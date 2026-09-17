@@ -1,0 +1,25 @@
+From: Relay Notifications <notify@relay.example.net>
+To: newsletter@example.jp
+Subject: Notification #4521
+Date: Fri, 12 Sep 2025 17:00:00 +0900
+Message-ID: <relay-0018@relay.example.net>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="=_alt_0018"
+
+--=_alt_0018
+Content-Type: text/plain; charset="utf-8"
+
+This notification is best viewed in an HTML capable mail client.
+Open the HTML version to see the details.
+
+--=_alt_0018
+Content-Type: text/html; charset="utf-8"
+
+<html><body>
+<p><b>Delivery has failed to these recipients or groups:</b></p>
+<p>sachi@customer.example.com</p>
+<p>Diagnostic information for administrators:</p>
+<p>Remote Server returned &#39;550 5.1.1 RESOLVER.ADR.RecipNotFound; not found&#39;</p>
+</body></html>
+
+--=_alt_0018--

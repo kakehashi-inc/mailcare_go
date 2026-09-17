@@ -20,7 +20,7 @@ import (
 // Jobs (jobs table).
 //
 // A job is one unit of background work: sync / fetch / group / analyze /
-// reindex / reclassify / notify. Jobs are queued in the master database and executed
+// reindex / reclassify / notify / cleanup. Jobs are queued in the master database and executed
 // by the JobManager, which runs up to "workers" jobs at once. Jobs that touch
 // the same IMAP server, the same mailbox index or the agent CLI hold resource
 // keys (see resourceKeys) and are serialized against each other. A job
@@ -33,7 +33,8 @@ const (
 	progressFlushInterval = 500 * time.Millisecond
 	// progressMaxLines bounds the progress text kept per job (newest lines).
 	progressMaxLines = 200
-	// jobRetention is how long finished jobs are kept.
+	// jobRetention is how long finished jobs are kept (the daily cleanup job
+	// removes older ones).
 	jobRetention = 30 * 24 * time.Hour
 	// analyzeAllTarget is the analyze job target meaning "every actionable group".
 	analyzeAllTarget = "*"
@@ -60,10 +61,24 @@ var ErrJobKind = errors.New("unknown job kind")
 // ValidateJobKind reports whether kind is one of the known job kinds.
 func ValidateJobKind(kind string) error {
 	switch kind {
-	case JobKindSync, JobKindFetch, JobKindGroup, JobKindAnalyze, JobKindReindex, JobKindReclassify, JobKindNotify:
+	case JobKindSync, JobKindFetch, JobKindGroup, JobKindAnalyze, JobKindReindex, JobKindReclassify, JobKindNotify, JobKindCleanup:
 		return nil
 	}
 	return fmt.Errorf("%w %q", ErrJobKind, kind)
+}
+
+// JobOfDeletedMailbox reports whether a job without a mailbox id belonged
+// to a mailbox that was deleted since: deleting a mailbox keeps its job
+// history with mailbox_id set to NULL (the system design document, 7.1),
+// which makes those rows look like expansion jobs. A job with a parent (a
+// child of an expansion job or a follow-up analysis) always had a mailbox,
+// and so did a queued job that was canceled without a result (the deletion
+// cancels the waiting jobs). Expansion jobs and notify jobs never have one.
+func JobOfDeletedMailbox(j *models.Job) bool {
+	if j.MailboxID.Valid || j.Kind == JobKindNotify {
+		return false
+	}
+	return j.ParentID != 0 || (j.Status == JobStatusCanceled && j.Result == "")
 }
 
 // NotifyTestTarget builds the notify job target that sends a test mail to
@@ -116,8 +131,10 @@ type JobManager struct {
 }
 
 // NewJobManager creates a manager over the master database. key is the
-// master key (to decrypt IMAP passwords); templates may be nil. The worker
-// count starts from the workers setting.
+// master key (to decrypt IMAP passwords), mailsRoot and agentRoot are the
+// mails and agent directories (MailsDir / AgentDir); templates (the embedded
+// agent instruction templates) may be nil. The worker count starts from the
+// workers setting.
 func NewJobManager(db *sql.DB, key []byte, mailsRoot, agentRoot string, templates fs.FS) *JobManager {
 	return &JobManager{db: db, key: key, mailsRoot: mailsRoot, agentRoot: agentRoot, templates: templates,
 		wake: make(chan struct{}, 1), workers: ResolveWorkers(db), locks: map[string]int64{}}
@@ -290,7 +307,9 @@ func jobResourceKeys(kind string, mb *models.Mailbox) []string {
 		return []string{mailboxKey}
 	case JobKindAnalyze:
 		return []string{lockAgent, lockAnalyzePrefix + mb.Address}
-	case JobKindReindex:
+	case JobKindReindex, JobKindCleanup:
+		// Both rewrite or remove mails and groups the agent may be reading
+		// (the prompt lists raw files), so they never overlap an analysis.
 		return []string{mailboxKey, lockAgent}
 	}
 	return nil
@@ -326,9 +345,9 @@ func (m *JobManager) releaseLocks(jobID int64) {
 	}
 }
 
-// HeldLocks returns the resource keys currently held, sorted (for status
-// output and tests).
-func (m *JobManager) HeldLocks() []string {
+// heldLocks returns the resource keys currently held, sorted (for the
+// tests).
+func (m *JobManager) heldLocks() []string {
 	m.lockMu.Lock()
 	defer m.lockMu.Unlock()
 	out := make([]string, 0, len(m.locks))
@@ -343,12 +362,18 @@ func (m *JobManager) HeldLocks() []string {
 // which case that job is returned with created=false. mailboxID 0 means "no
 // mailbox": an expansion job over every (enabled) mailbox.
 func (m *JobManager) Enqueue(kind string, mailboxID int64, target, requestedBy string) (job *models.Job, created bool, err error) {
-	return EnqueueJob(m.db, kind, mailboxID, target, requestedBy, m.wake)
+	return EnqueueJob(m.db, kind, mailboxID, target, requestedBy, 0, m.wake)
+}
+
+// enqueueChild queues a job caused by parent (same requester, parent id
+// recorded) so that the CLI can follow the jobs its own request caused.
+func (m *JobManager) enqueueChild(kind string, mailboxID int64, target string, parent *models.Job) (*models.Job, bool, error) {
+	return EnqueueJob(m.db, kind, mailboxID, target, parent.RequestedBy, parent.ID, m.wake)
 }
 
 // EnqueueJob is Enqueue without a manager (used by the CLI and the server
 // alike). wake may be nil.
-func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy string, wake chan struct{}) (*models.Job, bool, error) {
+func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy string, parentID int64, wake chan struct{}) (*models.Job, bool, error) {
 	if err := ValidateJobKind(kind); err != nil {
 		return nil, false, err
 	}
@@ -389,7 +414,7 @@ func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy st
 			return existing, false, nil
 		}
 	}
-	job := &models.Job{Kind: kind, Target: target, RequestedBy: requestedBy}
+	job := &models.Job{Kind: kind, Target: target, RequestedBy: requestedBy, ParentID: parentID}
 	if mailboxID != 0 {
 		job.MailboxID = sql.NullInt64{Int64: mailboxID, Valid: true}
 	}
@@ -419,15 +444,12 @@ func findActiveJob(db *sql.DB, kind string, mailboxID int64, target string) (*mo
 }
 
 // ResetStaleJobs is run at server start: jobs and agent reports left running
-// by a previous process are marked as error, and old finished jobs are
-// deleted.
+// by a previous process are marked as error. Nothing is deleted here; the
+// job history is pruned by the daily cleanup job (pruneJobHistory).
 func ResetStaleJobs(db *sql.DB, mailsRoot string) {
 	const reason = "interrupted by a server restart"
 	if err := models.ResetRunningJobs(db, reason); err != nil {
 		log.Printf("failed to reset running jobs: %v", err)
-	}
-	if err := models.DeleteOldJobs(db, time.Now().Add(-jobRetention)); err != nil {
-		log.Printf("failed to delete old jobs: %v", err)
 	}
 	mailboxes, err := models.ListMailboxes(db)
 	if err != nil {
@@ -597,6 +619,8 @@ func (m *JobManager) RunJob(ctx context.Context, job *models.Job, progress func(
 		return m.runReindex(ctx, job, mb, report)
 	case JobKindAnalyze:
 		return m.runAnalyze(ctx, job, mb, report)
+	case JobKindCleanup:
+		return m.runCleanup(ctx, mb, report)
 	}
 	return "", fmt.Errorf("%w %q", ErrJobKind, job.Kind)
 }
@@ -606,7 +630,7 @@ func (m *JobManager) RunJob(ctx context.Context, job *models.Job, progress func(
 // analysis) one after another. Progress lines are passed to echo. It is
 // used by the CLI when no server is running.
 func (m *JobManager) RunJobInline(ctx context.Context, kind string, mailboxID int64, target, requestedBy string, echo func(string)) (*models.Job, error) {
-	job, created, err := EnqueueJob(m.db, kind, mailboxID, target, requestedBy, nil)
+	job, created, err := EnqueueJob(m.db, kind, mailboxID, target, requestedBy, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -622,13 +646,17 @@ func (m *JobManager) RunJobInline(ctx context.Context, kind string, mailboxID in
 	}
 	m.execute(ctx, first, echo)
 	m.releaseLocks(first.ID)
+	// Only the jobs this run caused (children and their follow-ups) are
+	// executed here; jobs another CLI process queued meanwhile are left alone.
+	mine := map[int64]bool{first.ID: true}
 	for ctx.Err() == nil {
 		next, err := m.claimRunnable(func(j *models.Job) bool {
-			return j.RequestedBy == requestedBy && j.ID > first.ID
+			return mine[j.ParentID]
 		})
 		if err != nil || next == nil {
 			return first, err
 		}
+		mine[next.ID] = true
 		if echo != nil {
 			echo(fmt.Sprintf("--- job #%d (%s %s)", next.ID, next.Kind, strings.TrimSpace(next.Target+" "+m.addressOf(next))))
 		}
@@ -670,6 +698,15 @@ func (m *JobManager) runExpansion(ctx context.Context, job *models.Job, progress
 		if enabledOnly {
 			return "queued 0 jobs (no enabled mailbox)", nil
 		}
+		if job.Kind == JobKindCleanup {
+			// No child to hand the work to: the job history is pruned here
+			// so that the daily cleanup still applies that retention.
+			removed, err := m.pruneJobHistory(progress)
+			if err != nil {
+				return "queued 0 jobs (no mailbox)", err
+			}
+			return fmt.Sprintf("queued 0 jobs (no mailbox), removed %d jobs", removed), nil
+		}
 		return "queued 0 jobs (no mailbox)", nil
 	}
 	queued := 0
@@ -677,7 +714,7 @@ func (m *JobManager) runExpansion(ctx context.Context, job *models.Job, progress
 		if ctx.Err() != nil {
 			return fmt.Sprintf("queued %d jobs", queued), errors.New("server shutting down")
 		}
-		child, created, err := m.Enqueue(job.Kind, mb.ID, job.Target, job.RequestedBy)
+		child, created, err := m.enqueueChild(job.Kind, mb.ID, job.Target, job)
 		if err != nil {
 			progress(fmt.Sprintf("[%s] failed to queue %s: %v", mb.Address, job.Kind, err))
 			continue
@@ -712,7 +749,7 @@ func (m *JobManager) queueAnalysis(job *models.Job, mb *models.Mailbox, progress
 	if !m.agentAutoAnalysis(progress) {
 		return
 	}
-	if _, _, err := m.Enqueue(JobKindAnalyze, mb.ID, "", job.RequestedBy); err != nil {
+	if _, _, err := m.enqueueChild(JobKindAnalyze, mb.ID, "", job); err != nil {
 		progress(fmt.Sprintf("failed to queue analysis: %v", err))
 		return
 	}
@@ -720,14 +757,17 @@ func (m *JobManager) queueAnalysis(job *models.Job, mb *models.Mailbox, progress
 }
 
 // fetchOne runs FetchMailbox for one mailbox and records the outcome on the
-// mailbox row.
+// mailbox row. The search window never reaches before the mail retention
+// (mail_keep_days): mail older than that would only be removed again by the
+// daily cleanup.
 func (m *JobManager) fetchOne(ctx context.Context, mb *models.Mailbox, progress func(string)) (*mailengine.FetchResult, error) {
 	password, err := MailboxPassword(m.key, mb)
 	if err != nil {
 		_ = models.UpdateMailboxFetchResult(m.db, mb.ID, err.Error())
 		return nil, err
 	}
-	res, err := mailengine.FetchMailbox(ctx, m.mailsRoot, mb, password, mailengine.Progress(progress))
+	opts := mailengine.FetchOptions{NotBefore: time.Now().UTC().AddDate(0, 0, -ResolveMailKeepDays(m.db))}
+	res, err := mailengine.FetchMailbox(ctx, m.mailsRoot, mb, password, opts, mailengine.Progress(progress))
 	if err != nil {
 		_ = models.UpdateMailboxFetchResult(m.db, mb.ID, err.Error())
 		return nil, err
@@ -749,6 +789,82 @@ func (m *JobManager) runFetch(ctx context.Context, mb *models.Mailbox, progress 
 	line := fmt.Sprintf("fetched %d, skipped %d", res.Fetched, res.Skipped)
 	progress(line)
 	return line, nil
+}
+
+// runCleanup applies the retentions for one mailbox (the daily cleanup job,
+// also runnable by hand): first the mails older than mail_keep_days are
+// removed (mailengine.PruneMailbox: files and index rows, the groups they
+// belonged to recounted, the groups left empty deleted with their reports)
+// together with the leftovers of interrupted writes in the mailbox
+// directory (mailengine.RemoveStaleTempFiles; counted in a progress line
+// only), then the agent run directories older than agent_keep_days
+// (agent.CleanupWorkspaces), then the finished jobs older than jobRetention
+// (the job history is global, so every child of the daily run tries it and
+// the first one does the work). A later step runs even when an earlier one
+// failed; the result line counts what was removed and any failure makes the
+// job fail afterwards (what could not be removed is tried again next time).
+func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progress func(string)) (string, error) {
+	mailKeep := time.Duration(ResolveMailKeepDays(m.db)) * 24 * time.Hour
+	agentKeep := time.Duration(ResolveAgentKeepDays(m.db)) * 24 * time.Hour
+	progress(fmt.Sprintf("cleaning up (mail retention %s, agent workspace retention %s, job history %s)",
+		keepDaysLabel(mailKeep), keepDaysLabel(agentKeep), keepDaysLabel(jobRetention)))
+	var errs []error
+	pruned, err := mailengine.PruneMailbox(ctx, m.mailsRoot, mb.Address, mailKeep, mailengine.Progress(progress))
+	if err != nil {
+		progress(fmt.Sprintf("error: mail retention: %v", err))
+		errs = append(errs, fmt.Errorf("mail retention: %w", err))
+	}
+	if pruned == nil {
+		pruned = &mailengine.PruneResult{}
+	}
+	if ctx.Err() != nil {
+		return fmt.Sprintf("removed %d messages, %d groups, 0 agent workspaces, 0 jobs", pruned.Removed, pruned.RemovedGroups), errors.New("server shutting down")
+	}
+	if _, err := mailengine.RemoveStaleTempFiles(m.mailsRoot, mb.Address, mailengine.Progress(progress)); err != nil {
+		progress(fmt.Sprintf("error: temporary files: %v", err))
+		errs = append(errs, fmt.Errorf("temporary files: %w", err))
+	}
+	workspaces, err := agent.CleanupWorkspaces(m.agentRoot, mb.Address, agentKeep)
+	if workspaces > 0 {
+		progress(fmt.Sprintf("removed %d expired agent workspace(s)", workspaces))
+	}
+	if err != nil {
+		progress(fmt.Sprintf("error: agent workspaces: %v", err))
+		errs = append(errs, fmt.Errorf("agent workspaces: %w", err))
+	}
+	jobs, err := m.pruneJobHistory(progress)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	line := fmt.Sprintf("removed %d messages, %d groups, %d agent workspaces, %d jobs", pruned.Removed, pruned.RemovedGroups, workspaces, jobs)
+	progress(line)
+	if len(errs) > 0 {
+		return line, fmt.Errorf("%s: %w", mb.Address, errors.Join(errs...))
+	}
+	return line, nil
+}
+
+// pruneJobHistory deletes the finished jobs older than jobRetention and
+// returns how many went (a progress line reports a non-zero count).
+func (m *JobManager) pruneJobHistory(progress func(string)) (int64, error) {
+	removed, err := models.DeleteOldJobs(m.db, time.Now().Add(-jobRetention))
+	if err != nil {
+		progress(fmt.Sprintf("error: job history: %v", err))
+		return 0, fmt.Errorf("job history: %w", err)
+	}
+	if removed > 0 {
+		progress(fmt.Sprintf("removed %d finished job(s) older than %s", removed, keepDaysLabel(jobRetention)))
+	}
+	return removed, nil
+}
+
+// keepDaysLabel renders a retention for progress lines ("30 days", "1 day").
+func keepDaysLabel(keep time.Duration) string {
+	days := int(keep / (24 * time.Hour))
+	if days == 1 {
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", days)
 }
 
 // runGroup classifies and groups the messages not grouped yet (full = false)
@@ -792,11 +908,33 @@ func (m *JobManager) runSync(ctx context.Context, job *models.Job, mb *models.Ma
 	line := fmt.Sprintf("fetched %d, skipped %d, processed %d, bounces %d, groups %d",
 		fetched.Fetched, fetched.Skipped, grouped.Processed, grouped.Bounces, grouped.Groups)
 	progress(line)
-	if len(grouped.GroupsTouched) > 0 {
-		progress(fmt.Sprintf("%d group(s) need analysis", len(grouped.GroupsTouched)))
+	// Queue the analysis when any actionable group is flagged: groups that
+	// gained messages in this run and groups whose last analysis failed.
+	pending, err := m.countGroupsNeedingAnalysis(ctx, mb.Address)
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return line, fmt.Errorf("%s: %w", mb.Address, err)
+	}
+	if pending > 0 {
+		progress(fmt.Sprintf("%d group(s) need analysis", pending))
 		m.queueAnalysis(job, mb, progress)
 	}
 	return line, nil
+}
+
+// countGroupsNeedingAnalysis returns how many actionable open groups of the
+// address are flagged needs_analysis.
+func (m *JobManager) countGroupsNeedingAnalysis(ctx context.Context, address string) (int, error) {
+	idx, err := mailengine.OpenIndex(ctx, m.mailsRoot, address, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer idx.Close()
+	groups, err := models.ListGroupsNeedingAnalysis(idx)
+	if err != nil {
+		return 0, err
+	}
+	return len(groups), nil
 }
 
 // runReindex rebuilds the index from the raw files, then queues the analysis
@@ -810,6 +948,9 @@ func (m *JobManager) runReindex(ctx context.Context, job *models.Job, mb *models
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
 	}
 	line := fmt.Sprintf("messages %d, bounces %d, groups %d", res.Messages, res.Bounces, res.Groups)
+	if res.Skipped > 0 {
+		line += fmt.Sprintf(", skipped %d", res.Skipped)
+	}
 	progress(line)
 	m.queueAnalysis(job, mb, progress)
 	return line, nil
@@ -817,7 +958,8 @@ func (m *JobManager) runReindex(ctx context.Context, job *models.Job, mb *models
 
 // runAnalyze runs the agent over the groups named by the target: "" = the
 // actionable groups flagged for analysis, "*" = every actionable group, or
-// one group key.
+// one group key. The run directories are left alone here; the daily cleanup
+// job removes the ones older than agent_keep_days (runCleanup).
 func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
 	provider := ResolveAgentProvider(m.db)
 	if !agent.IsValidProvider(provider) {

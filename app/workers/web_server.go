@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -129,11 +130,120 @@ func isPublicAPIPath(p string) bool {
 	return p == "/api/v1/health" || p == "/api/v1/setup"
 }
 
-// webMiddleware restricts /control/* to loopback clients and enforces cookie
-// authentication on /api/v1/* (except health and setup). Other paths (SPA,
-// login, logout, setup) pass through unauthenticated.
+// isStateChanging reports whether a request to the API, the login endpoints
+// or the control endpoints can change state: every method but GET, HEAD and
+// OPTIONS.
+func isStateChanging(r *http.Request) bool {
+	p := r.URL.Path
+	if !strings.HasPrefix(p, "/api/v1/") && !strings.HasPrefix(p, "/web/") && !strings.HasPrefix(p, "/control/") {
+		return false
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	return true
+}
+
+// isJSONContentType reports whether the Content-Type names application/json
+// (parameters such as charset are allowed).
+func isJSONContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && mediaType == "application/json"
+}
+
+// normalizeHostPort lower-cases a host[:port] and drops an explicit default
+// port (80 for http, 443 for https, or either when the scheme is unknown) so
+// that "example.com", "example.com:443" and "EXAMPLE.com" compare equal.
+func normalizeHostPort(hostPort, scheme string) string {
+	hostPort = strings.ToLower(strings.TrimSpace(hostPort))
+	host, port, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return hostPort
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	switch {
+	case port == "80" && (scheme == "http" || scheme == ""),
+		port == "443" && (scheme == "https" || scheme == ""):
+		return host
+	}
+	return host + ":" + port
+}
+
+// sameOrigin reports whether the Origin header names the host the request
+// was sent to (the scheme is not compared: a reverse proxy may terminate TLS
+// in front of the server, in which case the browser's origin is https while
+// the server sees http). "null" and unparsable origins never match.
+func sameOrigin(origin, host string) bool {
+	u, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	return normalizeHostPort(u.Host, u.Scheme) == normalizeHostPort(host, "")
+}
+
+// checkStateChangingRequest applies the cross-site request forgery defence
+// to a state-changing request: the body must be declared as JSON (415
+// otherwise; an HTML form cannot send that type), and the request must come
+// from the same origin: an Origin header must name the request host, and
+// without one the Sec-Fetch-Site header, when present, must not say
+// cross-site or same-site (403 otherwise). It returns false after answering.
+func checkStateChangingRequest(w http.ResponseWriter, r *http.Request) bool {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if !sameOrigin(origin, r.Host) {
+			writeError(w, http.StatusForbidden, "cross-origin request refused")
+			return false
+		}
+	} else {
+		switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
+		case "cross-site", "same-site":
+			writeError(w, http.StatusForbidden, "cross-site request refused")
+			return false
+		}
+	}
+	return true
+}
+
+// setSecurityHeaders adds the response headers every reply carries: no MIME
+// sniffing, no framing (the message HTML endpoint, which the SPA shows in a
+// sandboxed iframe of its own origin, allows same-origin framing instead)
+// and no Referer leakage.
+func setSecurityHeaders(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	if isMessageHTMLPath(r.URL.Path) {
+		h.Set("X-Frame-Options", "SAMEORIGIN")
+	} else {
+		h.Set("X-Frame-Options", "DENY")
+	}
+	h.Set("Referrer-Policy", "no-referrer")
+}
+
+// isMessageHTMLPath matches GET /api/v1/mailboxes/{id}/messages/{key}/html.
+func isMessageHTMLPath(p string) bool {
+	if !strings.HasPrefix(p, "/api/v1/mailboxes/") || !strings.HasSuffix(p, "/html") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(p, "/api/v1/mailboxes/"), "/")
+	return len(parts) == 4 && parts[1] == "messages"
+}
+
+// webMiddleware sets the defensive response headers, refuses cross-site and
+// non-JSON state-changing requests, restricts /control/* to loopback clients
+// and enforces cookie authentication on /api/v1/* (except health and setup).
+// Other paths (SPA, login, logout, setup) pass through unauthenticated.
 func (c *core) webMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w, r)
+		if isStateChanging(r) && !checkStateChangingRequest(w, r) {
+			return
+		}
 		p := r.URL.Path
 		switch {
 		case strings.HasPrefix(p, "/control/"):

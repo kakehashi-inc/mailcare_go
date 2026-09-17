@@ -2,12 +2,15 @@ package models
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 )
 
 // AgentReport is a row of the per-mailbox agent_reports table: one analysis
 // run of an agent CLI over a bounce group. The newest completed report of a
-// group is the one shown to users; older rows are kept as history.
+// group is the one shown to users; older rows are kept as history. The
+// prompt, the CLI transcript and the report file of a run live in the run's
+// workspace directory data/agent/<address>/<group_key>/<id>/.
 type AgentReport struct {
 	ID             int64        `json:"id"`
 	GroupKey       string       `json:"group_key"`
@@ -33,10 +36,10 @@ func InsertAgentReport(db *sql.DB, r *AgentReport) error {
 	if r.Status == "" {
 		r.Status = "running"
 	}
-	r.Provider = truncateRunes(r.Provider, 32)
 	res, err := db.Exec(
-		`INSERT INTO agent_reports (group_key, provider, status, message_count, started_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO agent_reports (group_key, provider, status, severity, responsible, summary, report_markdown,
+		   error_message, message_count, started_at, created_at)
+		 VALUES (?, ?, ?, '', '', '', '', '', ?, ?, ?)`,
 		r.GroupKey, r.Provider, r.Status, r.MessageCount, now, now,
 	)
 	if err != nil {
@@ -53,7 +56,7 @@ func CompleteAgentReport(db *sql.DB, id int64, summary, responsible, severity, m
 	_, err := db.Exec(
 		`UPDATE agent_reports SET status = 'completed', summary = ?, responsible = ?, severity = ?, report_markdown = ?,
 		   finished_at = ? WHERE id = ?`,
-		truncateRunes(summary, 1000), responsible, severity, markdown, time.Now().UTC(), id,
+		summary, responsible, severity, markdown, time.Now().UTC(), id,
 	)
 	return err
 }
@@ -61,26 +64,28 @@ func CompleteAgentReport(db *sql.DB, id int64, summary, responsible, severity, m
 // FailAgentReport marks a run as failed.
 func FailAgentReport(db *sql.DB, id int64, errMsg string) error {
 	_, err := db.Exec(`UPDATE agent_reports SET status = 'error', error_message = ?, finished_at = ? WHERE id = ?`,
-		truncateRunes(errMsg, 2000), time.Now().UTC(), id)
+		errMsg, time.Now().UTC(), id)
 	return err
 }
 
-// RestoreAgentReport inserts a report row as it was (every column except the
-// id), used when an index is rebuilt and the group key came back.
+// RestoreAgentReport inserts a report row as it was, id included, used when
+// an index is rebuilt and the group key came back. The id must be kept
+// because the run's workspace directory data/agent/<address>/<group_key>/<id>/
+// is named after it (and, being an AUTOINCREMENT column, a fresh id would
+// otherwise be assigned).
 func RestoreAgentReport(db *sql.DB, r *AgentReport) error {
-	res, err := db.Exec(
-		`INSERT INTO agent_reports (group_key, provider, status, severity, responsible, summary, report_markdown,
+	if r.ID <= 0 {
+		return errors.New("restore agent report: missing id")
+	}
+	_, err := db.Exec(
+		`INSERT INTO agent_reports (id, group_key, provider, status, severity, responsible, summary, report_markdown,
 		   error_message, message_count, started_at, finished_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.GroupKey, truncateRunes(r.Provider, 32), r.Status, r.Severity, r.Responsible, truncateRunes(r.Summary, 1000),
-		r.ReportMarkdown, truncateRunes(r.ErrorMessage, 2000), r.MessageCount, utcNullTime(r.StartedAt),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.GroupKey, r.Provider, r.Status, r.Severity, r.Responsible, r.Summary,
+		r.ReportMarkdown, r.ErrorMessage, r.MessageCount, utcNullTime(r.StartedAt),
 		utcNullTime(r.FinishedAt), r.CreatedAt.UTC(),
 	)
-	if err != nil {
-		return err
-	}
-	r.ID, _ = res.LastInsertId()
-	return nil
+	return err
 }
 
 // LatestAgentReport returns the newest report of a group regardless of status
@@ -128,7 +133,7 @@ func ListAllAgentReports(db *sql.DB) ([]*AgentReport, error) {
 // ResetRunningAgentReports marks reports left running (e.g. after a crash) as error.
 func ResetRunningAgentReports(db *sql.DB, reason string) error {
 	_, err := db.Exec(`UPDATE agent_reports SET status = 'error', error_message = ?, finished_at = ? WHERE status = 'running'`,
-		truncateRunes(reason, 2000), time.Now().UTC())
+		reason, time.Now().UTC())
 	return err
 }
 

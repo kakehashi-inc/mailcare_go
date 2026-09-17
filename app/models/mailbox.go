@@ -49,9 +49,9 @@ type mailboxDetails struct {
 
 func (m *Mailbox) detailsJSON() string {
 	return marshalJSON(mailboxDetails{
-		Protocol: ProtocolIMAP, Host: truncateRunes(m.ImapHost, 253), Port: m.ImapPort, Security: m.ImapSecurity,
-		Username: truncateRunes(m.ImapUsername, 254), PasswordEnc: m.ImapPasswordEnc,
-		Folder: truncateRunes(m.Folder, 255), InitialDays: m.InitialDays, RecentDays: m.RecentDays,
+		Protocol: ProtocolIMAP, Host: m.ImapHost, Port: m.ImapPort, Security: m.ImapSecurity,
+		Username: m.ImapUsername, PasswordEnc: m.ImapPasswordEnc,
+		Folder: m.Folder, InitialDays: m.InitialDays, RecentDays: m.RecentDays,
 	})
 }
 
@@ -67,9 +67,9 @@ const mailboxColumns = `id, address, display_name, enabled, detail_info, last_fe
 // InsertMailbox creates a mailbox row and fills in its ID.
 func InsertMailbox(db *sql.DB, m *Mailbox) error {
 	now := time.Now().UTC()
-	m.DisplayName = truncateRunes(m.DisplayName, 128)
 	res, err := db.Exec(
-		`INSERT INTO mailboxes (address, display_name, enabled, detail_info, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO mailboxes (address, display_name, enabled, detail_info, last_fetch_error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, '', ?, ?)`,
 		m.Address, m.DisplayName, boolToInt(m.Enabled), m.detailsJSON(), now, now,
 	)
 	if err != nil {
@@ -91,7 +91,6 @@ func UpdateMailbox(db *sql.DB, m *Mailbox) error {
 		m.ImapPasswordEnc = cur.ImapPasswordEnc
 	}
 	now := time.Now().UTC()
-	m.DisplayName = truncateRunes(m.DisplayName, 128)
 	_, err := db.Exec(
 		`UPDATE mailboxes SET address = ?, display_name = ?, enabled = ?, detail_info = ?, updated_at = ? WHERE id = ?`,
 		m.Address, m.DisplayName, boolToInt(m.Enabled), m.detailsJSON(), now, m.ID,
@@ -106,7 +105,7 @@ func UpdateMailbox(db *sql.DB, m *Mailbox) error {
 // the error text ("" on success).
 func UpdateMailboxFetchResult(db *sql.DB, id int64, errMsg string) error {
 	_, err := db.Exec(`UPDATE mailboxes SET last_fetched_at = ?, last_fetch_error = ? WHERE id = ?`,
-		time.Now().UTC(), truncateRunes(errMsg, 2000), id)
+		time.Now().UTC(), errMsg, id)
 	return err
 }
 
@@ -138,9 +137,10 @@ func GetMailboxByAddress(db *sql.DB, address string) (*Mailbox, error) {
 	return scanMailbox(db.QueryRow(`SELECT `+mailboxColumns+` FROM mailboxes WHERE address = ?`, address))
 }
 
-// DeleteMailbox removes a mailbox row. The raw mail files and the index are
-// removed by the caller (app/modules).
-func DeleteMailbox(db *sql.DB, id int64) error {
+// DeleteMailbox removes a mailbox row (its queued jobs are canceled by the
+// caller in the same transaction; the raw mail files and the index are
+// removed by the caller as well, app/modules).
+func DeleteMailbox(db Execer, id int64) error {
 	_, err := db.Exec(`DELETE FROM mailboxes WHERE id = ?`, id)
 	return err
 }

@@ -136,6 +136,87 @@ func SetAgentEnabled(db *sql.DB, enabled bool) error {
 	return PersistSetting(db, SettingAgentEnabled, "0", enabled)
 }
 
+// ValidateAgentKeepDays checks the retention of the agent run directories
+// in days (MinAgentKeepDays..MaxAgentKeepDays).
+func ValidateAgentKeepDays(n int) error {
+	if n < MinAgentKeepDays || n > MaxAgentKeepDays {
+		return fmt.Errorf("agent_keep_days must be an integer between %d and %d", MinAgentKeepDays, MaxAgentKeepDays)
+	}
+	return nil
+}
+
+// ParseAgentKeepDays parses the retention given as text.
+func ParseAgentKeepDays(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0, fmt.Errorf("agent_keep_days must be an integer between %d and %d", MinAgentKeepDays, MaxAgentKeepDays)
+	}
+	if err := ValidateAgentKeepDays(n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ResolveAgentKeepDays returns how many days the workspace directory of an
+// analysis run is kept (saved > default). A saved value outside the bounds
+// falls back to the default.
+func ResolveAgentKeepDays(db *sql.DB) int {
+	n := resolveInt(db, SettingAgentKeepDays, 0, DefaultAgentKeepDays)
+	if ValidateAgentKeepDays(n) != nil {
+		return DefaultAgentKeepDays
+	}
+	return n
+}
+
+// SaveAgentKeepDays persists the retention (non-default only).
+func SaveAgentKeepDays(db *sql.DB, n int) error {
+	if err := ValidateAgentKeepDays(n); err != nil {
+		return err
+	}
+	return PersistSetting(db, SettingAgentKeepDays, strconv.Itoa(n), n == DefaultAgentKeepDays)
+}
+
+// --- Mail retention ---
+
+// ValidateMailKeepDays checks the retention of fetched mails in days
+// (MinMailKeepDays..MaxMailKeepDays).
+func ValidateMailKeepDays(n int) error {
+	if n < MinMailKeepDays || n > MaxMailKeepDays {
+		return fmt.Errorf("mail_keep_days must be an integer between %d and %d", MinMailKeepDays, MaxMailKeepDays)
+	}
+	return nil
+}
+
+// ParseMailKeepDays parses the retention given as text.
+func ParseMailKeepDays(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0, fmt.Errorf("mail_keep_days must be an integer between %d and %d", MinMailKeepDays, MaxMailKeepDays)
+	}
+	if err := ValidateMailKeepDays(n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// ResolveMailKeepDays returns how many days a fetched mail is kept (saved >
+// default). A saved value outside the bounds falls back to the default.
+func ResolveMailKeepDays(db *sql.DB) int {
+	n := resolveInt(db, SettingMailKeepDays, 0, DefaultMailKeepDays)
+	if ValidateMailKeepDays(n) != nil {
+		return DefaultMailKeepDays
+	}
+	return n
+}
+
+// SaveMailKeepDays persists the retention (non-default only).
+func SaveMailKeepDays(db *sql.DB, n int) error {
+	if err := ValidateMailKeepDays(n); err != nil {
+		return err
+	}
+	return PersistSetting(db, SettingMailKeepDays, strconv.Itoa(n), n == DefaultMailKeepDays)
+}
+
 // ParseBoolSetting accepts 1/0, true/false, yes/no, on/off.
 func ParseBoolSetting(s string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -194,6 +275,18 @@ func ParseCheckTimes(inputs []string) ([]string, error) {
 // FormatCheckTimes joins normalized check times for storage / display.
 func FormatCheckTimes(times []string) string {
 	return strings.Join(times, ",")
+}
+
+// CheckTimesNone is the word "settings set check_times" accepts to disable
+// the automatic checks, and what an empty list is displayed as.
+const CheckTimesNone = "none"
+
+// DisplayCheckTimes formats check times for people: "none" when disabled.
+func DisplayCheckTimes(times []string) string {
+	if len(times) == 0 {
+		return CheckTimesNone
+	}
+	return FormatCheckTimes(times)
 }
 
 // ResolveCheckTimes returns the configured check times (saved > default). A

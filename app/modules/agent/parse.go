@@ -26,6 +26,34 @@ var placeholderLine = regexp.MustCompile(`(?m)^\s*(?:\d+[.)]\s*)?<[^<>\n]*\s[^<>
 // placeholder ("<one or two sentences>" or any bracketed phrase).
 var placeholderSummary = regexp.MustCompile(`^<[^<>]*>$`)
 
+// secretLikePatterns match strings that look like the secrets MailCare or its
+// host may hold: the master key (64 hex digits), a bcrypt password hash, a
+// PEM block, an API token (mlc_ + 40 hex digits) and an AWS access key id. A
+// report or summary that carries one is refused (ErrSecretLikeContent): the
+// agent could only have obtained it by reading outside the mail files, or by
+// following an instruction planted in a notice.
+var secretLikePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`),
+	regexp.MustCompile(`\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{20,}`),
+	regexp.MustCompile(`-----BEGIN`),
+	regexp.MustCompile(`\bmlc_[0-9a-fA-F]{40}\b`),
+	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
+}
+
+// ErrSecretLikeContent is the ValidateOutput failure for a report or summary
+// that contains a secret-like string (see secretLikePatterns).
+var ErrSecretLikeContent = errors.New("report contains secret-like content")
+
+// ContainsSecretLike reports whether s matches one of secretLikePatterns.
+func ContainsSecretLike(s string) bool {
+	for _, re := range secretLikePatterns {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
 // Meta is the machine-readable part of the agent output (the META block).
 type Meta struct {
 	Summary     string `json:"summary"`
@@ -39,14 +67,6 @@ type Output struct {
 	ReportParsed bool   // false when no complete REPORT block was found
 	Meta         Meta   // validated META values (invalid enums become "")
 	MetaParsed   bool   // false when the META block was absent or not valid JSON
-}
-
-// ParseTranscript strips the echoed prompt from the CLI transcript (codex
-// exec prints the whole prompt under a "user" line before answering) and
-// parses what remains. This is what AnalyzeGroup uses; ParseOutput is the
-// prompt-free core.
-func ParseTranscript(raw, prompt string) Output {
-	return ParseOutput(StripPromptEcho(raw, prompt))
 }
 
 // StripPromptEcho removes everything up to and including the first echo of
@@ -131,9 +151,10 @@ func isTemplateReport(block string) bool {
 // ValidateOutput reports why a parsed output that has a REPORT block is not
 // a usable analysis: the report still carries template placeholders (the
 // agent echoed the prompt), the report body is shorter than MinReportRunes,
-// or the META summary is a placeholder. It returns nil for a usable output.
-// Callers treat a non-nil error as a failed run so that the previous good
-// report is kept.
+// the META summary is a placeholder, or the report or summary contains a
+// secret-like string (ErrSecretLikeContent). It returns nil for a usable
+// output. Callers treat a non-nil error as a failed run so that the previous
+// good report is kept.
 func ValidateOutput(out Output) error {
 	if !out.ReportParsed {
 		return errors.New("no report block")
@@ -146,6 +167,9 @@ func ValidateOutput(out Output) error {
 	}
 	if placeholderSummary.MatchString(strings.TrimSpace(out.Meta.Summary)) {
 		return fmt.Errorf("summary is the template placeholder %q", out.Meta.Summary)
+	}
+	if ContainsSecretLike(out.Report) || ContainsSecretLike(out.Meta.Summary) {
+		return ErrSecretLikeContent
 	}
 	return nil
 }

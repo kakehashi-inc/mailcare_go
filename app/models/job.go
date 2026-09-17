@@ -9,40 +9,28 @@ import (
 // group, analyze, reindex, reclassify, notify) with its progress and outcome.
 // Jobs are executed by the job workers (app/modules/jobs.go).
 //
-// Columns: the kind, the target mailbox, the extra target, the status, the
-// requester and the three timestamps. Progress, result and error text are
-// stored together in the detail_info JSON column (jobDetails).
+// Every attribute is a real column: the kind, the target mailbox, the parent
+// job, the extra target, the status, the requester, the progress / result /
+// error text and the three timestamps.
 type Job struct {
 	ID          int64         `json:"id"`
 	Kind        string        `json:"kind"`
-	MailboxID   sql.NullInt64 `json:"-"`      // NULL = expand to every mailbox (notify: always NULL)
-	Target      string        `json:"target"` // analyze: group key / "*" / ""; notify: "" or "test:<address>"
+	MailboxID   sql.NullInt64 `json:"-"`         // NULL = expand to every mailbox (notify: always NULL)
+	ParentID    int64         `json:"parent_id"` // the job that queued this one (a child of an expansion job or a follow-up analysis), 0 when queued directly
+	Target      string        `json:"target"`    // analyze: group key / "*" / ""; notify: "" or "test:<address>"
 	Status      string        `json:"status"`
 	RequestedBy string        `json:"requested_by"`
 	CreatedAt   time.Time     `json:"created_at"`
 	StartedAt   sql.NullTime  `json:"-"`
 	FinishedAt  sql.NullTime  `json:"-"`
 
-	// Stored in the detail_info JSON column.
-	Progress     string `json:"progress"`
-	Result       string `json:"result"`
-	ErrorMessage string `json:"error_message"`
+	Progress     string `json:"progress"`      // progress lines (the newest 200, newline separated)
+	Result       string `json:"result"`        // one-line result of a finished job
+	ErrorMessage string `json:"error_message"` // why the job failed ("" otherwise)
 }
 
-// jobDetails is the JSON shape of jobs.detail_info.
-type jobDetails struct {
-	Progress string `json:"progress,omitempty"`
-	Result   string `json:"result,omitempty"`
-	Error    string `json:"error,omitempty"`
-}
-
-func (j *Job) applyDetails(raw string) {
-	var o jobDetails
-	unmarshalJSON(raw, &o)
-	j.Progress, j.Result, j.ErrorMessage = o.Progress, o.Result, o.Error
-}
-
-const jobColumns = `id, kind, mailbox_id, target, status, requested_by, created_at, started_at, finished_at, detail_info`
+const jobColumns = `id, kind, mailbox_id, parent_id, target, status, requested_by, progress, result, error_message,
+	created_at, started_at, finished_at`
 
 // InsertJob queues a job and fills in its ID.
 func InsertJob(db *sql.DB, j *Job) error {
@@ -50,9 +38,14 @@ func InsertJob(db *sql.DB, j *Job) error {
 	if j.Status == "" {
 		j.Status = "queued"
 	}
+	var parent sql.NullInt64
+	if j.ParentID != 0 {
+		parent = sql.NullInt64{Int64: j.ParentID, Valid: true}
+	}
 	res, err := db.Exec(
-		`INSERT INTO jobs (kind, mailbox_id, target, status, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		j.Kind, j.MailboxID, truncateRunes(j.Target, 320), j.Status, truncateRunes(j.RequestedBy, 80), now,
+		`INSERT INTO jobs (kind, mailbox_id, parent_id, target, status, requested_by, progress, result, error_message, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, '', '', '', ?)`,
+		j.Kind, j.MailboxID, parent, j.Target, j.Status, j.RequestedBy, now,
 	)
 	if err != nil {
 		return err
@@ -60,12 +53,6 @@ func InsertJob(db *sql.DB, j *Job) error {
 	j.ID, _ = res.LastInsertId()
 	j.CreatedAt = now
 	return nil
-}
-
-// ClaimNextJob atomically moves the oldest queued job to running and returns
-// it, or nil when nothing is queued.
-func ClaimNextJob(db *sql.DB) (*Job, error) {
-	return ClaimNextRunnableJob(db, nil)
 }
 
 // ClaimNextRunnableJob walks the queued jobs oldest first and atomically
@@ -108,21 +95,9 @@ func ClaimJobByID(db *sql.DB, id int64) (*Job, error) {
 	return GetJobByID(db, id)
 }
 
-// NextQueuedJobAfter returns the oldest queued job created after the job with
-// id afterID by the given requester, or nil when there is none (used by the
-// in-process CLI runner to execute the follow-up jobs it queued itself).
-func NextQueuedJobAfter(db *sql.DB, afterID int64, requestedBy string) (*Job, error) {
-	j, err := scanJob(db.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE status = 'queued' AND id > ? AND requested_by = ?
-		ORDER BY id ASC LIMIT 1`, afterID, requestedBy))
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	return j, err
-}
-
 // UpdateJobProgress replaces the progress text of a running job.
 func UpdateJobProgress(db *sql.DB, id int64, progress string) error {
-	_, err := db.Exec(`UPDATE jobs SET detail_info = json_set(detail_info, '$.progress', ?) WHERE id = ?`, progress, id)
+	_, err := db.Exec(`UPDATE jobs SET progress = ? WHERE id = ?`, progress, id)
 	return err
 }
 
@@ -133,7 +108,7 @@ func FinishJob(db *sql.DB, id int64, result, errMsg string) error {
 		status = "error"
 	}
 	_, err := db.Exec(
-		`UPDATE jobs SET status = ?, detail_info = json_set(detail_info, '$.result', ?, '$.error', ?), finished_at = ? WHERE id = ?`,
+		`UPDATE jobs SET status = ?, result = ?, error_message = ?, finished_at = ? WHERE id = ?`,
 		status, result, errMsg, time.Now().UTC(), id,
 	)
 	return err
@@ -151,11 +126,32 @@ func CancelQueuedJob(db *sql.DB, id int64) (bool, error) {
 	return n > 0, nil
 }
 
+// CancelQueuedJobsForMailbox cancels every queued job of a mailbox (the
+// running ones are left alone: see HasRunningJobForMailbox) and returns how
+// many rows changed. It runs on an Execer so that deleting a mailbox can
+// cancel its waiting jobs in the same transaction as the row.
+func CancelQueuedJobsForMailbox(db Execer, mailboxID int64) (int64, error) {
+	res, err := db.Exec(`UPDATE jobs SET status = 'canceled', finished_at = ? WHERE mailbox_id = ? AND status = 'queued'`,
+		time.Now().UTC(), mailboxID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// HasRunningJobForMailbox reports whether a job of the mailbox is running
+// right now (of any kind).
+func HasRunningJobForMailbox(db Execer, mailboxID int64) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE mailbox_id = ? AND status = 'running'`, mailboxID).Scan(&n)
+	return n > 0, err
+}
+
 // ResetRunningJobs marks jobs left in running state (e.g. after a crash) as
 // error so they are not shown as in progress forever.
 func ResetRunningJobs(db *sql.DB, reason string) error {
-	_, err := db.Exec(`UPDATE jobs SET status = 'error', detail_info = json_set(detail_info, '$.error', ?), finished_at = ?
-		WHERE status = 'running'`, reason, time.Now().UTC())
+	_, err := db.Exec(`UPDATE jobs SET status = 'error', error_message = ?, finished_at = ? WHERE status = 'running'`,
+		reason, time.Now().UTC())
 	return err
 }
 
@@ -194,13 +190,17 @@ func HasActiveJob(db *sql.DB, kind string, mailboxID int64, target string) (bool
 	return n > 0, err
 }
 
-// DeleteOldJobs removes finished jobs older than the given time.
-func DeleteOldJobs(db *sql.DB, before time.Time) error {
-	_, err := db.Exec(
+// DeleteOldJobs removes the finished jobs whose finish time is before the
+// given time and returns how many rows went.
+func DeleteOldJobs(db *sql.DB, before time.Time) (int64, error) {
+	res, err := db.Exec(
 		`DELETE FROM jobs WHERE status IN ('done','error','canceled') AND finished_at IS NOT NULL AND finished_at < ?`,
 		before.UTC(),
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func queryJobs(db *sql.DB, query string, args ...any) ([]*Job, error) {
@@ -222,11 +222,11 @@ func queryJobs(db *sql.DB, query string, args ...any) ([]*Job, error) {
 
 func scanJob(s rowScanner) (*Job, error) {
 	j := &Job{}
-	var details string
-	if err := s.Scan(&j.ID, &j.Kind, &j.MailboxID, &j.Target, &j.Status, &j.RequestedBy, &j.CreatedAt, &j.StartedAt,
-		&j.FinishedAt, &details); err != nil {
+	var parent sql.NullInt64
+	if err := s.Scan(&j.ID, &j.Kind, &j.MailboxID, &parent, &j.Target, &j.Status, &j.RequestedBy, &j.Progress,
+		&j.Result, &j.ErrorMessage, &j.CreatedAt, &j.StartedAt, &j.FinishedAt); err != nil {
 		return nil, err
 	}
-	j.applyDetails(details)
+	j.ParentID = parent.Int64
 	return j, nil
 }

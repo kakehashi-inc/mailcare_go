@@ -1,0 +1,19 @@
+From: Shop <shop@client.example.com>
+To: newsletter@example.jp
+Subject: Thanks for your order
+Date: Fri, 12 Sep 2025 16:00:00 +0900
+Message-ID: <skeleton-0017@client.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="=_alt_0017"
+
+--=_alt_0017
+Content-Type: text/plain; charset="utf-8"
+
+Thanks for your order. We will ship it tomorrow.
+
+--=_alt_0017
+Content-Type: text/html; charset="utf-8"
+
+<html><head><title>Order</title></head><body><p></p><div>&nbsp;</div></body></html>
+
+--=_alt_0017--

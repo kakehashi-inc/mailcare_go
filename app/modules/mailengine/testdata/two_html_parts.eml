@@ -1,0 +1,28 @@
+Return-Path: <>
+From: postmaster@corp.example.co.jp
+To: newsletter@example.jp
+Subject: Undeliverable: Service maintenance notice
+Date: Sat, 13 Sep 2025 11:00:00 +0900
+Message-ID: <two-html-0021@EXCH01.corp.example.co.jp>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_mixed_0021"
+
+--=_mixed_0021
+Content-Type: text/html; charset="utf-8"
+
+<html><head><title>Original</title></head><body>
+<p>Dear customer,</p>
+<p>Our service will be under maintenance on Sunday. Contact <a href="mailto:support@example.jp">support@example.jp</a> for details.</p>
+</body></html>
+
+--=_mixed_0021
+Content-Type: text/html; charset="utf-8"
+
+<html><head><style>p { margin: 0; }</style></head><body>
+<p><b>Delivery has failed to these recipients or groups:</b></p>
+<p>kuro.suzuki@corp.example.co.jp</p>
+<p>Diagnostic information for administrators:</p>
+<p>Remote Server returned &#39;550 5.1.1 RESOLVER.ADR.RecipNotFound; not found&#39;</p>
+</body></html>
+
+--=_mixed_0021--

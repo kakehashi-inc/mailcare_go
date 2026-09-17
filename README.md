@@ -11,9 +11,14 @@ problem that the mail server administrator, the domain administrator or the owne
 has to act on.
 
 - **Every mail is kept** - each received mail, whether it is a bounce or not, is stored under
-  `data/mails/<address>/` as the original (`.eml`), the text body (`.txt`), the HTML body (`.html`) and the
-  parsed metadata (`.json`). The index is a separate SQLite file per address (`data/mails/<address>.sqlite`),
-  so detection can be re-run from the raw files whenever the rules change.
+  `data/mails/<address>/` as the original (`.eml`) and its decoded body sections (text as `<key>-1.txt`,
+  `<key>-2.txt`, ..., HTML as `<key>-1.html`, `<key>-2.html`, ...: one file per part with content, in MIME
+  order). The headers and other metadata live only in the index, a separate SQLite file per address
+  (`data/mails/<address>.sqlite`), so detection can be re-run from the raw files whenever the rules change.
+  Mails are kept for a configurable retention (180 days by default, counted from the date of the mail): a
+  cleanup that runs once a day, when the date changes, removes older mails, files and index entry alike, and a
+  bounce group left without mails disappears together with its analysis. The same cleanup drops finished jobs
+  older than 30 days from the job history. It can also be started from the Tools screen or the CLI.
 - **Detection** - the sender, sender name, subject and `multipart/report` delivery status decide whether a
   mail is a bounce and of which kind (failed / delayed / auto-reply). The failing recipient, the extended
   status code (`5.1.1`), the remote MTA and IP and the diagnostic text are extracted.
@@ -24,20 +29,24 @@ has to act on.
   recorded but excluded from Alerts, which show only what the mail administrator has to act on.
 - **Agent analysis** - an agent CLI installed on the machine (Codex CLI today; more can be added) is given the
   paths of the raw mails of an actionable group and writes a cause analysis with recommended actions, stored
-  per group. A group that gains new mails is analyzed again.
+  per group. A group that gains new mails is analyzed again. Every run gets its own workspace directory
+  (prompt, CLI output, report) under `data/agent/<address>/<group_key>/<report_id>/`; directories older than
+  the configured retention (30 days by default) are removed by the same daily cleanup.
 - **Independent phases** - fetching, grouping and analysis are separate jobs that can be run one by one from
   the Tools screen or the CLI, or together as a sync of all addresses. The number of concurrent jobs
   (workers) is configurable; accounts on the same IMAP server are processed one after another automatically.
 - **Scheduled checks** - all addresses are synced at the configured daily times (default 06:00, 12:00 and
-  18:00). The first fetch of an address looks back 90 days, later fetches 30 days, and only mails not fetched
-  yet are taken.
+  18:00). The first fetch of an address looks back 90 days, later fetches 30 days (never further back than the
+  mail retention), and only mails not fetched yet are taken.
 - **Mail notifications** - with SMTP configured, the selected recipient users (each user may register an
   optional email address) get one mail listing every analyzed actionable group: its summary, the number of
   affected mails and the URL that opens the alert. The notification time and interval (daily to every 7 days)
-  are configurable.
+  are configurable. The stored SMTP password is used only for the server it was saved for: changing the host,
+  port, connection mode or username (in the settings screen, with `settings set`, or for a test mail) requires
+  entering the password again.
 - **Web and CLI** - everything can be done from the Web UI (port 9790). The command line covers starting and
   stopping the service, user and token management, mail address registration, sync / fetch / group /
-  analyze runs, reindexing and group listings (reading mail bodies is Web only). Tokens are reserved for a
+  analyze / cleanup runs, reindexing and group listings (reading mail bodies is Web only). Tokens are reserved for a
   future API.
 - One binary for Windows, macOS and Linux.
 
@@ -72,8 +81,8 @@ Web navigation:
 | Dashboard (click the brand) | Actionable open groups and last fetch per address, recent groups, running jobs, next check time (non-admin users are read-only) |
 | Alerts | Mail address -> bounce group (actionable / excluded switch, with the agent report) -> original mails -> mail detail |
 | Mail | Raw mail viewer per address (text / HTML / original download) |
-| Tools | Sync all addresses, fetch only, group only, analyze only, rebuild the index, re-run detection, job history |
-| Settings (administrators only) | Check times, workers and agent, notifications (SMTP, recipients, time, interval), mail addresses, users, tokens (reserved for the API) |
+| Tools | Sync all addresses, fetch only, group only, analyze only, rebuild the index, re-run detection, cleanup (apply the retentions now), job history |
+| Settings (administrators only) | Check times, mail retention, workers and agent, notifications (SMTP, recipients, time, interval), mail addresses, users, tokens (reserved for the API) |
 | User name (top right) | Profile (display name, notification address, language, time zone, theme, password) and logout |
 
 See [Documents/システム設計書.md](Documents/システム設計書.md) for the design,
@@ -83,8 +92,21 @@ See [Documents/システム設計書.md](Documents/システム設計書.md) for
 ### 1.2 Requirements
 
 - The `codex` CLI must be on PATH to use the agent analysis (without it only the analysis is skipped).
-- Runtime data is created in `data/` next to the executable (`--data-dir` changes it). `data/mailcare.key` is
-  the secret key that encrypts IMAP passwords and signs Web sessions: back it up and keep it at mode 0600.
+- Runtime data is created in `data/` next to the executable (`--data-dir` changes it). It holds exactly three
+  things:
+  - `data/mailcare.db` - the master database (users, tokens, settings, mail addresses, jobs). The secret key
+    that encrypts the IMAP / SMTP passwords and signs the Web sessions is stored inside it (`settings` table);
+    there is no key file, so a backup of this one file also preserves the key.
+  - `data/mails/` - the index per address (`<address>.sqlite`) and the raw mail directories (`.eml` plus the
+    `.txt` / `.html` body sections).
+  - `data/agent/` - the per-run agent workspaces (`<address>/<group_key>/<report_id>/`).
+- Run MailCare and the agent CLI as a dedicated, unprivileged OS user that can read nothing but `data/`. The
+  agent's read-only sandbox only prevents writes: the CLI can still read every file the OS user can read (home
+  directory, keys, other applications' settings), and the mails it analyzes are untrusted input. Keep the data
+  directory private (mode 0700; the server warns at start otherwise). When MailCare is reached over the
+  network, terminate TLS on a reverse proxy in front of it (the server itself speaks plain HTTP), let the proxy
+  add the `Secure` flag to the session cookie or bind `web_listen` to `127.0.0.1`, and make the proxy pass the
+  `Host` header through unchanged.
 
 ## 2. Developer reference
 
@@ -157,7 +179,7 @@ go get -u
 Update the Go version
 
 ```bash
-go mod tidy --go=1.25
+go mod tidy --go=1.26
 ```
 
 Clear the caches
@@ -210,7 +232,8 @@ go run . service start
 ```
 
 The Web UI is served at http://localhost:9790 (`service stop` / `status` connect to the control endpoints on the
-same port). Runtime data (database, raw mails, agent workspaces) is created in `data/` next to the executable.
+same port). Runtime data (the master database, the per-address indexes with the raw mails and body sections, the
+per-run agent workspaces) is created in `data/` next to the executable.
 
 ### Lint and tests
 

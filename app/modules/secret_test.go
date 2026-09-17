@@ -1,8 +1,10 @@
 package modules
 
 import (
+	"encoding/hex"
 	"os"
-	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,26 +12,50 @@ import (
 )
 
 func TestSecretKeyAndEncryption(t *testing.T) {
-	dir := t.TempDir()
-	SetDataDir(dir)
-	key, err := LoadSecretKey()
+	db := newTestDB(t)
+	key, err := LoadSecretKey(db)
 	if err != nil {
 		t.Fatalf("load key: %v", err)
 	}
 	if len(key) != secretKeyLen {
 		t.Fatalf("key length %d", len(key))
 	}
-	info, err := os.Stat(filepath.Join(dir, SecretKeyFileName))
+	// The key lives in the settings table as 64 hex digits and nowhere else.
+	stored, found, err := models.GetSettingStrict(db, SettingSecretKey)
+	if err != nil || !found {
+		t.Fatalf("key not stored in settings: %v (found %v)", err, found)
+	}
+	if len(stored) != 2*secretKeyLen || stored != hex.EncodeToString(key) {
+		t.Errorf("stored key %q does not match the loaded key", stored)
+	}
+	dataDir, err := DataDir()
 	if err != nil {
-		t.Fatalf("key file missing: %v", err)
+		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("key file mode %v, want 0600", info.Mode().Perm())
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	again, err := loadOrCreateSecretKey(filepath.Join(dir, SecretKeyFileName))
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), DBFileName) {
+			t.Errorf("unexpected file in the data directory: %s", e.Name())
+		}
+	}
+	again, err := LoadSecretKey(db)
 	if err != nil || string(again) != string(key) {
 		t.Errorf("key changed on reload: %v", err)
 	}
+	// The CLI neither shows nor sets the key.
+	if slices.Contains(SettingKeys(), SettingSecretKey) {
+		t.Error("secret_key must not be a settable setting")
+	}
+	if _, err := ApplySetting(db, SettingSecretKey, "0123", nil); err == nil {
+		t.Error("settings set secret_key must be rejected")
+	}
+	if fresh, _ := LoadSecretKey(db); string(fresh) != string(key) {
+		t.Error("the rejected settings set must not touch the key")
+	}
+
 	enc, err := EncryptSecret(key, "p@ss w0rd")
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
@@ -45,27 +71,25 @@ func TestSecretKeyAndEncryption(t *testing.T) {
 	if _, err := DecryptSecret(other, enc); err == nil {
 		t.Errorf("decrypt with another key succeeded")
 	}
-	if err := os.WriteFile(filepath.Join(dir, SecretKeyFileName), []byte("nonsense"), 0o600); err != nil {
+	// A corrupt stored key is reported, never replaced.
+	if err := models.SetSetting(db, SettingSecretKey, "nonsense"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOrCreateSecretKey(filepath.Join(dir, SecretKeyFileName)); err == nil {
-		t.Errorf("corrupt key file accepted")
+	if _, err := LoadSecretKey(db); err == nil {
+		t.Errorf("corrupt key accepted")
+	}
+	if v := models.GetSetting(db, SettingSecretKey); v != "nonsense" {
+		t.Errorf("corrupt key was overwritten with %q", v)
 	}
 }
 
 func TestSessionCookieRoundTrip(t *testing.T) {
-	SetDataDir(t.TempDir())
-	MigrationsFS = os.DirFS("../..")
-	db, err := OpenDB("")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-	key, err := LoadSecretKey()
+	db := newTestDB(t)
+	key, err := LoadSecretKey(db)
 	if err != nil {
 		t.Fatalf("load key: %v", err)
 	}
-	u, err := CreateUser(db, "alice", "", "password123", RoleUser)
+	u, err := CreateUserFrom(db, NewUser{Username: "alice", Password: "password123", Role: RoleUser})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}

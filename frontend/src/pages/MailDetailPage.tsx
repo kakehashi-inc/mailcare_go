@@ -60,6 +60,9 @@ function HeaderValue({ value }: { value: unknown }) {
 const BUTTON_LINK =
     'inline-flex min-h-tap items-center justify-center gap-2 rounded-md border border-line bg-surface px-4 py-2 text-base font-medium text-ink transition-colors hover:bg-well focus:outline-none focus-visible:ring-2 focus-visible:ring-accent';
 
+const TEXT_BODY =
+    'max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-well p-3 font-mono text-sm leading-relaxed text-ink';
+
 export function MailDetailPage() {
     const { t } = useTranslation();
     const { mailboxId = '', messageKey = '' } = useParams();
@@ -78,11 +81,13 @@ export function MailDetailPage() {
         );
     }
 
-    const { message, bounce, text, headers } = detail.data;
+    const { message, bounce, text_sections, headers } = detail.data;
     const headerEntries = Object.entries(headers ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '');
+    // Text sections arrive in MIME order; blank ones are dropped so the numbering only counts visible text.
+    const sections = (text_sections ?? []).filter(s => s.trim() !== '');
     // Only body parts with content get a tab; the headers tab is always there.
-    const hasText = message.has_text && text !== '';
-    const hasHtml = message.has_html || detail.data.has_html;
+    const hasText = sections.length > 0;
+    const hasHtml = message.html_count > 0;
     const bodyTabs: { key: BodyTab; label: string; icon: string }[] = [
         ...(hasText ? [{ key: 'text' as const, label: t('mail.tabText'), icon: 'notes' }] : []),
         ...(hasHtml ? [{ key: 'html' as const, label: t('mail.tabHtml'), icon: 'code' }] : []),
@@ -179,8 +184,8 @@ export function MailDetailPage() {
                                     value: (
                                         <span className='inline-flex flex-wrap items-center gap-2'>
                                             <BounceKindBadge kind={message.bounce_kind} isBounce={message.is_bounce} />
-                                            {message.classify_reason && (
-                                                <span className='text-sm text-muted'>({message.classify_reason})</span>
+                                            {message.rule && (
+                                                <span className='text-sm text-muted'>({message.rule})</span>
                                             )}
                                         </span>
                                     ),
@@ -201,12 +206,21 @@ export function MailDetailPage() {
                         )}
                         <Tabs<BodyTab> label={t('mail.bodyTabs')} value={activeTab} onChange={setTab} tabs={bodyTabs} />
                         <TabPanel id='text' active={activeTab === 'text'}>
-                            {text ? (
-                                <pre className='max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-well p-3 font-mono text-sm leading-relaxed text-ink'>
-                                    {text}
-                                </pre>
-                            ) : (
+                            {sections.length === 0 ? (
                                 <EmptyState title={t('mail.noText')} />
+                            ) : sections.length === 1 ? (
+                                <pre className={TEXT_BODY}>{sections[0]}</pre>
+                            ) : (
+                                <div className='flex flex-col gap-4'>
+                                    {sections.map((section, i) => (
+                                        <section key={i}>
+                                            <h3 className='mb-1 text-sm font-medium text-muted'>
+                                                {t('mail.textSection', { index: i + 1 })}
+                                            </h3>
+                                            <pre className={TEXT_BODY}>{section}</pre>
+                                        </section>
+                                    ))}
+                                </div>
                             )}
                         </TabPanel>
                         <TabPanel id='html' active={activeTab === 'html'}>

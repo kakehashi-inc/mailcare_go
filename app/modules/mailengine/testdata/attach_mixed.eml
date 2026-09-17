@@ -1,0 +1,31 @@
+From: Hanako Sato <hanako@client.example.com>
+To: newsletter@example.jp
+Subject: Monthly report attached
+Date: Fri, 12 Sep 2025 15:00:00 +0900
+Message-ID: <attach-0016@client.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_mixed_0016"
+
+--=_mixed_0016
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Please find the monthly report attached.
+The delivery log is attached as well for reference.
+
+--=_mixed_0016
+Content-Type: text/plain; charset="us-ascii"; name="delivery.log"
+Content-Disposition: attachment; filename="delivery.log"
+Content-Transfer-Encoding: 7bit
+
+2025-09-12 relay=mx.customer.example.com status=sent (250 2.0.0 OK)
+2025-09-11 relay=mx.other.example.net status=bounced (550 5.1.1 User unknown)
+
+--=_mixed_0016
+Content-Type: application/pdf; name="report.pdf"
+Content-Disposition: attachment; filename="report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iaiA8PCAvVHlwZSAvQ2F0YWxvZyA+PiBlbmRvYmoKJSVFT0YK
+
+--=_mixed_0016--

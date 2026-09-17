@@ -24,7 +24,7 @@ import { errorMessage } from '../utils/errors';
 import { formatNumber } from '../utils/format';
 
 /** Job kinds that read or rewrite a mailbox's mails, shown as "syncing" on its card. */
-const MAILBOX_JOBS: readonly JobKind[] = ['sync', 'fetch', 'group', 'reindex', 'reclassify'];
+const MAILBOX_JOBS: readonly JobKind[] = ['sync', 'fetch', 'group', 'reindex', 'reclassify', 'cleanup'];
 
 export function DashboardPage() {
     const { t } = useTranslation();

@@ -33,6 +33,10 @@ export function MailsListPage() {
     const group = params.get('group') ?? '';
     const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
     const [search, setSearch] = useState(q);
+    // The checkbox mirrors the URL parameter but keeps its own state so that
+    // it flips at once; the URL update happens in a transition.
+    const [onlyBounceChecked, setOnlyBounceChecked] = useState(onlyBounce);
+    useEffect(() => setOnlyBounceChecked(onlyBounce), [onlyBounce]);
 
     const { mailboxes } = useMailboxes();
     const mailbox = useAsync(() => getMailbox(id), [id]);
@@ -56,7 +60,7 @@ export function MailsListPage() {
         {
             key: 'date',
             header: t('mail.date'),
-            cell: m => <DateTime value={m.date ?? m.received_at} />,
+            cell: m => <DateTime value={m.date || m.received_at} />,
             className: 'whitespace-nowrap',
         },
         {
@@ -130,8 +134,11 @@ export function MailsListPage() {
                 <div className='flex items-end'>
                     <CheckboxField
                         label={t('mails.onlyBounce')}
-                        checked={onlyBounce}
-                        onChange={e => update({ only_bounce: e.target.checked ? '1' : '' })}
+                        checked={onlyBounceChecked}
+                        onChange={e => {
+                            setOnlyBounceChecked(e.target.checked);
+                            update({ only_bounce: e.target.checked ? '1' : '' });
+                        }}
                     />
                 </div>
             </div>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,12 +32,8 @@ func newSeededCore(t *testing.T) *seededCore {
 	t.Helper()
 	c := newTestCore(t)
 	h := c.webHandler()
-	if _, err := modules.CreateUser(c.db, "admin", "", "password123", modules.RoleAdmin); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := modules.CreateUser(c.db, "bob", "", "password123", modules.RoleUser); err != nil {
-		t.Fatal(err)
-	}
+	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
+	createUser(t, c.db, "bob", "", "password123", modules.RoleUser)
 	mb, err := modules.CreateMailbox(c.db, c.key, &modules.MailboxInput{Address: "ops@example.test",
 		ImapHost: "imap.example.test", ImapUsername: "u", ImapPassword: "p"})
 	if err != nil {
@@ -117,7 +114,9 @@ func TestGroupsEndpoints(t *testing.T) {
 		t.Fatalf("scope=all counts %+v excluded %d (want %d)", all.Counts, all.ExcludedCount, excluded)
 	}
 	for _, g := range all.Groups {
-		if g.State != "open" || g.MessageCount != 1 || g.ReportStatus != "" || g.ReportSummary != "" || !g.NeedsAnalysis {
+		// Only actionable groups are flagged for analysis (recipient-side
+		// groups are never analyzed automatically).
+		if g.State != "open" || g.MessageCount != 1 || g.ReportStatus != "" || g.ReportSummary != "" || g.NeedsAnalysis != g.Actionable {
 			t.Errorf("unexpected group %+v", g)
 		}
 		if g.RecipientDomain == "" || g.LastSeen == nil || g.Category == "" || g.UnitValue == "" {
@@ -308,28 +307,53 @@ func TestMessagesEndpoints(t *testing.T) {
 		}
 	}
 
-	// Detail of a bounce.
+	// Detail of a bounce: the text sections, the decoded headers and the
+	// bounce details with the responsible party of its group.
 	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[1]), nil, s.user)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("detail: %d %s", rec.Code, rec.Body.String())
 	}
 	var detail struct {
-		Message MessageDTO     `json:"message"`
-		Bounce  *BounceDTO     `json:"bounce"`
-		Text    string         `json:"text"`
-		HasHTML bool           `json:"has_html"`
-		Headers map[string]any `json:"headers"`
+		Message      MessageDTO        `json:"message"`
+		Bounce       *BounceDTO        `json:"bounce"`
+		TextSections []string          `json:"text_sections"`
+		Headers      map[string]string `json:"headers"`
 	}
 	decode(t, rec.Body.Bytes(), &detail)
 	if detail.Message.MessageKey != s.keys[1] || detail.Bounce == nil || detail.Bounce.OriginalRecipient != "jiro@nowhere.example.org" {
 		t.Errorf("detail %+v bounce %+v", detail.Message, detail.Bounce)
 	}
-	if !strings.Contains(detail.Text, "could not be delivered") || detail.HasHTML || len(detail.Headers) == 0 {
-		t.Errorf("text/html/headers: %q %v %d", detail.Text[:min(len(detail.Text), 40)], detail.HasHTML, len(detail.Headers))
+	if detail.Message.TextCount < 1 || len(detail.TextSections) != detail.Message.TextCount || detail.Message.HTMLCount != 0 ||
+		!strings.Contains(strings.Join(detail.TextSections, "\n"), "could not be delivered") {
+		t.Errorf("text sections: count %d, %d sections %q", detail.Message.TextCount, len(detail.TextSections), detail.TextSections)
 	}
-	// An ordinary mail has bounce null.
+	if detail.Headers["Subject"] == "" || detail.Headers["From"] == "" {
+		t.Errorf("headers must be decoded from the .eml: %v", detail.Headers)
+	}
+	if detail.Message.Rule == "" || !detail.Message.IsBounce || detail.Message.GroupKey == "" {
+		t.Errorf("detection outcome: %+v", detail.Message)
+	}
+	if body := rec.Body.String(); strings.Contains(body, `"has_text"`) || strings.Contains(body, `"classify_reason"`) || strings.Contains(body, `"text":`) {
+		t.Errorf("old fields still in the response: %s", body)
+	}
+	// The responsible party comes from the group of the bounce.
+	idx, err := s.openIndex(httptest.NewRequest(http.MethodGet, "/", nil), s.mb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := models.UpdateGroupResponsible(idx, detail.Message.GroupKey, modules.ResponsibleDomain); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[1]), nil, s.user)
+	decode(t, rec.Body.Bytes(), &detail)
+	if detail.Bounce == nil || detail.Bounce.Responsible != modules.ResponsibleDomain {
+		t.Errorf("bounce responsible: %+v", detail.Bounce)
+	}
+	// An ordinary mail has bounce null and an empty text list when it has
+	// no text section.
 	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[2]), nil, s.user)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"bounce":null`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"bounce":null`) || !strings.Contains(rec.Body.String(), `"text_sections":[`) {
 		t.Errorf("normal mail detail: %d %s", rec.Code, rec.Body.String())
 	}
 	// Bad keys.
@@ -337,11 +361,11 @@ func TestMessagesEndpoints(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown key: %d", rec.Code)
 	}
-	rec = do(t, s.h, http.MethodGet, s.path("/messages/..%2F..%2Fmailcare.key"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/..%2F..%2Fmailcare.db"), nil, s.user)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("traversal key: %d %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, s.h, http.MethodGet, s.path("/messages/..%2F..%2Fmailcare.key/raw"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/..%2F..%2Fmailcare.db/raw"), nil, s.user)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("traversal raw: %d", rec.Code)
 	}
@@ -365,18 +389,34 @@ func TestMessagesEndpoints(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("html absent: %d", rec.Code)
 	}
-	// With an HTML file present it is sanitized and served with the CSP.
-	htmlPath := mailengine.MessageFilePath(s.mailsRoot, s.mb.Address, s.keys[0], "html")
-	if err := os.WriteFile(htmlPath, []byte(`<p onclick="x()">hi</p><script>alert(1)</script><a href="javascript:1">l</a>`), 0o600); err != nil {
+	// With two HTML sections present (and counted by the index) they are
+	// joined, sanitized and served with the CSP.
+	dir := mailengine.MailboxDir(s.mailsRoot, s.mb.Address)
+	for i, html := range []string{`<p onclick="x()">hi</p><script>alert(1)</script><a href="javascript:1">l</a>`, `<p>second</p>`} {
+		if err := os.WriteFile(mailengine.SectionFilePath(dir, s.keys[0], "html", i+1), []byte(html), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err = s.openIndex(httptest.NewRequest(http.MethodGet, "/", nil), s.mb)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := idx.Exec(`UPDATE messages SET html_count = 2 WHERE message_key = ?`, s.keys[0]); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
 	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html"), nil, s.user)
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Security-Policy") != htmlCSP ||
 		!strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
 		t.Errorf("html: %d %v", rec.Code, rec.Header())
 	}
-	if body := rec.Body.String(); strings.Contains(body, "script") || strings.Contains(body, "onclick") || strings.Contains(body, "javascript:") || !strings.Contains(body, "<p>hi</p>") {
-		t.Errorf("html not sanitized: %s", body)
+	if body := rec.Body.String(); strings.Contains(body, "script") || strings.Contains(body, "onclick") || strings.Contains(body, "javascript:") ||
+		!strings.Contains(body, "<p>hi</p>") || !strings.Contains(body, "<hr>") || !strings.Contains(body, "<p>second</p>") {
+		t.Errorf("html not sanitized or sections not joined: %s", body)
+	}
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]), nil, s.user)
+	if !strings.Contains(rec.Body.String(), `"html_count":2`) {
+		t.Errorf("html_count not reported: %s", rec.Body.String())
 	}
 	// Everything needs a session.
 	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/raw"), nil, nil)
@@ -388,13 +428,13 @@ func TestMessagesEndpoints(t *testing.T) {
 func TestJobsEndpoints(t *testing.T) {
 	s := newSeededCore(t)
 	// Only administrators queue jobs (the user role is read-only).
-	for _, kind := range []string{"reindex", "reclassify", "fetch", "group", "analyze", "sync"} {
+	for _, kind := range []string{"reindex", "reclassify", "fetch", "group", "analyze", "sync", "cleanup"} {
 		rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind, "mailbox_id": s.mb.ID}, s.user)
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("%s as user: %d", kind, rec.Code)
 		}
 	}
-	for _, kind := range []string{"fetch", "group", "analyze"} {
+	for _, kind := range []string{"fetch", "group", "analyze", "cleanup"} {
 		rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind, "mailbox_id": s.mb.ID}, s.admin)
 		if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"kind":"`+kind+`"`) {
 			t.Errorf("%s as admin: %d %s", kind, rec.Code, rec.Body.String())
@@ -404,6 +444,15 @@ func TestJobsEndpoints(t *testing.T) {
 	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"mailbox_id":null`) {
 		t.Errorf("all-mailbox analyze: %d %s", rec.Code, rec.Body.String())
 	}
+	// A cleanup without a mailbox is the expansion job the scheduler queues daily.
+	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "cleanup"}, s.admin)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"kind":"cleanup"`) || !strings.Contains(rec.Body.String(), `"mailbox_id":null`) {
+		t.Errorf("all-mailbox cleanup: %d %s", rec.Code, rec.Body.String())
+	}
+	var expansion struct {
+		Job JobDTO `json:"job"`
+	}
+	decode(t, rec.Body.Bytes(), &expansion)
 	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": s.mb.ID}, s.admin)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("sync: %d %s", rec.Code, rec.Body.String())
@@ -467,6 +516,47 @@ func TestJobsEndpoints(t *testing.T) {
 	if rec := do(t, s.h, http.MethodDelete, "/api/v1/jobs/"+itoa(env.Job.ID), nil, s.admin); rec.Code != http.StatusConflict {
 		t.Errorf("cancel done: %d", rec.Code)
 	}
+
+	// Deleting the mailbox leaves its jobs without a mailbox; they are
+	// marked mailbox_deleted (the expansion jobs are not).
+	// (The fetch job queued at the top of the test is still waiting, so the
+	// submission returns it.)
+	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "fetch", "mailbox_id": s.mb.ID}, s.admin)
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("fetch: %d %s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec.Body.Bytes(), &env)
+	if env.Job.MailboxDeleted {
+		t.Errorf("a job of an existing mailbox marked deleted: %+v", env.Job)
+	}
+	if rec := do(t, s.h, http.MethodDelete, "/api/v1/mailboxes/"+itoa(s.mb.ID)+"?keep_data=1", nil, s.admin); rec.Code != http.StatusOK {
+		t.Fatalf("delete mailbox: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs/"+itoa(env.Job.ID), nil, s.user)
+	var one struct {
+		Job JobDTO `json:"job"`
+	}
+	decode(t, rec.Body.Bytes(), &one)
+	if rec.Code != http.StatusOK || one.Job.Status != "canceled" || one.Job.MailboxID != nil || one.Job.MailboxAddress != "" || !one.Job.MailboxDeleted {
+		t.Errorf("job of the deleted mailbox: %d %+v", rec.Code, one.Job)
+	}
+	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=50", nil, s.user)
+	var list struct {
+		Jobs []JobDTO `json:"jobs"`
+	}
+	decode(t, rec.Body.Bytes(), &list)
+	seen := 0
+	for _, j := range list.Jobs {
+		if j.ID == expansion.Job.ID {
+			seen++
+			if j.MailboxID != nil || j.MailboxDeleted {
+				t.Errorf("the cleanup expansion job after the deletion: %+v", j)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Errorf("the cleanup expansion job is not listed:\n%s", rec.Body.String())
+	}
 }
 
 func TestSettingsValidationAndPersistence(t *testing.T) {
@@ -477,6 +567,11 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		{"agent_provider": "no-such-provider"},
 		{"workers": 0},
 		{"workers": modules.MaxWorkers + 1},
+		{"agent_keep_days": 0},
+		{"agent_keep_days": modules.MaxAgentKeepDays + 1},
+		{"mail_keep_days": 0},
+		{"mail_keep_days": modules.MaxMailKeepDays + 1},
+		{"mail_keep_days": -1},
 	} {
 		rec := do(t, s.h, http.MethodPut, "/api/v1/settings", bad, s.admin)
 		if rec.Code != http.StatusBadRequest {
@@ -491,14 +586,59 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		CheckTimes    []string `json:"check_times"`
 		AgentProvider string   `json:"agent_provider"`
 		AgentEnabled  bool     `json:"agent_enabled"`
+		AgentKeepDays int      `json:"agent_keep_days"`
+		MailKeepDays  int      `json:"mail_keep_days"`
 		Workers       int      `json:"workers"`
 		WebPort       int      `json:"web_port"`
 		DataDir       string   `json:"data_dir"`
 	}
 	decode(t, rec.Body.Bytes(), &st)
 	if strings.Join(st.CheckTimes, ",") != "07:30,23:00" || st.AgentEnabled || st.AgentProvider != modules.DefaultAgentProvider ||
-		st.WebPort != modules.DefaultWebPort || st.DataDir != s.dataDir || st.Workers != modules.DefaultWorkers {
+		st.WebPort != modules.DefaultWebPort || st.DataDir != s.dataDir || st.Workers != modules.DefaultWorkers ||
+		st.AgentKeepDays != modules.DefaultAgentKeepDays || st.MailKeepDays != modules.DefaultMailKeepDays {
 		t.Errorf("settings %+v", st)
+	}
+	// The mail retention is stored (non-default only) and a rejected value
+	// leaves it alone.
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"mail_keep_days": 365}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mail_keep_days: %d %s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec.Body.Bytes(), &st)
+	if st.MailKeepDays != 365 || modules.ResolveMailKeepDays(s.db) != 365 || models.GetSetting(s.db, modules.SettingMailKeepDays) != "365" {
+		t.Errorf("mail_keep_days not applied: dto %d resolved %d stored %q", st.MailKeepDays, modules.ResolveMailKeepDays(s.db), models.GetSetting(s.db, modules.SettingMailKeepDays))
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"mail_keep_days": modules.MaxMailKeepDays + 1, "workers": 3}, s.admin)
+	if rec.Code != http.StatusBadRequest || modules.ResolveMailKeepDays(s.db) != 365 || s.jm.Workers() != modules.DefaultWorkers {
+		t.Errorf("rejected update changed something: %d, retention %d, workers %d", rec.Code, modules.ResolveMailKeepDays(s.db), s.jm.Workers())
+	}
+	rec = do(t, s.h, http.MethodGet, "/api/v1/settings", nil, s.user)
+	decode(t, rec.Body.Bytes(), &st)
+	if st.MailKeepDays != 365 {
+		t.Errorf("GET mail_keep_days = %d", st.MailKeepDays)
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"mail_keep_days": modules.DefaultMailKeepDays}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if _, found, _ := models.GetSettingStrict(s.db, modules.SettingMailKeepDays); found {
+		t.Errorf("default mail_keep_days still stored")
+	}
+	// The retention of the agent run directories is stored (non-default only).
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"agent_keep_days": 90}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent_keep_days: %d %s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec.Body.Bytes(), &st)
+	if st.AgentKeepDays != 90 || modules.ResolveAgentKeepDays(s.db) != 90 || models.GetSetting(s.db, modules.SettingAgentKeepDays) != "90" {
+		t.Errorf("agent_keep_days not applied: dto %d resolved %d stored %q", st.AgentKeepDays, modules.ResolveAgentKeepDays(s.db), models.GetSetting(s.db, modules.SettingAgentKeepDays))
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"agent_keep_days": modules.DefaultAgentKeepDays}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if _, found, _ := models.GetSettingStrict(s.db, modules.SettingAgentKeepDays); found {
+		t.Errorf("default agent_keep_days still stored")
 	}
 	// The worker count is persisted and applied to the job manager at once.
 	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"workers": 5}, s.admin)

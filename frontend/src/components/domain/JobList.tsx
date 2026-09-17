@@ -48,8 +48,9 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                                     <span className='text-sm text-muted'>#{job.id}</span>
                                 </div>
                                 <p className='mt-1 break-all text-sm text-muted'>
-                                    {job.mailbox_address || t('mailbox.all')}
-                                    {job.mailbox_id === null && ` / ${t('jobs.expanded')}`}
+                                    {job.mailbox_address ||
+                                        (job.mailbox_deleted ? t('jobs.deletedMailbox') : t('mailbox.all'))}
+                                    {job.mailbox_id === null && !job.mailbox_deleted && ` / ${t('jobs.expanded')}`}
                                     {targetLabel && ` / ${targetLabel}`}
                                     {job.requested_by && ` / ${t('jobs.requestedBy', { name: job.requested_by })}`}
                                 </p>

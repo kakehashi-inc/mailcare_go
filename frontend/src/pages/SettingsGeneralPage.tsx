@@ -18,6 +18,10 @@ import { errorMessage } from '../utils/errors';
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const WORKERS_MIN = 1;
 const WORKERS_MAX = 16;
+const KEEP_DAYS_MIN = 1;
+const KEEP_DAYS_MAX = 365;
+const MAIL_KEEP_DAYS_MIN = 1;
+const MAIL_KEEP_DAYS_MAX = 3650;
 
 export function SettingsGeneralPage() {
     const { t } = useTranslation();
@@ -28,6 +32,8 @@ export function SettingsGeneralPage() {
     const [newTime, setNewTime] = useState('');
     const [provider, setProvider] = useState('');
     const [enabled, setEnabled] = useState(false);
+    const [keepDays, setKeepDays] = useState('');
+    const [mailKeepDays, setMailKeepDays] = useState('');
     const [workers, setWorkers] = useState('');
     const [saving, setSaving] = useState(false);
     const [dirty, setDirty] = useState(false);
@@ -37,7 +43,9 @@ export function SettingsGeneralPage() {
         setTimes(settings.data.check_times);
         setProvider(settings.data.agent_provider);
         setEnabled(settings.data.agent_enabled);
-        setWorkers(String(settings.data.workers));
+        setKeepDays(String(settings.data.agent_keep_days));
+        setMailKeepDays(String(settings.data.mail_keep_days));
+        setWorkers(String(settings.data.workers ?? ''));
         setDirty(false);
     }, [settings.data]);
 
@@ -48,7 +56,22 @@ export function SettingsGeneralPage() {
     const selectedProvider = settings.data?.providers.find(p => p.name === provider);
     const workersValue = Number(workers);
     const workersValid = /^\d+$/.test(workers.trim()) && workersValue >= WORKERS_MIN && workersValue <= WORKERS_MAX;
-    const canSave = dirty && invalidTimes.length === 0 && !duplicate && workersValid && !saving;
+    const keepDaysValue = Number(keepDays);
+    const keepDaysValid =
+        /^\d+$/.test(keepDays.trim()) && keepDaysValue >= KEEP_DAYS_MIN && keepDaysValue <= KEEP_DAYS_MAX;
+    const mailKeepDaysValue = Number(mailKeepDays);
+    const mailKeepDaysValid =
+        /^\d+$/.test(mailKeepDays.trim()) &&
+        mailKeepDaysValue >= MAIL_KEEP_DAYS_MIN &&
+        mailKeepDaysValue <= MAIL_KEEP_DAYS_MAX;
+    const canSave =
+        dirty &&
+        invalidTimes.length === 0 &&
+        !duplicate &&
+        workersValid &&
+        keepDaysValid &&
+        mailKeepDaysValid &&
+        !saving;
 
     function addTime() {
         if (!TIME_RE.test(newTime) || times.includes(newTime)) return;
@@ -69,6 +92,8 @@ export function SettingsGeneralPage() {
                 check_times: times,
                 agent_provider: provider,
                 agent_enabled: enabled,
+                agent_keep_days: keepDaysValue,
+                mail_keep_days: mailKeepDaysValue,
                 workers: workersValue,
             });
             toast.success(t('settings.saved'));
@@ -181,6 +206,26 @@ export function SettingsGeneralPage() {
                 </Card>
 
                 <Card>
+                    <CardHeader title={t('settings.mailRetention')} description={t('settings.mailRetentionHint')} />
+                    <InputField
+                        label={t('settings.mailKeepDays')}
+                        type='number'
+                        inputMode='numeric'
+                        min={MAIL_KEEP_DAYS_MIN}
+                        max={MAIL_KEEP_DAYS_MAX}
+                        step={1}
+                        value={mailKeepDays}
+                        onChange={e => {
+                            setMailKeepDays(e.target.value);
+                            setDirty(true);
+                        }}
+                        hint={t('settings.mailKeepDaysHint')}
+                        error={mailKeepDaysValid ? undefined : t('settings.mailKeepDaysInvalid')}
+                        wrapperClassName='max-w-xs'
+                    />
+                </Card>
+
+                <Card>
                     <CardHeader title={t('settings.jobs')} description={t('settings.jobsHint')} />
                     <InputField
                         label={t('settings.workers')}
@@ -251,6 +296,22 @@ export function SettingsGeneralPage() {
                                 setDirty(true);
                             }}
                         />
+                        <InputField
+                            label={t('settings.agentKeepDays')}
+                            type='number'
+                            inputMode='numeric'
+                            min={KEEP_DAYS_MIN}
+                            max={KEEP_DAYS_MAX}
+                            step={1}
+                            value={keepDays}
+                            onChange={e => {
+                                setKeepDays(e.target.value);
+                                setDirty(true);
+                            }}
+                            hint={t('settings.agentKeepDaysHint')}
+                            error={keepDaysValid ? undefined : t('settings.agentKeepDaysInvalid')}
+                            wrapperClassName='max-w-xs'
+                        />
                     </div>
                 </Card>
 
@@ -264,7 +325,7 @@ export function SettingsGeneralPage() {
                             },
                             {
                                 label: t('settings.webPort'),
-                                value: <code className='font-mono'>{settings.data.web_port}</code>,
+                                value: <code className='font-mono'>{settings.data.web_port ?? '-'}</code>,
                             },
                             {
                                 label: t('settings.dataDir'),

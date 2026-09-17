@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -44,21 +46,21 @@ func newTestIndex(t *testing.T) (db *sql.DB, mailsRoot, agentRoot, address strin
 		t.Fatal(err)
 	}
 	for i, key := range []string{"20260901-120000_aaaaaaaaaaaa", "20260902-120000_bbbbbbbbbbbb"} {
-		for _, ext := range []string{"eml", "txt"} {
-			if err := os.WriteFile(filepath.Join(dir, key+"."+ext), []byte("raw "+key), 0o600); err != nil {
+		for _, name := range []string{key + ".eml", key + "-1.txt"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("raw "+key), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
 		m := &models.Message{
 			MessageKey: key, UID: uint32(i + 1), UIDValidity: 1, Folder: "INBOX", Subject: "Undelivered Mail",
 			FromAddress: "mailer-daemon@example.com", Date: time.Date(2026, 9, 1+i, 12, 0, 0, 0, time.UTC),
-			IsBounce: true, BounceKind: "failed", GroupKey: testGroupKey,
+			TextCount: 1, IsBounce: true, BounceKind: "failed", GroupKey: testGroupKey,
 		}
 		if err := models.InsertMessage(db, m); err != nil {
 			t.Fatal(err)
 		}
 		if err := models.UpsertBounce(db, &models.Bounce{
-			MessageID: m.ID, OriginalRecipient: "user" + key[:1] + "@example.net", RecipientDomain: "example.net",
+			ID: m.ID, GroupKey: testGroupKey, Recipient: "user" + key[:1] + "@example.net", RecipientDomain: "example.net",
 			Action: "failed", StatusCode: "5.1.1", SMTPCode: "550", RemoteMTA: "mx.example.net", RemoteIP: "192.0.2.10",
 		}); err != nil {
 			t.Fatal(err)
@@ -118,10 +120,24 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 		t.Errorf("group responsible not updated from META: %q", g.Responsible)
 	}
 
-	work := filepath.Join(agentRoot, address, testGroupKey)
+	// The workspace of the run is data/agent/<address>/<group_key>/<report_id>/.
+	work := RunDir(agentRoot, address, testGroupKey, rep.ID)
+	if work != filepath.Join(agentRoot, address, testGroupKey, strconv.FormatInt(rep.ID, 10)) {
+		t.Fatalf("unexpected run directory %s", work)
+	}
 	for _, f := range []string{PromptFileName, ResultFileName, ReportFileName, "AGENTS.md", filepath.Join("sub", "notes.txt"), "received_prompt.txt"} {
 		if _, err := os.Stat(filepath.Join(work, f)); err != nil {
 			t.Errorf("workspace file %s missing: %v", f, err)
+		}
+	}
+	// The progress names the run directory relative to the address only;
+	// the absolute path stays out of the job history shown to every user.
+	if !slices.Contains(lines, "workspace "+testGroupKey+"/"+strconv.FormatInt(rep.ID, 10)) {
+		t.Errorf("progress must name the run directory: %v", lines)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, agentRoot) {
+			t.Errorf("progress must not contain the absolute workspace path: %q", l)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(work, "x.txt")); err == nil {
@@ -132,8 +148,9 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	if runtime.GOOS != "windows" && string(prompt) != string(received) {
 		t.Error("the CLI must receive PROMPT.md verbatim on stdin")
 	}
-	if !strings.Contains(string(prompt), filepath.Join(mailsRoot, address, "20260902-120000_bbbbbbbbbbbb.eml")) {
-		t.Error("prompt must list the message files")
+	if !strings.Contains(string(prompt), filepath.Join(mailsRoot, address, "20260902-120000_bbbbbbbbbbbb.eml")) ||
+		!strings.Contains(string(prompt), "text: "+filepath.Join(mailsRoot, address, "20260902-120000_bbbbbbbbbbbb-1.txt")) {
+		t.Error("prompt must list the message files and their text sections")
 	}
 	for _, want := range []string{
 		"Category: user_unknown - ", "Action unit (unit_value): user2@example.net - ",
@@ -179,11 +196,12 @@ func TestAnalyzeGroupNoReportBlock(t *testing.T) {
 	if !g.NeedsAnalysis {
 		t.Error("needs_analysis must be set after a failure even when it was clear before the run")
 	}
-	result, _ := os.ReadFile(filepath.Join(agentRoot, address, testGroupKey, ResultFileName))
+	work := RunDir(agentRoot, address, testGroupKey, rep.ID)
+	result, _ := os.ReadFile(filepath.Join(work, ResultFileName))
 	if !strings.HasPrefix(string(result), "Result: Failure\nReason: ") {
 		t.Errorf("RESULT.log content unexpected:\n%s", result)
 	}
-	if _, err := os.Stat(filepath.Join(agentRoot, address, testGroupKey, ReportFileName)); err == nil {
+	if _, err := os.Stat(filepath.Join(work, ReportFileName)); err == nil {
 		t.Error("REPORT.md must not be written on failure")
 	}
 }
@@ -203,6 +221,9 @@ func TestAnalyzeGroupRejectsUnusableReport(t *testing.T) {
 		{"echoed template", cannedEcho, "produced no report"},
 		{"too short", ReportBegin + "\n## 原因の分析\n不明。\n" + ReportEnd + "\n", "too short"},
 		{"one placeholder left", ReportBegin + "\n" + sampleReport + "\n2. <next action>\n" + ReportEnd + "\n", "template placeholder"},
+		{"secret in the report", ReportBegin + "\n" + sampleReport + "\nkey: " + strings.Repeat("0f", 32) + "\n" + ReportEnd + "\n", "secret-like content"},
+		{"secret in the summary", ReportBegin + "\n" + sampleReport + "\n" + ReportEnd + "\n" +
+			MetaBegin + "\n{\"summary\":\"token mlc_" + strings.Repeat("ab", 20) + "\",\"responsible\":\"sender\",\"severity\":\"low\"}\n" + MetaEnd + "\n", "secret-like content"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -237,10 +258,19 @@ func TestAnalyzeGroupRejectsUnusableReport(t *testing.T) {
 			if !g.NeedsAnalysis {
 				t.Error("needs_analysis must be set again after an unusable report")
 			}
-			work := filepath.Join(agentRoot, address, testGroupKey)
-			report, _ := os.ReadFile(filepath.Join(work, ReportFileName))
+			// Each run has its own directory: the good run keeps its REPORT.md,
+			// the failed run has none.
+			goodWork := RunDir(agentRoot, address, testGroupKey, good.ID)
+			report, _ := os.ReadFile(filepath.Join(goodWork, ReportFileName))
 			if strings.TrimSpace(string(report)) != sampleReport {
-				t.Errorf("REPORT.md must keep the previous good report:\n%s", report)
+				t.Errorf("REPORT.md of the good run must be untouched:\n%s", report)
+			}
+			work := RunDir(agentRoot, address, testGroupKey, rep.ID)
+			if work == goodWork {
+				t.Fatal("the failed run must get its own directory")
+			}
+			if _, err := os.Stat(filepath.Join(work, ReportFileName)); err == nil {
+				t.Error("REPORT.md must not be written by the failed run")
 			}
 			result, _ := os.ReadFile(filepath.Join(work, ResultFileName))
 			if !strings.HasPrefix(string(result), "Result: Failure\nReason: ") || !strings.Contains(string(result), c.reason) ||
@@ -276,8 +306,8 @@ func writeEchoingFakeCLI(t *testing.T, dir, canned string) []string {
 }
 
 // analyzeGoodThenFailure runs a good report first, re-flags the group, runs
-// the CLI given by argv and returns both reports.
-func analyzeGoodThenFailure(t *testing.T, argv []string) (db *sql.DB, work string, good, second *models.AgentReport) {
+// the CLI given by argv and returns both reports with their run directories.
+func analyzeGoodThenFailure(t *testing.T, argv []string) (db *sql.DB, goodWork, failedWork string, good, second *models.AgentReport) {
 	t.Helper()
 	db, mailsRoot, agentRoot, address := newTestIndex(t)
 	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), cannedSuccess)})
@@ -295,13 +325,14 @@ func analyzeGoodThenFailure(t *testing.T, argv []string) (db *sql.DB, work strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	return db, filepath.Join(agentRoot, address, testGroupKey), good, second
+	return db, RunDir(agentRoot, address, testGroupKey, good.ID), RunDir(agentRoot, address, testGroupKey, second.ID), good, second
 }
 
 // assertPreviousReportKept checks that a failed run left the previous good
-// report as the latest completed one, REPORT.md untouched and the group still
-// flagged for analysis.
-func assertPreviousReportKept(t *testing.T, db *sql.DB, work string, good, failed *models.AgentReport) {
+// report as the latest completed one, the REPORT.md of the good run
+// untouched (and none in its own directory) and the group still flagged for
+// analysis.
+func assertPreviousReportKept(t *testing.T, db *sql.DB, goodWork, failedWork string, good, failed *models.AgentReport) {
 	t.Helper()
 	if failed.Status != "error" {
 		t.Fatalf("expected an error report, got %+v", failed)
@@ -318,20 +349,26 @@ func assertPreviousReportKept(t *testing.T, db *sql.DB, work string, good, faile
 	if !g.NeedsAnalysis {
 		t.Error("needs_analysis must be set by a failure so the next sync retries the group")
 	}
-	report, _ := os.ReadFile(filepath.Join(work, ReportFileName))
+	report, _ := os.ReadFile(filepath.Join(goodWork, ReportFileName))
 	if strings.TrimSpace(string(report)) != sampleReport {
-		t.Errorf("REPORT.md must keep the previous good report:\n%s", report)
+		t.Errorf("REPORT.md of the good run must be untouched:\n%s", report)
+	}
+	if _, err := os.Stat(filepath.Join(failedWork, ReportFileName)); err == nil {
+		t.Error("REPORT.md must not be written by the failed run")
+	}
+	if _, err := os.Stat(filepath.Join(failedWork, ResultFileName)); err != nil {
+		t.Errorf("RESULT.log of the failed run missing: %v", err)
 	}
 }
 
 func TestAnalyzeGroupUsageLimitAfterPromptEcho(t *testing.T) {
 	// The real codex failure: the prompt is echoed (so the transcript holds
 	// the template markers), then the usage-limit error, and nothing else.
-	db, work, good, rep := analyzeGoodThenFailure(t, writeEchoingFakeCLI(t, t.TempDir(), "\n"+codexUsageLimit+codexUsageLimit))
+	db, goodWork, work, good, rep := analyzeGoodThenFailure(t, writeEchoingFakeCLI(t, t.TempDir(), "\n"+codexUsageLimit+codexUsageLimit))
 	if rep.ErrorMessage != "usage limit reached (retry after 7:22 PM)" {
 		t.Fatalf("expected the usage-limit message, got %+v", rep)
 	}
-	assertPreviousReportKept(t, db, work, good, rep)
+	assertPreviousReportKept(t, db, goodWork, work, good, rep)
 	result, _ := os.ReadFile(filepath.Join(work, ResultFileName))
 	if !strings.HasPrefix(string(result), "Result: Failure\nReason: usage limit reached (retry after 7:22 PM)\n") ||
 		!strings.Contains(string(result), "=== CONSTRAINTS ===") || !strings.Contains(string(result), strings.TrimSpace(codexUsageLimit)) {
@@ -340,11 +377,11 @@ func TestAnalyzeGroupUsageLimitAfterPromptEcho(t *testing.T) {
 }
 
 func TestAnalyzeGroupUsageLimitWithoutEcho(t *testing.T) {
-	db, work, good, rep := analyzeGoodThenFailure(t, writeFakeCLI(t, t.TempDir(), "Error: HTTP 429 Too Many Requests\n"))
+	db, goodWork, work, good, rep := analyzeGoodThenFailure(t, writeFakeCLI(t, t.TempDir(), "Error: HTTP 429 Too Many Requests\n"))
 	if rep.ErrorMessage != "usage limit reached" {
 		t.Fatalf("expected the generic usage-limit message, got %+v", rep)
 	}
-	assertPreviousReportKept(t, db, work, good, rep)
+	assertPreviousReportKept(t, db, goodWork, work, good, rep)
 }
 
 func TestAnalyzeGroupPromptEchoThenAnswer(t *testing.T) {
@@ -427,11 +464,19 @@ func TestAnalyzeGroupLaunchFailureAndUnknownProvider(t *testing.T) {
 		t.Error("an unknown-provider failure must set needs_analysis for the next sync")
 	}
 
-	if _, err := AnalyzeGroup(context.Background(), AnalyzeInput{Index: db, GroupKey: "missing", Provider: "ghost"}, nil); err == nil {
+	if _, err := AnalyzeGroup(context.Background(), AnalyzeInput{AgentRoot: agentRoot, Index: db, GroupKey: "missing", Provider: "ghost"}, nil); err == nil {
 		t.Fatal("a missing group cannot be recorded and must return an error")
 	}
 	if n, _ := models.ListAgentReports(db, "missing"); len(n) != 0 {
 		t.Fatal("no report row may exist for a missing group")
+	}
+	// Without a workspace root nothing is recorded either.
+	before, _ := models.ListAgentReports(db, testGroupKey)
+	if _, err := AnalyzeGroup(context.Background(), AnalyzeInput{Index: db, GroupKey: testGroupKey, Provider: "ghost"}, nil); err == nil {
+		t.Fatal("a missing workspace root must be refused")
+	}
+	if after, _ := models.ListAgentReports(db, testGroupKey); len(after) != len(before) {
+		t.Fatal("no report row may be added when the workspace root is missing")
 	}
 }
 

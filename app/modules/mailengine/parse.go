@@ -5,62 +5,69 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"mime"
 	netmail "net/mail"
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset" // registers ISO-2022-JP, Shift_JIS, EUC-JP and friends
 	"github.com/emersion/go-message/mail"
 )
 
-// ParsedMessage is the content of <message_key>.json: the headers and the
-// structured parts the classifier and the Web UI need. The bodies are stored
-// in the sibling .txt / .html files and are therefore not serialized.
+// ParsedMessage is what the MIME parser makes of one raw message: the
+// headers the index row needs, the body sections the classifier and the
+// extractor look at (and that become the .txt / .html files) and the
+// structured parts of a delivery report. It only lives in memory: the index
+// row keeps the headers and the section counts, the section files keep the
+// bodies, and everything is parsed again from the .eml when needed.
 type ParsedMessage struct {
-	Source Source `json:"source"`
-
-	MessageID     string    `json:"message_id"`
-	Subject       string    `json:"subject"`
-	FromAddress   string    `json:"from_address"`
-	FromName      string    `json:"from_name"`
-	To            string    `json:"to"`
-	ToName        string    `json:"to_name"` // display name of the first To address
-	Date          time.Time `json:"date,omitzero"`
-	ReturnPath    string    `json:"return_path"`
-	AutoSubmitted string    `json:"auto_submitted"`
-	ContentType   string    `json:"content_type"` // media type only, lower case
-	ReportType    string    `json:"report_type"`  // report-type parameter of multipart/report
+	MessageID     string
+	Subject       string
+	FromAddress   string
+	FromName      string
+	To            string
+	ToName        string // display name of the first To address
+	Date          time.Time
+	ReturnPath    string
+	AutoSubmitted string
+	ContentType   string // media type only, lower case
+	ReportType    string // report-type parameter of multipart/report
 	// Headers holds every top-level header (canonical key, decoded, values
-	// joined with a newline) for display.
-	Headers map[string]string `json:"headers"`
+	// joined with a newline).
+	Headers map[string]string
 
-	// HasText / HasHTML tell whether the text/plain and text/html parts carry
-	// a non-blank body (for HTML: after stripping the tags). BodySource names
-	// the body the classifier and the extractor use ("text" when HasText,
-	// else "html" when HasHTML, else ""). Design 5.2.
-	HasText    bool   `json:"has_text"`
-	HasHTML    bool   `json:"has_html"`
-	BodySource string `json:"body_source"`
+	// TextSections / HTMLSections are the decoded (UTF-8) bodies of the
+	// inline text/plain and text/html parts that carry content (for HTML:
+	// after stripping the tags), in MIME order; parts inside an embedded
+	// original message and attachments are left out. They are written as
+	// <key>-1.txt, <key>-2.txt, ... and <key>-1.html, <key>-2.html, ... and
+	// counted in messages.text_count / html_count (design 5.2). BodySource
+	// names the body the classifier and the extractor look at first ("text"
+	// when there are text sections, else "html" when there are HTML
+	// sections, else ""); the grouping phase records the body actually used
+	// in the index row (Classification.BodySource).
+	TextSections []string
+	HTMLSections []string
+	BodySource   string
 
-	DeliveryStatus  *DeliveryStatus  `json:"delivery_status,omitempty"`
-	OriginalMessage *OriginalMessage `json:"original_message,omitempty"`
+	DeliveryStatus  *DeliveryStatus
+	OriginalMessage *OriginalMessage
 
 	// ParseError records why the MIME parser gave up; the fields above hold
 	// whatever could still be read.
-	ParseError string `json:"parse_error,omitempty"`
+	ParseError string
 
-	// TextBody / HTMLBody are the decoded bodies (UTF-8). They live in the
-	// .txt / .html files and are only kept in memory.
-	TextBody string `json:"-"`
-	HTMLBody string `json:"-"`
-
-	parts    int    // leaf parts seen by walk (not serialized)
-	htmlText string // HTMLBody rendered as text (computed by finishBodies, not serialized)
+	parts    int    // leaf parts seen by walk
+	textBody string // TextSections joined (computed by finishBodies)
+	htmlText string // HTMLSections rendered as text and joined (computed by finishBodies)
 }
+
+// TextCount is the number of text sections (messages.text_count).
+func (pm *ParsedMessage) TextCount() int { return len(pm.TextSections) }
+
+// HTMLCount is the number of HTML sections (messages.html_count).
+func (pm *ParsedMessage) HTMLCount() int { return len(pm.HTMLSections) }
 
 // Body sources (ParsedMessage.BodySource / messages.body_source).
 const (
@@ -68,50 +75,51 @@ const (
 	bodySourceHTML = "html"
 )
 
-// Source records where the message came from so that Reindex can rebuild the
-// index rows without talking to the IMAP server again.
+// Source is the IMAP identity and the fetch facts of a message handed to
+// storeMessage: what the fetch saw, or what Reindex carried over from the
+// previous index (or synthesized) for a raw file.
 type Source struct {
-	MessageKey  string    `json:"message_key"`
-	Folder      string    `json:"folder"`
-	UIDValidity uint32    `json:"uidvalidity"`
-	UID         uint32    `json:"uid"`
-	Size        int64     `json:"size"`
-	ReceivedAt  time.Time `json:"received_at,omitzero"` // IMAP INTERNALDATE
-	FetchedAt   time.Time `json:"fetched_at,omitzero"`
+	MessageKey  string // "" lets storeMessage derive the key
+	Folder      string
+	UIDValidity uint32
+	UID         uint32
+	Size        int64
+	ReceivedAt  time.Time // IMAP INTERNALDATE
+	FetchedAt   time.Time
 }
 
 // DeliveryStatus is the structured message/delivery-status part (RFC 3464).
 type DeliveryStatus struct {
-	ReportingMTA string                    `json:"reporting_mta"`
-	ArrivalDate  string                    `json:"arrival_date"`
-	Recipients   []DeliveryStatusRecipient `json:"recipients"`
+	ReportingMTA string
+	ArrivalDate  string
+	Recipients   []DeliveryStatusRecipient
 }
 
-// DeliveryStatusRecipient is one per-recipient block of a delivery-status part.
+// DeliveryStatusRecipient is one per-recipient block of a delivery-status
+// part. Action and Status are normalized by the parser (normalizeDSNAction /
+// normalizeDSNStatus): Action is one of failed / delayed / delivered /
+// relayed / expanded or "", Status an extended status code (5.1.1) or "".
 type DeliveryStatusRecipient struct {
-	FinalRecipient    string `json:"final_recipient"`
-	OriginalRecipient string `json:"original_recipient"`
-	Action            string `json:"action"`
-	Status            string `json:"status"`
-	DiagnosticCode    string `json:"diagnostic_code"`
-	RemoteMTA         string `json:"remote_mta"`
+	FinalRecipient    string
+	OriginalRecipient string
+	Action            string
+	Status            string
+	DiagnosticCode    string
+	RemoteMTA         string
 }
 
 // OriginalMessage holds the headers of the message a bounce refers to, taken
 // from a message/rfc822 or text/rfc822-headers part.
 type OriginalMessage struct {
-	MessageID string    `json:"message_id"`
-	Subject   string    `json:"subject"`
-	From      string    `json:"from"`
-	Date      time.Time `json:"date,omitzero"`
+	MessageID string
+	Subject   string
+	From      string
+	Date      time.Time
 }
 
-// Limits that keep a hostile or broken message from exhausting memory.
-const (
-	maxBodyBytes    = 4 * 1024 * 1024 // text kept per body kind
-	maxHeaderValue  = 8 * 1024        // per header value in Headers
-	maxNestingDepth = 8               // multipart / message nesting
-)
+// Nothing about a message is capped: every header value, every body section
+// and every nesting level is read whole, whatever its size, so no mail is
+// shortened or dropped.
 
 // ParseMessage parses a raw RFC 5322 message. It never panics and never
 // returns a nil message: on a broken message the returned ParsedMessage holds
@@ -145,7 +153,7 @@ func parseMessage(raw []byte) (pm *ParsedMessage) {
 		return pm
 	}
 	pm.readTopHeaders(entity.Header)
-	if err := pm.walk(entity, 0, false); err != nil && pm.ParseError == "" {
+	if err := pm.walk(entity, false); err != nil && pm.ParseError == "" {
 		pm.ParseError = err.Error()
 	}
 	if strings.HasPrefix(pm.ContentType, "multipart/") && pm.parts == 0 {
@@ -159,28 +167,71 @@ func parseMessage(raw []byte) (pm *ParsedMessage) {
 	return pm
 }
 
-// finishBodies applies the body selection rule of design 5.2: a part counts
-// only when it has non-blank content (HTML after stripping the tags), the
-// plain text wins over HTML, and BodySource records the choice. Blank parts
-// are dropped so that the .txt / .html files are written only for real
-// content.
+// finishBodies applies the body rule of design 5.2 to the collected
+// sections: a section counts only when it has non-blank content (HTML after
+// stripping the tags), so blank ones are dropped and no file is written for
+// them; the joined views the classifier and the extractor use are computed
+// once. BodySource starts as the primary body (text over HTML); the grouping
+// phase records the body actually used when only the HTML matched.
 func (pm *ParsedMessage) finishBodies() {
-	if strings.TrimSpace(pm.TextBody) == "" {
-		pm.TextBody = ""
+	pm.TextSections = keepSections(pm.TextSections, func(s string) bool { return strings.TrimSpace(s) != "" })
+	pm.HTMLSections = keepSections(pm.HTMLSections, func(s string) bool { return htmlToText(s) != "" })
+	pm.textBody = joinSections(pm.TextSections, "\n\n")
+	texts := make([]string, 0, len(pm.HTMLSections))
+	for _, s := range pm.HTMLSections {
+		texts = append(texts, htmlToText(s))
 	}
-	pm.htmlText = htmlToText(pm.HTMLBody)
-	if pm.htmlText == "" {
-		pm.HTMLBody = ""
+	pm.htmlText = joinSections(texts, "\n\n")
+	pm.BodySource = pm.primarySource()
+}
+
+// keepSections returns the sections accepted by keep, in order (nil when
+// none are left, so an empty result compares equal to a never-filled one).
+func keepSections(sections []string, keep func(string) bool) []string {
+	var out []string
+	for _, s := range sections {
+		if keep(s) {
+			out = append(out, s)
+		}
 	}
-	pm.HasText, pm.HasHTML = pm.TextBody != "", pm.HTMLBody != ""
-	switch {
-	case pm.HasText:
-		pm.BodySource = bodySourceText
-	case pm.HasHTML:
-		pm.BodySource = bodySourceHTML
-	default:
-		pm.BodySource = ""
+	return out
+}
+
+// joinSections concatenates body sections into one text: the first is taken
+// as is, every later one follows the previous text after sep (one blank
+// line, so the extraction rules see paragraph breaks between the parts);
+// blank sections add nothing.
+func joinSections(sections []string, sep string) string {
+	body := ""
+	for _, s := range sections {
+		if strings.TrimSpace(s) == "" {
+			continue
+		}
+		if strings.TrimSpace(body) == "" {
+			body = s
+			continue
+		}
+		body = strings.TrimRight(body, "\n") + sep + strings.TrimLeft(s, "\n")
 	}
+	return body
+}
+
+// addTextSection keeps one inline text/plain part as a section (blank parts
+// are dropped; design 5.2).
+func (pm *ParsedMessage) addTextSection(s string) {
+	if strings.TrimSpace(s) == "" {
+		return
+	}
+	pm.TextSections = append(pm.TextSections, s)
+}
+
+// addHTMLSection keeps one inline text/html part as a section unless it is
+// only markup (skeleton HTML counts as no content; design 5.2).
+func (pm *ParsedMessage) addHTMLSection(s string) {
+	if htmlToText(s) == "" {
+		return
+	}
+	pm.HTMLSections = append(pm.HTMLSections, s)
 }
 
 // readTopHeaders fills the header fields from the root entity.
@@ -214,7 +265,7 @@ func (pm *ParsedMessage) readTopHeaders(h message.Header) {
 		if err != nil {
 			val = fields.Value()
 		}
-		val = truncate(strings.TrimSpace(val), maxHeaderValue)
+		val = strings.TrimSpace(val)
 		if prev, ok := pm.Headers[key]; ok {
 			pm.Headers[key] = prev + "\n" + val
 		} else {
@@ -225,13 +276,11 @@ func (pm *ParsedMessage) readTopHeaders(h message.Header) {
 
 // walk descends the MIME tree. inOriginal is true inside a message/rfc822
 // part: only the headers of the embedded message are of interest there.
-func (pm *ParsedMessage) walk(e *message.Entity, depth int, inOriginal bool) error {
-	if depth > maxNestingDepth {
-		return nil
-	}
-	ct, _, err := e.Header.ContentType()
+func (pm *ParsedMessage) walk(e *message.Entity, inOriginal bool) error {
+	ct, ctParams, err := e.Header.ContentType()
 	if err != nil {
 		ct = "text/plain"
+		ctParams = map[string]string{"charset": paramFromRaw(e.Header.Get("Content-Type"), "charset")}
 	}
 	ct = strings.ToLower(ct)
 	disp, _, _ := e.Header.ContentDisposition()
@@ -258,13 +307,13 @@ func (pm *ParsedMessage) walk(e *message.Entity, depth int, inOriginal bool) err
 			if part == nil {
 				return nil
 			}
-			if err := pm.walk(part, depth+1, inOriginal); err != nil {
+			if err := pm.walk(part, inOriginal); err != nil {
 				return err
 			}
 		}
 	case ct == "message/delivery-status":
 		if !inOriginal && pm.DeliveryStatus == nil {
-			body, _ := readLimited(e.Body, maxBodyBytes)
+			body, _ := readWhole(e.Body)
 			pm.DeliveryStatus = parseDeliveryStatus(body)
 		} else {
 			_, _ = io.Copy(io.Discard, e.Body)
@@ -285,31 +334,34 @@ func (pm *ParsedMessage) walk(e *message.Entity, depth int, inOriginal bool) err
 		pm.OriginalMessage = originalFromHeader(inner.Header)
 		// The embedded message may itself be multipart; walk it so that its
 		// parts are consumed, but nothing inside it is treated as our body.
-		return pm.walk(inner, depth+1, true)
+		return pm.walk(inner, true)
 	case ct == "text/rfc822-headers":
 		if inOriginal || pm.OriginalMessage != nil {
 			_, _ = io.Copy(io.Discard, e.Body)
 			return nil
 		}
-		body, _ := readLimited(e.Body, maxBodyBytes)
+		body, _ := readWhole(e.Body)
 		hdr, err := message.Read(bytes.NewReader(append(bytes.TrimLeft(body, "\r\n"), "\r\n\r\n"...)))
 		if hdr != nil && (err == nil || message.IsUnknownCharset(err) || message.IsUnknownEncoding(err)) {
 			pm.OriginalMessage = originalFromHeader(hdr.Header)
 		}
 	case ct == "text/plain":
-		if inOriginal || isAttachment || pm.TextBody != "" {
+		// Every inline text part becomes a section, in MIME order: some
+		// MTAs put the original message's text before the notice, others
+		// after it, and the notice must not be lost either way (design 5.2).
+		if inOriginal || isAttachment {
 			_, _ = io.Copy(io.Discard, e.Body)
 			return nil
 		}
-		body, _ := readLimited(e.Body, maxBodyBytes)
-		pm.TextBody = normalizeText(body)
+		body, _ := readWhole(e.Body)
+		pm.addTextSection(normalizeText(decodeBodyBytes(body, ctParams["charset"], false)))
 	case ct == "text/html":
-		if inOriginal || isAttachment || pm.HTMLBody != "" {
+		if inOriginal || isAttachment {
 			_, _ = io.Copy(io.Discard, e.Body)
 			return nil
 		}
-		body, _ := readLimited(e.Body, maxBodyBytes)
-		pm.HTMLBody = normalizeText(body)
+		body, _ := readWhole(e.Body)
+		pm.addHTMLSection(normalizeText(decodeBodyBytes(body, ctParams["charset"], true)))
 	default:
 		_, _ = io.Copy(io.Discard, e.Body)
 	}
@@ -360,8 +412,8 @@ func parseDeliveryStatus(body []byte) *DeliveryStatus {
 		ds.Recipients = append(ds.Recipients, DeliveryStatusRecipient{
 			FinalRecipient:    cleanAngleAddress(stripTypePrefix(fields["final-recipient"])),
 			OriginalRecipient: cleanAngleAddress(stripTypePrefix(fields["original-recipient"])),
-			Action:            strings.ToLower(fields["action"]),
-			Status:            strings.TrimSpace(fields["status"]),
+			Action:            normalizeDSNAction(fields["action"]),
+			Status:            normalizeDSNStatus(fields["status"]),
 			DiagnosticCode:    fields["diagnostic-code"],
 			RemoteMTA:         stripTypePrefix(fields["remote-mta"]),
 		})
@@ -370,6 +422,38 @@ func parseDeliveryStatus(body []byte) *DeliveryStatus {
 		return nil
 	}
 	return ds
+}
+
+// dsnActions are the Action values of RFC 3464 (bounces.action).
+var dsnActions = map[string]bool{"failed": true, "delayed": true, "delivered": true, "relayed": true, "expanded": true}
+
+// dsnCommentRe matches the parenthesized comments an Action or Status field
+// may carry ("failed (permanent failure)", "5.1.1 (bad destination)").
+var dsnCommentRe = regexp.MustCompile(`\([^()]*\)`)
+
+// dsnStatusRe matches an extended status code (class.subject.detail, class
+// 2, 4 or 5) inside a Status field; a fourth component ("5.1.1.1") is not a
+// status code.
+var dsnStatusRe = regexp.MustCompile(`(?:^|[^0-9.])([245]\.[0-9]{1,3}\.[0-9]{1,3})(?:[^0-9.]|$)`)
+
+// normalizeDSNAction reduces an Action field to one of the RFC 3464 values
+// (lower case, comments removed); anything else yields "" so that the
+// classifier falls back to the status code and the wording.
+func normalizeDSNAction(v string) string {
+	v = strings.ToLower(strings.TrimSpace(dsnCommentRe.ReplaceAllString(v, " ")))
+	if dsnActions[v] {
+		return v
+	}
+	return ""
+}
+
+// normalizeDSNStatus extracts the extended status code (class.subject.detail,
+// class 2, 4 or 5) of a Status field; "" when the field carries none.
+func normalizeDSNStatus(v string) string {
+	if m := dsnStatusRe.FindStringSubmatch(v); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // parseFieldGroup parses "Name: value" lines with RFC 822 style folding into
@@ -419,11 +503,7 @@ func cleanAngleAddress(v string) string {
 
 // headerText returns a decoded header value, falling back to the raw value.
 func headerText(h mail.Header, key string) string {
-	v, err := h.Text(key)
-	if err != nil {
-		v = decodeWordsLoose(h.Get(key))
-	}
-	return strings.TrimSpace(strings.Join(strings.Fields(v), " "))
+	return strings.TrimSpace(strings.Join(strings.Fields(decodeWordsLoose(h.Get(key))), " "))
 }
 
 // headerMessageID returns the Message-ID without angle brackets.
@@ -438,18 +518,33 @@ func headerMessageID(h mail.Header) string {
 // header, tolerating malformed values such as "MAILER-DAEMON (Mail Delivery
 // System)".
 func headerAddress(h mail.Header, key string) (address, name string) {
-	if list, err := h.AddressList(key); err == nil && len(list) > 0 {
+	if list := parseAddressHeader(h.Get(key)); len(list) > 0 {
 		return strings.TrimSpace(list[0].Address), strings.TrimSpace(list[0].Name)
 	}
 	raw := decodeWordsLoose(h.Get(key))
 	return looseAddress(raw)
 }
 
+// parseAddressHeader parses a raw address header with the engine's charset
+// handling (aliases, mislabeled ASCII, raw 8-bit names). nil when the value
+// is malformed.
+func parseAddressHeader(raw string) []*netmail.Address {
+	raw = asciiWordLabelRe.ReplaceAllString(raw, "=?"+mislabeledASCIILabel+"$1?$2?")
+	list, err := headerAddressParser.ParseList(raw)
+	if err != nil {
+		return nil
+	}
+	for _, a := range list {
+		a.Name = decodeHeaderText(a.Name)
+	}
+	return list
+}
+
 // headerAddressList returns the bare addresses of an address header joined
 // by ", " (display names stripped) and the display name of the first one.
 // A malformed header that yields no address is returned as is.
 func headerAddressList(h mail.Header, key string) (addresses, firstName string) {
-	if list, err := h.AddressList(key); err == nil && len(list) > 0 {
+	if list := parseAddressHeader(h.Get(key)); len(list) > 0 {
 		parts := make([]string, 0, len(list))
 		for _, a := range list {
 			if addr := strings.TrimSpace(a.Address); addr != "" {
@@ -520,11 +615,7 @@ func looseAddress(raw string) (address, name string) {
 // decodeWordsLoose decodes RFC 2047 encoded words, leaving the input as is on
 // failure.
 func decodeWordsLoose(s string) string {
-	dec := mime.WordDecoder{CharsetReader: message.CharsetReader}
-	if out, err := dec.DecodeHeader(s); err == nil {
-		return out
-	}
-	return s
+	return decodeHeaderWords(s)
 }
 
 // formatAddress renders "Name <addr>" (or just addr / Name).
@@ -565,40 +656,26 @@ func paramFromRaw(raw, name string) string {
 	return ""
 }
 
-// readLimited reads at most limit bytes and drains the rest.
-func readLimited(r io.Reader, limit int64) ([]byte, error) {
+// readWhole reads r to the end (tolerating unknown charset / encoding errors).
+func readWhole(r io.Reader) ([]byte, error) {
 	if r == nil {
 		return nil, nil
 	}
-	b, err := io.ReadAll(io.LimitReader(r, limit))
-	_, _ = io.Copy(io.Discard, r)
+	b, err := io.ReadAll(r)
 	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
 		return b, err
 	}
 	return b, nil
 }
 
-// normalizeText converts a decoded body to UTF-8 text with LF line endings.
-// go-message already converted known charsets; unknown ones arrive as raw
-// bytes and are made valid UTF-8 by replacing bad sequences.
+// normalizeText turns a decoded body into text with LF line endings and no
+// BOM. go-message already converted known charsets to UTF-8; a body in an
+// unknown charset arrives as raw bytes and is kept as is (the .txt / .html
+// file then holds the original bytes so nothing is lost), which the
+// classifier and the extractor tolerate.
 func normalizeText(b []byte) string {
 	s := strings.ReplaceAll(string(b), "\r\n", "\n")
-	s = strings.TrimPrefix(s, "\ufeff")
-	if !utf8.ValidString(s) {
-		s = strings.ToValidUTF8(s, "\ufffd")
-	}
-	return s
-}
-
-// truncate cuts s to at most n bytes on a rune boundary.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n]
+	return strings.TrimPrefix(s, "\ufeff")
 }
 
 // fillFallbackHeaders scans the raw header block with a tolerant line parser
@@ -638,23 +715,31 @@ func (pm *ParsedMessage) fillFallbackHeaders(raw []byte) {
 	}
 	if len(pm.Headers) == 0 {
 		for k, v := range fields {
-			pm.Headers[canonicalHeaderKey(k)] = truncate(decodeWordsLoose(v), maxHeaderValue)
+			pm.Headers[canonicalHeaderKey(k)] = decodeWordsLoose(v)
 		}
 	}
 	pm.fillFallbackBody(raw)
 }
 
-// fillFallbackBody keeps the bytes after the header block as the text body
-// so that the classifier still has something to look at.
+// fillFallbackBody keeps the bytes after the header block as the only text
+// section so that the classifier still has something to look at.
 func (pm *ParsedMessage) fillFallbackBody(raw []byte) {
-	if pm.TextBody != "" {
+	if len(pm.TextSections) > 0 {
 		return
 	}
-	_, body := splitHeaderBlock(raw)
+	head, body := splitHeaderBlock(raw)
 	if len(body) == 0 {
 		return
 	}
-	pm.TextBody = normalizeText(bytes.TrimLeft(body[:min(len(body), maxBodyBytes)], "\r\n"))
+	body = bytes.TrimLeft(body, "\r\n")
+	fields := parseFieldGroup(strings.ReplaceAll(string(head), "\r\n", "\n"))
+	label := paramFromRaw(fields["content-type"], "charset")
+	if label != "" && !asciiLabels[normalizeCharsetLabel(label)] {
+		body = decodeBytes(label, body)
+	} else {
+		body = decodeBodyBytes(body, label, strings.HasPrefix(pm.ContentType, "text/html"))
+	}
+	pm.addTextSection(normalizeText(body))
 }
 
 // splitHeaderBlock separates the header block from the body at the first
@@ -723,18 +808,59 @@ var (
 	htmlTagRe   = regexp.MustCompile(`(?s)<[^>]*>`)
 )
 
-// bodyForClassification returns the effective body the classifier and the
-// extractor look at (BodySource: the text body, else the HTML rendered as
-// text, else "").
+// bodyForClassification returns the primary body the classifier and the
+// extractor look at first: every text section joined, else every HTML
+// section rendered as text and joined, else "". secondaryBody is the other
+// one (design 5.2: both bodies are consulted, the primary first).
 func (pm *ParsedMessage) bodyForClassification() string {
-	switch pm.BodySource {
+	switch pm.primarySource() {
 	case bodySourceText:
-		return pm.TextBody
+		return pm.textBodyJoined()
 	case bodySourceHTML:
-		if pm.htmlText == "" {
-			pm.htmlText = htmlToText(pm.HTMLBody)
-		}
-		return pm.htmlText
+		return pm.htmlTextBody()
 	}
 	return ""
+}
+
+// secondaryBody returns the HTML sections rendered as text when the message
+// has both text and HTML sections, "" otherwise.
+func (pm *ParsedMessage) secondaryBody() string {
+	if len(pm.TextSections) > 0 && len(pm.HTMLSections) > 0 {
+		return pm.htmlTextBody()
+	}
+	return ""
+}
+
+// primarySource is the body source of the primary body ("text" when the
+// message has text sections, else "html" when it has HTML sections, else "").
+func (pm *ParsedMessage) primarySource() string {
+	switch {
+	case len(pm.TextSections) > 0:
+		return bodySourceText
+	case len(pm.HTMLSections) > 0:
+		return bodySourceHTML
+	}
+	return ""
+}
+
+// textBodyJoined returns the text sections joined into one body (cached by
+// finishBodies; computed here for a ParsedMessage built by hand).
+func (pm *ParsedMessage) textBodyJoined() string {
+	if pm.textBody == "" && len(pm.TextSections) > 0 {
+		pm.textBody = joinSections(pm.TextSections, "\n\n")
+	}
+	return pm.textBody
+}
+
+// htmlTextBody returns the HTML sections rendered as text and joined
+// (cached by finishBodies; computed here for a ParsedMessage built by hand).
+func (pm *ParsedMessage) htmlTextBody() string {
+	if pm.htmlText == "" && len(pm.HTMLSections) > 0 {
+		texts := make([]string, 0, len(pm.HTMLSections))
+		for _, s := range pm.HTMLSections {
+			texts = append(texts, htmlToText(s))
+		}
+		pm.htmlText = joinSections(texts, "\n\n")
+	}
+	return pm.htmlText
 }

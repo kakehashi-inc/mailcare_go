@@ -82,7 +82,7 @@ func (c *ScheduleSetCmd) Run() error {
 // SettingsCmd shows or changes server settings.
 type SettingsCmd struct {
 	Show SettingsShowCmd `cmd:"" help:"Show the settings"`
-	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, cookie_ttl_hours, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, smtp_from, public_base_url, notify_enabled, notify_time, notify_interval_days, notify_user_ids)"`
+	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, agent_keep_days, mail_keep_days, cookie_ttl_hours, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, smtp_from, public_base_url, notify_enabled, notify_time, notify_interval_days, notify_user_ids)"`
 }
 
 // SettingsShowCmd prints every effective setting.
@@ -109,6 +109,8 @@ func (c *SettingsShowCmd) Run() error {
 		SettingCheckTimes:     ResolveCheckTimes(db),
 		SettingAgentProvider:  provider,
 		SettingAgentEnabled:   ResolveAgentEnabled(db),
+		SettingAgentKeepDays:  ResolveAgentKeepDays(db),
+		SettingMailKeepDays:   ResolveMailKeepDays(db),
 		SettingCookieTTLHours: ResolveCookieTTLHours(db),
 		SettingSMTPHost:       notify.SMTP.Host,
 		SettingSMTPPort:       notify.SMTP.Port,
@@ -123,6 +125,9 @@ func (c *SettingsShowCmd) Run() error {
 		SettingNotifyInterval: notify.IntervalDays,
 		SettingNotifyUserIDs:  notify.UserIDs,
 		SettingNotifyLastSent: rfc3339OrNull(notify.LastSentAt),
+		// The date of the last daily cleanup is recorded by the scheduler
+		// and shown for information only.
+		SettingCleanupLastRunDate: stringOrNull(models.GetSetting(db, SettingCleanupLastRunDate)),
 	}
 	if c.JSON {
 		values["data_dir"] = dataDir
@@ -139,13 +144,15 @@ func (c *SettingsShowCmd) Run() error {
 	fmt.Printf("%-18s %v\n", SettingWebListen+":", values[SettingWebListen])
 	fmt.Printf("%-18s %v\n", SettingWebPort+":", values[SettingWebPort])
 	fmt.Printf("%-18s %v\n", SettingWorkers+":", values[SettingWorkers])
-	fmt.Printf("%-18s %s\n", SettingCheckTimes+":", FormatCheckTimes(ResolveCheckTimes(db)))
+	fmt.Printf("%-18s %s\n", SettingCheckTimes+":", DisplayCheckTimes(ResolveCheckTimes(db)))
 	available := "not available"
 	if agent.ProviderAvailable(provider) {
 		available = "available"
 	}
 	fmt.Printf("%-18s %s (%s)\n", SettingAgentProvider+":", provider, available)
 	fmt.Printf("%-18s %v\n", SettingAgentEnabled+":", values[SettingAgentEnabled])
+	fmt.Printf("%-18s %v\n", SettingAgentKeepDays+":", values[SettingAgentKeepDays])
+	fmt.Printf("%-18s %v\n", SettingMailKeepDays+":", values[SettingMailKeepDays])
 	fmt.Printf("%-18s %v\n", SettingCookieTTLHours+":", values[SettingCookieTTLHours])
 	fmt.Println()
 	fmt.Printf("%-22s %v\n", SettingSMTPHost+":", notify.SMTP.Host)
@@ -169,24 +176,56 @@ func (c *SettingsShowCmd) Run() error {
 	} else {
 		fmt.Printf("%-22s none (notifications are disabled)\n", "next_send_at:")
 	}
+	fmt.Println()
+	lastCleanup := models.GetSetting(db, SettingCleanupLastRunDate)
+	if lastCleanup == "" {
+		lastCleanup = "-"
+	}
+	fmt.Printf("%-22s %s (the daily cleanup runs when the date changes)\n", SettingCleanupLastRunDate+":", lastCleanup)
 	return nil
 }
 
-// SettingsSetCmd changes one setting.
+// stringOrNull maps an empty string to JSON null.
+func stringOrNull(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// SettingsSetCmd changes one setting. The value may be omitted only for
+// smtp_password, which is then read from stdin (hidden on a terminal, a
+// plain line on piped input, entered twice) so that it never appears in the
+// shell history or the process list.
 type SettingsSetCmd struct {
-	Key   string `arg:"" help:"Setting key"`
-	Value string `arg:"" help:"New value (an empty string restores the default)"`
+	Key   string  `arg:"" help:"Setting key"`
+	Value *string `arg:"" optional:"" help:"New value (an empty string restores the default; check_times also accepts none to disable the automatic checks). Omit it for smtp_password to be prompted for the password (hidden on a terminal; a line on piped input)"`
 }
 
 func (c *SettingsSetCmd) Run() error {
+	key := strings.ToLower(strings.TrimSpace(c.Key))
+	var value string
+	switch {
+	case c.Value != nil:
+		value = strings.TrimSpace(*c.Value)
+	case key == settingSMTPPassword:
+		password, err := promptPassword("SMTP password")
+		if err != nil {
+			return err
+		}
+		if password == "" {
+			return NewExitErrorf(ExitArgument, "no password given (use %s set %s \"\" to remove the stored password)", "settings", key)
+		}
+		value = password
+	default:
+		return NewExitErrorf(ExitArgument, "a value is required for %s (only %s may be omitted to be prompted)", key, settingSMTPPassword)
+	}
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	key := strings.ToLower(strings.TrimSpace(c.Key))
-	value := strings.TrimSpace(c.Value)
-	shown, err := ApplySetting(db, key, value, loadKeyForCLI)
+	shown, err := ApplySetting(db, key, value, func() ([]byte, error) { return loadKeyForCLI(db) })
 	if err != nil {
 		var exitErr *ExitError
 		if errors.As(err, &exitErr) {
@@ -209,7 +248,9 @@ func (c *SettingsSetCmd) Run() error {
 func SettingKeys() []string {
 	return []string{
 		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentEnabled,
-		SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity, SettingSMTPUsername, settingSMTPPassword,
+		SettingAgentKeepDays, SettingMailKeepDays, SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
+		SettingSMTPUsername,
+		settingSMTPPassword,
 		SettingSMTPFrom, SettingPublicBaseURL, SettingNotifyEnabled, SettingNotifyTime, SettingNotifyInterval, SettingNotifyUserIDs,
 	}
 }
@@ -257,6 +298,10 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		}
 		return strconv.Itoa(n), SaveWorkers(db, n)
 	case SettingCheckTimes:
+		// "none" disables the automatic checks ("" restores the default).
+		if strings.EqualFold(value, CheckTimesNone) {
+			return CheckTimesNone, SaveCheckTimes(db, nil)
+		}
 		times, perr := ParseCheckTimes([]string{value})
 		if perr != nil {
 			return argErr(perr)
@@ -277,6 +322,18 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 			return argErr(perr)
 		}
 		return strconv.FormatBool(enabled), SetAgentEnabled(db, enabled)
+	case SettingAgentKeepDays:
+		n, perr := ParseAgentKeepDays(value)
+		if perr != nil {
+			return argErr(perr)
+		}
+		return strconv.Itoa(n), SaveAgentKeepDays(db, n)
+	case SettingMailKeepDays:
+		n, perr := ParseMailKeepDays(value)
+		if perr != nil {
+			return argErr(perr)
+		}
+		return strconv.Itoa(n), SaveMailKeepDays(db, n)
 	}
 	// Notification keys share the validation of the Web settings.
 	in := &NotificationInput{}
@@ -349,6 +406,11 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		in.UserIDs = &ids
 	}
 	if err := SaveNotificationSettings(db, masterKey, in); err != nil {
+		if errors.Is(err, ErrSMTPPasswordRequired) {
+			// One key per command: the password cannot come along, so the
+			// operator removes it first and sets it again afterwards.
+			return "", NewExitErrorf(ExitArgument, "%v (remove the stored password with: settings set %s \"\", change the setting, then set the password again)", err, settingSMTPPassword)
+		}
 		return argErr(err)
 	}
 	if key == SettingNotifyUserIDs {

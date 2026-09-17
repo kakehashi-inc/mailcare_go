@@ -99,11 +99,11 @@ func TestNotifyDueAndNextNotifyAt(t *testing.T) {
 
 func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 	db := newNotifyTestDB(t)
-	key, err := LoadSecretKey()
+	key, err := LoadSecretKey(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin, err := CreateUserWithEmail(db, "admin", "", "Admin@Example.test", "password123", RoleAdmin)
+	admin, err := CreateUserFrom(db, NewUser{Username: "admin", Email: "Admin@Example.test", Password: "password123", Role: RoleAdmin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,23 +172,39 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 		t.Errorf("without key: %+v", s.SMTP)
 	}
 	// An empty password keeps the stored one; default values delete rows.
-	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPPassword: str(""), SMTPPort: num(DefaultSMTPPort)}); err != nil {
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPPassword: str(""), IntervalDays: num(DefaultNotifyIntervalDays)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := models.GetSettingStrict(db, SettingNotifyInterval); found {
+		t.Errorf("default interval stored")
+	}
+	if s, _ = ResolveNotificationSettings(db, key); s.SMTP.Password != "s3cret" {
+		t.Errorf("password lost on empty update")
+	}
+	// While a password is stored, a change of the connection settings must
+	// carry the password (nothing is saved otherwise); with it the change
+	// goes through and a default value still deletes its row.
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPPort: num(DefaultSMTPPort), SMTPFrom: str("other@example.test")}); !errors.Is(err, ErrSMTPPasswordRequired) {
+		t.Errorf("port change without the password: %v", err)
+	}
+	if s, _ = ResolveNotificationSettings(db, key); s.SMTP.Port != 2525 || s.SMTP.From != "mailcare@example.test" {
+		t.Errorf("refused update changed something: %+v", s.SMTP)
+	}
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPPort: num(DefaultSMTPPort), SMTPPassword: str("s3cret")}); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, _ := models.GetSettingStrict(db, SettingSMTPPort); found {
 		t.Errorf("default port stored")
 	}
-	if s, _ = ResolveNotificationSettings(db, key); s.SMTP.Password != "s3cret" {
-		t.Errorf("password lost on empty update")
-	}
-	if err := ClearSMTPPassword(db); err != nil {
+	// "settings set smtp_password \"\"" removes the stored password.
+	if _, err := ApplySetting(db, settingSMTPPassword, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if s, _ = ResolveNotificationSettings(db, key); s.SMTPPasswordSet {
 		t.Errorf("password not cleared")
 	}
 	// Recipients: only users with an address are addressed.
-	bob, err := CreateUser(db, "bob", "", "password123", RoleUser)
+	bob, err := CreateUserFrom(db, NewUser{Username: "bob", Password: "password123", Role: RoleUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,11 +236,11 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 
 func TestApplySettingValidatesKeys(t *testing.T) {
 	db := newNotifyTestDB(t)
-	admin, err := CreateUser(db, "admin", "", "password123", RoleAdmin)
+	admin, err := CreateUserFrom(db, NewUser{Username: "admin", Password: "password123", Role: RoleAdmin})
 	if err != nil {
 		t.Fatal(err)
 	}
-	loadKey := func() ([]byte, error) { return LoadSecretKey() }
+	loadKey := func() ([]byte, error) { return LoadSecretKey(db) }
 	isArg := func(err error) bool {
 		var exitErr *ExitError
 		return errors.As(err, &exitErr) && exitErr.Code == ExitArgument
@@ -259,7 +275,7 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 			t.Errorf("%s=%s: %q, %v (want %q)", ok[0], ok[1], got, err, ok[2])
 		}
 	}
-	key, _ := LoadSecretKey()
+	key, _ := LoadSecretKey(db)
 	s, err := ResolveNotificationSettings(db, key)
 	if err != nil {
 		t.Fatal(err)
@@ -269,9 +285,30 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 		s.Time != "07:05" || s.IntervalDays != 2 || len(s.UserIDs) != 1 || s.UserIDs[0] != admin.ID {
 		t.Errorf("resolved after CLI: %+v", s)
 	}
+	// With a password stored, a connection key cannot change on its own
+	// (the CLI sets one key per command, so the operator removes the
+	// password first); other keys and the unchanged value still work.
+	for _, change := range [][2]string{{SettingSMTPHost, "other.example.test"}, {SettingSMTPPort, "25"}, {SettingSMTPSecurity, "none"}, {SettingSMTPUsername, "other"}} {
+		_, err := ApplySetting(db, change[0], change[1], loadKey)
+		if !isArg(err) || !strings.Contains(err.Error(), ErrSMTPPasswordRequired.Error()) || !strings.Contains(err.Error(), `settings set smtp_password ""`) {
+			t.Errorf("%s=%s with a stored password: %v", change[0], change[1], err)
+		}
+	}
+	if got, err := ApplySetting(db, SettingSMTPHost, "smtp.example.test", loadKey); err != nil || got != "smtp.example.test" {
+		t.Errorf("unchanged host: %q %v", got, err)
+	}
+	if got, err := ApplySetting(db, SettingSMTPFrom, "other@example.test", loadKey); err != nil || got != "other@example.test" {
+		t.Errorf("sender change: %q %v", got, err)
+	}
+	if s, _ := ResolveNotificationSettings(db, key); s.SMTP.Host != "smtp.example.test" || s.SMTP.Port != 465 || s.SMTP.Username != "bounce" {
+		t.Errorf("refused CLI changes were applied: %+v", s.SMTP)
+	}
 	// An empty value restores the default; for the password it clears the stored one.
 	if _, err := ApplySetting(db, "smtp_password", "", nil); err != nil {
 		t.Fatal(err)
+	}
+	if got, err := ApplySetting(db, SettingSMTPHost, "other.example.test", loadKey); err != nil || got != "other.example.test" {
+		t.Errorf("host change once the password is removed: %q %v", got, err)
 	}
 	if _, err := ApplySetting(db, SettingNotifyInterval, "", nil); err != nil {
 		t.Fatal(err)
@@ -344,9 +381,9 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 	if _, err := CreateMailbox(db, key, &MailboxInput{Address: "empty@example.test", ImapHost: "h", ImapUsername: "u", ImapPassword: "p"}); err != nil {
 		t.Fatal(err)
 	}
-	admin, _ := CreateUserWithEmail(db, "admin", "", "admin@example.test", "password123", RoleAdmin)
-	carol, _ := CreateUserWithEmail(db, "carol", "", "carol@example.test", "password123", RoleUser)
-	bob, _ := CreateUser(db, "bob", "", "password123", RoleUser)
+	admin, _ := CreateUserFrom(db, NewUser{Username: "admin", Email: "admin@example.test", Password: "password123", Role: RoleAdmin})
+	carol, _ := CreateUserFrom(db, NewUser{Username: "carol", Email: "carol@example.test", Password: "password123", Role: RoleUser})
+	bob, _ := CreateUserFrom(db, NewUser{Username: "bob", Password: "password123", Role: RoleUser})
 	srv := startFakeSMTP(t)
 	ctx := context.Background()
 	now := time.Date(2026, 9, 17, 9, 0, 0, 0, time.Local)
@@ -517,7 +554,7 @@ func TestNotifyJobRunsThroughTheManager(t *testing.T) {
 		t.Errorf("skipped notification: %q, %v", result, err)
 	}
 	// And sends when every condition holds, even with the schedule disabled.
-	admin, _ := CreateUserWithEmail(db, "admin", "", "admin@example.test", "password123", RoleAdmin)
+	admin, _ := CreateUserFrom(db, NewUser{Username: "admin", Email: "admin@example.test", Password: "password123", Role: RoleAdmin})
 	ids := []int64{admin.ID}
 	if err := SaveNotificationSettings(db, key, &NotificationInput{UserIDs: &ids}); err != nil {
 		t.Fatal(err)
@@ -559,16 +596,17 @@ func TestSchedulerQueuesNotifyJob(t *testing.T) {
 	clock := localDate(2026, 9, 17, 8, 59, 50)
 	s.now = func() time.Time { return clock }
 	s.lastTick = clock
+	// Only the notify jobs are counted (the daily cleanup is queued on the
+	// first tick of a day as well).
 	clock = localDate(2026, 9, 17, 9, 0, 10)
 	s.Tick()
-	jobs, err := models.ListActiveJobs(db)
-	if err != nil || len(jobs) != 1 || jobs[0].Kind != JobKindNotify || jobs[0].MailboxID.Valid || jobs[0].Target != "" ||
-		jobs[0].RequestedBy != RequestedByScheduler {
-		t.Fatalf("after 09:00: %d jobs %+v, %v", len(jobs), jobs, err)
+	jobs := activeJobsOfKind(t, db, JobKindNotify)
+	if len(jobs) != 1 || jobs[0].MailboxID.Valid || jobs[0].Target != "" || jobs[0].RequestedBy != RequestedByScheduler {
+		t.Fatalf("after 09:00: %d jobs %+v", len(jobs), jobs)
 	}
 	clock = localDate(2026, 9, 17, 9, 0, 40)
 	s.Tick()
-	if jobs, _ = models.ListActiveJobs(db); len(jobs) != 1 {
+	if jobs = activeJobsOfKind(t, db, JobKindNotify); len(jobs) != 1 {
 		t.Errorf("notify re-queued within the minute: %d", len(jobs))
 	}
 	// Sent today: tomorrow with interval 2 does not fire, the day after does.
@@ -586,14 +624,14 @@ func TestSchedulerQueuesNotifyJob(t *testing.T) {
 	s.Tick()
 	clock = localDate(2026, 9, 18, 9, 0, 10)
 	s.Tick()
-	if jobs, _ = models.ListActiveJobs(db); len(jobs) != 0 {
+	if jobs = activeJobsOfKind(t, db, JobKindNotify); len(jobs) != 0 {
 		t.Errorf("fired before the interval elapsed: %d", len(jobs))
 	}
 	clock = localDate(2026, 9, 19, 8, 59, 50)
 	s.Tick()
 	clock = localDate(2026, 9, 19, 9, 0, 10)
 	s.Tick()
-	if jobs, _ = models.ListActiveJobs(db); len(jobs) != 1 || jobs[0].Kind != JobKindNotify {
+	if jobs = activeJobsOfKind(t, db, JobKindNotify); len(jobs) != 1 {
 		t.Errorf("not fired after the interval: %d", len(jobs))
 	}
 	// Disabling stops the scheduler at once.
@@ -606,7 +644,56 @@ func TestSchedulerQueuesNotifyJob(t *testing.T) {
 	s.Tick()
 	clock = localDate(2026, 9, 25, 9, 0, 10)
 	s.Tick()
-	if jobs, _ = models.ListActiveJobs(db); len(jobs) != 0 {
+	if jobs = activeJobsOfKind(t, db, JobKindNotify); len(jobs) != 0 {
 		t.Errorf("fired while disabled: %d", len(jobs))
+	}
+}
+
+func TestSMTPConfigForTestGuardsTheStoredPassword(t *testing.T) {
+	db := newNotifyTestDB(t)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	str := func(v string) *string { return &v }
+	num := func(v int) *int { return &v }
+	// Nothing stored: no password is required, overrides are applied.
+	cfg, err := SMTPConfigForTest(db, key, &SMTPTestInput{Host: str("mail.example.test"), From: str("MailCare@Example.test")})
+	if err != nil || cfg.Host != "mail.example.test" || cfg.From != "mailcare@example.test" || cfg.Password != "" || cfg.Port != DefaultSMTPPort {
+		t.Fatalf("without stored settings: %+v %v", cfg, err)
+	}
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPHost: str("mail.example.test"), SMTPPort: num(2525), SMTPSecurity: str("starttls"),
+		SMTPUsername: str("user"), SMTPPassword: str("s3cret"), SMTPFrom: str("mailcare@example.test")}); err != nil {
+		t.Fatal(err)
+	}
+	// The saved server (nil input, or the saved values repeated) gets the
+	// stored password; another sender address does not matter.
+	for _, in := range []*SMTPTestInput{nil, {}, {Host: str(" mail.example.test "), Port: num(2525), Security: str("STARTTLS"), Username: str("user")},
+		{From: str("other@example.test")}} {
+		cfg, err := SMTPConfigForTest(db, key, in)
+		if err != nil || cfg.Password != "s3cret" || cfg.Host != "mail.example.test" || cfg.Port != 2525 || cfg.Security != "starttls" || cfg.Username != "user" {
+			t.Errorf("saved server %+v: %+v %v", in, cfg, err)
+		}
+	}
+	// Any change of host, port, security or username without a password is
+	// refused, so the stored password cannot be sent elsewhere.
+	for _, in := range []*SMTPTestInput{
+		{Host: str("evil.example.test")}, {Port: num(25)}, {Security: str("none")}, {Username: str("other")}, {Username: str("other"), Password: str("")},
+	} {
+		if _, err := SMTPConfigForTest(db, key, in); !errors.Is(err, ErrSMTPPasswordRequired) {
+			t.Errorf("%+v: %v, want ErrSMTPPasswordRequired", in, err)
+		}
+	}
+	// With a password of its own the change is allowed and that password is
+	// used, never the stored one.
+	cfg, err = SMTPConfigForTest(db, key, &SMTPTestInput{Host: str("other.example.test"), Password: str("theirs")})
+	if err != nil || cfg.Host != "other.example.test" || cfg.Password != "theirs" || cfg.Port != 2525 || cfg.Username != "user" {
+		t.Errorf("own password: %+v %v", cfg, err)
+	}
+	// Invalid overrides are rejected like the settings update.
+	for _, in := range []*SMTPTestInput{{Port: num(0), Password: str("x")}, {Security: str("tls"), Password: str("x")}, {From: str("nope"), Password: str("x")}} {
+		if _, err := SMTPConfigForTest(db, key, in); err == nil || errors.Is(err, ErrSMTPPasswordRequired) {
+			t.Errorf("%+v: %v, want a validation error", in, err)
+		}
 	}
 }

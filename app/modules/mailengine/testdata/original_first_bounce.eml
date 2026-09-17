@@ -1,0 +1,37 @@
+Return-Path: <>
+From: MAILER-DAEMON@mx1.example.jp (Mail Delivery System)
+To: newsletter@example.jp
+Subject: Undelivered Mail Returned to Sender
+Date: Sat, 13 Sep 2025 09:00:00 +0900
+Message-ID: <orig-first-0019@mx1.example.jp>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_mixed_0019"
+
+--=_mixed_0019
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+Here is the September newsletter with our latest offers.
+For questions, write to support@example.jp or call our desk.
+Our partner desk can be reached at partner-desk@partner.example.org.
+
+-- 
+Newsletter team
+newsletter@example.jp
+
+--=_mixed_0019
+Content-Type: text/plain; charset="us-ascii"
+
+This is the mail system at host mx1.example.jp.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached above.
+
+<taro@customer.example.com>: host mx.customer.example.com[198.51.100.25]
+    said: 550 5.1.1 <taro@customer.example.com>: Recipient address
+    rejected: User unknown in virtual mailbox table (in reply to RCPT TO
+    command)
+
+--=_mixed_0019--

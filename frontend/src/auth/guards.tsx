@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation } from 'react-router-dom';
 import { FullPageSpinner } from '../components/ui/Spinner';
 import { ErrorState } from '../components/ui/ErrorState';
+import { safeNextPath } from '../utils/next';
 import { useAuth } from './AuthProvider';
 
 /** Renders children only for a signed-in user; otherwise goes to /setup or /login. */
@@ -40,8 +41,7 @@ export function RedirectIfAuthed({ children }: { children: ReactNode }) {
     if (needsSetup && location.pathname !== '/setup') return <Navigate to='/setup' replace />;
     if (!needsSetup && location.pathname === '/setup') return <Navigate to={me ? '/' : '/login'} replace />;
     if (me) {
-        const next = new URLSearchParams(location.search).get('next');
-        return <Navigate to={next && next.startsWith('/') ? next : '/'} replace />;
+        return <Navigate to={safeNextPath(new URLSearchParams(location.search).get('next'))} replace />;
     }
     return <>{children}</>;
 }

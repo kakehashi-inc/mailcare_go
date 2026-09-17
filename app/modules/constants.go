@@ -16,16 +16,19 @@ const (
 	// directory. Per-mailbox indexes live in MailsDirName (see mailengine).
 	DBFileName = "mailcare.db"
 	// MailsDirName is the directory (inside the data directory) that holds the
-	// raw mail files and the per-mailbox index databases:
-	//   data/mails/<address>/<message_key>.{eml,txt,html,json}
+	// raw mail files, their decoded body sections and the per-mailbox index
+	// databases:
+	//   data/mails/<address>/<message_key>.eml
+	//   data/mails/<address>/<message_key>-1.txt, <message_key>-2.txt, ...
+	//   data/mails/<address>/<message_key>-1.html, <message_key>-2.html, ...
 	//   data/mails/<address>.sqlite
 	MailsDirName = "mails"
 	// AgentDirName is the directory (inside the data directory) that holds the
-	// agent workspaces: data/agent/<address>/<group_key>/{PROMPT.md,RESULT.log,REPORT.md}
+	// agent workspaces, one directory per analysis run:
+	//   data/agent/<address>/<group_key>/<report_id>/{PROMPT.md,RESULT.log,REPORT.md,AGENTS.md}
+	// Together with the master database, MailsDirName and AgentDirName are
+	// everything the data directory contains.
 	AgentDirName = "agent"
-	// SecretKeyFileName holds the master key used to encrypt IMAP passwords at
-	// rest and to seal Web session cookies. Created on first use (0600).
-	SecretKeyFileName = "mailcare.key"
 )
 
 // --- Token / session ---
@@ -62,6 +65,13 @@ const (
 	// ReadHeaderTimeout bounds how long a client may take to send its request
 	// headers (protects the server from slowloris-style connections).
 	ReadHeaderTimeout = 10 * time.Second
+	// HTTPReadTimeout bounds the whole request read (headers and body).
+	HTTPReadTimeout = 30 * time.Second
+	// HTTPWriteTimeout bounds the response write; no endpoint waits for a
+	// job, so a response never takes long on purpose.
+	HTTPWriteTimeout = 5 * time.Minute
+	// HTTPIdleTimeout closes keep-alive connections idle for that long.
+	HTTPIdleTimeout = 2 * time.Minute
 	// ShutdownGraceTimeout bounds how long a graceful shutdown waits for the HTTP
 	// server to drain in-flight requests before giving up.
 	ShutdownGraceTimeout  = 5 * time.Second
@@ -81,9 +91,6 @@ const (
 	DefaultIMAPPort = 993
 	// IMAPTimeout bounds one IMAP network operation.
 	IMAPTimeout = 60 * time.Second
-	// MaxMessageSize is the largest message body fetched from IMAP; larger
-	// messages are skipped (bounce notices are small).
-	MaxMessageSize = 20 * 1024 * 1024
 )
 
 // --- IMAP security modes (mailboxes.imap_security) ---
@@ -105,11 +112,6 @@ const (
 	DefaultAgentProvider = agent.DefaultProvider
 	// AgentTimeout is a safety-net backstop on one agent CLI run.
 	AgentTimeout = agent.Timeout
-	// PromptFileName / ResultFileName / ReportFileName are written inside the
-	// agent workspace of a group.
-	PromptFileName = agent.PromptFileName
-	ResultFileName = agent.ResultFileName
-	ReportFileName = agent.ReportFileName
 	// Output markers the agent must emit (rare enough not to appear in prose).
 	AgentReportBegin = agent.ReportBegin
 	AgentReportEnd   = agent.ReportEnd
@@ -118,6 +120,29 @@ const (
 	// AgentMaxSampleMessages bounds how many message files are listed in one
 	// prompt (the newest ones are chosen).
 	AgentMaxSampleMessages = agent.MaxSampleMessages
+	// DefaultAgentKeepDays is how many days the workspace directory of an
+	// analysis run (data/agent/<address>/<group_key>/<report_id>/) is kept;
+	// older run directories are removed by the daily cleanup job. The setting
+	// agent_keep_days overrides it within MinAgentKeepDays..MaxAgentKeepDays.
+	DefaultAgentKeepDays = 30
+	MinAgentKeepDays     = 1
+	MaxAgentKeepDays     = 365
+)
+
+// --- Mail retention defaults ---
+
+const (
+	// DefaultMailKeepDays is how many days a fetched mail is kept, counted
+	// from the date of the mail (messages.date: the Date header, else
+	// INTERNALDATE, else the fetch time). Older mails are removed from the
+	// mailbox directory (.eml and body section files) and from the index by
+	// the daily cleanup job (mailengine.PruneMailbox); the groups they
+	// belonged to are recounted and a group left empty is deleted with its
+	// reports. The setting mail_keep_days overrides it within
+	// MinMailKeepDays..MaxMailKeepDays.
+	DefaultMailKeepDays = 180
+	MinMailKeepDays     = 1
+	MaxMailKeepDays     = 3650
 )
 
 // --- Job kinds and statuses (jobs table) ---
@@ -130,6 +155,7 @@ const (
 	JobKindReindex    = "reindex"    // rebuild the index from the raw files (fetch-equivalent + full grouping)
 	JobKindReclassify = "reclassify" // re-run classification and grouping over every message
 	JobKindNotify     = "notify"     // send the alert summary mail to the notification recipients
+	JobKindCleanup    = "cleanup"    // remove the mails older than mail_keep_days and the agent run directories older than agent_keep_days (one mailbox; NULL expands to every mailbox)
 
 	JobStatusQueued   = "queued"
 	JobStatusRunning  = "running"
@@ -215,11 +241,18 @@ const (
 // the code default, so a later change to a default takes effect on its own.
 
 const (
+	// SettingSecretKey holds the master key (32 random bytes, hex encoded)
+	// that encrypts the stored passwords and seals the Web session cookies.
+	// It is generated on first use and is the one setting that is always
+	// stored; the CLI never shows it and never lets it be set (secret.go).
+	SettingSecretKey      = "secret_key"
 	SettingWebListen      = "web_listen"
 	SettingWebPort        = "web_port"
 	SettingCheckTimes     = "check_times"
 	SettingAgentProvider  = "agent_provider"
-	SettingAgentEnabled   = "agent_enabled" // "1" (default) or "0"
+	SettingAgentEnabled   = "agent_enabled"   // "1" (default) or "0"
+	SettingAgentKeepDays  = "agent_keep_days" // days an agent run directory is kept (DefaultAgentKeepDays)
+	SettingMailKeepDays   = "mail_keep_days"  // days a fetched mail is kept (DefaultMailKeepDays)
 	SettingCookieTTLHours = "cookie_ttl_hours"
 	SettingWorkers        = "workers"
 	// Notification mail (SMTP) settings. The password is stored encrypted with
@@ -236,6 +269,9 @@ const (
 	SettingNotifyInterval  = "notify_interval_days"
 	SettingNotifyUserIDs   = "notify_user_ids" // comma-separated users.id
 	SettingNotifyLastSent  = "notify_last_sent_at"
+	// SettingCleanupLastRunDate is the local date (YYYY-MM-DD) on which the
+	// scheduler last queued the daily cleanup job (internal; see scheduler.go).
+	SettingCleanupLastRunDate = "cleanup_last_run_date"
 )
 
 // --- Notification defaults ---

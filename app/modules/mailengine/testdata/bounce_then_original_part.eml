@@ -1,0 +1,38 @@
+Return-Path: <>
+From: Mail Delivery System <Mailer-Daemon@mail.example.org>
+To: newsletter@example.jp
+Subject: Mail delivery failed: returning message to sender
+Date: Sat, 13 Sep 2025 10:00:00 +0900
+Message-ID: <bounce-then-orig-0020@mail.example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_mixed_0020"
+
+--=_mixed_0020
+Content-Type: text/plain; charset="us-ascii"
+
+This message was created automatically by mail delivery software.
+
+A message that you sent could not be delivered to one or more of its
+recipients. This is a permanent error. The following address(es) failed:
+
+  jiro@nowhere.example.org
+    SMTP error from remote mail server after RCPT TO:<jiro@nowhere.example.org>:
+    host mx.nowhere.example.org [203.0.113.55]: 550 5.1.1 <jiro@nowhere.example.org>:
+    Recipient address rejected: User unknown
+
+--=_mixed_0020
+Content-Type: text/plain; charset="us-ascii"; name="original.txt"
+Content-Disposition: inline; filename="original.txt"
+
+Return-Path: <newsletter@example.jp>
+From: Newsletter <newsletter@example.jp>
+To: jiro@nowhere.example.org
+Cc: archive@partner.example.org
+Subject: Weekly digest
+Date: Sat, 13 Sep 2025 09:59:00 +0900
+Message-ID: <digest-0020@example.jp>
+
+Here is this week's digest.
+Reply to digest-owner@example.jp with any feedback.
+
+--=_mixed_0020--

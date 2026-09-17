@@ -7,13 +7,9 @@ import (
 	"errors"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"mailcare/app/models"
 )
-
-// maxTemplateLen caps the diagnostic template (in runes).
-const maxTemplateLen = 300
 
 // Placeholders and the protected tokens of DiagnosticTemplate. The SMTP reply
 // code and the extended status code are swapped for private-use sentinels
@@ -100,12 +96,9 @@ func DiagnosticTemplate(diagnostic string) string {
 			return r
 		}, m)
 	})
-	s = strings.TrimSpace(tplSpaceRe.ReplaceAllString(s, " "))
-	if utf8.RuneCountInString(s) > maxTemplateLen {
-		r := []rune(s)
-		s = strings.TrimSpace(string(r[:maxTemplateLen]))
-	}
-	return s
+	// The template is kept whole (no length cap): a long diagnostic keeps
+	// its full shape so that notices differing late in the text stay apart.
+	return strings.TrimSpace(tplSpaceRe.ReplaceAllString(s, " "))
 }
 
 // groupKeyPart normalizes one component of the group identity (design 5.4:
@@ -121,21 +114,14 @@ func GroupKey(category, unitValue, authority string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// groupForBounce categorizes a bounce and builds the group row it belongs to.
-// The bounce's Responsible is set from the category so that the bounce row
-// and its group always agree. Non-bounces and auto-replies do not belong to
-// any group (nil).
+// groupForBounce categorizes a bounce and builds the group row it belongs
+// to (the responsible party is a column of the group only). Only failed and
+// delayed notices belong to a group (isGroupedKind); anything else is nil.
 func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
-	switch kind {
-	case bounceKindFailed, bounceKindDelayed, bounceKindOther:
-	default:
-		return nil
-	}
-	if b == nil {
+	if !isGroupedKind(kind) || b == nil {
 		return nil
 	}
 	c := Categorize(b, kind)
-	b.Responsible = c.Responsible
 	return &models.BounceGroup{
 		GroupKey:           GroupKey(c.Category, c.UnitValue, c.Authority),
 		Category:           c.Category,
@@ -149,23 +135,28 @@ func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 	}
 }
 
-// groupTracker collects the groups touched during one run so that their
-// counters are refreshed once at the end (design 5.4 "incremental") and
-// reports which actionable groups gained messages.
+// groupTracker collects the groups touched during one run and decides, for
+// every message, whether its group must be flagged for analysis: an
+// actionable group is flagged as soon as its message count exceeds the
+// count it had before the run (design 5.4 "incremental"). The counters and
+// the flag are written inside the transaction of the message, so they are
+// always in step with the bounces rows. At the end the flagged groups are
+// reported as GroupResult.GroupsTouched.
 type groupTracker struct {
 	order      []string
 	seen       map[string]bool
 	before     map[string]int  // message_count before the run (0 for new groups)
 	actionable map[string]bool // groups.actionable as written by the last upsert
+	grew       map[string]bool // actionable groups flagged during the run
 }
 
 func newGroupTracker() *groupTracker {
-	return &groupTracker{seen: map[string]bool{}, before: map[string]int{}, actionable: map[string]bool{}}
+	return &groupTracker{seen: map[string]bool{}, before: map[string]int{}, actionable: map[string]bool{}, grew: map[string]bool{}}
 }
 
 // upsert stores the descriptive columns of the group and remembers its key
 // together with its message count before the run.
-func (t *groupTracker) upsert(db *sql.DB, g *models.BounceGroup) error {
+func (t *groupTracker) upsert(db models.Execer, g *models.BounceGroup) error {
 	if g == nil {
 		return nil
 	}
@@ -186,25 +177,42 @@ func (t *groupTracker) upsert(db *sql.DB, g *models.BounceGroup) error {
 	return nil
 }
 
-// refresh recomputes the counters of every touched group and returns the
-// keys of the actionable groups whose message count grew, in first-seen
-// order (GroupResult.GroupsTouched).
-func (t *groupTracker) refresh(db *sql.DB) ([]string, error) {
+// recount refreshes the counters of the group after the bounces row of the
+// current message was written and, when the group is actionable and its
+// message count now exceeds the count before the run, sets needs_analysis
+// (once per run; recipient-side groups are never flagged).
+func (t *groupTracker) recount(db models.Execer, g *models.BounceGroup) error {
+	if g == nil {
+		return nil
+	}
+	if err := models.RefreshGroupCounters(db, g.GroupKey); err != nil {
+		return err
+	}
+	if !t.actionable[g.GroupKey] || t.grew[g.GroupKey] {
+		return nil
+	}
+	var count int
+	if err := db.QueryRow(`SELECT message_count FROM groups WHERE group_key = ?`, g.GroupKey).Scan(&count); err != nil {
+		return err
+	}
+	if count <= t.before[g.GroupKey] {
+		return nil
+	}
+	if err := models.SetGroupNeedsAnalysis(db, g.GroupKey, true); err != nil {
+		return err
+	}
+	t.grew[g.GroupKey] = true
+	return nil
+}
+
+// touched returns the keys of the actionable groups whose message count
+// grew during the run, in first-seen order (GroupResult.GroupsTouched).
+func (t *groupTracker) touched() []string {
 	touched := []string{}
 	for _, key := range t.order {
-		if err := models.RefreshGroupCounters(db, key); err != nil {
-			return nil, err
-		}
-		if !t.actionable[key] {
-			continue
-		}
-		var count int
-		if err := db.QueryRow(`SELECT message_count FROM groups WHERE group_key = ?`, key).Scan(&count); err != nil {
-			return nil, err
-		}
-		if count > t.before[key] {
+		if t.grew[key] {
 			touched = append(touched, key)
 		}
 	}
-	return touched, nil
+	return touched
 }

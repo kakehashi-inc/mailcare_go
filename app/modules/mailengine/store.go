@@ -2,7 +2,6 @@ package mailengine
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -26,11 +25,13 @@ type storeOptions struct {
 // indexed under another key (see storeOptions.dedupeByMessageID).
 var errDuplicateMessage = errors.New("mailengine: message already indexed")
 
-// storeMessage writes the derived files of one message and inserts its index
-// row with classified = 0 (design 5.1). Classification, extraction and
-// grouping happen later in the grouping phase (groupMessage).
+// storeMessage writes the body section files of one message and inserts its
+// index row with classified = 0 (design 5.1). Classification, extraction
+// and grouping happen later in the grouping phase (groupMessage).
 //
-// raw is the original message, src its IMAP identity.
+// raw is the original message, src its IMAP identity and fetch facts (a
+// zero FetchedAt means now, a zero Size the length of raw, an empty
+// MessageKey lets the key be derived from the date and the identity).
 func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOptions) (*models.Message, *ParsedMessage, error) {
 	pm := ParseMessage(raw)
 	if opts.dedupeByMessageID && pm.MessageID != "" {
@@ -42,17 +43,23 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 			return nil, pm, errDuplicateMessage
 		}
 	}
-	pm.Source = src
-	if pm.Source.FetchedAt.IsZero() {
-		pm.Source.FetchedAt = time.Now().UTC()
+	if src.FetchedAt.IsZero() {
+		src.FetchedAt = time.Now().UTC()
 	}
-	if pm.Source.Size == 0 {
-		pm.Source.Size = int64(len(raw))
+	if src.Size == 0 {
+		src.Size = int64(len(raw))
 	}
+	if src.Folder == "" {
+		src.Folder = defaultFolder
+	}
+	// A missing or unparsable Date header falls back to INTERNALDATE and
+	// then to the fetch time (the same order as the message key), so the
+	// row always sorts and groups.last_seen is never NULL. The parsed value
+	// stays empty and the raw header is kept in Headers.
+	date := keyDate(pm.Date, src.ReceivedAt, src.FetchedAt)
 	key := src.MessageKey
 	if key == "" {
-		key = MessageKey(keyDate(pm.Date, src.ReceivedAt, pm.Source.FetchedAt), src.Folder, src.UIDValidity, src.UID)
-		pm.Source.MessageKey = key
+		key = MessageKey(date, src.Folder, src.UIDValidity, src.UID)
 	}
 
 	if opts.writeEML {
@@ -60,7 +67,7 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 			return nil, pm, fmt.Errorf("write eml: %w", err)
 		}
 	}
-	if err := writeDerivedFiles(dir, key, pm); err != nil {
+	if err := writeBodySections(dir, key, pm); err != nil {
 		return nil, pm, err
 	}
 
@@ -75,17 +82,13 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 		FromName:    pm.FromName,
 		ToAddress:   pm.To,
 		ToName:      pm.ToName,
-		// A missing or unparsable Date header falls back to INTERNALDATE and
-		// then to the fetch time (the same order as the message key), so the
-		// row always sorts and groups.last_seen is never NULL. The .json keeps
-		// the parsed value empty and the raw header in Headers.
-		Date:       keyDate(pm.Date, src.ReceivedAt, pm.Source.FetchedAt),
-		ReceivedAt: models.NullTime(src.ReceivedAt),
-		Size:       pm.Source.Size,
-		HasText:    pm.HasText,
-		HasHTML:    pm.HasHTML,
-		BodySource: pm.BodySource,
-		FetchedAt:  pm.Source.FetchedAt,
+		Date:        date,
+		ReceivedAt:  models.NullTime(src.ReceivedAt),
+		Size:        src.Size,
+		TextCount:   pm.TextCount(),
+		HTMLCount:   pm.HTMLCount(),
+		BodySource:  pm.BodySource,
+		FetchedAt:   src.FetchedAt,
 	}
 	if err := models.InsertMessage(db, msg); err != nil {
 		return nil, pm, fmt.Errorf("insert message %s: %w", key, err)
@@ -93,63 +96,32 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 	return msg, pm, nil
 }
 
-// writeDerivedFiles writes <key>.txt (only when the text part has content),
-// <key>.html (only when the HTML part has content) and <key>.json. A stale
-// body file of a part that turned out blank is removed.
-func writeDerivedFiles(dir, key string, pm *ParsedMessage) error {
-	if err := writeBodyFile(filepath.Join(dir, key+".txt"), pm.TextBody, pm.HasText); err != nil {
-		return err
+// writeBodySections replaces the body section files of a message (design
+// 3 / 5.1): every text section is written as <key>-1.txt, <key>-2.txt, ...
+// and every HTML section as <key>-1.html, <key>-2.html, ... in MIME order.
+// Only sections with content exist in pm (finishBodies), so a message
+// without a text or HTML body has no file of that kind.
+func writeBodySections(dir, key string, pm *ParsedMessage) error {
+	if !ValidMessageKey(key) {
+		return ErrInvalidMessageKey
 	}
-	if err := writeBodyFile(filepath.Join(dir, key+".html"), pm.HTMLBody, pm.HasHTML); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(pm, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode json: %w", err)
-	}
-	if err := writeFileAtomic(filepath.Join(dir, key+".json"), data, 0o600); err != nil {
-		return fmt.Errorf("write json: %w", err)
-	}
-	return nil
-}
-
-// writeBodyFile writes a body file when present is true and removes it
-// otherwise.
-func writeBodyFile(path, body string, present bool) error {
-	if present {
-		if err := writeFileAtomic(path, []byte(body), 0o600); err != nil {
-			return fmt.Errorf("write %s: %w", filepath.Ext(path), err)
+	for _, kind := range []struct {
+		ext      string
+		sections []string
+	}{{"txt", pm.TextSections}, {"html", pm.HTMLSections}} {
+		for i, s := range kind.sections {
+			path := SectionFilePath(dir, key, kind.ext, i+1)
+			if err := writeFileAtomic(path, []byte(s), 0o600); err != nil {
+				return fmt.Errorf("write %s: %w", filepath.Base(path), err)
+			}
 		}
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale %s: %w", filepath.Ext(path), err)
 	}
 	return nil
 }
 
-// loadParsedMessage reads <key>.json and <key>.txt / <key>.html of a message.
-// It returns os.ErrNotExist (wrapped) when the JSON file is missing.
-func loadParsedMessage(dir, key string) (*ParsedMessage, error) {
-	data, err := os.ReadFile(filepath.Join(dir, key+".json"))
-	if err != nil {
-		return nil, err
-	}
-	pm := &ParsedMessage{}
-	if err := json.Unmarshal(data, pm); err != nil {
-		return nil, fmt.Errorf("decode %s.json: %w", key, err)
-	}
-	if pm.Headers == nil {
-		pm.Headers = map[string]string{}
-	}
-	if b, err := os.ReadFile(filepath.Join(dir, key+".txt")); err == nil {
-		pm.TextBody = string(b)
-	}
-	if b, err := os.ReadFile(filepath.Join(dir, key+".html")); err == nil {
-		pm.HTMLBody = string(b)
-	}
-	pm.finishBodies()
-	return pm, nil
+// readRawMessage reads the .eml of a message from the mailbox directory.
+func readRawMessage(dir, key string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(dir, key+".eml"))
 }
 
 // keyDate picks the timestamp of a message key: the Date header, else the

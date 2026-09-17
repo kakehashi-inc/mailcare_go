@@ -15,8 +15,9 @@ import (
 // cycle (workers imports modules, but the CLI in modules must start the
 // server). workers is the --workers value (0 = keep the saved setting);
 // checkTimes are the normalized --check-time values (nil = keep the saved
-// setting).
-var StartServer func(webListen string, webPort int, workers int, checkTimes []string) error
+// setting); mailKeepDays is the validated --mail-keep-days value (0 = keep
+// the saved setting).
+var StartServer func(webListen string, webPort int, workers int, checkTimes []string, mailKeepDays int) error
 
 // controlClient is used for every request to the local control endpoints.
 var controlClient = &http.Client{Timeout: 10 * time.Second}
@@ -51,18 +52,28 @@ func StopServer(port int) error {
 	return fmt.Errorf("shutdown request failed: %w", controlError(resp))
 }
 
-// ServerStatus is the payload of GET /control/status.
+// ServerStatus is the payload of GET /control/status. DataDir is the
+// absolute path of the data directory the server serves; the CLI compares it
+// with its own before handing jobs to the server or stopping it, since a
+// server on the expected port may belong to another data directory.
 type ServerStatus struct {
 	Status      string `json:"status"`
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	WebListen   string `json:"web_listen"`
+	DataDir     string `json:"data_dir"`
 	Uptime      string `json:"uptime"`
 	Users       int    `json:"users"`
 	Tokens      int    `json:"tokens"`
 	Mailboxes   int    `json:"mailboxes"`
 	ActiveJobs  int    `json:"active_jobs"`
 	NextCheckAt string `json:"next_check_at"`
+}
+
+// ServesDataDir reports whether the server serves the given data directory
+// (see SameDataDir; a server that reports no directory does not).
+func (st *ServerStatus) ServesDataDir(dataDir string) bool {
+	return st != nil && SameDataDir(st.DataDir, dataDir)
 }
 
 // GetServerStatus queries a running local server's status endpoint.
@@ -98,6 +109,7 @@ func ShowServerStatus(port int) error {
 	fmt.Printf("%-12s %v\n", "name:", st.Name)
 	fmt.Printf("%-12s %v\n", "version:", st.Version)
 	fmt.Printf("%-12s %v\n", "web_listen:", st.WebListen)
+	fmt.Printf("%-12s %v\n", "data_dir:", st.DataDir)
 	fmt.Printf("%-12s %v\n", "uptime:", st.Uptime)
 	fmt.Printf("%-12s %v\n", "users:", st.Users)
 	fmt.Printf("%-12s %v\n", "tokens:", st.Tokens)
@@ -107,23 +119,28 @@ func ShowServerStatus(port int) error {
 	return nil
 }
 
-// IsServerRunning reports whether a MailCare server answers on the local
-// control port.
-func IsServerRunning(port int) bool {
+// LocalServer returns the status of the MailCare server answering on the
+// local control port, or nil when nothing answers there (or what answers is
+// not a MailCare server). Whether that server serves this process's data
+// directory is a separate question (ServerStatus.ServesDataDir).
+func LocalServer(port int) *ServerStatus {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(controlURL(port, "/status"))
 	if err != nil {
-		return false
+		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return nil
 	}
 	var st ServerStatus
 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		return false
+		return nil
 	}
-	return st.Name == AppName
+	if st.Name != AppName {
+		return nil
+	}
+	return &st
 }
 
 // JobRequest is the payload of POST /control/jobs (and POST /api/v1/jobs).

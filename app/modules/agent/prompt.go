@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bufio"
+	"bytes"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -14,15 +17,23 @@ import (
 // variable so tests can point it at their own fixtures.
 var messageFilePath = mailengine.MessageFilePath
 
+// sectionFilePath resolves the absolute path of the n-th decoded body section
+// of a message (n = 1 is <key>-1.<ext>, n = 2 is <key>-2.<ext>, ...). A
+// variable for the same reason as messageFilePath.
+var sectionFilePath = func(mailsRoot, address, key, ext string, n int) string {
+	return mailengine.SectionFilePath(mailengine.MailboxDir(mailsRoot, address), key, ext, n)
+}
+
 // PromptInput is everything BuildPrompt needs; run.go assembles it from the
 // index so that prompt building itself stays free of database access.
 type PromptInput struct {
-	MailsRoot string
-	Address   string
-	Language  string // "ja" (default) or "en"
-	Group     *models.BounceGroup
-	Stats     *models.GroupBounceStats // may be nil
-	Messages  []*models.Message        // newest first, at most MaxSampleMessages
+	MailsRoot   string
+	Address     string
+	Language    string // "ja" (default) or "en"
+	TemplatesFS fs.FS  // root contains TemplatesDirName; supplies the Japanese report headings (may be nil)
+	Group       *models.BounceGroup
+	Stats       *models.GroupBounceStats // may be nil
+	Messages    []*models.Message        // newest first, at most MaxSampleMessages
 }
 
 // reportLanguage carries the language-dependent parts of the prompt.
@@ -32,26 +43,69 @@ type reportLanguage struct {
 	Headings [4]string // cause, impact, actions, responsible
 }
 
-var reportLanguages = map[string]reportLanguage{
-	"ja": {Code: "ja", Name: "Japanese", Headings: [4]string{"## 原因の分析", "## 影響範囲", "## 推奨する対応", "## 対応すべき担当"}},
-	"en": {Code: "en", Name: "English", Headings: [4]string{"## Cause analysis", "## Impact", "## Recommended actions", "## Responsible party"}},
-}
+// englishHeadings are the built-in report headings: used for English reports
+// and as the fallback when the heading template of another language is
+// missing or incomplete.
+var englishHeadings = [4]string{"## Cause analysis", "## Impact", "## Recommended actions", "## Responsible party"}
+
+// ReportHeadingsFileJa is the template file (under TemplatesDirName inside
+// PromptInput.TemplatesFS) that holds the Japanese report headings: exactly
+// four non-empty lines in the order cause, impact, actions, responsible. It
+// keeps the Go sources ASCII-only.
+const ReportHeadingsFileJa = "report_headings_ja.txt"
 
 // languageFor returns the prompt language for a code ("" and unknown codes
-// fall back to Japanese).
-func languageFor(code string) reportLanguage {
-	if l, ok := reportLanguages[strings.ToLower(strings.TrimSpace(code))]; ok {
-		return l
+// fall back to Japanese). The Japanese headings come from the template;
+// without it the English headings are used.
+func languageFor(code string, templates fs.FS) reportLanguage {
+	if strings.ToLower(strings.TrimSpace(code)) == "en" {
+		return reportLanguage{Code: "en", Name: "English", Headings: englishHeadings}
 	}
-	return reportLanguages["ja"]
+	return reportLanguage{Code: "ja", Name: "Japanese", Headings: loadHeadings(templates, ReportHeadingsFileJa)}
+}
+
+// loadHeadings reads a heading template: one heading per non-empty line,
+// trimmed, given the "## " prefix when it lacks one. A nil FS, a missing
+// file or fewer than four headings yield englishHeadings.
+func loadHeadings(templates fs.FS, name string) [4]string {
+	if templates == nil {
+		return englishHeadings
+	}
+	data, err := fs.ReadFile(templates, TemplatesDirName+"/"+name)
+	if err != nil {
+		return englishHeadings
+	}
+	var headings [4]string
+	n := 0
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	for sc.Scan() && n < len(headings) {
+		line := foldLine(sc.Text())
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "## ") {
+			line = "## " + strings.TrimLeft(line, "# ")
+		}
+		headings[n] = line
+		n++
+	}
+	if n < len(headings) {
+		return englishHeadings
+	}
+	return headings
 }
 
 // BuildPrompt assembles the analysis prompt with a fixed section order: hard
 // constraints first (framing), then the group summary and the mail file list
 // (read-only data), then the required output format last (recency). The
 // instructions are English; the report language is chosen by in.Language.
+//
+// Every machine-derived value (category, action unit, authority, domain,
+// status code, diagnostic template, the recipient / IP / MTA lists) is folded
+// onto one line and the lists are capped at MaxPromptListItems, so that text
+// taken from a notice cannot open a new line or section of the prompt.
 func BuildPrompt(in PromptInput) string {
-	lang := languageFor(in.Language)
+	lang := languageFor(in.Language, in.TemplatesFS)
 	g := in.Group
 	var b strings.Builder
 
@@ -85,9 +139,9 @@ func BuildPrompt(in PromptInput) string {
 	writeField(&b, "Last seen", formatTime(g.LastSeen))
 	writeField(&b, "Responsible (machine guess)", g.Responsible)
 	if in.Stats != nil {
-		writeList(&b, "Recipients", in.Stats.Recipients, MaxPromptRecipients)
-		writeList(&b, "Remote IPs", in.Stats.RemoteIPs, 0)
-		writeList(&b, "Remote MTAs", in.Stats.RemoteMTAs, 0)
+		writeList(&b, "Recipients", in.Stats.Recipients, MaxPromptListItems)
+		writeList(&b, "Remote IPs", in.Stats.RemoteIPs, MaxPromptListItems)
+		writeList(&b, "Remote MTAs", in.Stats.RemoteMTAs, MaxPromptListItems)
 	}
 	b.WriteString("\n")
 
@@ -97,11 +151,15 @@ func BuildPrompt(in PromptInput) string {
 	}
 	for _, m := range in.Messages {
 		b.WriteString("- " + messageFilePath(in.MailsRoot, in.Address, m.MessageKey, "eml") + "\n")
-		if txt := messageFilePath(in.MailsRoot, in.Address, m.MessageKey, "txt"); fileExists(txt) {
-			b.WriteString("  text: " + txt + "\n")
+		// One "text:" line per decoded text section (<key>-1.txt, <key>-2.txt,
+		// ... in MIME order); the index says how many exist.
+		for n := 1; n <= m.TextCount; n++ {
+			if txt := sectionFilePath(in.MailsRoot, in.Address, m.MessageKey, "txt", n); fileExists(txt) {
+				b.WriteString("  text: " + txt + "\n")
+			}
 		}
 	}
-	b.WriteString("Each .eml is the original notice (RFC 5322); the optional .txt next to it is its decoded text body. Read the .eml when the .txt is insufficient (delivery-status parts, headers, the returned original message).\n\n")
+	b.WriteString("Each .eml is the original notice (RFC 5322); the text: files next to it (<key>-1.txt, <key>-2.txt, ...) are its decoded text body sections in MIME order. Read the .eml when the text sections are insufficient (delivery-status parts, headers, the returned original message).\n\n")
 
 	b.WriteString("=== OUTPUT (produce EXACTLY these two blocks, each once, on their own lines) ===\n")
 	b.WriteString(fmt.Sprintf("1) The report, in %s, as Markdown with exactly these four level-2 headings in this order. Do not add other headings; do not quote mail bodies at length; do not include the marker lines inside the report:\n", lang.Name))
@@ -129,15 +187,15 @@ func BuildPrompt(in PromptInput) string {
 // agent sees an unclassified group as such; unit and authority are skipped
 // when empty (authority is empty for recipient-side categories).
 func writeCategory(b *strings.Builder, g *models.BounceGroup, info CategoryInfo) {
-	category := strings.TrimSpace(g.Category)
+	category := foldLine(g.Category)
 	if category == "" {
 		category = "(not classified)"
 	}
 	b.WriteString("Category: " + category + " - " + info.Description + "\n")
-	if unit := strings.TrimSpace(g.UnitValue); unit != "" {
+	if unit := foldLine(g.UnitValue); unit != "" {
 		b.WriteString("Action unit (unit_value): " + unit + " - " + info.Unit + "\n")
 	}
-	if authority := strings.TrimSpace(g.Authority); authority != "" {
+	if authority := foldLine(g.Authority); authority != "" {
 		line := "Authority: " + authority
 		if info.Authority != "" {
 			line += " - " + info.Authority
@@ -151,16 +209,19 @@ func writeCategory(b *strings.Builder, g *models.BounceGroup, info CategoryInfo)
 	}
 }
 
-// writeField writes "Label: value" and skips empty values.
+// writeField writes "Label: value" (the value folded onto one line) and
+// skips empty values.
 func writeField(b *strings.Builder, label, value string) {
-	value = strings.TrimSpace(value)
+	value = foldLine(value)
 	if value == "" {
 		return
 	}
 	b.WriteString(label + ": " + value + "\n")
 }
 
-// writeList writes "Label (n): a, b, c" capped at limit items (0 = no cap).
+// writeList writes "Label (n): a, b, c" with every item folded onto one line
+// and at most limit items (0 = no cap); the rest is summarized as
+// "... (N more)".
 func writeList(b *strings.Builder, label string, items []string, limit int) {
 	if len(items) == 0 {
 		return
@@ -169,11 +230,21 @@ func writeList(b *strings.Builder, label string, items []string, limit int) {
 	if limit > 0 && len(shown) > limit {
 		shown = shown[:limit]
 	}
-	b.WriteString(fmt.Sprintf("%s (%d): %s", label, len(items), strings.Join(shown, ", ")))
+	folded := make([]string, 0, len(shown))
+	for _, item := range shown {
+		folded = append(folded, foldLine(item))
+	}
+	b.WriteString(fmt.Sprintf("%s (%d): %s", label, len(items), strings.Join(folded, ", ")))
 	if len(shown) < len(items) {
 		b.WriteString(fmt.Sprintf(", ... (%d more)", len(items)-len(shown)))
 	}
 	b.WriteString("\n")
+}
+
+// foldLine trims s and folds every run of whitespace, line breaks included,
+// into one space so that a value taken from a notice stays on one line.
+func foldLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // formatTime renders a nullable time as RFC 3339 UTC ("" when NULL).

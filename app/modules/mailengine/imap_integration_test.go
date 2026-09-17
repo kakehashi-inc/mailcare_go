@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"net"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -169,7 +167,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	progress := func(m string) { lines = append(lines, m) }
 
 	// Run 1: initial window (90 days). Fetching only downloads and indexes.
-	res, err := FetchMailbox(ctx, root, mb, memPassword, progress)
+	res, err := FetchMailbox(ctx, root, mb, memPassword, FetchOptions{}, progress)
 	if err != nil {
 		t.Fatalf("run 1: %v\n%s", err, strings.Join(lines, "\n"))
 	}
@@ -217,7 +215,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 
 	// Run 2: recent window, nothing new.
 	lines = nil
-	res, err = FetchMailbox(ctx, root, mb, memPassword, progress)
+	res, err = FetchMailbox(ctx, root, mb, memPassword, FetchOptions{}, progress)
 	if err != nil {
 		t.Fatalf("run 2: %v", err)
 	}
@@ -233,32 +231,50 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 
 	// Run 3: a fresh recipient-side bounce, a second Spamhaus listing (same
 	// IP, other recipient domain), a bounce older than the recent window (not
-	// fetched) and an oversized message (skipped by size).
+	// fetched) and a large message (5 MB; there is no size limit, it is
+	// stored whole).
 	srv.appendSample(t, "exim_bounce.eml", 0)
 	srv.appendSample(t, "spamhaus_block_b.eml", 0)
 	srv.appendRaw(t, withNewMessageID(readSample(t, "sendmail_bounce.eml"), "old-but-new@example.jp"), time.Now().AddDate(0, 0, -45))
-	big := append([]byte("From: big@example.jp\r\nSubject: big\r\nMessage-ID: <big@example.jp>\r\n\r\n"), bytes.Repeat([]byte("x"), maxMessageSize+1)...)
+	bigBody := bytes.Repeat([]byte("x"), 5*1024*1024)
+	big := append([]byte("From: big@example.jp\r\nSubject: big\r\nMessage-ID: <big@example.jp>\r\n\r\n"), bigBody...)
 	srv.appendRaw(t, big, time.Now())
 	lines = nil
-	res, err = FetchMailbox(ctx, root, mb, memPassword, progress)
+	res, err = FetchMailbox(ctx, root, mb, memPassword, FetchOptions{}, progress)
 	if err != nil {
 		t.Fatalf("run 3: %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if res.Fetched != 2 || res.Skipped != 1 {
-		t.Fatalf("run 3 = %+v, want 2 fetched / 1 skipped\n%s", res, strings.Join(lines, "\n"))
+	if res.Fetched != 3 || res.Skipped != 0 {
+		t.Fatalf("run 3 = %+v, want 3 fetched / 0 skipped\n%s", res, strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "exceeds the limit") {
-		t.Errorf("oversized skip not reported:\n%s", strings.Join(lines, "\n"))
+	{
+		idx, err := models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bigMsgs, _, err := models.ListMessages(idx, models.MessageFilter{Query: "big"})
+		if err != nil || len(bigMsgs) != 1 || bigMsgs[0].Size != int64(len(big)) || bigMsgs[0].TextCount != 1 {
+			t.Fatalf("large message row = %+v (err %v), want size %d and one text section", bigMsgs, err, len(big))
+		}
+		if raw, err := ReadMessageFile(root, mb.Address, bigMsgs[0].MessageKey, "eml"); err != nil || !bytes.Equal(raw, big) {
+			t.Errorf("large message .eml differs from the original (err %v)", err)
+		}
+		if txt, err := readFirstSection(root, mb.Address, bigMsgs[0].MessageKey, "txt"); err != nil || len(txt) < len(bigBody) {
+			t.Errorf("large message text section = %d bytes (err %v), want the whole %d byte body", len(txt), err, len(bigBody))
+		}
+		idx.Close()
 	}
-	assertIndexState(t, root, mb.Address, len(recent)+2, len(recent), 2, gres.Groups, "run 3 fetch")
+	assertIndexState(t, root, mb.Address, len(recent)+3, len(recent), 3, gres.Groups, "run 3 fetch")
 	gres, err = GroupMailbox(ctx, root, mb.Address, false, nil)
 	if err != nil {
 		t.Fatalf("group 3: %v", err)
 	}
-	if gres.Processed != 2 || gres.Bounces != 2 || len(gres.GroupsTouched) != 1 || gres.GroupsTouched[0] != spamKey {
-		t.Fatalf("group 3 = %+v, want 2 processed / touched [%s]", gres, spamKey)
+	if gres.Processed != 3 || gres.Bounces != 2 || len(gres.GroupsTouched) != 1 || gres.GroupsTouched[0] != spamKey {
+		t.Fatalf("group 3 = %+v, want 3 processed (2 bounces) / touched [%s]", gres, spamKey)
 	}
-	assertIndexState(t, root, mb.Address, len(recent)+2, len(recent)+2, 0, gres.Groups, "run 3 group")
+	// The large message is ordinary mail, so bounces stay at the previous
+	// count plus the two new notices.
+	assertIndexState(t, root, mb.Address, len(recent)+3, len(recent)+2, 0, gres.Groups, "run 3 group")
 	db, err = models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
 	if err != nil {
 		t.Fatal(err)
@@ -272,13 +288,18 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 		t.Errorf("run 3 spamhaus group members = %+v", msgs)
 	}
 	for _, m := range msgs {
-		for _, ext := range []string{"eml", "txt", "json"} {
-			if _, err := ReadMessageFile(root, mb.Address, m.MessageKey, ext); err != nil {
-				t.Errorf("missing %s for %s: %v", ext, m.MessageKey, err)
-			}
+		if _, err := ReadMessageFile(root, mb.Address, m.MessageKey, "eml"); err != nil {
+			t.Errorf("missing eml for %s: %v", m.MessageKey, err)
 		}
-		if !m.HasText || m.BodySource != "text" {
-			t.Errorf("%s: has_text=%v body_source=%q, want a text body", m.MessageKey, m.HasText, m.BodySource)
+		if _, err := readFirstSection(root, mb.Address, m.MessageKey, "txt"); err != nil {
+			t.Errorf("missing txt for %s: %v", m.MessageKey, err)
+		}
+		if m.TextCount != 1 || m.BodySource != "text" {
+			t.Errorf("%s: text_count=%d body_source=%q, want one text section", m.MessageKey, m.TextCount, m.BodySource)
+		}
+		if sections, err := ReadBodySections(root, mb.Address, m.MessageKey, "txt", m.TextCount); err != nil || len(sections) != 1 ||
+			!strings.Contains(sections[0], "spamhaus") {
+			t.Errorf("%s: text sections = %q (err %v)", m.MessageKey, sections, err)
 		}
 	}
 
@@ -294,7 +315,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	srv.appendSample(t, "exim_bounce.eml", 0)
 	srv.appendSample(t, "postfix_dsn.eml", 80) // outside the recent window anyway
 	lines = nil
-	res, err = FetchMailbox(ctx, root, mb, memPassword, progress)
+	res, err = FetchMailbox(ctx, root, mb, memPassword, FetchOptions{}, progress)
 	if err != nil {
 		t.Fatalf("run 4: %v\n%s", err, strings.Join(lines, "\n"))
 	}
@@ -307,19 +328,74 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	if !strings.Contains(strings.Join(lines, "\n"), "uidvalidity changed") {
 		t.Errorf("UIDVALIDITY change not reported:\n%s", strings.Join(lines, "\n"))
 	}
-	assertIndexState(t, root, mb.Address, len(recent)+2, len(recent)+2, 0, gres.Groups, "run 4")
+	assertIndexState(t, root, mb.Address, len(recent)+3, len(recent)+2, 0, gres.Groups, "run 4")
 
 	// Cancellation is honoured mid-run.
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := FetchMailbox(cctx, root, mb, memPassword, nil); err == nil {
+	if _, err := FetchMailbox(cctx, root, mb, memPassword, FetchOptions{}, nil); err == nil {
 		t.Error("cancelled fetch succeeded")
 	}
 }
 
+// TestFetchNotBeforeBoundsWindow: FetchOptions.NotBefore caps how far back
+// a run searches. A bound later than the window's start replaces it (and
+// is reported), an earlier one changes nothing.
+func TestFetchNotBeforeBoundsWindow(t *testing.T) {
+	srv := startMemIMAP(t)
+	ctx := context.Background()
+	for _, s := range []struct {
+		name    string
+		daysAgo int
+	}{{"postfix_dsn.eml", 80}, {"qmail_bounce.eml", 45}, {"gmail_bounce.eml", 20}, {"postfix_delayed.eml", 1}} {
+		srv.appendSample(t, s.name, s.daysAgo)
+	}
+	// A 30 day bound on a fresh index (initial window 90 days): only the
+	// two mails within 30 days are fetched.
+	root := t.TempDir()
+	var lines []string
+	res, err := FetchMailbox(ctx, root, srv.mailbox(), memPassword,
+		FetchOptions{NotBefore: time.Now().AddDate(0, 0, -30)}, func(m string) { lines = append(lines, m) })
+	if err != nil {
+		t.Fatalf("bounded run: %v\n%s", err, strings.Join(lines, "\n"))
+	}
+	if res.Fetched != 2 {
+		t.Errorf("bounded run fetched %d, want 2\n%s", res.Fetched, strings.Join(lines, "\n"))
+	}
+	joined := strings.Join(lines, "\n")
+	wantSince := "searching since " + time.Now().UTC().AddDate(0, 0, -30).Format("2006-01-02") + " (initial window, 90 days, limited to the mail retention)"
+	if !strings.Contains(joined, wantSince) {
+		t.Errorf("progress lacks %q:\n%s", wantSince, joined)
+	}
+	assertIndexState(t, root, srv.mailbox().Address, 2, 0, 2, 0, "bounded run")
+	// A bound earlier than the window changes nothing: the whole initial
+	// window is searched on another fresh index.
+	root = t.TempDir()
+	lines = nil
+	res, err = FetchMailbox(ctx, root, srv.mailbox(), memPassword,
+		FetchOptions{NotBefore: time.Now().AddDate(0, 0, -365)}, func(m string) { lines = append(lines, m) })
+	if err != nil {
+		t.Fatalf("unbounded run: %v", err)
+	}
+	if res.Fetched != 4 || strings.Contains(strings.Join(lines, "\n"), "limited to") {
+		t.Errorf("unbounded run fetched %d, want 4 without a limit note\n%s", res.Fetched, strings.Join(lines, "\n"))
+	}
+	// On a later run the recent window (30 days) and a 10 day bound leave
+	// only the newest mail to consider, which is indexed already.
+	lines = nil
+	res, err = FetchMailbox(ctx, root, srv.mailbox(), memPassword,
+		FetchOptions{NotBefore: time.Now().AddDate(0, 0, -10)}, func(m string) { lines = append(lines, m) })
+	if err != nil || res.Fetched != 0 {
+		t.Errorf("later bounded run: %+v, %v", res, err)
+	}
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "recent window, 30 days, limited to the mail retention") || !strings.Contains(joined, "found 1 messages in the window, 0 new") {
+		t.Errorf("later bounded run progress:\n%s", joined)
+	}
+}
+
 // assertIndexState checks the number of index rows (total, detected bounces,
-// rows still awaiting grouping, groups) and that every row has its .eml /
-// .txt / .json files.
+// rows still awaiting grouping, groups) and that every row has its .eml and
+// exactly the section files its counts announce (and no parsed sidecar).
 func assertIndexState(t *testing.T, root, address string, wantMessages, wantBounces, wantUnclassified, wantGroups int, label string) {
 	t.Helper()
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
@@ -344,28 +420,16 @@ func assertIndexState(t *testing.T, root, address string, wantMessages, wantBoun
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := MailboxDir(root, address)
 	for _, m := range msgs {
 		if m.UID == 0 || m.UIDValidity == 0 || m.Folder != memFolder || !m.ReceivedAt.Valid {
 			t.Errorf("%s: row lacks IMAP identity: %+v", label, m)
 		}
-		for _, ext := range []string{".eml", ".json"} {
-			if _, err := os.Stat(filepath.Join(dir, m.MessageKey+ext)); err != nil {
-				t.Errorf("%s: %s%s missing: %v", label, m.MessageKey, ext, err)
-			}
-		}
-		for ext, want := range map[string]bool{".txt": m.HasText, ".html": m.HasHTML} {
-			_, err := os.Stat(filepath.Join(dir, m.MessageKey+ext))
-			if want && err != nil {
-				t.Errorf("%s: %s%s missing: %v", label, m.MessageKey, ext, err)
-			} else if !want && err == nil {
-				t.Errorf("%s: %s%s exists although the part is blank", label, m.MessageKey, ext)
-			}
-		}
-		if (m.BodySource == "text") != m.HasText || (m.BodySource == "html") != (!m.HasText && m.HasHTML) {
-			t.Errorf("%s: body_source %q does not match has_text=%v has_html=%v", label, m.BodySource, m.HasText, m.HasHTML)
+		hasText, hasHTML := m.TextCount > 0, m.HTMLCount > 0
+		if (m.BodySource == "text") != hasText || (m.BodySource == "html") != (!hasText && hasHTML) {
+			t.Errorf("%s: body_source %q does not match text_count=%d html_count=%d", label, m.BodySource, m.TextCount, m.HTMLCount)
 		}
 	}
+	assertSectionFiles(t, root, address, msgs, label)
 }
 
 // withNewMessageID rewrites the Message-ID header of a raw sample so that the

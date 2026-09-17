@@ -47,8 +47,9 @@ func (c *core) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		lastSeen time.Time
 	}
 	var recents []recent
+	u := userFrom(r)
 	for _, mb := range mailboxes {
-		mdto := toMailboxDTO(mb)
+		mdto := mailboxDTOFor(mb, u)
 		mdto.Stats = &MailboxStatsDTO{}
 		idx, err := c.openIndex(r, mb)
 		if err != nil {

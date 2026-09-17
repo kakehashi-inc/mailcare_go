@@ -3,8 +3,12 @@ package workers
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
+	"math"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,8 +59,12 @@ func clearSessionCookie(w http.ResponseWriter) {
 }
 
 // handleSetup creates the first administrator (only while no user exists)
-// and signs them in.
+// and signs them in. The handler runs under setupMu and re-checks the user
+// count inside the lock, so concurrent first requests create exactly one
+// administrator; the others are refused like any later setup attempt.
 func (c *core) handleSetup(w http.ResponseWriter, r *http.Request) {
+	c.setupMu.Lock()
+	defer c.setupMu.Unlock()
 	n, err := models.CountUsers(c.db)
 	if err != nil {
 		writeInternalError(w, "failed to count users", err)
@@ -89,29 +97,51 @@ func (c *core) handleSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "user": toUserDTO(u)})
 }
 
-// handleLogin signs in with username + password. remember = true opens a
-// persistent session (see setSessionCookie). Tokens are not accepted here:
-// they are reserved for the future API.
+// clientIP returns the address the request came from, without the port
+// (the TCP peer; forwarding headers are not trusted).
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// handleLogin signs in with username + password (JSON body only). remember =
+// true opens a persistent session (see setSessionCookie). Tokens are not
+// accepted here: they are reserved for the future API. Failed attempts are
+// counted per client and username (LoginLimiter): a wrong password is
+// answered 401 as usual, and while the wait that follows repeated failures
+// is in force every attempt is refused with 429 before the password is
+// checked. Failures and refusals are logged with the client address and the
+// username.
 func (c *core) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		Remember bool   `json:"remember"`
 	}
-	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		if !decodeJSON(w, r, &body) {
-			return
-		}
-	} else {
-		body.Username, body.Password = r.FormValue("username"), r.FormValue("password")
-		body.Remember, _ = modules.ParseBoolSetting(r.FormValue("remember"))
+	if !decodeJSON(w, r, &body) {
+		return
 	}
+	body.Username = strings.TrimSpace(body.Username)
 	if body.Username == "" || body.Password == "" {
 		writeError(w, http.StatusBadRequest, "username and password are required")
 		return
 	}
+	ip := clientIP(r)
+	if wait, blocked := c.logins.Blocked(ip, body.Username); blocked {
+		log.Printf("login refused for %q from %s: too many failed attempts (retry after %s)", body.Username, ip, wait.Round(time.Second))
+		writeTooManyLogins(w, wait)
+		return
+	}
 	u, err := modules.AuthenticateUser(c.db, body.Username, body.Password)
 	if errors.Is(err, modules.ErrInvalidCredentials) {
+		if wait := c.logins.Fail(ip, body.Username); wait > 0 {
+			log.Printf("login failed for %q from %s: invalid credentials (further attempts refused for %s)", body.Username, ip, wait)
+		} else {
+			log.Printf("login failed for %q from %s: invalid credentials", body.Username, ip)
+		}
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -119,9 +149,21 @@ func (c *core) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "login failed", err)
 		return
 	}
+	c.logins.Reset(ip, body.Username)
 	_ = models.TouchUserLogin(c.db, u.ID)
 	c.setSessionCookie(w, u, body.Remember)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": toUserDTO(u)})
+}
+
+// writeTooManyLogins answers 429 with the wait in Retry-After (seconds,
+// rounded up) and in the message.
+func writeTooManyLogins(w http.ResponseWriter, wait time.Duration) {
+	seconds := int(math.Ceil(wait.Seconds()))
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed login attempts; try again in %d seconds", seconds))
 }
 
 // handleLogout clears the session cookie.

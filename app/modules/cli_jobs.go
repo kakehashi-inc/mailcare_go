@@ -11,7 +11,7 @@ import (
 	"mailcare/app/models"
 )
 
-// --- job-running commands (sync / fetch / group / reindex / reclassify / analyze / notify / jobs) ---
+// --- job-running commands (sync / fetch / group / reindex / reclassify / analyze / notify / cleanup / jobs) ---
 
 // jobSpec is one job to run or submit.
 type jobSpec struct {
@@ -38,14 +38,27 @@ func echoProgress(line string) {
 }
 
 // runJobs runs the specs: through the running server when one answers on
-// the control port (waiting for completion when wait is true), otherwise in
-// this process. It returns a non-nil error when any job failed.
+// the control port and serves this process's data directory (waiting for
+// completion when wait is true), otherwise in this process. A server that
+// answers but serves another data directory is left alone (the mailbox ids
+// of the specs were resolved in our own database and would mean other
+// mailboxes there), and the specs run in this process just as when no server
+// runs. It returns a non-nil error when any job failed.
 func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {
 	port := ResolveWebPort(db, 0)
+	dataDir, err := DataDir()
+	if err != nil {
+		return NewExitErrorf(ExitFileIO, "%s", err)
+	}
 	ctx, cancel := signalContext()
 	defer cancel()
 	failed := 0
-	if IsServerRunning(port) {
+	server := LocalServer(port)
+	if server != nil && !server.ServesDataDir(dataDir) {
+		fmt.Printf("A server is running on port %d for another data directory; running in this process.\n", port)
+		server = nil
+	}
+	if server != nil {
 		fmt.Printf("Server is running on port %d; submitting to it.\n", port)
 		for _, spec := range specs {
 			job, created, err := SubmitJobToServer(port, JobRequest{Kind: spec.kind, MailboxID: spec.mailboxID, Target: spec.target})
@@ -101,8 +114,8 @@ func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {
 
 // waitForJobTree waits for a job submitted to the server and then for the
 // jobs it caused (the children of an expansion job and the follow-up
-// analysis, recognizable by the CLI requester tag and a later id), printing
-// the progress and outcome of each. It returns the number of failed jobs.
+// analysis, recognizable by their parent id), printing the progress and
+// outcome of each. It returns the number of failed jobs.
 func waitForJobTree(ctx context.Context, db *sql.DB, port int, id int64) (int, error) {
 	failed := 0
 	final, err := WaitForJob(ctx, port, id, echoProgress)
@@ -114,7 +127,7 @@ func waitForJobTree(ctx context.Context, db *sql.DB, port int, id int64) (int, e
 	}
 	waited := map[int64]bool{id: true}
 	for {
-		next, err := nextFollowUp(db, id, waited)
+		next, err := nextFollowUp(db, waited)
 		if err != nil {
 			return failed, err
 		}
@@ -133,16 +146,17 @@ func waitForJobTree(ctx context.Context, db *sql.DB, port int, id int64) (int, e
 	}
 }
 
-// nextFollowUp returns the oldest job queued by the CLI after job afterID
-// that was not waited for yet (nil when there is none).
-func nextFollowUp(db *sql.DB, afterID int64, waited map[int64]bool) (*models.Job, error) {
+// nextFollowUp returns the oldest job caused by one of the jobs in tree
+// (children and follow-ups, recognized by their parent id) that was not
+// waited for yet (nil when there is none).
+func nextFollowUp(db *sql.DB, tree map[int64]bool) (*models.Job, error) {
 	jobs, err := models.ListJobs(db, 500)
 	if err != nil {
 		return nil, err
 	}
 	var next *models.Job
 	for _, j := range jobs {
-		if j.ID <= afterID || j.RequestedBy != RequestedByCLI || waited[j.ID] {
+		if tree[j.ID] || !tree[j.ParentID] {
 			continue
 		}
 		if next == nil || j.ID < next.ID {
@@ -161,9 +175,14 @@ func reportFollowUps(db *sql.DB, firstID int64) int {
 		return 0
 	}
 	failed := 0
+	tree := map[int64]bool{firstID: true}
 	for i := len(jobs) - 1; i >= 0; i-- {
 		j := jobs[i]
-		if j.ID <= firstID || j.RequestedBy != RequestedByCLI || j.Status == JobStatusQueued {
+		if !tree[j.ParentID] {
+			continue
+		}
+		tree[j.ID] = true
+		if j.Status == JobStatusQueued {
 			continue
 		}
 		if !printJobOutcome(j.ID, j.Status, j.Result, j.ErrorMessage) {
@@ -173,6 +192,14 @@ func reportFollowUps(db *sql.DB, firstID int64) int {
 	return failed
 }
 
+// deletedMailboxLabel stands for the address of a job whose mailbox was
+// deleted since (JobOfDeletedMailbox); allMailboxesLabel for an expansion
+// job, which never had one.
+const (
+	deletedMailboxLabel = "(deleted mailbox)"
+	allMailboxesLabel   = "(all)"
+)
+
 // jobLabel renders "kind address target" for a job.
 func jobLabel(db *sql.DB, j *models.Job) string {
 	label := j.Kind
@@ -180,6 +207,8 @@ func jobLabel(db *sql.DB, j *models.Job) string {
 		if mb, err := models.GetMailboxByID(db, j.MailboxID.Int64); err == nil {
 			label += " " + mb.Address
 		}
+	} else if JobOfDeletedMailbox(j) {
+		label += " " + deletedMailboxLabel
 	}
 	if j.Target != "" {
 		label += " " + j.Target
@@ -327,6 +356,18 @@ func (c *AnalyzeCmd) Run() error {
 	return runJobs(db, []jobSpec{spec}, true)
 }
 
+// CleanupCmd applies the retentions now: removes the mails older than
+// mail_keep_days and the agent run directories older than agent_keep_days
+// (what the scheduler does once a day).
+type CleanupCmd struct {
+	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every address)"`
+	Wait      bool     `help:"When submitted to a running server, wait for completion and show progress"`
+}
+
+func (c *CleanupCmd) Run() error {
+	return runKindForAddresses(JobKindCleanup, c.Addresses, c.Wait)
+}
+
 // NotifyCmd sends the notification mail now, or a test mail that only
 // proves the SMTP settings. Like the other job commands it goes through the
 // running server when there is one.
@@ -373,13 +414,21 @@ func (c *NotifyCmd) Run() error {
 	return runJobs(db, specs, true)
 }
 
-// JobsCmd lists the job history.
+// JobsCmd groups the job history subcommands: "jobs" (the default
+// subcommand, list) shows the history and "jobs cancel ID" cancels a queued
+// job.
 type JobsCmd struct {
+	List   JobsListCmd   `cmd:"" default:"withargs" help:"Show the job history"`
+	Cancel JobsCancelCmd `cmd:"" help:"Cancel a queued job (a running job cannot be stopped)"`
+}
+
+// JobsListCmd lists the job history.
+type JobsListCmd struct {
 	Limit int  `help:"Number of jobs to show" default:"20"`
 	JSON  bool `help:"Output as JSON"`
 }
 
-func (c *JobsCmd) Run() error {
+func (c *JobsListCmd) Run() error {
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
@@ -399,7 +448,10 @@ func (c *JobsCmd) Run() error {
 	}
 	addressOf := func(j *models.Job) string {
 		if !j.MailboxID.Valid {
-			return "(all)"
+			if JobOfDeletedMailbox(j) {
+				return deletedMailboxLabel
+			}
+			return allMailboxesLabel
 		}
 		if a, ok := addresses[j.MailboxID.Int64]; ok {
 			return a
@@ -413,9 +465,13 @@ func (c *JobsCmd) Run() error {
 			if j.MailboxID.Valid {
 				mailboxID = j.MailboxID.Int64
 			}
+			var parentID interface{}
+			if j.ParentID != 0 {
+				parentID = j.ParentID
+			}
 			out = append(out, map[string]interface{}{
 				"id": j.ID, "kind": j.Kind, "mailbox_id": mailboxID, "mailbox_address": addressOf(j), "target": j.Target,
-				"status": j.Status, "progress": j.Progress, "result": j.Result, "error_message": j.ErrorMessage,
+				"parent_id": parentID, "status": j.Status, "progress": j.Progress, "result": j.Result, "error_message": j.ErrorMessage,
 				"requested_by": j.RequestedBy, "created_at": j.CreatedAt.UTC().Format(time.RFC3339),
 				"started_at": rfc3339OrNull(j.StartedAt), "finished_at": rfc3339OrNull(j.FinishedAt),
 			})
@@ -436,5 +492,36 @@ func (c *JobsCmd) Run() error {
 		fmt.Printf("%-6d %-10s %-32s %-9s %-20s %s\n", j.ID, j.Kind, clip(addressOf(j), 32), j.Status,
 			j.CreatedAt.Local().Format(cliTimeFmt), clip(outcome, 60))
 	}
+	return nil
+}
+
+// JobsCancelCmd cancels a queued job ("jobs cancel ID"): the same change as
+// the Web UI's cancel. A job that is not queued any more (running or
+// finished) is reported with ExitExec.
+type JobsCancelCmd struct {
+	ID int64 `arg:"" help:"Job id"`
+}
+
+func (c *JobsCancelCmd) Run() error {
+	db, err := openDBForCLI()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	job, err := models.GetJobByID(db, c.ID)
+	if err == sql.ErrNoRows {
+		return NewExitErrorf(ExitArgument, "job #%d not found", c.ID)
+	}
+	if err != nil {
+		return NewExitError(ExitGeneral, err.Error())
+	}
+	changed, err := models.CancelQueuedJob(db, job.ID)
+	if err != nil {
+		return NewExitError(ExitGeneral, err.Error())
+	}
+	if !changed {
+		return NewExitErrorf(ExitExec, "job #%d is %s; only queued jobs can be canceled", job.ID, job.Status)
+	}
+	fmt.Printf("Canceled job #%d (%s)\n", job.ID, jobLabel(db, job))
 	return nil
 }

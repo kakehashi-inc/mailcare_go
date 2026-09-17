@@ -10,12 +10,20 @@
 // templates/agent/<name>/ (embedded from package main). See
 // templates/agent/README.md for the step-by-step recipe.
 //
-// Workspace layout inside agentRoot (data/agent):
+// Workspace layout inside agentRoot (data/agent): every analysis run gets
+// its own directory named after its agent_reports row, so the prompt and the
+// transcript of each run stay together and a failed run never touches the
+// files of an earlier successful one. The CLI runs with that directory as
+// its working directory.
 //
-//	<address>/<group_key>/PROMPT.md   the prompt fed to the CLI
-//	<address>/<group_key>/RESULT.log  verdict + full CLI transcript of the last run
-//	<address>/<group_key>/REPORT.md   the extracted report (Markdown)
-//	<address>/<group_key>/AGENTS.md   copied from templates/agent/<provider>/ (if present)
+//	<address>/<group_key>/<report_id>/PROMPT.md   the prompt fed to the CLI
+//	<address>/<group_key>/<report_id>/RESULT.log  verdict + full CLI transcript of the run
+//	<address>/<group_key>/<report_id>/REPORT.md   the extracted report (Markdown; successful runs only)
+//	<address>/<group_key>/<report_id>/AGENTS.md   copied from templates/agent/<provider>/ (if present)
+//
+// Run directories are removed by CleanupWorkspaces (cleanup.go) once they are
+// older than the retention the caller passes (setting agent_keep_days); a
+// group directory left empty goes with them.
 //
 // This package must not import app/modules (app/modules imports this package),
 // so the handful of values it shares with app/modules/constants.go are declared
@@ -35,7 +43,7 @@ const (
 	// Timeout is a safety-net backstop on one agent CLI run.
 	Timeout = 30 * time.Minute
 	// PromptFileName, ResultFileName and ReportFileName are written inside the
-	// workspace of a group.
+	// workspace directory of a run.
 	PromptFileName = "PROMPT.md"
 	ResultFileName = "RESULT.log"
 	ReportFileName = "REPORT.md"
@@ -47,9 +55,9 @@ const (
 	// MaxSampleMessages bounds how many message files are listed in one prompt
 	// (the newest ones are chosen).
 	MaxSampleMessages = 20
-	// MaxPromptRecipients bounds how many distinct recipients the group summary
-	// of the prompt lists.
-	MaxPromptRecipients = 30
+	// MaxPromptListItems bounds how many distinct recipients, remote IPs and
+	// remote MTAs the group summary of the prompt lists (the rest is counted).
+	MaxPromptListItems = 30
 	// MaxSummaryRunes bounds the summary derived from the report body when the
 	// META block carries none.
 	MaxSummaryRunes = 200
@@ -96,7 +104,7 @@ type ProviderStatus struct {
 // AnalyzeInput carries everything AnalyzeGroup needs.
 type AnalyzeInput struct {
 	MailsRoot   string  // data/mails
-	AgentRoot   string  // data/agent
+	AgentRoot   string  // data/agent (the run directory is created below it)
 	TemplatesFS fs.FS   // root contains "templates/agent/<provider>/**" (may be nil)
 	Address     string  // the mailbox address
 	Index       *sql.DB // the opened per-mailbox index

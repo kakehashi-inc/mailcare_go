@@ -2,13 +2,13 @@ package workers
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/microcosm-cc/bluemonday"
 
@@ -86,10 +86,6 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		perPage = n
 	}
-	if len(q.Get("q")) > 200 {
-		writeError(w, http.StatusBadRequest, "query too long")
-		return
-	}
 	filter := models.MessageFilter{
 		Query: q.Get("q"), OnlyBounce: q.Get("only_bounce") == "1", GroupKey: q.Get("group"),
 		Offset: (page - 1) * perPage, Limit: perPage,
@@ -117,6 +113,7 @@ func (c *core) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer idx.Close()
 	var bounce *models.Bounce
+	responsible := ""
 	if m.IsBounce {
 		b, err := models.GetBounceByMessageID(idx, m.ID)
 		if err != nil && err != sql.ErrNoRows {
@@ -124,49 +121,73 @@ func (c *core) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		bounce = b
+		// The responsible party belongs to the group the bounce was
+		// bundled into.
+		if bounce != nil && bounce.GroupKey != "" {
+			g, err := models.GetGroup(idx, bounce.GroupKey)
+			if err != nil && err != sql.ErrNoRows {
+				writeInternalError(w, "failed to load the bounce group", err)
+				return
+			}
+			if g != nil {
+				responsible = g.Responsible
+			}
+		}
 	}
-	// The .txt file is returned only when the message has a text body; a
-	// blank or missing text part answers an empty string.
-	text := ""
-	if m.HasText {
-		if data, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "txt"); err == nil {
-			text = string(data)
-		} else if !errors.Is(err, os.ErrNotExist) {
+	// The decoded text sections (<key>-1.txt, <key>-2.txt, ...), as many as
+	// the index counted; a message without text answers an empty list.
+	sections := []string{}
+	if m.TextCount > 0 {
+		list, err := mailengine.ReadBodySections(c.mailsRoot, mb.Address, m.MessageKey, "txt", m.TextCount)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			writeInternalError(w, "failed to read the message text", err)
 			return
 		}
+		if list != nil {
+			sections = list
+		}
 	}
-	headers := map[string]any{}
-	if data, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "json"); err == nil {
-		if jerr := json.Unmarshal(data, &headers); jerr != nil {
-			headers = map[string]any{}
+	// The headers are decoded from the .eml on request (nothing but the raw
+	// file and the body sections is stored next to the index).
+	headers := map[string]string{}
+	if raw, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "eml"); err == nil {
+		if pm := mailengine.ParseMessage(raw); pm != nil && pm.Headers != nil {
+			headers = pm.Headers
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		writeInternalError(w, "failed to read the message metadata", err)
+		writeInternalError(w, "failed to read the raw message", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message": toMessageDTO(m), "bounce": toBounceDTO(bounce), "text": text, "has_html": m.HasHTML, "headers": headers,
+		"message": toMessageDTO(m), "bounce": toBounceDTO(bounce, responsible), "text_sections": sections, "headers": headers,
 	})
 }
 
 // handleMessageHTML serves the sanitized HTML body for a sandboxed iframe.
+// Every HTML section of the message (<key>-1.html, <key>-2.html, ...) is
+// served, separated by a horizontal rule, and sanitized as one document. A
+// message without HTML sections, or whose section files are all missing,
+// answers 404.
 func (c *core) handleMessageHTML(w http.ResponseWriter, r *http.Request) {
 	mb, idx, m, ok := c.messageFromPath(w, r)
 	if !ok {
 		return
 	}
 	idx.Close()
-	data, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "html")
-	if errors.Is(err, os.ErrNotExist) {
+	if m.HTMLCount == 0 {
 		writeError(w, http.StatusNotFound, "this message has no HTML part")
 		return
 	}
+	sections, err := mailengine.ReadBodySections(c.mailsRoot, mb.Address, m.MessageKey, "html", m.HTMLCount)
 	if err != nil {
 		writeInternalError(w, "failed to read the message HTML", err)
 		return
 	}
-	safe := htmlPolicy.SanitizeBytes(data)
+	if len(sections) == 0 {
+		writeError(w, http.StatusNotFound, "this message has no HTML part")
+		return
+	}
+	safe := htmlPolicy.SanitizeBytes([]byte(strings.Join(sections, "\n<hr>\n")))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", htmlCSP)
 	w.Header().Set("X-Content-Type-Options", "nosniff")

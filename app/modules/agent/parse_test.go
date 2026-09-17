@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -212,11 +213,48 @@ func TestStripPromptEcho(t *testing.T) {
 			t.Errorf("%s: got %q want %q", c.name, got, c.want)
 		}
 	}
-	out := ParseTranscript("user\n"+prompt+"\nERROR: You've hit your usage limit. try again at 7:22 PM.\n", prompt)
+	out := ParseOutput(StripPromptEcho("user\n"+prompt+"\nERROR: You've hit your usage limit. try again at 7:22 PM.\n", prompt))
 	if out.ReportParsed {
 		t.Fatal("the echoed template must not be parsed as a report")
 	}
-	if out := ParseTranscript("user\n"+prompt+answer, prompt); !out.ReportParsed || out.Report != sampleReport {
+	if out := ParseOutput(StripPromptEcho("user\n"+prompt+answer, prompt)); !out.ReportParsed || out.Report != sampleReport {
 		t.Fatalf("the answer after the echo must be parsed: %+v", out)
+	}
+}
+
+func TestValidateOutputRejectsSecretLikeContent(t *testing.T) {
+	secrets := map[string]string{
+		"master key":  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"bcrypt hash": "$2a$12$hU6M9KWBs4epQ45MC43i2.C7ThAbeorfWt51.wt5qKZoPkzlrLKGy",
+		"bcrypt 2b":   "$2b$10$abcdefghijklmnopqrstuv",
+		"pem block":   "-----BEGIN PRIVATE KEY-----",
+		"api token":   "mlc_" + strings.Repeat("ab", 20),
+		"aws key id":  "AKIAIOSFODNN7EXAMPLE",
+	}
+	for name, secret := range secrets {
+		raw := ReportBegin + "\n" + sampleReport + "\n" + secret + "\n" + ReportEnd
+		out := ParseOutput(raw)
+		if !out.ReportParsed {
+			t.Fatalf("%s: fixture must have a report block", name)
+		}
+		if err := ValidateOutput(out); !errors.Is(err, ErrSecretLikeContent) {
+			t.Errorf("%s in the report: got %v, want ErrSecretLikeContent", name, err)
+		}
+		withSummary := ParseOutput(ReportBegin + "\n" + sampleReport + "\n" + ReportEnd + "\n" +
+			MetaBegin + "\n{\"summary\":\"see " + secret + "\",\"responsible\":\"sender\",\"severity\":\"low\"}\n" + MetaEnd)
+		if err := ValidateOutput(withSummary); !errors.Is(err, ErrSecretLikeContent) {
+			t.Errorf("%s in the summary: got %v, want ErrSecretLikeContent", name, err)
+		}
+	}
+	// Ordinary bounce material is not mistaken for a secret: short hex ids,
+	// status codes, addresses, a 40-digit hex value and a 63-digit one.
+	for _, harmless := range []string{
+		"queue id 3F2A9B1C7D", "550 5.1.1 <alice@example.net>", strings.Repeat("a", 40), strings.Repeat("0", 63),
+		"$2a$ is not a hash", "mlc_short", "AKIA-not-a-key",
+	} {
+		out := ParseOutput(ReportBegin + "\n" + sampleReport + "\n" + harmless + "\n" + ReportEnd)
+		if err := ValidateOutput(out); err != nil {
+			t.Errorf("%q must pass: %v", harmless, err)
+		}
 	}
 }

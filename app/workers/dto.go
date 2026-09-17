@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules"
 )
 
 // Response DTOs (see the system design document (Documents) section 9.3). Times are
@@ -68,7 +69,9 @@ type MailboxStatsDTO struct {
 	ExcludedGroups int                `json:"excluded_groups"`
 }
 
-// MailboxDTO is a mailbox without its password.
+// MailboxDTO is a mailbox without its password. The connection settings
+// (host, port, security, username, folder) and the fetch ranges are shown
+// to administrators only; redactMailboxDTO blanks them for other users.
 type MailboxDTO struct {
 	ID             int64            `json:"id"`
 	Address        string           `json:"address"`
@@ -96,6 +99,23 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 		LastFetchError: mb.LastFetchError,
 		CreatedAt:      timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
 	}
+}
+
+// mailboxDTOFor converts a mailbox for the given user: administrators get
+// every field, other users get the connection settings and fetch ranges
+// blanked (empty strings and zeros).
+func mailboxDTOFor(mb *models.Mailbox, u *models.User) MailboxDTO {
+	dto := toMailboxDTO(mb)
+	if u == nil || u.Role != modules.RoleAdmin {
+		redactMailboxDTO(&dto)
+	}
+	return dto
+}
+
+// redactMailboxDTO blanks the fields reserved for administrators.
+func redactMailboxDTO(dto *MailboxDTO) {
+	dto.ImapHost, dto.ImapPort, dto.ImapSecurity, dto.ImapUsername, dto.Folder = "", 0, "", "", ""
+	dto.InitialDays, dto.RecentDays = 0, 0
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.
@@ -179,40 +199,41 @@ func toReportDTO(r *models.AgentReport) ReportDTO {
 }
 
 // MessageDTO is an indexed message (the system design document (Documents)
-// 9.3). Date is never null; BodySource names the body used for detection
-// ("text", "html" or "").
+// 9.3). Date is never null; TextCount / HTMLCount say how many decoded body
+// sections exist; BodySource names the body used for detection ("text",
+// "html" or ""); Rule is the name of the detection rule that matched.
 type MessageDTO struct {
-	ID             int64   `json:"id"`
-	MessageKey     string  `json:"message_key"`
-	Folder         string  `json:"folder"`
-	UIDValidity    uint32  `json:"uidvalidity"`
-	UID            uint32  `json:"uid"`
-	MessageID      string  `json:"message_id"`
-	Subject        string  `json:"subject"`
-	FromAddress    string  `json:"from_address"`
-	FromName       string  `json:"from_name"`
-	ToAddress      string  `json:"to_address"`
-	ToName         string  `json:"to_name"`
-	Date           string  `json:"date"`
-	ReceivedAt     *string `json:"received_at"`
-	Size           int64   `json:"size"`
-	HasText        bool    `json:"has_text"`
-	HasHTML        bool    `json:"has_html"`
-	BodySource     string  `json:"body_source"`
-	IsBounce       bool    `json:"is_bounce"`
-	BounceKind     string  `json:"bounce_kind"`
-	ClassifyReason string  `json:"classify_reason"`
-	Classified     bool    `json:"classified"`
-	GroupKey       string  `json:"group_key"`
-	FetchedAt      string  `json:"fetched_at"`
+	ID          int64   `json:"id"`
+	MessageKey  string  `json:"message_key"`
+	Folder      string  `json:"folder"`
+	UIDValidity uint32  `json:"uidvalidity"`
+	UID         uint32  `json:"uid"`
+	MessageID   string  `json:"message_id"`
+	Subject     string  `json:"subject"`
+	FromAddress string  `json:"from_address"`
+	FromName    string  `json:"from_name"`
+	ToAddress   string  `json:"to_address"`
+	ToName      string  `json:"to_name"`
+	Date        string  `json:"date"`
+	ReceivedAt  *string `json:"received_at"`
+	Size        int64   `json:"size"`
+	TextCount   int     `json:"text_count"`
+	HTMLCount   int     `json:"html_count"`
+	BodySource  string  `json:"body_source"`
+	IsBounce    bool    `json:"is_bounce"`
+	BounceKind  string  `json:"bounce_kind"`
+	Rule        string  `json:"rule"`
+	Classified  bool    `json:"classified"`
+	GroupKey    string  `json:"group_key"`
+	FetchedAt   string  `json:"fetched_at"`
 }
 
 func toMessageDTO(m *models.Message) MessageDTO {
 	return MessageDTO{
 		ID: m.ID, MessageKey: m.MessageKey, Folder: m.Folder, UIDValidity: m.UIDValidity, UID: m.UID, MessageID: m.MessageID,
 		Subject: m.Subject, FromAddress: m.FromAddress, FromName: m.FromName, ToAddress: m.ToAddress, ToName: m.ToName,
-		Date: timeString(m.Date), ReceivedAt: nullTimeString(m.ReceivedAt), Size: m.Size, HasText: m.HasText, HasHTML: m.HasHTML,
-		BodySource: m.BodySource, IsBounce: m.IsBounce, BounceKind: m.BounceKind, ClassifyReason: m.ClassifyReason,
+		Date: timeString(m.Date), ReceivedAt: nullTimeString(m.ReceivedAt), Size: m.Size, TextCount: m.TextCount,
+		HTMLCount: m.HTMLCount, BodySource: m.BodySource, IsBounce: m.IsBounce, BounceKind: m.BounceKind, Rule: m.Rule,
 		Classified: m.Classified, GroupKey: m.GroupKey, FetchedAt: timeString(m.FetchedAt),
 	}
 }
@@ -225,7 +246,8 @@ func toMessageDTOs(list []*models.Message) []MessageDTO {
 	return out
 }
 
-// BounceDTO is the extracted detail of a bounce message.
+// BounceDTO is the extracted detail of a bounce message. Responsible is the
+// responsible party of the group the bounce belongs to ("" while ungrouped).
 type BounceDTO struct {
 	OriginalRecipient  string  `json:"original_recipient"`
 	RecipientDomain    string  `json:"recipient_domain"`
@@ -244,25 +266,30 @@ type BounceDTO struct {
 	Responsible        string  `json:"responsible"`
 }
 
-func toBounceDTO(b *models.Bounce) *BounceDTO {
+// toBounceDTO converts a bounce; responsible is taken from its group (the
+// caller looks it up, "" when the bounce has no group).
+func toBounceDTO(b *models.Bounce, responsible string) *BounceDTO {
 	if b == nil {
 		return nil
 	}
 	return &BounceDTO{
-		OriginalRecipient: b.OriginalRecipient, RecipientDomain: b.RecipientDomain, Action: b.Action,
+		OriginalRecipient: b.Recipient, RecipientDomain: b.RecipientDomain, Action: b.Action,
 		StatusCode: b.StatusCode, SMTPCode: b.SMTPCode, Diagnostic: b.Diagnostic, DiagnosticTemplate: b.DiagnosticTemplate,
 		RemoteMTA: b.RemoteMTA, RemoteIP: b.RemoteIP, ReportingMTA: b.ReportingMTA, OriginalMessageID: b.OriginalMessageID,
 		OriginalSubject: b.OriginalSubject, OriginalFrom: b.OriginalFrom, OriginalDate: nullTimeString(b.OriginalDate),
-		Responsible: b.Responsible,
+		Responsible: responsible,
 	}
 }
 
-// JobDTO is a job with its mailbox address resolved.
+// JobDTO is a job with its mailbox address resolved. MailboxDeleted marks a
+// job whose mailbox was deleted since (mailbox_id null and mailbox_address
+// "", like an expansion job; modules.JobOfDeletedMailbox tells them apart).
 type JobDTO struct {
 	ID             int64   `json:"id"`
 	Kind           string  `json:"kind"`
 	MailboxID      *int64  `json:"mailbox_id"`
 	MailboxAddress string  `json:"mailbox_address"`
+	MailboxDeleted bool    `json:"mailbox_deleted"`
 	Target         string  `json:"target"`
 	Status         string  `json:"status"`
 	Progress       string  `json:"progress"`
@@ -284,6 +311,8 @@ func toJobDTO(j *models.Job, addresses map[int64]string) JobDTO {
 		id := j.MailboxID.Int64
 		dto.MailboxID = &id
 		dto.MailboxAddress = addresses[id]
+	} else {
+		dto.MailboxDeleted = modules.JobOfDeletedMailbox(j)
 	}
 	return dto
 }

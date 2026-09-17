@@ -35,7 +35,7 @@ export function CopyButton({ text, label, size = 'sm', className = '' }: CopyBut
             onClick={copy}
             aria-label={copied ? t('common.copied') : title}
             title={title}
-            className={`inline-flex min-h-tap items-center gap-1 rounded-md px-2 text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+            className={`inline-flex min-h-tap shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                 size === 'sm' ? 'text-sm' : 'text-base'
             } ${className}`}
         >

@@ -91,10 +91,6 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid responsible")
 		return
 	}
-	if len(filter.Query) > 200 {
-		writeError(w, http.StatusBadRequest, "query too long")
-		return
-	}
 	idx, err := c.openIndex(r, mb)
 	if err != nil {
 		writeInternalError(w, "failed to open the mail index", err)

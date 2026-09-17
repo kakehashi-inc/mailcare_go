@@ -117,7 +117,8 @@ func readSecret(label string) (string, error) {
 }
 
 // promptPassword asks for a password twice (hidden on a terminal; pass
-// --password to avoid the prompt in scripts).
+// --password to avoid the prompt in scripts). Piped input must therefore
+// carry two lines; a missing second line is reported as such.
 func promptPassword(label string) (string, error) {
 	first, err := readSecret(label)
 	if err != nil {
@@ -125,7 +126,7 @@ func promptPassword(label string) (string, error) {
 	}
 	second, err := readSecret(label + " (again)")
 	if err != nil {
-		return "", NewExitError(ExitArgument, "no password given")
+		return "", NewExitError(ExitArgument, "the password must be entered twice (the confirmation line is missing)")
 	}
 	if first != second {
 		return "", NewExitError(ExitArgument, "the passwords do not match")
@@ -147,19 +148,29 @@ func openDBForCLI() (*sql.DB, error) {
 	return db, nil
 }
 
-// loadKeyForCLI loads the master key.
-func loadKeyForCLI() ([]byte, error) {
-	key, err := LoadSecretKey()
+// loadKeyForCLI loads the master key from the settings table (generating
+// it on the first use).
+func loadKeyForCLI(db *sql.DB) ([]byte, error) {
+	key, err := LoadSecretKey(db)
 	if err != nil {
 		return nil, NewExitErrorf(ExitConfig, "%s", err)
 	}
 	return key, nil
 }
 
-// dataRoots returns the mails and agent directories.
-func dataRoots() (mailsRoot, agentRoot string, err error) {
-	if mailsRoot, err = MailsDir(); err != nil {
-		return "", "", NewExitErrorf(ExitFileIO, "%s", err)
+// mailsRootForCLI returns the mails directory.
+func mailsRootForCLI() (string, error) {
+	mailsRoot, err := MailsDir()
+	if err != nil {
+		return "", NewExitErrorf(ExitFileIO, "%s", err)
+	}
+	return mailsRoot, nil
+}
+
+// dataRootsForCLI returns the mails and agent directories.
+func dataRootsForCLI() (mailsRoot, agentRoot string, err error) {
+	if mailsRoot, err = mailsRootForCLI(); err != nil {
+		return "", "", err
 	}
 	if agentRoot, err = AgentDir(); err != nil {
 		return "", "", NewExitErrorf(ExitFileIO, "%s", err)
@@ -169,11 +180,11 @@ func dataRoots() (mailsRoot, agentRoot string, err error) {
 
 // newCLIJobManager builds a (not started) job manager for in-process runs.
 func newCLIJobManager(db *sql.DB) (*JobManager, error) {
-	key, err := loadKeyForCLI()
+	key, err := loadKeyForCLI(db)
 	if err != nil {
 		return nil, err
 	}
-	mailsRoot, agentRoot, err := dataRoots()
+	mailsRoot, agentRoot, err := dataRootsForCLI()
 	if err != nil {
 		return nil, err
 	}

@@ -39,9 +39,11 @@
     }
 
     /* A visible focus ring on every focusable element by default. Components
-       may override it with focus-visible utilities. */
+       may override it with focus-visible utilities. The accent color is
+       repeated here because colors declared in tailwind.config.js are not
+       emitted as CSS variables by Tailwind v4. */
     :focus-visible {
-        outline: 2px solid var(--color-accent);
+        outline: 2px solid light-dark(#4f46e5, #818cf8);
         outline-offset: 2px;
     }
 

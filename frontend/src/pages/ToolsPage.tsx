@@ -32,10 +32,11 @@ const TOOL_META: Record<ToolKind, { icon: string; danger: boolean }> = {
     analyze: { icon: 'psychology', danger: false },
     reindex: { icon: 'refresh', danger: true },
     reclassify: { icon: 'rule', danger: false },
+    cleanup: { icon: 'cleaning_services', danger: false },
 };
 
 function emptyTargets(): Record<ToolKind, string> {
-    return { sync: '', fetch: '', group: '', analyze: '', reindex: '', reclassify: '' };
+    return { sync: '', fetch: '', group: '', analyze: '', reindex: '', reclassify: '', cleanup: '' };
 }
 
 export function ToolsPage() {

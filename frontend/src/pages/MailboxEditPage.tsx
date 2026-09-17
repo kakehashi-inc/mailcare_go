@@ -123,6 +123,18 @@ export function MailboxEditPage() {
     const daysError = (v: string) =>
         v !== '' && (!Number.isInteger(Number(v)) || Number(v) < 1) ? t('mailbox.daysInvalid') : undefined;
     const passwordRequired = isNew && form.imap_password === '';
+    // The server uses the stored password only for the server it was saved
+    // for: a change of the host, port, connection mode or username of an
+    // existing mailbox must carry the password again.
+    const saved = existing.data ? fromDto(existing.data) : null;
+    const connectionChanged =
+        saved !== null &&
+        (form.imap_host.trim() !== saved.imap_host ||
+            form.imap_port.trim() !== saved.imap_port ||
+            form.imap_security !== saved.imap_security ||
+            form.imap_username.trim() !== saved.imap_username);
+    const passwordError =
+        !isNew && connectionChanged && form.imap_password === '' ? t('mailbox.passwordRequiredOnChange') : undefined;
     const valid =
         form.address.trim() !== '' &&
         !emailError &&
@@ -131,7 +143,8 @@ export function MailboxEditPage() {
         !portError &&
         !daysError(form.initial_days) &&
         !daysError(form.recent_days) &&
-        !passwordRequired;
+        !passwordRequired &&
+        !passwordError;
 
     function toInput(): MailboxInput {
         return {
@@ -277,6 +290,11 @@ export function MailboxEditPage() {
                                 error={portError}
                             />
                         </div>
+                        {form.imap_security === 'none' && (
+                            <div className='md:col-span-2'>
+                                <Alert tone='warning'>{t('mailbox.securityNoneWarning')}</Alert>
+                            </div>
+                        )}
                         <InputField
                             label={t('mailbox.username')}
                             autoComplete='off'
@@ -292,6 +310,7 @@ export function MailboxEditPage() {
                                 value={form.imap_password}
                                 onChange={e => set('imap_password', e.target.value)}
                                 hint={isNew ? undefined : t('mailbox.passwordKeepHint')}
+                                error={passwordError}
                                 required={isNew}
                             />
                             <CheckboxField
@@ -314,7 +333,12 @@ export function MailboxEditPage() {
                             <Button
                                 icon='network_check'
                                 loading={testing}
-                                disabled={!form.imap_host || !form.imap_username || (isNew && !form.imap_password)}
+                                disabled={
+                                    !form.imap_host ||
+                                    !form.imap_username ||
+                                    (isNew && !form.imap_password) ||
+                                    !!passwordError
+                                }
                                 onClick={() => void test()}
                             >
                                 {t('mailbox.test')}

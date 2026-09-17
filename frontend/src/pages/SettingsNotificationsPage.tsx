@@ -48,6 +48,9 @@ interface FormState {
 
 const SMTP_KEYS = ['smtp_host', 'smtp_port', 'smtp_security', 'smtp_username', 'smtp_password', 'smtp_from'] as const;
 
+/** The keys that name the server the stored password belongs to; changing one of them needs the password again. */
+const CONNECTION_KEYS = ['smtp_host', 'smtp_port', 'smtp_security', 'smtp_username'] as const;
+
 const INTERVAL_OPTIONS = Array.from(
     { length: NOTIFY_INTERVAL_MAX_DAYS - NOTIFY_INTERVAL_MIN_DAYS + 1 },
     (_, i) => NOTIFY_INTERVAL_MIN_DAYS + i
@@ -206,7 +209,14 @@ export function SettingsNotificationsPage() {
             ? t('notify.publicUrlInvalid')
             : undefined;
     const testToError = testTo.trim() !== '' && !isEmailAddress(testTo) ? t('notify.fromInvalid') : undefined;
-    const valid = !portError && !fromError && !timeError && !urlError;
+    // The server refuses to point a stored password at another server: a
+    // change of the connection settings must carry the password.
+    const connectionDirty = CONNECTION_KEYS.some(key => key in changes);
+    const passwordError =
+        connectionDirty && dto.smtp_password_set && form.smtp_password === ''
+            ? t('notify.passwordRequiredOnChange')
+            : undefined;
+    const valid = !portError && !fromError && !timeError && !urlError && !passwordError;
     const canSave = dirty && valid && !saving;
     const smtpSaved = dto.smtp_host !== '' && dto.smtp_from !== '';
     const testAddress = testTo.trim() || me?.user.email || '';
@@ -313,6 +323,7 @@ export function SettingsNotificationsPage() {
                                 value={form.smtp_password}
                                 onChange={e => set('smtp_password', e.target.value)}
                                 hint={dto.smtp_password_set ? t('notify.passwordKeepHint') : t('notify.passwordHint')}
+                                error={passwordError}
                             />
                             <CheckboxField
                                 className='mt-1'
@@ -382,7 +393,7 @@ export function SettingsNotificationsPage() {
                                 onChange={e => set('notify_time', e.target.value)}
                                 hint={
                                     general.data?.server_timezone
-                                        ? `${t('notify.timeHint')} ${t('settings.serverTimeZone', { zone: general.data.server_timezone })}`
+                                        ? t('settings.serverTimeZone', { zone: general.data.server_timezone })
                                         : t('notify.timeHint')
                                 }
                                 error={timeError}

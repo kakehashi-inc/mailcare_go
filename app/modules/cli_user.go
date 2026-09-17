@@ -121,7 +121,7 @@ func (c *UserDeleteCmd) Run() error {
 			return NewExitError(ExitArgument, "cannot delete the last administrator")
 		}
 	}
-	if !c.Yes && !confirm(fmt.Sprintf("Delete user %q and its tokens? [y/N]: ", u.Username)) {
+	if !c.Yes && !confirm(fmt.Sprintf("Delete user %q? [y/N]: ", u.Username)) {
 		fmt.Println("Cancelled")
 		return nil
 	}

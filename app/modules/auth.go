@@ -8,7 +8,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -55,13 +57,15 @@ func ValidateRole(role string) error {
 	return nil
 }
 
-// ValidatePassword enforces the minimum password length.
+// ValidatePassword enforces the minimum password length and bcrypt's own
+// maximum (it hashes at most 72 bytes; longer input is refused instead of
+// silently ignored).
 func ValidatePassword(password string) error {
-	if len(password) < PasswordMinLength {
+	if utf8.RuneCountInString(password) < PasswordMinLength {
 		return fmt.Errorf("password must be at least %d characters", PasswordMinLength)
 	}
-	if len(password) > 256 {
-		return errors.New("password must be 256 characters or fewer")
+	if len(password) > 72 {
+		return errors.New("password must be 72 bytes or fewer (bcrypt limit)")
 	}
 	return nil
 }
@@ -92,9 +96,6 @@ func NormalizeEmail(email string) (string, error) {
 	return email, nil
 }
 
-// MaxTimezoneLength bounds an IANA zone name (users.timezone).
-const MaxTimezoneLength = 64
-
 // NormalizeTimezone trims a display timezone and checks that it is an IANA
 // zone name the runtime can load (e.g. "Asia/Tokyo", "UTC"). Empty means
 // the default. "Local" is rejected: it names the server's zone, not one of
@@ -104,26 +105,13 @@ func NormalizeTimezone(tz string) (string, error) {
 	if tz == "" {
 		return models.DefaultTimezone, nil
 	}
-	if len(tz) > MaxTimezoneLength || tz == "Local" {
+	if tz == "Local" {
 		return "", fmt.Errorf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz)
 	}
 	if _, err := time.LoadLocation(tz); err != nil {
 		return "", fmt.Errorf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz)
 	}
 	return tz, nil
-}
-
-// UserLocation returns the display location of a user (the default zone
-// when the stored name cannot be loaded).
-func UserLocation(u *models.User) *time.Location {
-	if loc, err := time.LoadLocation(u.Timezone); err == nil && u.Timezone != "" {
-		return loc
-	}
-	loc, err := time.LoadLocation(models.DefaultTimezone)
-	if err != nil {
-		return time.UTC
-	}
-	return loc
 }
 
 // ServerTimezone returns the name of the server's local zone, in which the
@@ -191,17 +179,6 @@ type NewUser struct {
 	Role        string
 }
 
-// CreateUser validates the input, hashes the password and inserts the user
-// with the default preferences and no notification address.
-func CreateUser(db *sql.DB, username, displayName, password, role string) (*models.User, error) {
-	return CreateUserFrom(db, NewUser{Username: username, DisplayName: displayName, Password: password, Role: role})
-}
-
-// CreateUserWithEmail is CreateUser with an optional notification address.
-func CreateUserWithEmail(db *sql.DB, username, displayName, email, password, role string) (*models.User, error) {
-	return CreateUserFrom(db, NewUser{Username: username, DisplayName: displayName, Email: email, Password: password, Role: role})
-}
-
 // CreateUserFrom validates every field of in, hashes the password and
 // inserts the user.
 func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
@@ -223,7 +200,7 @@ func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
 	if displayName == "" {
 		displayName = username
 	}
-	if len(displayName) > 128 {
+	if utf8.RuneCountInString(displayName) > 128 {
 		return nil, errors.New("display name must be 128 characters or fewer")
 	}
 	email, err := NormalizeEmail(in.Email)
@@ -280,7 +257,7 @@ func ApplyProfile(u *models.User, in ProfileInput) (displayName, email, language
 		if displayName == "" {
 			displayName = u.Username
 		}
-		if len(displayName) > 128 {
+		if utf8.RuneCountInString(displayName) > 128 {
 			return "", "", "", "", "", errors.New("display name must be 128 characters or fewer")
 		}
 	}
@@ -350,4 +327,126 @@ func AuthenticateUser(db *sql.DB, username, password string) (*models.User, erro
 		return nil, ErrInvalidCredentials
 	}
 	return u, nil
+}
+
+// --- Login throttling ---
+
+// Login attempts are throttled per (client IP, username): after
+// LoginFailuresBeforeLock consecutive failures the pair must wait
+// LoginLockInitial before the next attempt is checked; every further failure
+// doubles the wait up to LoginLockMax. A successful login clears the record.
+// Requests that arrive while a wait is in force are refused without checking
+// the password, so they neither count as failures nor extend the wait. The
+// state is kept in memory only (a restart resets it) and is bounded by
+// dropping records that were idle for loginRecordTTL.
+const (
+	LoginFailuresBeforeLock = 5
+	LoginLockInitial        = 30 * time.Second
+	LoginLockMax            = 15 * time.Minute
+	loginRecordTTL          = time.Hour
+	loginRecordsPruneEvery  = 256
+)
+
+// LoginLimiter counts failed login attempts per client and username.
+type LoginLimiter struct {
+	mu      sync.Mutex
+	records map[string]*loginRecord
+	ops     int
+	now     func() time.Time // replaced by tests
+}
+
+type loginRecord struct {
+	failures  int           // consecutive failures
+	lock      time.Duration // current wait (0 until the threshold is reached)
+	lockUntil time.Time     // zero when no wait is in force
+	seen      time.Time     // last activity, for pruning
+}
+
+// NewLoginLimiter returns an empty limiter.
+func NewLoginLimiter() *LoginLimiter {
+	return NewLoginLimiterWithClock(time.Now)
+}
+
+// NewLoginLimiterWithClock is NewLoginLimiter with an injected clock (for
+// tests that advance time).
+func NewLoginLimiterWithClock(now func() time.Time) *LoginLimiter {
+	if now == nil {
+		now = time.Now
+	}
+	return &LoginLimiter{records: map[string]*loginRecord{}, now: now}
+}
+
+func loginKey(ip, username string) string {
+	return ip + "\x00" + strings.ToLower(strings.TrimSpace(username))
+}
+
+// Blocked reports whether the (ip, username) pair must still wait and, if
+// so, for how long.
+func (l *LoginLimiter) Blocked(ip, username string) (time.Duration, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rec := l.records[loginKey(ip, username)]
+	if rec == nil || rec.lockUntil.IsZero() {
+		return 0, false
+	}
+	remaining := rec.lockUntil.Sub(l.now())
+	if remaining <= 0 {
+		return 0, false
+	}
+	return remaining, true
+}
+
+// Fail records a failed attempt and returns the wait now in force (0 when
+// the threshold is not reached yet).
+func (l *LoginLimiter) Fail(ip, username string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.pruneLocked()
+	key := loginKey(ip, username)
+	rec := l.records[key]
+	if rec == nil {
+		rec = &loginRecord{}
+		l.records[key] = rec
+	}
+	now := l.now()
+	rec.seen = now
+	rec.failures++
+	rec.lockUntil = time.Time{}
+	if rec.failures < LoginFailuresBeforeLock {
+		return 0
+	}
+	switch {
+	case rec.lock == 0:
+		rec.lock = LoginLockInitial
+	case rec.lock*2 > LoginLockMax:
+		rec.lock = LoginLockMax
+	default:
+		rec.lock *= 2
+	}
+	rec.lockUntil = now.Add(rec.lock)
+	return rec.lock
+}
+
+// Reset forgets the failures of the pair (called on a successful login).
+func (l *LoginLimiter) Reset(ip, username string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.records, loginKey(ip, username))
+}
+
+// pruneLocked drops records idle for loginRecordTTL every
+// loginRecordsPruneEvery operations so that the map cannot grow without
+// bound. loginRecordTTL exceeds LoginLockMax, so a dropped record never has
+// a wait still in force. The caller holds mu.
+func (l *LoginLimiter) pruneLocked() {
+	l.ops++
+	if l.ops%loginRecordsPruneEvery != 0 {
+		return
+	}
+	cutoff := l.now().Add(-loginRecordTTL)
+	for key, rec := range l.records {
+		if rec.seen.Before(cutoff) {
+			delete(l.records, key)
+		}
+	}
 }

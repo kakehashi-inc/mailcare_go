@@ -146,11 +146,12 @@ func TestConnection(ctx context.Context, mb *models.Mailbox, password string) er
 }
 
 // FetchMailbox downloads the messages not yet indexed (initial_days back on
-// the first run, recent_days afterwards), stores their raw and derived files
-// and adds their index rows with classified = 0 (design 5.1). No
-// classification or grouping happens here; GroupMailbox does that. The
-// caller records the outcome on the mailbox row.
-func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, password string, progress Progress) (*FetchResult, error) {
+// the first run, recent_days afterwards, but never before opts.NotBefore
+// when it is set), stores their raw and derived files and adds their index
+// rows with classified = 0 (design 5.1). No classification or grouping
+// happens here; GroupMailbox does that. The caller records the outcome on
+// the mailbox row.
+func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, password string, opts FetchOptions, progress Progress) (*FetchResult, error) {
 	if mb == nil {
 		return nil, errors.New("mailengine: mailbox is nil")
 	}
@@ -218,7 +219,12 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 	}
 
 	since := time.Now().UTC().AddDate(0, 0, -days)
-	report(progress, fmt.Sprintf("searching since %s (%s window, %d days)", since.Format("2006-01-02"), window, days))
+	bounded := ""
+	if !opts.NotBefore.IsZero() && opts.NotBefore.After(since) {
+		since = opts.NotBefore.UTC()
+		bounded = ", limited to the mail retention"
+	}
+	report(progress, fmt.Sprintf("searching since %s (%s window, %d days%s)", since.Format("2006-01-02"), window, days, bounded))
 	search, err := s.client.UIDSearch(&imap.SearchCriteria{Since: since}, nil).Wait()
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", ctxErr(ctx, err))
@@ -242,20 +248,13 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 		return result, nil
 	}
 
-	// Sizes first so oversized messages are never downloaded.
+	// Sizes and dates first (recorded on the row; no message is refused for
+	// its size).
 	sizes, dates, err := s.fetchSizes(ctx, pending)
 	if err != nil {
 		return nil, err
 	}
-	var toFetch []imap.UID
-	for _, uid := range pending {
-		if size, ok := sizes[uid]; ok && size > maxMessageSize {
-			result.Skipped++
-			report(progress, fmt.Sprintf("skipping uid %d (%d bytes exceeds the limit)", uid, size))
-			continue
-		}
-		toFetch = append(toFetch, uid)
-	}
+	toFetch := pending
 
 	for start := 0; start < len(toFetch); start += fetchBatchSize {
 		if err := ctx.Err(); err != nil {
@@ -264,12 +263,7 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 		end := min(start+fetchBatchSize, len(toFetch))
 		batch := toFetch[start:end]
 		report(progress, fmt.Sprintf("fetching %d of %d", end, len(toFetch)))
-		err := s.fetchBodies(ctx, batch, func(uid imap.UID, internalDate time.Time, raw []byte, tooLarge bool) error {
-			if tooLarge {
-				result.Skipped++
-				report(progress, fmt.Sprintf("skipping uid %d (body exceeds the limit)", uid))
-				return nil
-			}
+		err := s.fetchBodies(ctx, batch, func(uid imap.UID, internalDate time.Time, raw []byte) error {
 			if internalDate.IsZero() {
 				internalDate = dates[uid]
 			}
@@ -326,10 +320,10 @@ func (s *imapSession) fetchSizes(ctx context.Context, uids []imap.UID) (map[imap
 }
 
 // fetchBodies downloads the full bodies of the given UIDs (BODY.PEEK[] keeps
-// the messages unread) and hands each one to handle in server order. A body
-// longer than maxMessageSize is drained and reported with tooLarge = true.
+// the messages unread) and hands each one to handle in server order, whole
+// and unmodified whatever its size.
 func (s *imapSession) fetchBodies(ctx context.Context, uids []imap.UID,
-	handle func(uid imap.UID, internalDate time.Time, raw []byte, tooLarge bool) error) error {
+	handle func(uid imap.UID, internalDate time.Time, raw []byte) error) error {
 	section := &imap.FetchItemBodySection{Peek: true}
 	cmd := s.client.Fetch(imap.UIDSetNum(uids...), &imap.FetchOptions{
 		UID:          true,
@@ -354,7 +348,6 @@ func (s *imapSession) fetchBodies(ctx context.Context, uids []imap.UID,
 			internalDate time.Time
 			raw          []byte
 			gotBody      bool
-			tooLarge     bool
 		)
 		for {
 			item := msg.Next()
@@ -370,14 +363,9 @@ func (s *imapSession) fetchBodies(ctx context.Context, uids []imap.UID,
 				if it.Literal == nil {
 					continue
 				}
-				b, err := io.ReadAll(io.LimitReader(it.Literal, maxMessageSize+1))
+				b, err := io.ReadAll(it.Literal)
 				if err != nil {
 					handleErr = fmt.Errorf("read body: %w", ctxErr(ctx, err))
-					_, _ = io.Copy(io.Discard, it.Literal)
-					continue
-				}
-				if len(b) > maxMessageSize {
-					tooLarge = true
 					_, _ = io.Copy(io.Discard, it.Literal)
 					continue
 				}
@@ -391,11 +379,11 @@ func (s *imapSession) fetchBodies(ctx context.Context, uids []imap.UID,
 		if uid == 0 {
 			continue
 		}
-		if !gotBody && !tooLarge {
+		if !gotBody {
 			handleErr = fmt.Errorf("uid %d: server returned no body", uid)
 			continue
 		}
-		if err := handle(uid, internalDate, raw, tooLarge); err != nil {
+		if err := handle(uid, internalDate, raw); err != nil {
 			handleErr = err
 		}
 	}

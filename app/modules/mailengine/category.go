@@ -392,21 +392,29 @@ func (f *categoryFacts) unit(kind unitKind) string {
 	case unitSendingDomain:
 		candidates = []string{f.senderDomain, b.ReportingMTA}
 	case unitSenderAddress:
-		candidates = []string{f.senderAddress, otherAddressIn(f.text, b.OriginalRecipient), f.senderDomain, b.ReportingMTA}
+		candidates = []string{f.senderAddress, otherAddressIn(f.text, b.Recipient), f.senderDomain, b.ReportingMTA}
 	case unitReportingMTA:
 		candidates = []string{b.ReportingMTA, f.senderDomain}
 	case unitRecipientAddress:
-		candidates = []string{b.OriginalRecipient, b.RecipientDomain}
+		candidates = []string{b.Recipient, b.RecipientDomain}
 	case unitRecipientDomain:
 		candidates = []string{b.RecipientDomain}
 	}
+	// Final fallback shared by every kind, so that a group never shows an
+	// empty unit: the recipient domain, then the remote MTA's host name,
+	// then a literal "unknown".
+	candidates = append(candidates, b.RecipientDomain, b.RemoteMTA, unitUnknown)
 	for _, c := range candidates {
 		if c = strings.ToLower(strings.TrimSpace(c)); c != "" {
 			return c
 		}
 	}
-	return ""
+	return unitUnknown
 }
+
+// unitUnknown is the unit_value written when nothing at all could be
+// extracted for the unit of a group.
+const unitUnknown = "unknown"
 
 // authority resolves the authority of a category (lower-cased).
 func (f *categoryFacts) authority(kind authorityKind) string {

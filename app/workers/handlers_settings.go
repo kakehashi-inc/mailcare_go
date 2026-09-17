@@ -5,42 +5,53 @@ import (
 	"net/http"
 	"strings"
 
+	"mailcare/app/models"
 	"mailcare/app/modules"
 	"mailcare/app/modules/agent"
 )
 
-// settingsDTO builds the settings payload.
-func (c *core) settingsDTO() map[string]any {
+// settingsDTO builds the settings payload. The server internals (worker
+// count, listen address and port, data directory) are included for
+// administrators only.
+func (c *core) settingsDTO(u *models.User) map[string]any {
 	providers := agent.Providers()
 	if providers == nil {
 		providers = []agent.ProviderStatus{}
 	}
-	return map[string]any{
-		"check_times":    modules.ResolveCheckTimes(c.db),
-		"agent_provider": modules.ResolveAgentProvider(c.db),
-		"agent_enabled":  modules.ResolveAgentEnabled(c.db),
-		"providers":      providers,
-		"workers":        c.jm.Workers(),
-		"web_listen":     c.webListen,
-		"web_port":       c.webPort,
-		"data_dir":       c.dataDir,
+	dto := map[string]any{
+		"check_times":     modules.ResolveCheckTimes(c.db),
+		"agent_provider":  modules.ResolveAgentProvider(c.db),
+		"agent_enabled":   modules.ResolveAgentEnabled(c.db),
+		"agent_keep_days": modules.ResolveAgentKeepDays(c.db),
+		"mail_keep_days":  modules.ResolveMailKeepDays(c.db),
+		"providers":       providers,
 		// check_times and notify_time are interpreted in this zone.
 		"server_timezone": modules.ServerTimezone(),
 	}
+	if u != nil && u.Role == modules.RoleAdmin {
+		dto["workers"] = c.jm.Workers()
+		dto["web_listen"] = c.webListen
+		dto["web_port"] = c.webPort
+		dto["data_dir"] = c.dataDir
+	}
+	return dto
 }
 
 func (c *core) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, c.settingsDTO())
+	writeJSON(w, http.StatusOK, c.settingsDTO(userFrom(r)))
 }
 
 // handleUpdateSettings changes the check times, the agent provider, the
-// agent switch and the worker count (applied to the job manager at once).
-// Absent fields are left unchanged.
+// agent switch, the retention of the agent run directories, the retention
+// of fetched mails and the worker count (applied to the job manager at
+// once). Absent fields are left unchanged.
 func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CheckTimes    *[]string `json:"check_times"`
 		AgentProvider *string   `json:"agent_provider"`
 		AgentEnabled  *bool     `json:"agent_enabled"`
+		AgentKeepDays *int      `json:"agent_keep_days"`
+		MailKeepDays  *int      `json:"mail_keep_days"`
 		Workers       *int      `json:"workers"`
 	}
 	if !decodeJSON(w, r, &body) {
@@ -50,12 +61,20 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("workers must be between 1 and %d", modules.MaxWorkers))
 		return
 	}
-	var times []string
-	if body.CheckTimes != nil {
-		if len(*body.CheckTimes) > 48 {
-			writeError(w, http.StatusBadRequest, "too many check times")
+	if body.AgentKeepDays != nil {
+		if err := modules.ValidateAgentKeepDays(*body.AgentKeepDays); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+	}
+	if body.MailKeepDays != nil {
+		if err := modules.ValidateMailKeepDays(*body.MailKeepDays); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	var times []string
+	if body.CheckTimes != nil {
 		var err error
 		if times, err = modules.ParseCheckTimes(*body.CheckTimes); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -88,6 +107,18 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.AgentKeepDays != nil {
+		if err := modules.SaveAgentKeepDays(c.db, *body.AgentKeepDays); err != nil {
+			writeInternalError(w, "failed to save the agent retention", err)
+			return
+		}
+	}
+	if body.MailKeepDays != nil {
+		if err := modules.SaveMailKeepDays(c.db, *body.MailKeepDays); err != nil {
+			writeInternalError(w, "failed to save the mail retention", err)
+			return
+		}
+	}
 	if body.Workers != nil {
 		if err := modules.SaveWorkers(c.db, *body.Workers); err != nil {
 			writeInternalError(w, "failed to save the worker count", err)
@@ -95,5 +126,5 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		c.jm.SetWorkers(*body.Workers)
 	}
-	writeJSON(w, http.StatusOK, c.settingsDTO())
+	writeJSON(w, http.StatusOK, c.settingsDTO(userFrom(r)))
 }

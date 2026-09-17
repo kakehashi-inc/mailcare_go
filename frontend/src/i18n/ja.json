@@ -77,7 +77,7 @@
         "unknown": "不明なエラーが発生しました。",
         "adminOnly": "このページは管理者のみ利用できます。",
         "renderTitle": "画面の表示中にエラーが発生しました",
-        "renderHint": "ページを再読み込みしてください。解決しない場合は管理者に連絡してください。",
+        "renderHint": "ページを再読み込みしてください。解決しない場合は、しばらく待ってからもう一度ページを再読み込みしてください。",
         "reload": "再読み込み"
     },
     "pagination": {
@@ -100,7 +100,8 @@
         "remember": "ログインを保持する",
         "rememberHint": "共有端末では使用しないでください。",
         "submit": "ログイン",
-        "errorInvalid": "ユーザー名またはパスワードが正しくありません。"
+        "errorInvalid": "ユーザー名またはパスワードが正しくありません。",
+        "errorTooMany": "ログインの失敗が続いたため、しばらく待ってから再試行してください。"
     },
     "setup": {
         "title": "初期設定",
@@ -143,6 +144,7 @@
         "analyze": "解析",
         "reindex": "再索引",
         "reclassify": "再判定",
+        "cleanup": "クリーンアップ",
         "notify": "通知メール送信",
         "other": "その他 ({{kind}})"
     },
@@ -228,9 +230,11 @@
         "port": "ポート",
         "portInvalid": "1〜65535 の数値を入力してください。",
         "security": "接続方式",
+        "securityNoneWarning": "暗号化なしでは、パスワードとメール本文が平文でネットワークを流れます。同じネットワーク内の信頼できるサーバーにだけ使ってください。",
         "username": "IMAP ユーザー名",
         "password": "IMAP パスワード",
         "passwordKeepHint": "空欄のままにすると、保存済みのパスワードを据え置きます。",
+        "passwordRequiredOnChange": "接続設定 (ホスト、ポート、接続方式、ユーザー名) を変更するときは、IMAP パスワードをもう一度入力してください。",
         "folder": "フォルダー",
         "sectionBasic": "基本情報",
         "sectionImap": "IMAP 接続",
@@ -367,6 +371,7 @@
         "tabText": "テキスト",
         "tabHtml": "HTML",
         "tabHeaders": "ヘッダー",
+        "textSection": "本文 {{index}}",
         "noText": "テキスト本文はありません",
         "noBody": "本文はありません",
         "noBodyHint": "テキスト本文も HTML 本文も空です。ヘッダーの確認と原文のダウンロードはできます。",
@@ -405,10 +410,11 @@
         "targetAll": "全グループ",
         "targetNeeds": "解析待ちのグループ",
         "alreadyActive": "同じジョブがすでに待機中または実行中です。",
-        "expanded": "アドレスごとに展開"
+        "expanded": "アドレスごとに展開",
+        "deletedMailbox": "削除済みのメールアドレス"
     },
     "tools": {
-        "description": "受信・纏め・解析を個別に、またはまとめて実行します。索引の再構築や判定のやり直しもここから行います。",
+        "description": "受信・纏め・解析を個別に、またはまとめて実行します。索引の再構築や判定のやり直し、保持日数によるクリーンアップもここから行います。",
         "adminOnlyTitle": "ツールの実行は管理者のみ行えます",
         "adminOnly": "一般利用者はジョブ履歴の閲覧のみできます。",
         "readOnly": "操作は管理者のみ行えます",
@@ -454,6 +460,11 @@
             "description": "メールを残したまま、バウンス判定と纏めだけをやり直します。判定ルールの更新後に使います。",
             "warning": ""
         },
+        "cleanup": {
+            "title": "クリーンアップ",
+            "description": "保持日数を過ぎたメール（原文・本文セクション・索引の行）、エージェントの古い作業ディレクトリ、完了から 30 日を過ぎたジョブ履歴を削除します。サーバーでは日付が変わるたびに自動で実行されます。",
+            "warning": "メールが無くなった纏めグループは分析報告ごと削除されます。"
+        },
         "runAria": "{{tool}}を開始"
     },
     "settings": {
@@ -468,7 +479,7 @@
         },
         "saved": "設定を保存しました。",
         "checkTimes": "同期時刻",
-        "checkTimesHint": "指定した時刻 (サーバーのローカル時刻) に、有効な全メールアドレスを自動で同期します。",
+        "checkTimesHint": "指定した時刻に、有効な全メールアドレスを自動で同期します。",
         "serverTimeZone": "サーバーのローカル時刻（{{zone}}）で実行されます。",
         "noCheckTimes": "同期時刻が設定されていません。自動同期は行われません。",
         "addTime": "時刻を追加",
@@ -476,6 +487,11 @@
         "removeTime": "{{time}}を削除",
         "invalidTime": "時刻は HH:MM 形式で指定してください。",
         "duplicateTime": "同じ時刻が重複しています。",
+        "mailRetention": "メールの保持",
+        "mailRetentionHint": "受信したメール（原文と本文セクション、索引の行）を残す期間の設定です。",
+        "mailKeepDays": "メールの保持日数",
+        "mailKeepDaysHint": "メールの日付からこの日数を過ぎたメールを、日付が変わるたびに実行されるクリーンアップで削除します（ツール画面からも実行できます）。所属していた纏めグループは件数を数え直し、メールが無くなったグループは分析報告ごと削除されます。",
+        "mailKeepDaysInvalid": "1〜3650 の整数を入力してください。",
         "jobs": "ジョブの実行",
         "jobsHint": "バックグラウンドで実行するジョブの設定です。",
         "workers": "ワーカー数",
@@ -491,6 +507,9 @@
         "providerUnavailableHint": "{{provider}}のコマンドがサーバーで見つかりません。インストールするか、別のプロバイダーを選んでください。",
         "agentEnabled": "エージェント分析を有効にする",
         "agentEnabledHint": "有効にすると、同期で新しいバウンスが見つかったときに自動で分析します。",
+        "agentKeepDays": "作業ディレクトリの保持日数",
+        "agentKeepDaysHint": "解析の実行ごとに作られる作業ディレクトリ（プロンプト、CLI の出力、報告）を残す日数。日付が変わるたびに実行されるクリーンアップで、これより古いものを削除します。",
+        "agentKeepDaysInvalid": "1〜365 の整数を入力してください。",
         "server": "サーバー情報",
         "serverHint": "起動パラメータで決まる値です。ここでは変更できません。",
         "webListen": "待受アドレス",
@@ -531,7 +550,7 @@
         "passwordReset": "{{username}}のパスワードを再設定しました。",
         "deleted": "{{username}}を削除しました。",
         "deleteTitle": "利用者を削除",
-        "deleteMessage": "{{username}}を削除します。この利用者のトークンも無効になります。",
+        "deleteMessage": "{{username}}を削除します。この操作は元に戻せません。",
         "cannotDeleteSelf": "自分自身は削除できません。",
         "cannotDeleteLastAdmin": "最後の管理者は削除できません。",
         "cannotDemoteLastAdmin": "最後の管理者を一般利用者に変更することはできません。",
@@ -540,8 +559,8 @@
         "deleteAria": "{{username}}を削除"
     },
     "token": {
-        "description": "ログイントークンは、将来の API 連携のために予約されている秘密の文字列です。利用者には紐づきません。",
-        "futureNote": "現在の Web ログインでは使いません。トークンが 1 つもないときは、サーバーが「default」トークンを自動で作成します。",
+        "description": "トークンは、将来の API 連携のために予約された機能です。Web のログインには使いません。",
+        "futureNote": "トークンが 1 つもないときは、サーバーが「default」トークンを自動で作成します。",
         "create": "トークンを発行",
         "name": "名前",
         "nameHint": "用途がわかる名前 (例: 監視スクリプト)",
@@ -602,6 +621,7 @@
         "passwordSet": "設定済み",
         "passwordHint": "認証しない場合は空欄にします。",
         "passwordKeepHint": "空欄のままなら変更しません。",
+        "passwordRequiredOnChange": "接続設定 (ホスト、ポート、接続方式、ユーザー名) を変更するときは、パスワードをもう一度入力してください。",
         "from": "送信元アドレス",
         "fromHint": "通知メールの差出人 (From) に使うアドレスです。",
         "fromInvalid": "メールアドレスの形式が正しくありません。",

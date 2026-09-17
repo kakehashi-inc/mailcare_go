@@ -37,9 +37,6 @@ const (
 	sessionExpiryLen = 8
 	sessionFlagsLen  = 1
 	sessionPlainLen  = sessionUserIDLen + sessionHashLen + sessionExpiryLen + sessionFlagsLen
-	// sessionLegacyPlainLen is the layout without the flags byte (cookies
-	// issued before "remember me" existed); such a cookie counts as remembered.
-	sessionLegacyPlainLen = sessionUserIDLen + sessionHashLen + sessionExpiryLen
 
 	sessionFlagRemember = 0x01
 )
@@ -104,17 +101,14 @@ func ValidateSessionCookie(db *sql.DB, key []byte, value string) (*Session, erro
 		return nil, err
 	}
 	plain, err := open(gcm, blob)
-	if err != nil || (len(plain) != sessionPlainLen && len(plain) != sessionLegacyPlainLen) {
+	if err != nil || len(plain) != sessionPlainLen {
 		return nil, ErrSessionInvalid
 	}
 	userID := int64(binary.BigEndian.Uint64(plain[:sessionUserIDLen]))
 	storedHash := plain[sessionUserIDLen : sessionUserIDLen+sessionHashLen]
 	expiryOff := sessionUserIDLen + sessionHashLen
 	expiry := time.Unix(int64(binary.BigEndian.Uint64(plain[expiryOff:expiryOff+sessionExpiryLen])), 0)
-	remember := true
-	if len(plain) == sessionPlainLen {
-		remember = plain[expiryOff+sessionExpiryLen]&sessionFlagRemember != 0
-	}
+	remember := plain[expiryOff+sessionExpiryLen]&sessionFlagRemember != 0
 	if time.Now().After(expiry) {
 		return nil, fmt.Errorf("session expired: %w", ErrSessionInvalid)
 	}

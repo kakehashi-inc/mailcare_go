@@ -17,12 +17,27 @@ type carriedGroup struct {
 	MessageCount   int
 }
 
-// carryover holds the group states and agent reports of the previous index
-// so that Reindex can restore them for the group keys that come back (group
-// keys are deterministic, so a rebuilt group is the same problem).
+// carryover holds what Reindex keeps from the previous index: the IMAP
+// identity and fetch facts of every message (by message key, since the raw
+// file does not record them), and the group states and agent reports, which
+// are restored for the group keys that come back (group keys are
+// deterministic, so a rebuilt group is the same problem).
 type carryover struct {
+	sources map[string]models.MessageSource
 	groups  map[string]carriedGroup
 	reports []*models.AgentReport // in old id order
+}
+
+// messageSource returns the carried source of a message key (nil when the
+// previous index did not know the key, or when nothing was carried over).
+func (c *carryover) messageSource(key string) *models.MessageSource {
+	if c == nil {
+		return nil
+	}
+	if s, ok := c.sources[key]; ok {
+		return &s
+	}
+	return nil
 }
 
 // errCarryoverOutdated is returned by readCarryover when the previous index
@@ -30,11 +45,12 @@ type carryover struct {
 // nothing is carried over.
 var errCarryoverOutdated = errors.New("previous index has an outdated schema")
 
-// readCarryover reads the groups and agent reports of the index at path
-// through the models. The file is opened directly (not through OpenMailIndex,
-// which would fail on an outdated schema); when its schema version is not
-// the current one, errCarryoverOutdated is returned and the caller continues
-// without carrying anything over. A missing file yields nil, nil.
+// readCarryover reads the message sources, the groups and the agent reports
+// of the index at path through the models. The file is opened directly (not
+// through OpenMailIndex, which would fail on an outdated schema); when its
+// schema version is not the current one, errCarryoverOutdated is returned
+// and the caller continues without carrying anything over. A missing file
+// yields nil, nil.
 func readCarryover(path string) (*carryover, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -57,6 +73,10 @@ func readCarryover(path string) (*carryover, error) {
 	}
 
 	c := &carryover{groups: map[string]carriedGroup{}}
+	c.sources, err = models.ListMessageSources(db)
+	if err != nil {
+		return nil, err
+	}
 	groups, err := models.ListGroups(db, models.GroupFilter{})
 	if err != nil {
 		return nil, err
@@ -75,8 +95,9 @@ func readCarryover(path string) (*carryover, error) {
 
 // apply restores the carried state and reports into the rebuilt index for
 // the group keys that exist there. needs_analysis is carried over as it was,
-// except that a group whose message count grew is flagged again. It returns
-// how many groups and reports were restored.
+// except that a group whose message count grew is flagged again (a
+// recipient-side group is never flagged, RestoreGroupState). It returns how
+// many groups and reports were restored.
 func (c *carryover) apply(db *sql.DB) (groups, reports int, err error) {
 	if c == nil {
 		return 0, 0, nil
@@ -111,19 +132,32 @@ func (c *carryover) apply(db *sql.DB) (groups, reports int, err error) {
 
 // reapplyReportResponsible re-applies the responsible party named by the
 // latest completed agent report of every group, because the group upsert of
-// a grouping / reindex resets it to the machine-derived value.
+// a grouping / reindex resets it to the machine-derived value. As when the
+// report was first stored (agent.AnalyzeGroup), only a definite answer
+// (sender / recipient / domain) replaces the rule-based value; "unknown", an
+// empty or an unexpected value leaves it as the grouping derived it.
 func reapplyReportResponsible(db *sql.DB) error {
 	latest, err := models.LatestCompletedAgentReports(db)
 	if err != nil {
 		return err
 	}
 	for key, r := range latest {
-		switch r.Responsible {
-		case responsibleSender, responsibleRecipient, responsibleDomain, responsibleUnknown:
-			if err := models.UpdateGroupResponsible(db, key, r.Responsible); err != nil {
-				return err
-			}
+		if !isDefiniteResponsible(r.Responsible) {
+			continue
+		}
+		if err := models.UpdateGroupResponsible(db, key, r.Responsible); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// isDefiniteResponsible reports whether v names an actual party (sender,
+// recipient or domain) rather than "", unknown or anything unexpected.
+func isDefiniteResponsible(v string) bool {
+	switch v {
+	case responsibleSender, responsibleRecipient, responsibleDomain:
+		return true
+	}
+	return false
 }

@@ -117,12 +117,27 @@ func (c *core) handleUpdateNotificationSettings(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, dto)
 }
 
+// notificationTestInput is the body of POST /api/v1/notifications/test: the
+// recipient (default: the caller's own address) and, optionally, connection
+// values to try instead of the saved ones.
+type notificationTestInput struct {
+	To           string  `json:"to"`
+	SMTPHost     *string `json:"smtp_host"`
+	SMTPPort     *int    `json:"smtp_port"`
+	SMTPSecurity *string `json:"smtp_security"`
+	SMTPUsername *string `json:"smtp_username"`
+	SMTPPassword *string `json:"smtp_password"`
+	SMTPFrom     *string `json:"smtp_from"`
+}
+
 // handleTestNotification sends the SMTP test mail to the given address
-// (default: the caller's own address) and reports the SMTP error text.
+// (default: the caller's own address) and reports the SMTP error text. The
+// stored password is used only when the host, port, security mode and
+// username are the saved ones; a request that changes one of them must
+// carry smtp_password (400 otherwise), so the stored password is never
+// relayed to another server.
 func (c *core) handleTestNotification(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		To string `json:"to"`
-	}
+	var body notificationTestInput
 	if r.ContentLength != 0 && !decodeJSON(w, r, &body) {
 		return
 	}
@@ -134,12 +149,15 @@ func (c *core) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no recipient: set your notification address or pass \"to\"")
 		return
 	}
-	s, err := modules.ResolveNotificationSettings(c.db, c.key)
+	cfg, err := modules.SMTPConfigForTest(c.db, c.key, &modules.SMTPTestInput{
+		Host: body.SMTPHost, Port: body.SMTPPort, Security: body.SMTPSecurity, Username: body.SMTPUsername,
+		Password: body.SMTPPassword, From: body.SMTPFrom,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := modules.TestSMTP(r.Context(), s.SMTP, to); err != nil {
+	if err := modules.TestSMTP(r.Context(), cfg, to); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

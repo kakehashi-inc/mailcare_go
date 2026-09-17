@@ -89,31 +89,73 @@ func ValidMessageKey(key string) bool {
 	return messageKeyPattern.MatchString(key)
 }
 
-// MessageFilePath returns the path of one raw file (ext: eml, txt, html, json).
-// An invalid key or extension yields "" (ReadMessageFile reports the error).
+// MessageFilePath returns the path of the raw file (<key>.eml) of a message;
+// the body sections are addressed with SectionFilePath. An invalid key or an
+// extension other than "eml" yields "" (ReadMessageFile reports the error).
 func MessageFilePath(mailsRoot, address, messageKey, ext string) string {
-	if !ValidMessageKey(messageKey) || !validExt(ext) {
+	if !ValidMessageKey(messageKey) || ext != "eml" {
 		return ""
 	}
 	return filepath.Join(MailboxDir(mailsRoot, address), messageKey+"."+ext)
 }
 
-func validExt(ext string) bool {
-	switch ext {
-	case "eml", "txt", "html", "json":
-		return true
-	}
-	return false
+// validSectionExt reports whether ext names a body section kind.
+func validSectionExt(ext string) bool {
+	return ext == "txt" || ext == "html"
 }
 
-// ReadMessageFile reads one raw file of a message. A missing optional file
-// (txt/html) yields os.ErrNotExist.
+// SectionFilePath returns the path of the n-th body section file of a
+// message inside the mailbox directory dir (design 3.2): sections are
+// numbered from 1, <key>-<n>.<ext>, whatever their count. ext is "txt" or
+// "html". An invalid key, extension or n < 1 yields "".
+func SectionFilePath(dir, key, ext string, n int) string {
+	if !ValidMessageKey(key) || !validSectionExt(ext) || n < 1 {
+		return ""
+	}
+	return filepath.Join(dir, sectionFileName(key, ext, n))
+}
+
+// sectionFileName is the file name of the n-th section (n >= 1) of one kind.
+func sectionFileName(key, ext string, n int) string {
+	return key + "-" + strconv.Itoa(n) + "." + ext
+}
+
+// ReadMessageFile reads the raw file (.eml) of a message. A missing file
+// yields os.ErrNotExist.
 func ReadMessageFile(mailsRoot, address, messageKey, ext string) ([]byte, error) {
 	path := MessageFilePath(mailsRoot, address, messageKey, ext)
 	if path == "" {
 		return nil, ErrInvalidMessageKey
 	}
 	return os.ReadFile(path)
+}
+
+// ReadBodySections reads the body sections of one kind of a message in
+// order: <key>-1.<ext>, <key>-2.<ext>, ... up to count files (ext "txt" with
+// messages.text_count, "html" with messages.html_count). A section file that
+// does not exist is skipped, so the result can be shorter than count; it is
+// never nil. An invalid key yields ErrInvalidMessageKey, an extension other
+// than txt / html an error.
+func ReadBodySections(mailsRoot, address, key, ext string, count int) ([]string, error) {
+	if !ValidMessageKey(key) {
+		return nil, ErrInvalidMessageKey
+	}
+	if !validSectionExt(ext) {
+		return nil, fmt.Errorf("mailengine: %q is not a body section extension", ext)
+	}
+	dir := MailboxDir(mailsRoot, address)
+	out := []string{}
+	for n := 1; n <= count; n++ {
+		data, err := os.ReadFile(SectionFilePath(dir, key, ext, n))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, string(data))
+	}
+	return out, nil
 }
 
 // DeleteMailboxData removes the raw files directory and the index of a mailbox

@@ -5,11 +5,16 @@ import (
 	"strings"
 )
 
-// Classification is the outcome of the bounce detection for one message.
+// Classification is the outcome of the bounce detection for one message
+// (messages.is_bounce / bounce_kind / rule / body_source).
 type Classification struct {
 	IsBounce bool
 	Kind     string // failed | delayed | auto_reply | other ("" when not a bounce)
-	Reason   string // name of the matching rule ("" when not a bounce)
+	Rule     string // name of the matching rule ("" when not a bounce)
+	// BodySource is the body the decision was made on: the primary body
+	// ("text", else "html") or "html" when only the HTML body of a message
+	// that also has a text body matched; "" when the message has no body.
+	BodySource string
 }
 
 // classifyRule is one row of the rule table (design 5.3). Rules are evaluated
@@ -21,8 +26,10 @@ type classifyRule struct {
 }
 
 // classifyRules is the rule table. Keep the order of the design document:
-// structured DSNs first, then daemon senders, then subject patterns, then
-// auto-replies and finally daemon display names.
+// structured DSNs first, then daemon senders, then auto-replies (before the
+// subject patterns, so that an automatic reply quoting a bounce subject is
+// not taken for the bounce), then subject patterns, daemon display names and
+// finally the body wording.
 var classifyRules = []classifyRule{
 	{
 		// 1. multipart/report; report-type=delivery-status
@@ -47,7 +54,20 @@ var classifyRules = []classifyRule{
 		},
 	},
 	{
-		// 3. Subject matches a known bounce pattern
+		// 3. Auto-Submitted: auto-replied / auto-generated (an automatic
+		// reply that is not a DSN and not from a daemon) or an out-of-office
+		// subject. Evaluated before the subject patterns: "Automatic reply:
+		// Undeliverable: ..." is a reply, not the bounce it quotes.
+		name: "auto_reply",
+		match: func(pm *ParsedMessage, body string) string {
+			if isAutoSubmitted(pm.AutoSubmitted) || autoReplySubjectRe.MatchString(pm.Subject) {
+				return bounceKindAutoReply
+			}
+			return ""
+		},
+	},
+	{
+		// 4. Subject matches a known bounce pattern
 		name: "subject_pattern",
 		match: func(pm *ParsedMessage, body string) string {
 			if !bounceSubjectRe.MatchString(pm.Subject) {
@@ -60,23 +80,28 @@ var classifyRules = []classifyRule{
 		},
 	},
 	{
-		// 4. Auto-Submitted: auto-replied or an out-of-office subject
-		name: "auto_reply",
+		// 5. From display name of a mail delivery system: a daemon mail, but
+		// a failure only when the subject or body says so ("Postmaster Team"
+		// announcing maintenance is "other" and is not grouped).
+		name: "daemon_display_name",
 		match: func(pm *ParsedMessage, body string) string {
-			if strings.HasPrefix(pm.AutoSubmitted, "auto-replied") || autoReplySubjectRe.MatchString(pm.Subject) {
-				return bounceKindAutoReply
+			if daemonDisplayNameRe.MatchString(pm.FromName) {
+				return kindFromText(pm.Subject, body)
 			}
 			return ""
 		},
 	},
 	{
-		// 5. From display name of a mail delivery system
-		name: "daemon_display_name",
+		// 6. The body itself carries the wording of a non-delivery report
+		// (used when neither the structure nor the sender nor the subject
+		// gave it away, e.g. a notification relay forwarding an NDR; also
+		// what makes an HTML-only bounce wording count).
+		name: "body_pattern",
 		match: func(pm *ParsedMessage, body string) string {
-			if daemonDisplayNameRe.MatchString(pm.FromName) {
-				return bounceKindOther
+			if !bounceBodyRe.MatchString(body) {
+				return ""
 			}
-			return ""
+			return kindFromText(pm.Subject, body)
 		},
 	},
 }
@@ -159,21 +184,63 @@ var (
 		"\u5916\u51fa\u4e2d", // gaishutsu chuu: away
 	}, "|"))
 
+	// bounceBodyRe lists the phrases that only a non-delivery report carries
+	// (strict on purpose: a normal mail quoting an error must not match).
+	bounceBodyRe = regexp.MustCompile(`(?i)` + strings.Join([]string{
+		`delivery has failed to these recipients`,
+		`the following recipient\(s\) cannot be reached`,
+		`undelivered mail returned to sender`,
+		`the following address(?:\(es\)|es)? failed`,
+		`could not be delivered to (?:one or more|the following)`,
+		`(?:message|mail) (?:wasn't|was not|couldn't be|could not be) delivered to`,
+		`this is the mail system at host`,
+		`remote server returned '[45][0-9]{2}`,
+		`delivery status notification \((?:failure|delay)\)`,
+		`delivery to the following recipients? (?:failed|was delayed)`,
+		`your message did not reach some or all of the intended recipients`,
+	}, "|"))
+
 	daemonDisplayNameRe = regexp.MustCompile(`(?i)^\s*(?:mail delivery (?:sub)?system|mail delivery service|mail administrator|mailer[ -]?daemon|postmaster|internet mail delivery|delivery notification)\b`)
 )
 
-// Classify runs the rule table over a parsed message.
+// Classify runs the rule table over a parsed message: first with the
+// primary body (every text section joined, else the HTML sections rendered
+// as text), then, when the message also carries HTML sections, with the
+// HTML text. A match on either makes the message a bounce (design 5.2 / 5.3).
 func Classify(pm *ParsedMessage) Classification {
 	if pm == nil {
 		return Classification{}
 	}
-	body := pm.bodyForClassification()
-	for _, rule := range classifyRules {
-		if kind := rule.match(pm, body); kind != "" {
-			return Classification{IsBounce: true, Kind: kind, Reason: rule.name}
+	if c, ok := classifyWith(pm, pm.bodyForClassification()); ok {
+		c.BodySource = pm.primarySource()
+		return c
+	}
+	if secondary := pm.secondaryBody(); secondary != "" {
+		if c, ok := classifyWith(pm, secondary); ok {
+			c.BodySource = bodySourceHTML
+			return c
 		}
 	}
-	return Classification{}
+	return Classification{BodySource: pm.primarySource()}
+}
+
+// classifyWith evaluates the rule table with one body text.
+func classifyWith(pm *ParsedMessage, body string) (Classification, bool) {
+	for _, rule := range classifyRules {
+		if kind := rule.match(pm, body); kind != "" {
+			return Classification{IsBounce: true, Kind: kind, Rule: rule.name}, true
+		}
+	}
+	return Classification{}, false
+}
+
+// isAutoSubmitted reports whether an Auto-Submitted header value (lower
+// case) marks an automatic reply or an automatically generated message
+// ("auto-replied", "auto-generated", with or without a comment such as
+// "(failure)"). "no" and an empty value do not.
+func isAutoSubmitted(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "auto-replied") || strings.HasPrefix(value, "auto-generated")
 }
 
 // isDaemonAddress reports whether the local part of address is a mail daemon.
@@ -195,9 +262,12 @@ func isDaemonAddress(address string) bool {
 	return false
 }
 
-// kindFromDeliveryStatus derives failed / delayed / other from the DSN actions.
-// A DSN that only reports successes (delivered / relayed / expanded) is a
-// daemon mail but not a failure, so it becomes "other".
+// kindFromDeliveryStatus derives failed / delayed / other from the DSN actions
+// (normalized by the parser: failed / delayed / delivered / relayed /
+// expanded or ""), falling back to the class of the status code. A DSN that
+// only reports successes (delivered / relayed / expanded, or a 2.x.x
+// status) is a daemon mail but not a failure, so it becomes "other" and is
+// not grouped.
 func kindFromDeliveryStatus(pm *ParsedMessage, body string) string {
 	var failed, delayed, success int
 	if pm.DeliveryStatus != nil {
@@ -210,10 +280,13 @@ func kindFromDeliveryStatus(pm *ParsedMessage, body string) string {
 			case "delivered", "relayed", "expanded":
 				success++
 			default:
-				if strings.HasPrefix(r.Status, "5") {
+				switch {
+				case strings.HasPrefix(r.Status, "5"):
 					failed++
-				} else if strings.HasPrefix(r.Status, "4") {
+				case strings.HasPrefix(r.Status, "4"):
 					delayed++
+				case strings.HasPrefix(r.Status, "2"):
+					success++
 				}
 			}
 		}
@@ -230,10 +303,12 @@ func kindFromDeliveryStatus(pm *ParsedMessage, body string) string {
 	return kindFromText(pm.Subject, body)
 }
 
-// kindFromText decides between delayed and failed from the subject and body
-// wording. Failure wording wins over delay wording because delay notices
-// rarely mention a permanent error while failure notices often say "delayed
-// ... and will not be retried".
+// kindFromText decides between delayed, failed and other from the subject
+// and body wording. Failure wording wins over delay wording because delay
+// notices rarely mention a permanent error while failure notices often say
+// "delayed ... and will not be retried". A daemon mail whose subject and
+// body carry neither failure nor delay wording (a success report, an
+// announcement from postmaster) is "other": recorded, not grouped.
 func kindFromText(subject, body string) string {
 	if delayedSubjectRe.MatchString(subject) && !failedSubjectHint(subject) {
 		return bounceKindDelayed
@@ -244,7 +319,10 @@ func kindFromText(subject, body string) string {
 	if delayedBodyRe.MatchString(body) {
 		return bounceKindDelayed
 	}
-	return bounceKindFailed
+	if failedSubjectHint(subject) || bounceSubjectRe.MatchString(subject) {
+		return bounceKindFailed
+	}
+	return bounceKindOther
 }
 
 // failedSubjectHint reports whether a subject that also contains delay wording

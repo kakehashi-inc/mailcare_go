@@ -102,7 +102,7 @@ func ResolveNotificationSettings(db *sql.DB, key []byte) (*NotificationSettings,
 // entries are dropped, duplicates removed, ascending).
 func ParseNotifyUserIDs(s string) []int64 {
 	seen := map[int64]bool{}
-	var out []int64
+	out := []int64{} // never nil so that JSON output shows [] rather than null
 	for _, part := range strings.Split(s, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -131,11 +131,8 @@ func FormatNotifyUserIDs(ids []int64) string {
 // ValidateNotifyTime checks one HH:MM time and returns it normalized.
 func ValidateNotifyTime(s string) (string, error) {
 	times, err := ParseCheckTimes([]string{s})
-	if err != nil {
-		return "", fmt.Errorf("notify_time: %w", err)
-	}
-	if len(times) != 1 {
-		return "", errors.New("notify_time must be one HH:MM time")
+	if err != nil || len(times) != 1 {
+		return "", fmt.Errorf("invalid notify_time %q (use one HH:MM time, 00:00-23:59)", strings.TrimSpace(s))
 	}
 	return times[0], nil
 }
@@ -210,7 +207,11 @@ type NotificationInput struct {
 
 // SaveNotificationSettings validates every given field and persists it
 // (values equal to the code default delete the row). key is needed only
-// when a password is given.
+// when a password is given. While a password is stored, an update that
+// changes the host, port, security mode or username must carry the password
+// too (ErrSMTPPasswordRequired otherwise; nothing is saved): the stored
+// password serves the server it was saved for and is never pointed at
+// another one.
 func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) error {
 	type write struct {
 		key, value string
@@ -242,15 +243,9 @@ func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 	}
 	if in.SMTPUsername != nil {
 		name := strings.TrimSpace(*in.SMTPUsername)
-		if len(name) > 256 {
-			return errors.New("smtp_username must be 256 characters or fewer")
-		}
 		writes = append(writes, write{SettingSMTPUsername, name, name == ""})
 	}
 	if in.SMTPPassword != nil && *in.SMTPPassword != "" {
-		if len(*in.SMTPPassword) > 256 {
-			return errors.New("smtp_password must be 256 characters or fewer")
-		}
 		if key == nil {
 			return errors.New("the master key is required to store the SMTP password")
 		}
@@ -302,6 +297,15 @@ func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 		value := FormatNotifyUserIDs(ids)
 		writes = append(writes, write{SettingNotifyUserIDs, value, value == ""})
 	}
+	if in.SMTPPassword == nil || *in.SMTPPassword == "" {
+		saved, err := ResolveNotificationSettings(db, nil)
+		if err != nil {
+			return err
+		}
+		if saved.SMTPPasswordSet && smtpConnectionChanged(saved, in) {
+			return ErrSMTPPasswordRequired
+		}
+	}
 	for _, w := range writes {
 		if err := PersistSetting(db, w.key, w.value, w.isDefault); err != nil {
 			return err
@@ -310,9 +314,29 @@ func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 	return nil
 }
 
-// ClearSMTPPassword removes the stored SMTP password.
-func ClearSMTPPassword(db *sql.DB) error {
-	return models.DeleteSetting(db, SettingSMTPPasswordEnc)
+// smtpConnectionChanged reports whether in changes the SMTP host, port,
+// security mode or username away from the saved values (compared after the
+// same normalization the update applies).
+func smtpConnectionChanged(saved *NotificationSettings, in *NotificationInput) bool {
+	if in.SMTPHost != nil && strings.TrimSpace(*in.SMTPHost) != saved.SMTP.Host {
+		return true
+	}
+	if in.SMTPPort != nil && *in.SMTPPort != saved.SMTP.Port {
+		return true
+	}
+	if in.SMTPSecurity != nil {
+		sec := strings.ToLower(strings.TrimSpace(*in.SMTPSecurity))
+		if sec == "" {
+			sec = DefaultSMTPSecurity
+		}
+		if sec != saved.SMTP.Security {
+			return true
+		}
+	}
+	if in.SMTPUsername != nil && strings.TrimSpace(*in.SMTPUsername) != saved.SMTP.Username {
+		return true
+	}
+	return false
 }
 
 // SetNotifyLastSent records the time of the last notification mail.
@@ -667,6 +691,84 @@ func loadCategoryLabels() (map[string]string, error) {
 }
 
 // --- Sending ---
+
+// ErrSMTPPasswordRequired is returned by SaveNotificationSettings and
+// SMTPConfigForTest when a password is stored, the request changes the
+// connection settings (host, port, security, username) and gives no
+// password of its own.
+var ErrSMTPPasswordRequired = errors.New("smtp_password is required when the connection settings change")
+
+// SMTPTestInput carries the connection values a test mail may try instead of
+// the saved ones; nil fields (and an empty password) mean the saved values.
+type SMTPTestInput struct {
+	Host     *string
+	Port     *int
+	Security *string
+	Username *string
+	Password *string
+	From     *string
+}
+
+// SMTPConfigForTest builds the SMTP configuration of a test mail from the
+// saved settings and the values given in the request. The stored password is
+// used only when the host, port, security mode and username are the saved
+// ones; as soon as one of them differs the request must carry its own
+// password (ErrSMTPPasswordRequired otherwise), so that the stored password
+// can never be sent to a server other than the one it was saved for.
+func SMTPConfigForTest(db *sql.DB, key []byte, in *SMTPTestInput) (SMTPConfig, error) {
+	saved, err := ResolveNotificationSettings(db, key)
+	if err != nil {
+		return SMTPConfig{}, err
+	}
+	cfg := saved.SMTP
+	cfg.Password = ""
+	if in == nil {
+		in = &SMTPTestInput{}
+	}
+	if in.Host != nil {
+		cfg.Host = strings.TrimSpace(*in.Host)
+	}
+	if in.Port != nil {
+		if *in.Port < 1 || *in.Port > 65535 {
+			return SMTPConfig{}, errors.New("smtp_port must be between 1 and 65535")
+		}
+		cfg.Port = *in.Port
+	}
+	if in.Security != nil {
+		sec := strings.ToLower(strings.TrimSpace(*in.Security))
+		if sec == "" {
+			sec = DefaultSMTPSecurity
+		}
+		if err := ValidateSMTPSecurity(sec); err != nil {
+			return SMTPConfig{}, err
+		}
+		cfg.Security = sec
+	}
+	if in.Username != nil {
+		cfg.Username = strings.TrimSpace(*in.Username)
+	}
+	if in.From != nil {
+		from, err := NormalizeEmail(*in.From)
+		if err != nil {
+			return SMTPConfig{}, fmt.Errorf("smtp_from: %w", err)
+		}
+		cfg.From = from
+	}
+	if in.Password != nil && *in.Password != "" {
+		cfg.Password = *in.Password
+		return cfg, nil
+	}
+	if !saved.SMTPPasswordSet {
+		return cfg, nil
+	}
+	sameServer := cfg.Host == saved.SMTP.Host && cfg.Port == saved.SMTP.Port &&
+		cfg.Security == saved.SMTP.Security && cfg.Username == saved.SMTP.Username
+	if !sameServer {
+		return SMTPConfig{}, ErrSMTPPasswordRequired
+	}
+	cfg.Password = saved.SMTP.Password
+	return cfg, nil
+}
 
 // TestSMTP sends a short mail that only proves the SMTP settings work.
 func TestSMTP(ctx context.Context, cfg SMTPConfig, to string) error {

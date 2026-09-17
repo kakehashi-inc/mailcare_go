@@ -1,7 +1,10 @@
 package modules
 
 import (
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
 
 	"mailcare/app/models"
 )
@@ -28,11 +31,17 @@ func mailboxRow(mb *models.Mailbox) map[string]interface{} {
 	}
 }
 
+// imapEndpoint renders the IMAP host and port of a mailbox as "host:port"
+// (an IPv6 literal is bracketed: "[::1]:993").
+func imapEndpoint(mb *models.Mailbox) string {
+	return net.JoinHostPort(mb.ImapHost, strconv.Itoa(mb.ImapPort))
+}
+
 func printMailbox(mb *models.Mailbox) {
 	fmt.Printf("id:            %d\n", mb.ID)
 	fmt.Printf("address:       %s\n", mb.Address)
 	fmt.Printf("display name:  %s\n", mb.DisplayName)
-	fmt.Printf("imap:          %s:%d (%s)\n", mb.ImapHost, mb.ImapPort, mb.ImapSecurity)
+	fmt.Printf("imap:          %s (%s)\n", imapEndpoint(mb), mb.ImapSecurity)
 	fmt.Printf("username:      %s\n", mb.ImapUsername)
 	fmt.Printf("folder:        %s\n", mb.Folder)
 	fmt.Printf("enabled:       %v\n", mb.Enabled)
@@ -65,7 +74,7 @@ func (c *MailboxAddCmd) Run() error {
 		return err
 	}
 	defer db.Close()
-	key, err := loadKeyForCLI()
+	key, err := loadKeyForCLI(db)
 	if err != nil {
 		return err
 	}
@@ -128,8 +137,7 @@ func (c *MailboxListCmd) Run() error {
 	}
 	fmt.Printf("%-5s %-32s %-28s %-8s %-20s %s\n", "ID", "ADDRESS", "IMAP", "ENABLED", "LAST FETCH", "STATUS")
 	for _, mb := range mailboxes {
-		imap := fmt.Sprintf("%s:%d", mb.ImapHost, mb.ImapPort)
-		fmt.Printf("%-5d %-32s %-28s %-8v %-20s %s\n", mb.ID, mb.Address, clip(imap, 28), mb.Enabled, formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
+		fmt.Printf("%-5d %-32s %-28s %-8v %-20s %s\n", mb.ID, mb.Address, clip(imapEndpoint(mb), 28), mb.Enabled, formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
 	}
 	return nil
 }
@@ -196,11 +204,11 @@ func (c *MailboxUpdateCmd) Run() error {
 		return err
 	}
 	defer db.Close()
-	key, err := loadKeyForCLI()
+	key, err := loadKeyForCLI(db)
 	if err != nil {
 		return err
 	}
-	mailsRoot, _, err := dataRoots()
+	mailsRoot, agentRoot, err := dataRootsForCLI()
 	if err != nil {
 		return err
 	}
@@ -247,7 +255,13 @@ func (c *MailboxUpdateCmd) Run() error {
 		enabled := c.Enabled
 		in.Enabled = &enabled
 	}
-	if err := UpdateMailbox(db, key, mailsRoot, mb, in); err != nil {
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, mb, in); err != nil {
+		if errors.Is(err, ErrMailboxBusy) {
+			return NewExitError(ExitExec, err.Error())
+		}
+		if errors.Is(err, ErrPasswordRequired) {
+			return NewExitErrorf(ExitArgument, "%s (pass --password or --ask-password)", err)
+		}
 		return NewExitError(ExitArgument, err.Error())
 	}
 	fmt.Printf("Updated mailbox %q\n", mb.Address)
@@ -258,7 +272,7 @@ func (c *MailboxUpdateCmd) Run() error {
 type MailboxDeleteCmd struct {
 	Address  string `arg:"" help:"Mail address"`
 	Yes      bool   `short:"y" help:"Skip confirmation"`
-	KeepData bool   `help:"Keep the raw mail files and the index" name:"keep-data"`
+	KeepData bool   `help:"Keep the raw mail files, the index and the agent workspaces" name:"keep-data"`
 }
 
 func (c *MailboxDeleteCmd) Run() error {
@@ -267,7 +281,7 @@ func (c *MailboxDeleteCmd) Run() error {
 		return err
 	}
 	defer db.Close()
-	mailsRoot, _, err := dataRoots()
+	mailsRoot, agentRoot, err := dataRootsForCLI()
 	if err != nil {
 		return err
 	}
@@ -283,7 +297,10 @@ func (c *MailboxDeleteCmd) Run() error {
 		fmt.Println("Cancelled")
 		return nil
 	}
-	if err := DeleteMailbox(db, mailsRoot, mb, c.KeepData); err != nil {
+	if err := DeleteMailbox(db, mailsRoot, agentRoot, mb, c.KeepData); err != nil {
+		if errors.Is(err, ErrMailboxBusy) {
+			return NewExitError(ExitExec, err.Error())
+		}
 		return NewExitError(ExitGeneral, err.Error())
 	}
 	fmt.Printf("Deleted mailbox %q\n", mb.Address)
@@ -301,7 +318,7 @@ func (c *MailboxTestCmd) Run() error {
 		return err
 	}
 	defer db.Close()
-	key, err := loadKeyForCLI()
+	key, err := loadKeyForCLI(db)
 	if err != nil {
 		return err
 	}
@@ -309,7 +326,7 @@ func (c *MailboxTestCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Testing the IMAP connection of %s (%s:%d, %s)... ", mb.Address, mb.ImapHost, mb.ImapPort, mb.ImapSecurity)
+	fmt.Printf("Testing the IMAP connection of %s (%s, %s)... ", mb.Address, imapEndpoint(mb), mb.ImapSecurity)
 	ctx, cancel := signalContext()
 	defer cancel()
 	if err := TestMailboxConnection(ctx, db, key, MailboxInputFrom(mb)); err != nil {

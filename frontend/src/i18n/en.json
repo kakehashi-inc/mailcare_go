@@ -77,7 +77,7 @@
         "unknown": "An unknown error occurred.",
         "adminOnly": "This page is available to administrators only.",
         "renderTitle": "The page failed to render",
-        "renderHint": "Reload the page. If the problem persists, contact an administrator.",
+        "renderHint": "Reload the page. If the problem persists, wait a moment and reload it again.",
         "reload": "Reload"
     },
     "pagination": {
@@ -100,7 +100,8 @@
         "remember": "Keep me signed in",
         "rememberHint": "Do not use on a shared device.",
         "submit": "Log in",
-        "errorInvalid": "The username or password is incorrect."
+        "errorInvalid": "The username or password is incorrect.",
+        "errorTooMany": "Too many failed login attempts. Please wait a moment and try again."
     },
     "setup": {
         "title": "Initial setup",
@@ -143,6 +144,7 @@
         "analyze": "Analyze",
         "reindex": "Reindex",
         "reclassify": "Reclassify",
+        "cleanup": "Cleanup",
         "notify": "Notification mail",
         "other": "Other ({{kind}})"
     },
@@ -228,9 +230,11 @@
         "port": "Port",
         "portInvalid": "Enter a number between 1 and 65535.",
         "security": "Connection",
+        "securityNoneWarning": "Without encryption the password and the mail body travel the network in plain text. Use this only with a trusted server on the same network.",
         "username": "IMAP username",
         "password": "IMAP password",
         "passwordKeepHint": "Leave empty to keep the stored password.",
+        "passwordRequiredOnChange": "Enter the IMAP password again when you change the connection settings (host, port, connection, username).",
         "folder": "Folder",
         "sectionBasic": "Basics",
         "sectionImap": "IMAP connection",
@@ -367,6 +371,7 @@
         "tabText": "Text",
         "tabHtml": "HTML",
         "tabHeaders": "Headers",
+        "textSection": "Text section {{index}}",
         "noText": "No text body",
         "noBody": "This mail has no body",
         "noBodyHint": "Both the text and the HTML part are empty. The headers and the raw download are still available.",
@@ -405,10 +410,11 @@
         "targetAll": "all groups",
         "targetNeeds": "groups awaiting analysis",
         "alreadyActive": "The same job is already queued or running.",
-        "expanded": "expanded per mailbox"
+        "expanded": "expanded per mailbox",
+        "deletedMailbox": "Deleted mailbox"
     },
     "tools": {
-        "description": "Run fetch, grouping and analysis separately or together, rebuild the index, or redo the classification.",
+        "description": "Run fetch, grouping and analysis separately or together, rebuild the index, redo the classification, or apply the retentions with a cleanup.",
         "adminOnlyTitle": "Only administrators can run tools",
         "adminOnly": "Members can view the job history.",
         "readOnly": "Only administrators can run this",
@@ -454,6 +460,11 @@
             "description": "Keeps the messages and re-runs only bounce classification and grouping. Use after classification rules change.",
             "warning": ""
         },
+        "cleanup": {
+            "title": "Cleanup",
+            "description": "Removes the mails past their retention (original, body sections and index row), the old agent workspaces and the jobs finished more than 30 days ago. The server runs this automatically whenever the date changes.",
+            "warning": "A bounce group left without mails is removed together with its analysis report."
+        },
         "runAria": "Start {{tool}}"
     },
     "settings": {
@@ -468,7 +479,7 @@
         },
         "saved": "Settings saved.",
         "checkTimes": "Sync times",
-        "checkTimesHint": "All enabled mailboxes are synced automatically at these times (server local time).",
+        "checkTimesHint": "All enabled mailboxes are synced automatically at these times.",
         "serverTimeZone": "Runs at the server local time ({{zone}}).",
         "noCheckTimes": "No sync times configured. Automatic syncs are off.",
         "addTime": "Add time",
@@ -476,6 +487,11 @@
         "removeTime": "Remove {{time}}",
         "invalidTime": "Times must use the HH:MM format.",
         "duplicateTime": "This time is already listed.",
+        "mailRetention": "Mail retention",
+        "mailRetentionHint": "How long fetched mails (original, body sections and index row) are kept.",
+        "mailKeepDays": "Mail retention (days)",
+        "mailKeepDaysHint": "Mails older than this many days, counted from their date, are removed by the cleanup that runs whenever the date changes (it can also be started from the Tools page). The bounce groups they belonged to are recounted; a group left without mails is removed together with its analysis report.",
+        "mailKeepDaysInvalid": "Enter a whole number from 1 to 3650.",
         "jobs": "Job execution",
         "jobsHint": "Settings for the jobs that run in the background.",
         "workers": "Workers",
@@ -491,6 +507,9 @@
         "providerUnavailableHint": "The {{provider}} command was not found on the server. Install it or choose another provider.",
         "agentEnabled": "Enable agent analysis",
         "agentEnabledHint": "When enabled, new bounces found by a sync are analyzed automatically.",
+        "agentKeepDays": "Workspace retention (days)",
+        "agentKeepDaysHint": "How many days the workspace directory of each analysis run (prompt, CLI output, report) is kept. Older ones are removed by the cleanup that runs whenever the date changes.",
+        "agentKeepDaysInvalid": "Enter a whole number from 1 to 365.",
         "server": "Server information",
         "serverHint": "Set by the start-up parameters. Cannot be changed here.",
         "webListen": "Listen address",
@@ -531,7 +550,7 @@
         "passwordReset": "Password of {{username}} was reset.",
         "deleted": "Deleted {{username}}.",
         "deleteTitle": "Delete user",
-        "deleteMessage": "Delete {{username}}? Their tokens stop working too.",
+        "deleteMessage": "Delete {{username}}? This cannot be undone.",
         "cannotDeleteSelf": "You cannot delete yourself.",
         "cannotDeleteLastAdmin": "The last administrator cannot be deleted.",
         "cannotDemoteLastAdmin": "The last administrator cannot be demoted.",
@@ -540,8 +559,8 @@
         "deleteAria": "Delete {{username}}"
     },
     "token": {
-        "description": "Login tokens are secret strings reserved for the future API. They are not tied to a user.",
-        "futureNote": "They are not used for the web login. When no token exists, the server creates a \"default\" token by itself.",
+        "description": "Tokens are reserved for the future API and are not used for the web login.",
+        "futureNote": "When no token exists, the server creates a \"default\" token by itself.",
         "create": "Issue token",
         "name": "Name",
         "nameHint": "A name that tells what it is for (e.g. monitoring script)",
@@ -602,6 +621,7 @@
         "passwordSet": "Set",
         "passwordHint": "Leave empty when the server needs no authentication.",
         "passwordKeepHint": "Leave empty to keep the stored password.",
+        "passwordRequiredOnChange": "Enter the password again when you change the connection settings (host, port, connection, username).",
         "from": "Sender address",
         "fromHint": "Used as the From address of notification mails.",
         "fromInvalid": "This is not a valid email address.",

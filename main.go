@@ -32,10 +32,11 @@ type CLI struct {
 	Reclassify modules.ReclassifyCmd `cmd:"" help:"Re-run bounce detection and grouping over every mail"`
 	Analyze    modules.AnalyzeCmd    `cmd:"" help:"Run the agent analysis over bounce groups"`
 	Notify     modules.NotifyCmd     `cmd:"" help:"Send the alert notification mail now, or an SMTP test mail (--test)"`
-	Groups     modules.GroupsCmd     `cmd:"" help:"List the bounce groups of a mail address, or show one group (ADDRESS KEY)"`
+	Cleanup    modules.CleanupCmd    `cmd:"" help:"Remove the mails and agent workspaces older than their retention (runs daily on the server)"`
+	Groups     modules.GroupsCmd     `cmd:"" help:"List the bounce groups of a mail address, show one group (ADDRESS KEY) or change its state (set-state)"`
 	Schedule   modules.ScheduleCmd   `cmd:"" help:"Show or set the daily check times"`
 	Settings   modules.SettingsCmd   `cmd:"" help:"Show or change settings"`
-	Jobs       modules.JobsCmd       `cmd:"" help:"Show the job history"`
+	Jobs       modules.JobsCmd       `cmd:"" help:"Show the job history, or cancel a queued job (cancel ID)"`
 	Version    VersionCmd            `cmd:"" help:"Show version"`
 }
 
@@ -59,19 +60,30 @@ func main() {
 		kong.Name(modules.AppName),
 		kong.Description("MailCare: collects bounce mail from IMAP accounts, bundles similar bounces and explains what to do about them."),
 		kong.UsageOnError(),
+		// kong exits with 80 on a usage error; map it to the documented
+		// argument error code (help output keeps exit 0).
+		kong.Exit(func(code int) {
+			if code != 0 {
+				code = modules.ExitArgument
+			}
+			os.Exit(code)
+		}),
 		kong.ConfigureHelp(kong.HelpOptions{Compact: true}),
 		// Defaults are referenced from constants so help text never drifts.
 		kong.Vars{
-			"default_web_listen":   modules.DefaultWebListenAddr,
-			"default_web_port":     strconv.Itoa(modules.DefaultWebPort),
-			"default_imap_port":    strconv.Itoa(modules.DefaultIMAPPort),
-			"default_initial_days": strconv.Itoa(modules.DefaultInitialDays),
-			"default_recent_days":  strconv.Itoa(modules.DefaultRecentDays),
-			"default_workers":      strconv.Itoa(modules.DefaultWorkers),
-			"max_workers":          strconv.Itoa(modules.MaxWorkers),
-			"default_timezone":     models.DefaultTimezone,
-			"default_language":     models.DefaultLanguage,
-			"default_theme":        models.DefaultTheme,
+			"default_web_listen":     modules.DefaultWebListenAddr,
+			"default_web_port":       strconv.Itoa(modules.DefaultWebPort),
+			"default_imap_port":      strconv.Itoa(modules.DefaultIMAPPort),
+			"default_initial_days":   strconv.Itoa(modules.DefaultInitialDays),
+			"default_recent_days":    strconv.Itoa(modules.DefaultRecentDays),
+			"default_workers":        strconv.Itoa(modules.DefaultWorkers),
+			"max_workers":            strconv.Itoa(modules.MaxWorkers),
+			"default_mail_keep_days": strconv.Itoa(modules.DefaultMailKeepDays),
+			"min_mail_keep_days":     strconv.Itoa(modules.MinMailKeepDays),
+			"max_mail_keep_days":     strconv.Itoa(modules.MaxMailKeepDays),
+			"default_timezone":       models.DefaultTimezone,
+			"default_language":       models.DefaultLanguage,
+			"default_theme":          models.DefaultTheme,
 		},
 	)
 	modules.SetDataDir(cli.DataDir)

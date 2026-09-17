@@ -8,6 +8,7 @@ import { InlineError } from '../components/ui/ErrorState';
 import { CheckboxField, InputField } from '../components/ui/Field';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { errorMessage } from '../utils/errors';
+import { safeNextPath } from '../utils/next';
 import { AuthShell } from './AuthShell';
 
 /** Username + password login. "Keep me signed in" asks the server for a long-lived session. */
@@ -32,11 +33,12 @@ export function LoginPage() {
         setError(null);
         try {
             await login({ username: username.trim(), password, remember });
-            const next = params.get('next');
-            navigate(next && next.startsWith('/') ? next : '/', { replace: true });
+            navigate(safeNextPath(params.get('next')), { replace: true });
         } catch (err) {
             if (err instanceof ApiError && (err.status === 401 || err.status === 400)) {
                 setError(t('login.errorInvalid'));
+            } else if (err instanceof ApiError && err.status === 429) {
+                setError(t('login.errorTooMany'));
             } else {
                 setError(errorMessage(err, t));
             }

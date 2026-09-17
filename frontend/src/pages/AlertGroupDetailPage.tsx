@@ -219,7 +219,7 @@ export function AlertGroupDetailPage() {
         {
             key: 'date',
             header: t('mail.date'),
-            cell: m => <DateTime value={m.date ?? m.received_at} />,
+            cell: m => <DateTime value={m.date || m.received_at} />,
             className: 'whitespace-nowrap',
         },
         {

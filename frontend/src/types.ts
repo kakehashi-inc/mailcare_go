@@ -1,4 +1,4 @@
-// Shapes of the JSON exchanged with the server (see Documents/システム設計書.md
+// Shapes of the JSON exchanged with the server (see the design document,
 // section 9.3). Field names are the server's snake_case names.
 
 export type Role = 'admin' | 'user';
@@ -7,11 +7,11 @@ export type Responsible = 'sender' | 'recipient' | 'domain' | 'unknown';
 export type Severity = 'high' | 'medium' | 'low' | '';
 export type ImapSecurity = 'ssl' | 'starttls' | 'none';
 export type SmtpSecurity = 'ssl' | 'starttls' | 'none';
-export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify' | 'notify';
+export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify' | 'cleanup' | 'notify';
 /** Job kinds that the tools page offers (notify is started from the notification settings). */
 export type ToolKind = Exclude<JobKind, 'notify'>;
 /** Tool job kinds, in the order the tools page lists them. */
-export const JOB_KINDS: readonly ToolKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify'];
+export const JOB_KINDS: readonly ToolKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify', 'cleanup'];
 /** Every job kind the server can report, for labelling job rows. */
 export const ALL_JOB_KINDS: readonly JobKind[] = [...JOB_KINDS, 'notify'];
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled';
@@ -105,6 +105,7 @@ export interface MailboxDTO {
     id: number;
     address: string;
     display_name: string;
+    /** The connection settings and fetch ranges are filled for administrators only; other users get "" / 0. */
     imap_host: string;
     imap_port: number;
     imap_security: ImapSecurity;
@@ -189,6 +190,8 @@ export interface MessageDTO {
     id: number;
     message_key: string;
     uid: number;
+    /** IMAP UIDVALIDITY of the folder the uid belongs to. */
+    uidvalidity: number;
     folder: string;
     message_id: string;
     subject: string;
@@ -196,17 +199,22 @@ export interface MessageDTO {
     from_name: string;
     to_address: string;
     to_name: string;
-    date: string | null;
+    /** Date header as RFC 3339; the server falls back to the receive time, so it is never null. */
+    date: string;
     received_at: string | null;
     size: number;
-    /** True when the text part has real content. */
-    has_text: boolean;
-    has_html: boolean;
+    /** Number of text body sections with content, in MIME order. */
+    text_count: number;
+    /** Number of HTML body sections with content. */
+    html_count: number;
     /** Which body the bounce detection read: text, html, or none. */
     body_source: BodySource;
+    /** False while the mail is still waiting for the grouping phase. */
+    classified: boolean;
     is_bounce: boolean;
     bounce_kind: string;
-    classify_reason: string;
+    /** Name of the detection rule that matched; empty when no rule matched. */
+    rule: string;
     group_key: string;
     fetched_at: string;
 }
@@ -234,6 +242,8 @@ export interface JobDTO {
     kind: JobKind | string;
     mailbox_id: number | null;
     mailbox_address: string;
+    /** True when the job's mailbox was deleted since (mailbox_id is null then, like an expansion job's). */
+    mailbox_deleted: boolean;
     target: string;
     status: JobStatus;
     progress: string;
@@ -292,12 +302,17 @@ export interface SettingsDTO {
     check_times: string[];
     agent_provider: string;
     agent_enabled: boolean;
+    /** Days the workspace directory of an analysis run is kept (1-365). */
+    agent_keep_days: number;
+    /** Days a fetched mail is kept, counted from its date (1-3650). */
+    mail_keep_days: number;
     providers: ProviderStatus[];
-    /** Jobs executed at the same time (1-16). */
-    workers: number;
-    web_listen: string;
-    web_port: number;
-    data_dir: string;
+    /** Jobs executed at the same time (1-16). Present for administrators only. */
+    workers?: number;
+    /** Server internals, present for administrators only. */
+    web_listen?: string;
+    web_port?: number;
+    data_dir?: string;
     /** IANA zone the scheduler interprets check_times and notify_time in. */
     server_timezone: string;
 }
@@ -306,6 +321,8 @@ export interface SettingsInput {
     check_times?: string[];
     agent_provider?: string;
     agent_enabled?: boolean;
+    agent_keep_days?: number;
+    mail_keep_days?: number;
     workers?: number;
 }
 
@@ -390,8 +407,8 @@ export interface MessageListResponse {
 export interface MessageDetailResponse {
     message: MessageDTO;
     bounce: BounceDTO | null;
-    text: string;
-    has_html: boolean;
+    /** Text body sections in MIME order (one entry per section with content). */
+    text_sections: string[];
     /** The parsed-message JSON (message_id, subject, from, to, date, delivery_status, ...). */
     headers: Record<string, unknown>;
 }

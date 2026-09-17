@@ -7,14 +7,14 @@ import (
 	"mailcare/app/models"
 )
 
-// ExtractBounce builds the bounces row of a message classified as failed /
-// delayed / other. The delivery-status part is used first; what it does not
+// ExtractBounce builds the bounces row of a message classified as failed or
+// delayed. The delivery-status part is used first; what it does not
 // provide is filled from the body text by the rule table below. exclude lists
 // addresses that must not be taken as the failed recipient (the monitored
 // address and the sender of the notice itself).
 //
-// The returned Bounce has no MessageID; the caller sets it after inserting
-// the message row.
+// The returned Bounce has no ID and no GroupKey; the caller (groupMessage)
+// sets them from the message row and the group it files the bounce into.
 func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bounce {
 	b := &models.Bounce{}
 	if pm == nil {
@@ -25,11 +25,16 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 		f.fromDeliveryStatus(pm.DeliveryStatus, kind)
 		b.ReportingMTA = pm.DeliveryStatus.ReportingMTA
 	}
-	body := unfold(pm.bodyForClassification())
-	f.fromBody(body, pm.Headers, exclude)
+	// The primary body (every text section joined) first; whatever is still
+	// empty is completed from the HTML sections rendered as text when the
+	// message has both kinds (design 5.2).
+	f.fromBody(unfold(pm.bodyForClassification()), pm.Headers, exclude)
+	if secondary := pm.secondaryBody(); secondary != "" {
+		f.fromBody(unfold(secondary), nil, exclude)
+	}
 	f.finish()
 
-	b.OriginalRecipient = f.addr
+	b.Recipient = f.addr
 	b.RecipientDomain = domainOf(f.addr)
 	b.Action = f.action
 	if b.Action == "" {
@@ -54,8 +59,8 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 		templateSource = pm.Subject
 	}
 	b.DiagnosticTemplate = DiagnosticTemplate(templateSource)
-	// Responsible is set by groupForBounce from the category (design 5.4) so
-	// that the bounce row and its group never disagree.
+	// The responsible party is a property of the group (design 5.4); the
+	// bounce row does not repeat it.
 	return b
 }
 
@@ -197,6 +202,12 @@ var bodyRules = []bodyRule{
 	{"gmail_recipient", regexp.MustCompile(`message (?:wasn't|was not|couldn't be) delivered to ` + reAddr)},
 	// Gmail: "The response from the remote server was:\n550 5.1.1 ..." / "The response was:\n\n550 ..."
 	{"gmail_response", regexp.MustCompile(`(?s)The response (?:from the remote server )?was:\s*` + reReply)},
+	// Japanese MTA wording: "<could not deliver to>: addr" / "addr <could not be delivered>".
+	// The escaped words are haishin dekimasen (cannot deliver), haishin funou
+	// (undeliverable), haishin ni shippai (delivery failed) and todokimasen
+	// (did not arrive); the address follows or precedes them on the same line.
+	{"jp_failed_recipient", regexp.MustCompile("(?:\u914d\u4fe1\u3067\u304d\u307e\u305b\u3093|\u914d\u4fe1\u4e0d\u80fd|\u914d\u4fe1\u306b\u5931\u6557|\u5c4a\u304d\u307e\u305b\u3093)[^\n]{0,40}?<?" + reAddr + ">?")},
+	{"jp_failed_recipient_before", regexp.MustCompile("<?" + reAddr + ">?[^\n]{0,60}(?:\u914d\u4fe1\u3067\u304d\u307e\u305b\u3093|\u914d\u4fe1\u4e0d\u80fd|\u914d\u4fe1\u306b\u5931\u6557|\u5c4a\u304d\u307e\u305b\u3093)")},
 	// Generic: "Final-Recipient: rfc822; addr" that ended up in the text part
 	{"text_final_recipient", regexp.MustCompile(`(?i)Final-Recipient:\s*(?:rfc822;)?\s*` + reAddr)},
 	// Generic: a quoted SMTP reply with an extended status code anywhere in the text
@@ -251,7 +262,6 @@ func (f *fields) fromBody(body string, headers map[string]string, exclude []stri
 func (f *fields) finish() {
 	f.diag = strings.TrimSpace(inReplyToRe.ReplaceAllString(f.diag, ""))
 	f.diag = strings.Join(strings.Fields(f.diag), " ")
-	f.diag = truncate(f.diag, 1000)
 	if f.status == "" {
 		if m := statusInTextRe.FindStringSubmatch(f.diag); m != nil {
 			f.status = m[1]

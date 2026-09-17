@@ -14,7 +14,7 @@ import (
 
 // openIndexForCLI opens the per-mailbox index of a mailbox.
 func openIndexForCLI(ctx context.Context, mb *models.Mailbox) (*sql.DB, error) {
-	mailsRoot, _, err := dataRoots()
+	mailsRoot, err := mailsRootForCLI()
 	if err != nil {
 		return nil, err
 	}
@@ -67,9 +67,19 @@ func ActionableFilter(scope string) (actionable *bool, ok bool) {
 	return nil, false
 }
 
-// GroupsCmd lists the bounce groups of a mailbox ("groups ADDRESS") or, with
-// a group key, shows one group with its latest report ("groups ADDRESS KEY").
+// GroupsCmd groups the bounce group subcommands: "groups ADDRESS [KEY]"
+// (the default subcommand, list) lists the groups of a mailbox or shows one
+// group with its latest report; "groups set-state ADDRESS KEY STATE" changes
+// the state of a group.
 type GroupsCmd struct {
+	List     GroupsListCmd     `cmd:"" default:"withargs" help:"List the bounce groups of a mail address, or show one group (ADDRESS KEY)"`
+	SetState GroupsSetStateCmd `cmd:"" name:"set-state" help:"Change the state of a group (open, resolved or ignored)"`
+}
+
+// GroupsListCmd lists the bounce groups of a mailbox ("groups ADDRESS") or,
+// with a group key, shows one group with its latest report ("groups ADDRESS
+// KEY").
+type GroupsListCmd struct {
 	Address  string `arg:"" help:"Mail address"`
 	Key      string `arg:"" optional:"" help:"Group key: show that group instead of the list"`
 	State    string `help:"Filter by state" enum:",open,resolved,ignored" default:""`
@@ -78,7 +88,7 @@ type GroupsCmd struct {
 	JSON     bool   `help:"Output as JSON"`
 }
 
-func (c *GroupsCmd) Run() error {
+func (c *GroupsListCmd) Run() error {
 	if strings.TrimSpace(c.Key) != "" {
 		return showGroup(c.Address, c.Key, c.JSON)
 	}
@@ -220,5 +230,45 @@ func showGroup(address, key string, asJSON bool) error {
 		fmt.Printf("summary: %s\n\n", report.Summary)
 	}
 	fmt.Println(strings.TrimSpace(report.ReportMarkdown))
+	return nil
+}
+
+// GroupsSetStateCmd changes the state of a group ("groups set-state ADDRESS
+// KEY STATE"), the same change the Web UI makes from the group detail.
+type GroupsSetStateCmd struct {
+	Address string `arg:"" help:"Mail address"`
+	Key     string `arg:"" help:"Group key"`
+	State   string `arg:"" help:"New state" enum:"open,resolved,ignored"`
+}
+
+func (c *GroupsSetStateCmd) Run() error {
+	db, err := openDBForCLI()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	mb, err := findMailbox(db, c.Address)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	idx, err := openIndexForCLI(ctx, mb)
+	if err != nil {
+		return err
+	}
+	defer idx.Close()
+	key := strings.TrimSpace(c.Key)
+	g, err := models.GetGroup(idx, key)
+	if err == sql.ErrNoRows {
+		return NewExitErrorf(ExitArgument, "group %q not found", key)
+	}
+	if err != nil {
+		return NewExitError(ExitGeneral, err.Error())
+	}
+	if err := models.SetGroupState(idx, g.GroupKey, c.State); err != nil {
+		return NewExitError(ExitGeneral, err.Error())
+	}
+	fmt.Printf("Group %s of %s is now %s\n", g.GroupKey, mb.Address, c.State)
 	return nil
 }

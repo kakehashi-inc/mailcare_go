@@ -121,10 +121,16 @@ async function request<T>(url: string, init: RequestInit = {}, opts: RequestOpti
     return JSON.parse(text) as T;
 }
 
+/**
+ * Request options for a state-changing call. The JSON content type is sent
+ * even without a body: the server refuses writes declared as anything else
+ * (its cross-site request forgery defence), and a bare POST or DELETE would
+ * otherwise carry no type at all.
+ */
 function json(method: string, body?: unknown): RequestInit {
     return {
         method,
-        headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
     };
 }

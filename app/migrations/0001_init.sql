@@ -7,13 +7,13 @@
 -- migration. Wrap each statement in StatementBegin/StatementEnd so goose can
 -- run multi-line statements safely.
 --
--- SQLite ignores declared text sizes, so bounded columns carry CHECK
--- constraints instead. Every DATETIME column holds UTC. Information that is
--- never searched, joined or sorted on is kept in JSON columns (json_valid) so
--- the tables stay narrow. Such columns are always named "detail_info" so the
--- column name never ties a table to one protocol or use: mailboxes.detail_info
--- (mail server connection settings, with a "protocol" key) and jobs.detail_info
--- (progress, result, error).
+-- Design rules: no column has a default value (the application writes every
+-- column); text whose length is known is declared VARCHAR(n) and text of
+-- unpredictable length TEXT (SQLite does not enforce the declared length; the
+-- length of user input is checked where it is entered); enumerations are kept
+-- by the application constants, not by constraints. The only JSON column is mailboxes.detail_info
+-- (mail server connection settings, with a "protocol" key); the name never
+-- ties the column to one protocol.
 --
 -- Per-mailbox indexes (data/mails/<address>.sqlite) are NOT managed here: their
 -- schema lives in app/models/mailindex.go and is rebuilt from the raw files.
@@ -27,66 +27,69 @@
 
 -- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT     NOT NULL UNIQUE CHECK (length(username) BETWEEN 1 AND 64),
-    display_name  TEXT     NOT NULL CHECK (length(display_name) BETWEEN 1 AND 128),
-    email         TEXT     NOT NULL DEFAULT '' CHECK (length(email) <= 254),
-    language      TEXT     NOT NULL DEFAULT 'ja' CHECK (language IN ('ja', 'en')),
-    timezone      TEXT     NOT NULL DEFAULT 'Asia/Tokyo' CHECK (length(timezone) BETWEEN 1 AND 64),
-    theme         TEXT     NOT NULL DEFAULT 'auto' CHECK (theme IN ('auto', 'light', 'dark')),
-    password_hash TEXT     NOT NULL,
-    role          TEXT     NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
-    created_at    DATETIME NOT NULL DEFAULT (datetime('now')),
-    updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
-    last_login_at DATETIME
+    id                  INTEGER       PRIMARY KEY AUTOINCREMENT,
+    username            VARCHAR(64)   NOT NULL UNIQUE,
+    display_name        VARCHAR(128)  NOT NULL,
+    email               VARCHAR(254)  NOT NULL,
+    language            VARCHAR(16)   NOT NULL,
+    timezone            VARCHAR(64)   NOT NULL,
+    theme               VARCHAR(32)   NOT NULL,
+    password_hash       VARCHAR(60)   NOT NULL,
+    role                VARCHAR(32)   NOT NULL,
+    created_at          DATETIME      NOT NULL,
+    updated_at          DATETIME      NOT NULL,
+    last_login_at       DATETIME
 );
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS tokens (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    identifier  TEXT    NOT NULL UNIQUE,
-    name        TEXT    NOT NULL,
-    token       TEXT    NOT NULL UNIQUE,
-    is_default  INTEGER NOT NULL DEFAULT 0,
-    expires_at  DATETIME,
-    created_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+    id                  INTEGER       PRIMARY KEY AUTOINCREMENT,
+    identifier          TEXT          NOT NULL UNIQUE,
+    name                TEXT          NOT NULL,
+    token               TEXT          NOT NULL UNIQUE,
+    is_default          INTEGER       NOT NULL,
+    expires_at          DATETIME,
+    created_at          DATETIME      NOT NULL
 );
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+    key                 VARCHAR(64)   NOT NULL PRIMARY KEY,
+    value               TEXT          NOT NULL
 );
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS mailboxes (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    address          TEXT     NOT NULL UNIQUE CHECK (length(address) BETWEEN 3 AND 254),
-    display_name     TEXT     NOT NULL DEFAULT '' CHECK (length(display_name) <= 128),
-    enabled          INTEGER  NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-    detail_info          TEXT     NOT NULL CHECK (json_valid(detail_info)),
-    last_fetched_at  DATETIME,
-    last_fetch_error TEXT     NOT NULL DEFAULT '' CHECK (length(last_fetch_error) <= 2000),
-    created_at       DATETIME NOT NULL DEFAULT (datetime('now')),
-    updated_at       DATETIME NOT NULL DEFAULT (datetime('now'))
+    id                  INTEGER       PRIMARY KEY AUTOINCREMENT,
+    address             VARCHAR(254)  NOT NULL UNIQUE,
+    display_name        VARCHAR(128)  NOT NULL,
+    enabled             INTEGER       NOT NULL,
+    detail_info         TEXT          NOT NULL,
+    last_fetched_at     DATETIME      ,
+    last_fetch_error    TEXT          NOT NULL,
+    created_at          DATETIME      NOT NULL,
+    updated_at          DATETIME      NOT NULL
 );
 -- +goose StatementEnd
 
 -- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS jobs (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind         TEXT     NOT NULL CHECK (kind IN ('sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify', 'notify')),
-    mailbox_id   INTEGER  REFERENCES mailboxes(id) ON DELETE SET NULL,
-    target       TEXT     NOT NULL DEFAULT '' CHECK (length(target) <= 320),
-    status       TEXT     NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'error', 'canceled')),
-    requested_by TEXT     NOT NULL DEFAULT '' CHECK (length(requested_by) <= 80),
-    detail_info      TEXT     NOT NULL DEFAULT '{}' CHECK (json_valid(detail_info)),
-    created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
-    started_at   DATETIME,
-    finished_at  DATETIME
+    id                  INTEGER       PRIMARY KEY AUTOINCREMENT,
+    kind                VARCHAR(32)   NOT NULL,
+    mailbox_id          INTEGER       REFERENCES mailboxes(id) ON DELETE SET NULL,
+    parent_id           INTEGER       REFERENCES jobs(id) ON DELETE SET NULL,
+    target              VARCHAR(320)  NOT NULL,
+    status              VARCHAR(32)   NOT NULL,
+    requested_by        VARCHAR(80)   NOT NULL,
+    progress            TEXT          NOT NULL,
+    result              TEXT          NOT NULL,
+    error_message       TEXT          NOT NULL,
+    created_at          DATETIME      NOT NULL,
+    started_at          DATETIME      ,
+    finished_at         DATETIME
 );
 -- +goose StatementEnd
 

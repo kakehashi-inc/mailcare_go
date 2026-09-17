@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func newTestCore(t *testing.T) *core {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	key, err := modules.LoadSecretKey()
+	key, err := modules.LoadSecretKey(db)
 	if err != nil {
 		t.Fatalf("load key: %v", err)
 	}
@@ -43,9 +44,23 @@ func newTestCore(t *testing.T) *core {
 	return newCore(db, key, spaFS, dataDir, "127.0.0.1", modules.DefaultWebPort)
 }
 
-// do performs a request against the handler, optionally with a JSON body
-// and a session cookie.
-func do(t *testing.T, h http.Handler, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
+// createUser inserts a user with the default preferences and no address.
+func createUser(t *testing.T, db *sql.DB, username, displayName, password, role string) *models.User {
+	t.Helper()
+	u, err := modules.CreateUserFrom(db, modules.NewUser{Username: username, DisplayName: displayName, Password: password, Role: role})
+	if err != nil {
+		t.Fatalf("create user %s: %v", username, err)
+	}
+	return u
+}
+
+// testRemoteAddr is the client address of every request made by do.
+const testRemoteAddr = "192.168.1.5:40000"
+
+// newRequest builds a request the way the SPA sends it: a JSON body when
+// given, and the JSON content type on every state-changing method (the
+// server refuses such requests without it).
+func newRequest(t *testing.T, method, path string, body any) *http.Request {
 	t.Helper()
 	var reader *bytes.Reader
 	if body != nil {
@@ -58,16 +73,29 @@ func do(t *testing.T, h http.Handler, method, path string, body any, cookie *htt
 		reader = bytes.NewReader(nil)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req.RemoteAddr = "192.168.1.5:40000"
-	if body != nil {
+	req.RemoteAddr = testRemoteAddr
+	if body != nil || (method != http.MethodGet && method != http.MethodHead) {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if cookie != nil {
-		req.AddCookie(cookie)
-	}
+	return req
+}
+
+// serve runs one request through the handler.
+func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// do performs a request against the handler, optionally with a JSON body
+// and a session cookie.
+func do(t *testing.T, h http.Handler, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	req := newRequest(t, method, path, body)
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	return serve(h, req)
 }
 
 // sessionCookie extracts the session cookie set by a response.
@@ -158,9 +186,7 @@ func TestSetupFlow(t *testing.T) {
 func TestLoginWithPasswordAndRememberMe(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
-	if _, err := modules.CreateUser(c.db, "alice", "Alice", "correct-horse", modules.RoleUser); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	createUser(t, c.db, "alice", "Alice", "correct-horse", modules.RoleUser)
 
 	rec := do(t, h, http.MethodPost, "/web/login", map[string]string{"username": "alice", "password": "wrong-horse"}, nil)
 	if rec.Code != http.StatusUnauthorized {
@@ -222,14 +248,15 @@ func TestLoginWithPasswordAndRememberMe(t *testing.T) {
 	if until := time.Until(sess.Expiry); until < time.Duration(c.cookieTTLHours)*time.Hour-time.Hour {
 		t.Errorf("remembered expiry only %v away", until)
 	}
-	// The form-encoded login accepts remember too.
+	// Only JSON is accepted: a form-encoded login (what a cross-site HTML
+	// form could send) is refused before the credentials are looked at.
 	form := httptest.NewRequest(http.MethodPost, "/web/login", strings.NewReader("username=alice&password=correct-horse&remember=1"))
 	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	form.RemoteAddr = "192.168.1.5:40000"
+	form.RemoteAddr = testRemoteAddr
 	formRec := httptest.NewRecorder()
 	h.ServeHTTP(formRec, form)
-	if formRec.Code != http.StatusOK || sessionCookie(t, formRec).MaxAge == 0 {
-		t.Errorf("form login with remember: status %d", formRec.Code)
+	if formRec.Code != http.StatusUnsupportedMediaType || len(formRec.Result().Cookies()) != 0 {
+		t.Errorf("form login: status %d, want 415 and no cookie", formRec.Code)
 	}
 
 	// Logout clears the cookie; a password change invalidates old sessions
@@ -255,12 +282,8 @@ func TestLoginWithPasswordAndRememberMe(t *testing.T) {
 func TestAdminOnlyEndpoints(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
-	if _, err := modules.CreateUser(c.db, "admin", "", "password123", modules.RoleAdmin); err != nil {
-		t.Fatalf("create admin: %v", err)
-	}
-	if _, err := modules.CreateUser(c.db, "bob", "", "password123", modules.RoleUser); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
+	createUser(t, c.db, "bob", "", "password123", modules.RoleUser)
 	admin := login(t, h, "admin", "password123")
 	user := login(t, h, "bob", "password123")
 
@@ -324,12 +347,8 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 func TestTokensAreAdminOnly(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
-	if _, err := modules.CreateUser(c.db, "admin", "", "password123", modules.RoleAdmin); err != nil {
-		t.Fatalf("create admin: %v", err)
-	}
-	if _, err := modules.CreateUser(c.db, "bob", "", "password123", modules.RoleUser); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
+	createUser(t, c.db, "bob", "", "password123", modules.RoleUser)
 	admin := login(t, h, "admin", "password123")
 	user := login(t, h, "bob", "password123")
 
@@ -443,12 +462,8 @@ func TestDefaultToken(t *testing.T) {
 func TestMailboxesRequireAdminForWrites(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
-	if _, err := modules.CreateUser(c.db, "admin", "", "password123", modules.RoleAdmin); err != nil {
-		t.Fatalf("create admin: %v", err)
-	}
-	if _, err := modules.CreateUser(c.db, "bob", "", "password123", modules.RoleUser); err != nil {
-		t.Fatalf("create user: %v", err)
-	}
+	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
+	createUser(t, c.db, "bob", "", "password123", modules.RoleUser)
 	admin := login(t, h, "admin", "password123")
 	user := login(t, h, "bob", "password123")
 	input := map[string]any{"address": "Bounce@Example.com", "imap_host": "imap.example.com", "imap_username": "bounce", "imap_password": "secret"}
@@ -479,8 +494,12 @@ func TestMailboxesRequireAdminForWrites(t *testing.T) {
 		t.Errorf("duplicate mailbox: status %d, want 400", rec.Code)
 	}
 	rec = do(t, h, http.MethodGet, "/api/v1/mailboxes", nil, user)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"address":"bounce@example.com"`) || strings.Contains(rec.Body.String(), `"imap_username":"bounce"`) {
+		t.Errorf("list mailboxes as user (connection settings are admin only): status %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodGet, "/api/v1/mailboxes", nil, admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"imap_username":"bounce"`) {
-		t.Errorf("list mailboxes as user: status %d, body %s", rec.Code, rec.Body.String())
+		t.Errorf("list mailboxes as admin: status %d, body %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, user); rec.Code != http.StatusForbidden {
 		t.Errorf("queue sync as user: status %d, want 403", rec.Code)
@@ -527,6 +546,18 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 				t.Errorf("loopback client: body %q does not contain %s", rec.Body.String(), want)
 			}
 		}
+		// The status names the data directory served, so a CLI of another
+		// data directory can tell this server is not its own.
+		var st modules.ServerStatus
+		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+			t.Fatalf("status body: %v", err)
+		}
+		if st.DataDir != c.dataDir || !filepath.IsAbs(st.DataDir) {
+			t.Errorf("status data_dir = %q, want the absolute %q", st.DataDir, c.dataDir)
+		}
+		if !st.ServesDataDir(c.dataDir) || st.ServesDataDir(filepath.Join(c.dataDir, "other")) {
+			t.Errorf("ServesDataDir does not single out %q", c.dataDir)
+		}
 	}
 
 	// Jobs can be queued and read back over the control endpoints.
@@ -551,10 +582,20 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"analyze","target":"0123456789abcdef"}`))
 	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("analyze of one group without a mailbox: status %d, want 400", rec.Code)
+	}
+	// The control POSTs need the JSON content type like every other write
+	// (the CLI sends it).
+	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"sync"}`))
+	req.RemoteAddr = "127.0.0.1:40000"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("control job without a content type: status %d, want 415", rec.Code)
 	}
 }
 

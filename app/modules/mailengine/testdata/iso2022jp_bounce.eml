@@ -1,0 +1,16 @@
+Return-Path: <>
+From: =?iso-2022-jp?B?GyRCJWEhPCVrR1s/LiU3JTklRiVgGyhC?= <MAILER-DAEMON@mx1.example.jp>
+To: =?iso-2022-jp?B?GyRCR1s/LkM0RXYbKEI=?= <newsletter@example.jp>
+Subject: =?iso-2022-jp?B?GyRCR1s/LklURz0bKEI6IDkbJEI3biROJCpDTiRpJDsbKEI=?=
+Date: Fri, 12 Sep 2025 09:00:00 +0900
+Message-ID: <jis-0013@mx1.example.jp>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="ISO-2022-JP"
+Content-Transfer-Encoding: 7bit
+
+これはメール配信システムからの自動送信メッセージです。
+以下の宛先にメッセージを配信できませんでした。
+
+<taro@customer.example.com>: host mx.customer.example.com[198.51.100.25]
+    said: 550 5.1.1 <taro@customer.example.com>: Recipient address rejected: User unknown
+    (in reply to RCPT TO command)

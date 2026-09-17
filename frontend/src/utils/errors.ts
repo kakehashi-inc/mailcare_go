@@ -32,6 +32,11 @@ const SERVER_MESSAGES: { match: RegExp; key: string }[] = [
     { match: /job is not queued|not queued|already (started|running|finished)/i, key: 'serverError.jobNotQueued' },
     { match: /password (is )?too short|password must be at least/i, key: 'serverError.passwordTooShort' },
     { match: /invalid (check )?time|time format/i, key: 'serverError.invalidTime' },
+    { match: /smtp_password is required when the connection settings change/i, key: 'notify.passwordRequiredOnChange' },
+    {
+        match: /imap_password is required when the connection settings change/i,
+        key: 'mailbox.passwordRequiredOnChange',
+    },
 ];
 
 /** Translates a known backend message, or returns it unchanged. */

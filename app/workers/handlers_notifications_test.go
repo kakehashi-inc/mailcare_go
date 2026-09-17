@@ -14,9 +14,7 @@ import (
 func TestMeEmailAndUserEmailEndpoints(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
-	if _, err := modules.CreateUser(c.db, "admin", "", "password123", modules.RoleAdmin); err != nil {
-		t.Fatal(err)
-	}
+	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
 	admin := login(t, h, "admin", "password123")
 	// Own address: set (normalized), reject invalid, clear.
 	rec := do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": " Admin@Example.test "}, admin)
@@ -235,6 +233,39 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK || !dto.SMTPPasswordSet || dto.NotifyIntervalDays != 3 || dto.SMTPHost != srv.Host() {
 		t.Errorf("partial put: %d %+v", rec.Code, dto)
 	}
+	// While a password is stored, changing the host, port, security mode or
+	// username needs the password in the same request; a refused update
+	// saves nothing (the other field of the request included).
+	for _, change := range []map[string]any{
+		{"smtp_host": "other.example.test"}, {"smtp_port": srv.Port() + 1}, {"smtp_security": "starttls"}, {"smtp_username": "other"},
+		{"smtp_username": "other", "smtp_password": ""},
+	} {
+		change["notify_interval_days"] = 5
+		rec := do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", change, s.admin)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "smtp_password is required when the connection settings change") {
+			t.Errorf("put %v without the password: %d %s", change, rec.Code, rec.Body.String())
+		}
+	}
+	rec = do(t, s.h, http.MethodGet, "/api/v1/settings/notifications", nil, s.admin)
+	decode(t, rec.Body.Bytes(), &dto)
+	if dto.SMTPHost != srv.Host() || dto.SMTPPort != srv.Port() || dto.SMTPSecurity != "none" || dto.SMTPUsername != "u" || dto.NotifyIntervalDays != 3 {
+		t.Errorf("refused put changed the settings: %+v", dto)
+	}
+	// Repeating the saved values is not a change; with the password the
+	// change goes through (and back).
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", map[string]any{"smtp_host": srv.Host(), "smtp_port": srv.Port(), "smtp_security": "none", "smtp_username": "u"}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Errorf("put with the saved connection values: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", map[string]any{"smtp_username": "other", "smtp_password": "p2"}, s.admin)
+	decode(t, rec.Body.Bytes(), &dto)
+	if rec.Code != http.StatusOK || dto.SMTPUsername != "other" || !dto.SMTPPasswordSet {
+		t.Errorf("put with the password: %d %+v", rec.Code, dto)
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", map[string]any{"smtp_username": "u", "smtp_password": "p"}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put back: %d %s", rec.Code, rec.Body.String())
+	}
 	// Validation errors.
 	for _, bad := range []map[string]any{
 		{"notify_interval_days": 8}, {"notify_time": "24:00"}, {"smtp_security": "tls"}, {"smtp_port": 0},
@@ -267,6 +298,48 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", map[string]string{"to": "ops@example.test"}, s.admin)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "authentication failed") {
 		t.Errorf("test with a wrong password: %d %s", rec.Code, rec.Body.String())
+	}
+	srv.Username, srv.Password = "u", "p"
+	// The stored password serves the saved server only: a test that changes
+	// the host, port, security mode or username must carry its own password,
+	// so the stored one is never relayed elsewhere.
+	sent := len(srv.Messages())
+	for _, change := range []map[string]any{
+		{"smtp_host": "other.example.test"}, {"smtp_port": srv.Port() + 1}, {"smtp_security": "starttls"}, {"smtp_username": "other"},
+		{"smtp_username": "other", "smtp_password": ""},
+	} {
+		body := map[string]any{"to": "ops@example.test"}
+		for k, v := range change {
+			body[k] = v
+		}
+		rec := do(t, s.h, http.MethodPost, "/api/v1/notifications/test", body, s.admin)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "smtp_password is required when the connection settings change") {
+			t.Errorf("test with %v and no password: %d %s", change, rec.Code, rec.Body.String())
+		}
+	}
+	if len(srv.Messages()) != sent {
+		t.Errorf("a refused test must not send anything")
+	}
+	// With a password of its own the changed settings are tried with that
+	// password (here it is wrong for the server, which proves the stored one
+	// was not used).
+	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", map[string]any{"to": "ops@example.test", "smtp_username": "u", "smtp_password": "not-p", "smtp_from": "Other@Example.test"}, s.admin)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "authentication failed") {
+		t.Errorf("test with an own password: %d %s", rec.Code, rec.Body.String())
+	}
+	// Repeating the saved values is the saved server: the stored password
+	// applies, and a different sender is fine.
+	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", map[string]any{"to": "ops@example.test", "smtp_host": srv.Host(), "smtp_port": srv.Port(),
+		"smtp_security": "none", "smtp_username": "u", "smtp_from": "Other@Example.test"}, s.admin)
+	if rec.Code != http.StatusOK || len(srv.Messages()) != sent+1 || srv.Messages()[sent].From != "other@example.test" {
+		t.Errorf("test with the saved server repeated: %d %s (%d mails)", rec.Code, rec.Body.String(), len(srv.Messages()))
+	}
+	for _, bad := range []map[string]any{{"smtp_port": 0}, {"smtp_security": "tls"}, {"smtp_from": "nope"}} {
+		bad["to"] = "ops@example.test"
+		bad["smtp_password"] = "p"
+		if rec := do(t, s.h, http.MethodPost, "/api/v1/notifications/test", bad, s.admin); rec.Code != http.StatusBadRequest {
+			t.Errorf("test with %v: %d, want 400", bad, rec.Code)
+		}
 	}
 	// Send now queues one notify job (admin only), a duplicate answers 200.
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/send", nil, s.admin)

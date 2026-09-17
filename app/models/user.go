@@ -47,8 +47,6 @@ func (u *User) applyPreferenceDefaults() {
 // InsertUser creates a user row and fills in its ID.
 func InsertUser(db *sql.DB, u *User) error {
 	now := time.Now().UTC()
-	u.DisplayName = truncateRunes(u.DisplayName, 128)
-	u.Email = truncateRunes(u.Email, 254)
 	u.applyPreferenceDefaults()
 	res, err := db.Exec(
 		`INSERT INTO users (username, display_name, email, language, timezone, theme, password_hash, role, created_at,
@@ -114,7 +112,7 @@ func UpdateUser(db *sql.DB, id int64, displayName, email, language, timezone, th
 	_, err := db.Exec(
 		`UPDATE users SET display_name = ?, email = ?, language = ?, timezone = ?, theme = ?, role = ?, updated_at = ?
 		 WHERE id = ?`,
-		truncateRunes(displayName, 128), truncateRunes(email, 254), p.Language, p.Timezone, p.Theme, role,
+		displayName, email, p.Language, p.Timezone, p.Theme, role,
 		time.Now().UTC(), id,
 	)
 	return err
@@ -128,14 +126,8 @@ func UpdateUserProfile(db *sql.DB, id int64, displayName, email, language, timez
 	p.applyPreferenceDefaults()
 	_, err := db.Exec(
 		`UPDATE users SET display_name = ?, email = ?, language = ?, timezone = ?, theme = ?, updated_at = ? WHERE id = ?`,
-		truncateRunes(displayName, 128), truncateRunes(email, 254), p.Language, p.Timezone, p.Theme, time.Now().UTC(), id,
+		displayName, email, p.Language, p.Timezone, p.Theme, time.Now().UTC(), id,
 	)
-	return err
-}
-
-// UpdateUserEmail changes only the notification address of a user.
-func UpdateUserEmail(db *sql.DB, id int64, email string) error {
-	_, err := db.Exec(`UPDATE users SET email = ?, updated_at = ? WHERE id = ?`, email, time.Now().UTC(), id)
 	return err
 }
 
@@ -170,7 +162,7 @@ func TouchUserLogin(db *sql.DB, id int64) error {
 	return err
 }
 
-// DeleteUser removes a user (its tokens are removed by the foreign key cascade).
+// DeleteUser removes a user.
 func DeleteUser(db *sql.DB, id int64) error {
 	_, err := db.Exec(`DELETE FROM users WHERE id = ?`, id)
 	return err

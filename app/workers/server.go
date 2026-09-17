@@ -49,6 +49,12 @@ type core struct {
 	jm    *modules.JobManager
 	sched *modules.Scheduler
 
+	// setupMu serializes handleSetup so that concurrent first requests
+	// cannot each create an administrator.
+	setupMu sync.Mutex
+	// logins throttles failed logins per client and username.
+	logins *modules.LoginLimiter
+
 	srv          *http.Server
 	shutdownOnce sync.Once
 }
@@ -61,6 +67,7 @@ func newCore(db *sql.DB, key []byte, spaFS fs.FS, dataDir, webListen string, web
 		webListen: webListen, webPort: webPort,
 		cookieTTLHours: modules.ResolveCookieTTLHours(db),
 		dataDir:        dataDir,
+		logins:         modules.NewLoginLimiter(),
 	}
 	c.mailsRoot = dataDir + string(os.PathSeparator) + modules.MailsDirName
 	c.agentRoot = dataDir + string(os.PathSeparator) + modules.AgentDirName
@@ -105,17 +112,18 @@ func listenWithLoopback(addr string, port int) ([]net.Listener, error) {
 	return []net.Listener{main, loop}, nil
 }
 
-func startServer(webListen string, webPort int, workers int, checkTimes []string) error {
+func startServer(webListen string, webPort int, workers int, checkTimes []string, mailKeepDays int) error {
 	dataDir, err := modules.EnsureDataDir()
 	if err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
+	modules.LogMigrations = true
 	db, err := modules.OpenDB("")
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 	defer db.Close()
-	key, err := modules.LoadSecretKey()
+	key, err := modules.LoadSecretKey(db)
 	if err != nil {
 		return err
 	}
@@ -135,6 +143,11 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 			log.Printf("failed to persist check_times: %v", err)
 		}
 	}
+	if mailKeepDays > 0 {
+		if err := modules.SaveMailKeepDays(db, mailKeepDays); err != nil {
+			log.Printf("failed to persist mail_keep_days: %v", err)
+		}
+	}
 
 	spaFS, err := fs.Sub(modules.FrontendFS, "frontend/dist")
 	if err != nil {
@@ -143,9 +156,6 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 	c := newCore(db, key, spaFS, dataDir, webListen, webPort)
 	if err := os.MkdirAll(c.mailsRoot, 0o700); err != nil {
 		return fmt.Errorf("failed to create the mails directory: %w", err)
-	}
-	if err := os.MkdirAll(c.agentRoot, 0o700); err != nil {
-		return fmt.Errorf("failed to create the agent directory: %w", err)
 	}
 	modules.ResetStaleJobs(db, c.mailsRoot)
 	// Ensure a default token exists. Deleting the default never promotes
@@ -161,7 +171,16 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 		log.Printf("Created default token: %s", tok.Token)
 	}
 
-	c.srv = &http.Server{Handler: c.webHandler(), ReadHeaderTimeout: modules.ReadHeaderTimeout}
+	// The timeouts bound slow or idle clients: request headers, the whole
+	// request read, the response write (no endpoint waits for a job) and
+	// idle keep-alive connections.
+	c.srv = &http.Server{
+		Handler:           c.webHandler(),
+		ReadHeaderTimeout: modules.ReadHeaderTimeout,
+		ReadTimeout:       modules.HTTPReadTimeout,
+		WriteTimeout:      modules.HTTPWriteTimeout,
+		IdleTimeout:       modules.HTTPIdleTimeout,
+	}
 	listeners, err := listenWithLoopback(webListen, webPort)
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", webPort, err)
@@ -175,7 +194,6 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
-		log.Println("Shutting down...")
 		c.shutdown()
 	}()
 
@@ -183,6 +201,9 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 		log.Printf("No users yet: open the Web UI to create the first administrator, or run: %s user create --username <name> --role admin", modules.AppName)
 	}
 	log.Printf("%s %s listening on %s:%d (data: %s)", modules.AppName, modules.AppVersion, webListen, webPort, dataDir)
+	if warning := modules.DataDirPermissionWarning(dataDir); warning != "" {
+		log.Printf("warning: %s", warning)
+	}
 	if len(listeners) > 1 {
 		log.Printf("also listening on 127.0.0.1:%d for local control", webPort)
 	}
@@ -192,6 +213,7 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 		log.Printf("check times: none (automatic checks are disabled)")
 	}
 	log.Printf("workers: %d", c.jm.Workers())
+	log.Printf("mail retention: %d days", modules.ResolveMailKeepDays(db))
 
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup
@@ -224,6 +246,7 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 // and the scheduler are stopped by startServer once the listeners are closed.
 func (c *core) shutdown() {
 	c.shutdownOnce.Do(func() {
+		log.Println("Shutting down...")
 		ctx, cancel := context.WithTimeout(context.Background(), modules.ShutdownGraceTimeout)
 		defer cancel()
 		if c.srv != nil {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"mailcare/app/models"
@@ -16,10 +17,10 @@ import (
 )
 
 // AnalyzeGroup builds the prompt for the group (listing the raw message files
-// so the CLI reads the originals itself), runs the provider CLI in the group's
-// workspace, parses the REPORT/META blocks and stores an agent report row.
-// It returns the stored report (status completed or error) and an error only
-// when nothing could be recorded.
+// so the CLI reads the originals itself), runs the provider CLI in a fresh
+// workspace directory made for this run, parses the REPORT/META blocks and
+// stores an agent report row. It returns the stored report (status completed
+// or error) and an error only when nothing could be recorded.
 //
 // Success is decided by whether a usable REPORT block was extracted from the
 // transcript after the echoed prompt is removed (see StripPromptEcho and
@@ -27,10 +28,12 @@ import (
 // summary). The CLI exit code is not a reliable signal (codex exits non-zero on
 // fine runs), so it is ignored. A launch failure (CLI missing), a timeout, a
 // cancellation, a usage/rate limit ("usage limit reached (retry after ...)"),
-// a missing REPORT block or an unusable report fail the run and the reason is
-// stored on the report. A failure never touches REPORT.md or the previous
-// completed report row and sets needs_analysis so the next sync retries the
-// group; RESULT.log keeps the full transcript.
+// a missing REPORT block or an unusable report (template placeholders, too
+// short, or secret-like content: see ValidateOutput) fail the run and the
+// reason is stored on the report. A failed run writes no REPORT.md, leaves the previous
+// completed report row (and the directory of that run) untouched and sets
+// needs_analysis so the next sync retries the group; its RESULT.log keeps the
+// full transcript.
 func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (*models.AgentReport, error) {
 	if progress == nil {
 		progress = func(string) {}
@@ -40,6 +43,9 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 	}
 	if in.GroupKey == "" {
 		return nil, errors.New("agent: empty group key")
+	}
+	if in.AgentRoot == "" {
+		return nil, errors.New("agent: no workspace root")
 	}
 	providerName := in.Provider
 	if providerName == "" {
@@ -79,8 +85,8 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		return fail(fmt.Errorf("unknown agent provider %q", providerName))
 	}
 
-	// 1. Workspace.
-	dir := filepath.Join(in.AgentRoot, mailengine.SanitizeAddress(in.Address), group.GroupKey)
+	// 1. Workspace: one directory per run, named after the report row.
+	dir := RunDir(in.AgentRoot, in.Address, group.GroupKey, report.ID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fail(fmt.Errorf("create workspace: %w", err))
 	}
@@ -99,13 +105,17 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		return fail(fmt.Errorf("list messages: %w", err))
 	}
 	promptText := BuildPrompt(PromptInput{
-		MailsRoot: in.MailsRoot,
-		Address:   in.Address,
-		Language:  in.Language,
-		Group:     group,
-		Stats:     stats,
-		Messages:  msgs,
+		MailsRoot:   in.MailsRoot,
+		Address:     in.Address,
+		Language:    in.Language,
+		TemplatesFS: in.TemplatesFS,
+		Group:       group,
+		Stats:       stats,
+		Messages:    msgs,
 	})
+	// The progress names the run directory relative to the address (its
+	// absolute path would expose the server's layout to every Web user).
+	progress("workspace " + group.GroupKey + "/" + strconv.FormatInt(report.ID, 10))
 	promptFile := filepath.Join(dir, PromptFileName)
 	if err := os.WriteFile(promptFile, []byte(promptText), 0o600); err != nil {
 		return fail(fmt.Errorf("write prompt: %w", err))
@@ -143,8 +153,9 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		case !parsed.ReportParsed:
 			failure = fmt.Errorf("%s produced no report", provider.Label())
 		default:
-			// A REPORT block that still carries placeholders, is too short or
-			// comes with a placeholder summary must not replace a good report.
+			// A REPORT block that still carries placeholders, is too short,
+			// comes with a placeholder summary or contains secret-like content
+			// must not replace a good report.
 			failure = fmt.Errorf("%s produced an unusable report: %v", provider.Label(), invalid)
 		}
 	}
@@ -185,6 +196,12 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		progress("report stored")
 	}
 	return report, nil
+}
+
+// RunDir returns the workspace directory of one analysis run:
+// <agentRoot>/<sanitized address>/<group_key>/<report_id>.
+func RunDir(agentRoot, address, groupKey string, reportID int64) string {
+	return filepath.Join(agentRoot, mailengine.SanitizeAddress(address), groupKey, strconv.FormatInt(reportID, 10))
 }
 
 // copyTemplates copies templates/agent/<provider>/** from templates into dir.
