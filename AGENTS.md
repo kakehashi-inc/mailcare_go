@@ -48,10 +48,10 @@ Loop:
 
 <project_details>
 <instruction>
-CRITICAL: You MUST read [README.md](README.md) BEFORE taking any action.
+CRITICAL: You MUST read [README.md](README.md) (English) or [README-ja.md](README-ja.md) (Japanese) BEFORE taking any action.
 </instruction>
 <development_rules>
-- Developer documentation (except README.md) must be placed in the `Documents` directory.
+- Developer documentation (except README.md / README-ja.md) must be placed in the `Documents` directory.
 - After every change, always run the linter and apply appropriate fixes. If intentionally allowing a linter error, document the reason in a comment. **Builds are for releases only and are not needed for debugging; running the linter is sufficient.**
 - When implementing models, place one file per table.
 - Reusable components must be implemented as separate files in the `modules` directory.

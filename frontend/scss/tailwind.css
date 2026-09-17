@@ -16,7 +16,93 @@
         min-height: 100%;
     }
 
+    html {
+        /* Universal design: body text is at least 16px with 1.5 line height. */
+        font-size: 16px;
+        line-height: 1.5;
+        overflow-x: hidden;
+    }
+
     body {
         @apply bg-canvas font-sans text-ink antialiased;
+        overflow-x: hidden;
+    }
+
+    /* A visible focus ring on every focusable element by default. Components
+       may override it with focus-visible utilities. */
+    :focus-visible {
+        outline: 2px solid var(--color-accent);
+        outline-offset: 2px;
+    }
+
+    /* Respect the user's reduced-motion preference. */
+    @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
+        }
+    }
+}
+
+@layer components {
+    /* Rendered Markdown (agent reports). */
+    .prose-report {
+        @apply text-base leading-relaxed text-ink;
+    }
+    .prose-report > * + * {
+        @apply mt-3;
+    }
+    .prose-report h1,
+    .prose-report h2,
+    .prose-report h3,
+    .prose-report h4 {
+        @apply font-semibold text-ink;
+    }
+    .prose-report h1 {
+        @apply mt-6 text-xl;
+    }
+    .prose-report h2 {
+        @apply mt-6 border-b border-line pb-1 text-lg;
+    }
+    .prose-report h3 {
+        @apply mt-4 text-base;
+    }
+    .prose-report ul {
+        @apply list-disc pl-6;
+    }
+    .prose-report ol {
+        @apply list-decimal pl-6;
+    }
+    .prose-report li + li {
+        @apply mt-1;
+    }
+    .prose-report a {
+        @apply text-accent underline underline-offset-2 hover:text-accent-hover;
+    }
+    .prose-report code {
+        @apply rounded bg-well px-1 py-0.5 font-mono text-[0.9em];
+    }
+    .prose-report pre {
+        @apply overflow-x-auto rounded-md bg-well p-3 font-mono text-sm;
+    }
+    .prose-report pre code {
+        @apply bg-transparent p-0;
+    }
+    .prose-report blockquote {
+        @apply border-l-4 border-line pl-3 text-muted;
+    }
+    .prose-report table {
+        @apply w-full border-collapse text-sm;
+    }
+    .prose-report th,
+    .prose-report td {
+        @apply border border-line px-2 py-1 text-left align-top;
+    }
+    .prose-report th {
+        @apply bg-well font-semibold;
     }
 }

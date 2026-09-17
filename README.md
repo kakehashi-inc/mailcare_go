@@ -1,176 +1,194 @@
-# システム名をここに記載
+# MailCare
 
-## 1. システム概要
+Japanese version: [README-ja.md](README-ja.md)
 
-システムの概略をここに記載してください。
+## 1. Overview
 
-事前の変更点は以下のキーワードでファイル名、またはファイル内容を検索しアプリ名に置き換えてください。
+MailCare watches any number of mail addresses over IMAP, collects the notices that mail daemons
+(MAILER-DAEMON, postmaster, ...) send back, such as "Undelivered Mail Returned to Sender", smooths out the
+variation in recipient addresses and remote server IPs, and presents them in **bounce groups**: one row per
+problem that the mail server administrator, the domain administrator or the owner of the recipient address
+has to act on.
 
-ファイル名キーワード:
+- **Every mail is kept** - each received mail, whether it is a bounce or not, is stored under
+  `data/mails/<address>/` as the original (`.eml`), the text body (`.txt`), the HTML body (`.html`) and the
+  parsed metadata (`.json`). The index is a separate SQLite file per address (`data/mails/<address>.sqlite`),
+  so detection can be re-run from the raw files whenever the rules change.
+- **Detection** - the sender, sender name, subject and `multipart/report` delivery status decide whether a
+  mail is a bounce and of which kind (failed / delayed / auto-reply). The failing recipient, the extended
+  status code (`5.1.1`), the remote MTA and IP and the diagnostic text are extracted.
+- **Grouping** - bounces with the same recipient domain, status code and normalized diagnostic text form one
+  group, with a machine-derived guess of who should act (sending server, recipient address owner, recipient
+  domain).
+- **Agent analysis** - an agent CLI installed on the machine (Codex CLI today; more can be added) is given the
+  paths of the raw mails of a group and writes a cause analysis with recommended actions, stored per group.
+- **Scheduled checks** - mail is fetched at the configured daily times (default 06:00, 12:00 and 18:00). The
+  first check of an address looks back 90 days, later checks 30 days, and only mails not fetched yet are
+  taken.
+- **Web and CLI** - everything can be done from the Web UI (port 9790). The command line covers starting and
+  stopping the service, user and login-token management, mail address registration, mail checks, reindexing,
+  analysis runs and group listings (reading mail bodies is Web only).
+- One binary for Windows, macOS and Linux.
 
-- develop_app
+### 1.1 Quick start
 
-ファイル内容検索キーワード:
+```bash
+# Start the server (open http://localhost:9790/ and create the first administrator on the setup screen)
+mailcare service start
 
-- develop_app
-- develop app
-- システム名をここに記載
-- 8080（Webサーバーの待受ポート）
-- 8081（APIサーバーの待受ポート）
-- dap_（APIトークンの接頭辞）
-- settings（サーバー設定の保存に暫定利用しているテーブルと処理。不要な場合は削除）
+# Or create an administrator from the command line
+mailcare user create --username admin --role admin
 
-現在の概要に記載されている内容は`システムの概略をここに記載してください。`を残し削除してください。
+# Register a mail address (the password is prompted when omitted)
+mailcare mailbox add --address bounce@example.com --host imap.example.com --username bounce@example.com
 
-APIサーバーを使わずWebサーバーのみの1サーバー構成にする場合:
+# Check mail now (submitted to the running server; --wait shows the progress until it finishes)
+mailcare check --wait
 
-- `app/workers/api_server.go`の`/control/*`（ハンドラとループバック制限）を`web_server.go`の`webHandler`へ移し、`api_server.go`を削除する
-- `app/workers/server.go`の`startServer`からAPI側（`apiSrv` / `apiLns`、`apiPort == webPort`の検査）を外し、Web側のリスナーを`listenWithLoopback`で開く
-- `api_listen` / `api_port`の定数・設定キー（`app/modules/constants.go`）、`--api-listen` / `--api-port`フラグ（`app/modules/cli.go`）、`StartServer`の引数（`service.go` / `main.go`）を削除し、`service stop` / `status`はWebポートへ接続する
-
-詳細設計書に含めるもの:
-
-- テーブル定義: Documents/テーブル定義.mdに作成してそれを指示してもよい。
-- 用語定義: 関係する人の役割、各種用語などは全て定義しておくこと。これは日本語(English)の形式で必ず英語も用意しておく。
-
-プロンプト依頼例:
-
-```text
-以下の詳細設計書を元に実装をしてください。
-Go言語用にプロジェクトの基本構造などは既に作成済みです。
-起動パラメータ解析処理は`main.go`へ実装してください。
-
-`app/models`ディレクトリ内にデータ構造（モデル）を定義してください。
-`app/modules`ディレクトリ内に実際の処理や部品を定義してください。
-`app/workers`ディレクトリ内にHTTPサーバーのルーティングとハンドラを定義してください。
-Web画面は`frontend/src`内に実装してください。
-
-README.mdを確認し、プロジェクトの開発方法などを読み解いてください。**`開発ルール`セクションを確認し遵守してください。**
-すべての実装が完了したらREADME.mdのプロジェクトの概要部分を更新してください。
-最終的な成果物として、テーブル定義.md、システム設計書.mdをDocumentsに配置してください。
-
-これ以降が詳細設計書です。
+# Change the check times (the same as --check-time 06:00 --check-time 12:00 ... at start; saved for later runs)
+mailcare schedule set 06:00 12:00 18:00
 ```
 
-## 2. 開発者向けリファレンス
+Web navigation:
 
-### Go 操作コマンド
+| Menu | Content |
+| --- | --- |
+| Dashboard (click the brand) | Open groups and last check per address, recent groups, running jobs, next check time |
+| Alerts | Mail address -> bounce group (with the agent report) -> original mails -> mail detail |
+| Mail | Raw mail viewer per address (text / HTML / original download) |
+| Tools | Rebuild the index, re-run detection, re-run the agent analysis, job history |
+| Settings | Check times and agent, mail addresses, users, login tokens, account |
 
-デバッグモジュールの追加・更新
+See [Documents/システム設計書.md](Documents/システム設計書.md) for the design,
+[Documents/テーブル定義.md](Documents/テーブル定義.md) for the tables and
+[Documents/プロンプト仕様](Documents/プロンプト仕様) for the agent prompt (all in Japanese).
+
+### 1.2 Requirements
+
+- The `codex` CLI must be on PATH to use the agent analysis (without it only the analysis is skipped).
+- Runtime data is created in `data/` next to the executable (`--data-dir` changes it). `data/mailcare.key` is
+  the secret key that encrypts IMAP passwords and signs Web sessions: back it up and keep it at mode 0600.
+
+## 2. Developer reference
+
+### Go commands
+
+Install or update the debugger
 
 ```bash
 go install github.com/go-delve/delve/cmd/dlv@latest
 ```
 
-モジュールの追加
+Add a module
 
 ```bash
 go get <package-name>
 ```
 
-モジュールの追加・ビルド
+Add and build a module
 
 ```bash
 go install <package-name>
 ```
 
-モジュールファイルの作成
+Create the module file
 
 ```bash
 go mod init <module-name>
 ```
 
-モジュールのダウンロード（モジュール名を省略するとgo.modの全て）
+Download modules (all of go.mod when the name is omitted)
 
 ```bash
 go mod download <module-name>
 ```
 
-モジュールの最適化（ソースとgo.modの双方向での一致）
+Tidy modules (sources and go.mod in both directions)
 
 ```bash
 go mod tidy
 ```
 
-モジュールの最新化
+Update modules
 
 ```bash
 go get -u
 ```
 
-Go バージョンの更新
+Update the Go version
 
 ```bash
 go mod tidy --go=1.25
 ```
 
-キャッシュのクリア
+Clear the caches
 
 ```bash
 go clean --cache --testcache
 ```
 
-### フロントエンド操作コマンド
+### Frontend commands
 
-依存パッケージのインストール
+Install dependencies
 
 ```bash
 cd frontend
 yarn install
 ```
 
-ビルド（`frontend/dist`に出力。Goの`go:embed`が参照するため、`go build`や`go vet`の前に必要）
+Build (outputs `frontend/dist`; required before `go build` and `go vet` because Go embeds it)
 
 ```bash
 cd frontend
 yarn build
 ```
 
-型チェック
+Type check
 
 ```bash
 cd frontend
 yarn lint
 ```
 
-整形（`src`配下）
+Format (`src`)
 
 ```bash
 cd frontend
 yarn format
 ```
 
-Material Iconsフォントの配置（`node_modules`から`public/fonts`へコピー）
+Copy the Material Icons fonts (from `node_modules` to `public/fonts`)
 
 ```bash
 cd frontend
 yarn setup:fonts
 ```
 
-### 起動
+### Run
 
 ```bash
 go run . service start
 ```
 
-http://localhost:8080 でWeb画面が開きます（APIサーバーは8081。`service stop` / `status`はAPIポートへ接続します）。実行時データ（DBファイルなど）は実行ファイルと同じ場所の`data/`に作成されます。
+The Web UI is served at http://localhost:9790 (`service stop` / `status` connect to the control endpoints on the
+same port). Runtime data (database, raw mails, agent workspaces) is created in `data/` next to the executable.
 
-### Lintとテスト
+### Lint and tests
 
 ```bash
 make lint
 make test
 ```
 
-### ビルドやリリース方法
+### Build and release
 
-ビルド（事前に`cd frontend && yarn build`が必要）
+Build (run `cd frontend && yarn build` first)
 
 ```bash
 go build
 ```
 
-リリース
+Release
 
 ```bash
 make

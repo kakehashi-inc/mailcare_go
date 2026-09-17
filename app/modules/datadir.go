@@ -40,3 +40,22 @@ func EnsureDataDir() (string, error) {
 	}
 	return dir, nil
 }
+
+// MailsDir returns the directory holding the raw mail files and the
+// per-mailbox index databases (<data>/mails).
+func MailsDir() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, MailsDirName), nil
+}
+
+// AgentDir returns the directory holding the agent workspaces (<data>/agent).
+func AgentDir() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, AgentDirName), nil
+}

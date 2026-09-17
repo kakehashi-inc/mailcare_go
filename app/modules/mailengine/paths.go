@@ -1,0 +1,185 @@
+package mailengine
+
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+)
+
+// ErrInvalidMessageKey is returned when a message key does not have the
+// expected shape (it would otherwise be able to address files outside the
+// mailbox directory).
+var ErrInvalidMessageKey = errors.New("mailengine: invalid message key")
+
+// messageKeyPattern is the shape of every key produced by MessageKey:
+// YYYYMMDD-HHMMSS_<12 hex digits>.
+var messageKeyPattern = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}_[0-9a-f]{12}$`)
+
+// windowsReservedNames are device names that Windows refuses as file names,
+// with or without an extension, in any letter case.
+var windowsReservedNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+// SanitizeAddress maps a mail address to a name that is safe as a directory or
+// file name on Windows, macOS and Linux (system design document, section 3.1):
+// only A-Z a-z 0-9 . _ - @ + are kept, everything else becomes "_", a trailing
+// "." or space becomes "_", Windows reserved device names get a leading "_"
+// and an empty result becomes "_". Letter case is preserved.
+func SanitizeAddress(address string) string {
+	var b strings.Builder
+	b.Grow(len(address))
+	for _, r := range address {
+		switch {
+		case r > unicode.MaxASCII:
+			b.WriteByte('_')
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.', r == '_', r == '-', r == '@', r == '+':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	s := b.String()
+	// Trailing dots and spaces are stripped silently by Windows; spaces were
+	// already replaced above, so only dots remain.
+	for strings.HasSuffix(s, ".") {
+		s = s[:len(s)-1] + "_"
+	}
+	if s == "" {
+		return "_"
+	}
+	base := s
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	if windowsReservedNames[strings.ToUpper(base)] {
+		s = "_" + s
+	}
+	return s
+}
+
+// MailboxDir returns mailsRoot/<sanitized address>.
+func MailboxDir(mailsRoot, address string) string {
+	return filepath.Join(mailsRoot, SanitizeAddress(address))
+}
+
+// MailboxIndexPath returns mailsRoot/<sanitized address>.sqlite.
+func MailboxIndexPath(mailsRoot, address string) string {
+	return filepath.Join(mailsRoot, SanitizeAddress(address)+".sqlite")
+}
+
+// ValidMessageKey reports whether key has the shape produced by MessageKey.
+// Keys of any other shape are rejected by the file helpers so that a key
+// coming from an HTTP request can never leave the mailbox directory.
+func ValidMessageKey(key string) bool {
+	return messageKeyPattern.MatchString(key)
+}
+
+// MessageFilePath returns the path of one raw file (ext: eml, txt, html, json).
+// An invalid key or extension yields "" (ReadMessageFile reports the error).
+func MessageFilePath(mailsRoot, address, messageKey, ext string) string {
+	if !ValidMessageKey(messageKey) || !validExt(ext) {
+		return ""
+	}
+	return filepath.Join(MailboxDir(mailsRoot, address), messageKey+"."+ext)
+}
+
+func validExt(ext string) bool {
+	switch ext {
+	case "eml", "txt", "html", "json":
+		return true
+	}
+	return false
+}
+
+// ReadMessageFile reads one raw file of a message. A missing optional file
+// (txt/html) yields os.ErrNotExist.
+func ReadMessageFile(mailsRoot, address, messageKey, ext string) ([]byte, error) {
+	path := MessageFilePath(mailsRoot, address, messageKey, ext)
+	if path == "" {
+		return nil, ErrInvalidMessageKey
+	}
+	return os.ReadFile(path)
+}
+
+// DeleteMailboxData removes the raw files directory and the index of a mailbox
+// (including the SQLite WAL side files). Missing files are not an error.
+func DeleteMailboxData(mailsRoot, address string) error {
+	if err := os.RemoveAll(MailboxDir(mailsRoot, address)); err != nil {
+		return err
+	}
+	return removeIndexFiles(MailboxIndexPath(mailsRoot, address))
+}
+
+// removeIndexFiles deletes an index database and its -wal / -shm side files.
+func removeIndexFiles(indexPath string) error {
+	for _, p := range []string{indexPath, indexPath + "-wal", indexPath + "-shm", indexPath + "-journal"} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// MessageKey builds the file name base of one message (design 3.2):
+// <YYYYMMDD-HHMMSS>_<hash> where the date is the UTC form of date (the caller
+// passes the Date header, else INTERNALDATE, else the fetch time) and hash is
+// the first 12 hex digits of sha1(folder + "\x00" + uidvalidity + "\x00" +
+// uid). The same message therefore always yields the same key.
+func MessageKey(date time.Time, folder string, uidValidity, uid uint32) string {
+	sum := sha1.Sum([]byte(folder + "\x00" + strconv.FormatUint(uint64(uidValidity), 10) + "\x00" +
+		strconv.FormatUint(uint64(uid), 10)))
+	return date.UTC().Format("20060102-150405") + "_" + hex.EncodeToString(sum[:])[:12]
+}
+
+// writeFileAtomic writes data to path through a temporary file in the same
+// directory followed by a rename, so readers never observe a partial file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return fmt.Errorf("rename %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}

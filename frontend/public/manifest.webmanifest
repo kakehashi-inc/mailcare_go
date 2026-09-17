@@ -1,6 +1,7 @@
 {
-    "name": "Develop App",
-    "short_name": "Develop App",
+    "name": "MailCare",
+    "short_name": "MailCare",
+    "description": "Bounce mail monitoring and analysis",
     "start_url": "/",
     "display": "standalone",
     "background_color": "#f8fafc",

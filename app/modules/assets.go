@@ -6,6 +6,8 @@ import "io/fs"
 //
 //   - MigrationsFS: root contains "app/migrations/*.sql" (goose migrations).
 //   - FrontendFS:   root contains "frontend/dist/**" (the built SPA).
+//   - TemplatesFS:  root contains "agent-templates/<provider>/**" (workspace
+//     skeletons copied into the agent workspace of a group).
 //
 // They are package-level variables (mirroring the StartServer pattern) so that
 // modules/workers can reach the binary-embedded assets without an import cycle
@@ -13,6 +15,7 @@ import "io/fs"
 var (
 	MigrationsFS fs.FS
 	FrontendFS   fs.FS
+	TemplatesFS  fs.FS
 )
 
 // AppVersion is the build version injected from package main at startup

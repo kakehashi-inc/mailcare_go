@@ -1,0 +1,37 @@
+Return-path: <>
+Envelope-to: newsletter@example.jp
+Delivery-date: Thu, 4 Sep 2025 10:20:30 +0900
+Received: from mail by mail.example.org with local (Exim 4.96)
+	id 1t8Xyz-0001Ab-Cd
+	for newsletter@example.jp; Thu, 04 Sep 2025 10:20:30 +0900
+X-Failed-Recipients: jiro@nowhere.example.org
+Auto-Submitted: auto-replied
+From: Mail Delivery System <Mailer-Daemon@mail.example.org>
+To: newsletter@example.jp
+Subject: Mail delivery failed: returning message to sender
+Message-Id: <E1t8Xyz-0001Ab-Cd@mail.example.org>
+Date: Thu, 04 Sep 2025 10:20:30 +0900
+
+This message was created automatically by mail delivery software.
+
+A message that you sent could not be delivered to one or more of its
+recipients. This is a permanent error. The following address(es) failed:
+
+  jiro@nowhere.example.org
+    SMTP error from remote mail server after RCPT TO:<jiro@nowhere.example.org>:
+    host mx.nowhere.example.org [203.0.113.55]: 550 5.1.1 The email account that you tried to reach does not exist.
+
+------ This is a copy of the message, including all the headers. ------
+
+Return-path: <newsletter@example.jp>
+Received: from app01.example.jp ([192.0.2.20])
+	by mail.example.org with esmtp (Exim 4.96)
+	id 1t8Xyy-0001Aa-Zz
+	for jiro@nowhere.example.org; Thu, 04 Sep 2025 10:20:29 +0900
+From: Newsletter <newsletter@example.jp>
+To: jiro@nowhere.example.org
+Subject: September campaign
+Message-ID: <camp-0004@example.jp>
+Date: Thu, 4 Sep 2025 10:20:00 +0900
+
+Hello, this is the September campaign.

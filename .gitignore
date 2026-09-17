@@ -36,7 +36,7 @@ bin/
 *.exe
 __debug_bin*
 
-# develop_app runtime data (created next to the executable) and dev binary
+# mailcare runtime data (created next to the executable) and dev binary
 /data/
-/develop_app
-/develop_app_*
+/mailcare
+/mailcare_*

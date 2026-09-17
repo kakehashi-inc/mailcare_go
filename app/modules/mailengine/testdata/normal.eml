@@ -1,0 +1,31 @@
+Return-Path: <hachiro@client.example.com>
+Received: from smtp.client.example.com (smtp.client.example.com [198.51.100.200])
+	by mx.example.jp (Postfix) with ESMTPS id 9F8E7D6C5B
+	for <newsletter@example.jp>; Wed, 10 Sep 2025 15:30:00 +0900 (JST)
+From: Hachiro Suzuki <hachiro@client.example.com>
+To: Newsletter <newsletter@example.jp>
+Cc: support@example.jp
+Subject: Re: September campaign - question about pricing
+Date: Wed, 10 Sep 2025 15:30:00 +0900
+Message-ID: <q-0010@client.example.com>
+In-Reply-To: <camp-0004@example.jp>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset="UTF-8"
+
+Hello,
+
+Could you tell me whether the campaign price includes delivery?
+The mail server at mx.customer.example.com said 550 nothing, I am just quoting.
+
+Regards,
+Hachiro
+
+--b1
+Content-Type: text/html; charset="UTF-8"
+
+<html><body><p>Hello,</p><p>Could you tell me whether the campaign price includes delivery?</p></body></html>
+
+--b1--

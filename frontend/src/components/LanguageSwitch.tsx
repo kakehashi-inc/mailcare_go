@@ -19,19 +19,20 @@ export function LanguageSwitch() {
             <button
                 type='button'
                 aria-label={t('header.language')}
+                title={t('header.language')}
                 aria-haspopup='menu'
                 aria-expanded={open}
                 onClick={() => setOpen(v => !v)}
-                className='flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-line hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                className='flex min-h-tap min-w-tap items-center justify-center rounded-md text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
             >
-                <span className='material-icons-outlined text-xl' aria-hidden='true'>
+                <span className='material-icons-outlined text-[22px]' aria-hidden='true'>
                     language
                 </span>
             </button>
             {open && (
                 <div
                     role='menu'
-                    className='absolute right-0 z-20 mt-1 min-w-36 overflow-hidden rounded-md border border-line bg-surface py-1 shadow-xl'
+                    className='absolute right-0 z-20 mt-1 min-w-40 overflow-hidden rounded-md border border-line bg-surface py-1 shadow-xl'
                 >
                     {SUPPORTED_LANGS.map(code => (
                         <button
@@ -43,7 +44,7 @@ export function LanguageSwitch() {
                                 setOpen(false);
                                 void changeLanguage(code);
                             }}
-                            className={`flex w-full items-center justify-between gap-3 px-4 py-2 text-left text-sm hover:bg-line focus:bg-line focus:outline-none ${
+                            className={`flex min-h-tap w-full items-center justify-between gap-3 px-4 py-2 text-left text-base hover:bg-well focus:bg-well focus:outline-none ${
                                 current === code ? 'text-ink' : 'text-muted'
                             }`}
                         >

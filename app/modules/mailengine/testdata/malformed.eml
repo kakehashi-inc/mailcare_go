@@ -1,0 +1,7 @@
+From: MAILER-DAEMON@broken.example.net (Mail Delivery System)
+Subject: =?ISO-2022-JP?B?broken=?= Undeliverable
+Date: not a date at all
+Content-Type: multipart/report; report-type=delivery-status; boundary="missing"
+
+This body has no boundary markers at all, so the multipart parser fails.
+<kuro@broken.example.net>: host mx.broken.example.net[192.0.2.99] said: 550 5.7.1 Message rejected due to policy (in reply to end of DATA command)

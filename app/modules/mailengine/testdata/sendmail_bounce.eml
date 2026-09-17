@@ -1,0 +1,60 @@
+Return-Path: <MAILER-DAEMON>
+Received: from localhost (localhost)
+	by relay.example.edu (8.15.2/8.15.2) id 5880ABCD012345;
+	Mon, 8 Sep 2025 10:00:00 +0900 (JST)
+Date: Mon, 8 Sep 2025 10:00:00 +0900 (JST)
+From: Mail Delivery Subsystem <MAILER-DAEMON@relay.example.edu>
+Message-Id: <202509080100.5880ABCD012345@relay.example.edu>
+To: <newsletter@example.jp>
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status;
+	boundary="5880ABCD012345.1757293200/relay.example.edu"
+Subject: Returned mail: see transcript for details
+Auto-Submitted: auto-generated (failure)
+
+This is a MIME-encapsulated message
+
+--5880ABCD012345.1757293200/relay.example.edu
+
+The original message was received at Mon, 8 Sep 2025 09:59:59 +0900 (JST)
+from app01.example.jp [192.0.2.20]
+
+   ----- The following addresses had permanent fatal errors -----
+<rokuro@dept.example.edu>
+    (reason: 550 5.1.1 <rokuro@dept.example.edu>... User unknown)
+
+   ----- Transcript of session follows -----
+... while talking to mail.dept.example.edu.:
+>>> DATA
+<<< 550 5.1.1 <rokuro@dept.example.edu>... User unknown
+550 5.1.1 <rokuro@dept.example.edu>... User unknown
+<<< 503 5.0.0 Need RCPT (recipient)
+
+--5880ABCD012345.1757293200/relay.example.edu
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; relay.example.edu
+Received-From-MTA: DNS; app01.example.jp
+Arrival-Date: Mon, 8 Sep 2025 09:59:59 +0900 (JST)
+
+Final-Recipient: RFC822; rokuro@dept.example.edu
+Action: failed
+Status: 5.1.1
+Remote-MTA: DNS; mail.dept.example.edu
+Diagnostic-Code: SMTP; 550 5.1.1 <rokuro@dept.example.edu>... User unknown
+Last-Attempt-Date: Mon, 8 Sep 2025 10:00:00 +0900 (JST)
+
+--5880ABCD012345.1757293200/relay.example.edu
+Content-Type: text/rfc822-headers
+
+Return-Path: <newsletter@example.jp>
+Received: from app01.example.jp (app01.example.jp [192.0.2.20])
+	by relay.example.edu (8.15.2/8.15.2) with ESMTP id 5880ABCD012344
+	for <rokuro@dept.example.edu>; Mon, 8 Sep 2025 09:59:59 +0900 (JST)
+From: Newsletter <newsletter@example.jp>
+To: rokuro@dept.example.edu
+Subject: Campus event
+Date: Mon, 8 Sep 2025 09:59:50 +0900
+Message-ID: <campus-0008@example.jp>
+
+--5880ABCD012345.1757293200/relay.example.edu--

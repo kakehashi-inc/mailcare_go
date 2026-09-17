@@ -35,7 +35,7 @@ func OpenDB(dbPath string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

@@ -1,4 +1,4 @@
-EXECUTABLE=develop_app
+EXECUTABLE=mailcare
 WINDOWS_AMD64=$(EXECUTABLE)_windows_amd64.exe
 WINDOWS_ARM64=$(EXECUTABLE)_windows_arm64.exe
 LINUX_AMD64=$(EXECUTABLE)_linux_amd64

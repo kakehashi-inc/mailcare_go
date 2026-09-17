@@ -1,0 +1,27 @@
+Return-Path: <#@[]>
+Received: (qmail 12345 invoked for bounce); 5 Sep 2025 02:30:00 -0000
+Date: 5 Sep 2025 02:30:00 -0000
+From: MAILER-DAEMON@qmail.example.net
+To: newsletter@example.jp
+Subject: failure notice
+
+Hi. This is the qmail-send program at qmail.example.net.
+I'm afraid I wasn't able to deliver your message to the following addresses.
+This is a permanent error; I've given up. Sorry it didn't work out.
+
+<saburo@customer.example.com>:
+198.51.100.25 does not like recipient.
+Remote host said: 550 5.1.1 <saburo@customer.example.com>: Recipient address rejected: User unknown in virtual mailbox table
+Giving up on 198.51.100.25.
+
+--- Below this line is a copy of the message.
+
+Return-Path: <newsletter@example.jp>
+Received: (qmail 12300 invoked by uid 1001); 5 Sep 2025 02:29:58 -0000
+Date: 5 Sep 2025 02:29:58 -0000
+Message-ID: <qmail-0005@example.jp>
+From: newsletter@example.jp
+To: saburo@customer.example.com
+Subject: Invoice
+
+Please find the invoice attached.

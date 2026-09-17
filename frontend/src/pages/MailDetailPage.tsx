@@ -1,0 +1,315 @@
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { Link, useParams } from 'react-router-dom';
+import { getMailbox, getMessage, messageHtmlUrl, messageRawUrl } from '../api/client';
+import { BounceKindBadge, ResponsibleBadge } from '../components/domain/StatusBadges';
+import { Alert } from '../components/ui/Alert';
+import { Card, CardHeader } from '../components/ui/Card';
+import { CopyButton } from '../components/ui/CopyButton';
+import { DateTime } from '../components/ui/DateTime';
+import { DescriptionList } from '../components/ui/DescriptionList';
+import { EmptyState } from '../components/ui/EmptyState';
+import { ErrorState } from '../components/ui/ErrorState';
+import { Icon } from '../components/ui/Icon';
+import { PageContainer, PageHeader } from '../components/ui/PageHeader';
+import { LoadingBlock } from '../components/ui/Spinner';
+import { TabPanel, Tabs } from '../components/ui/Tabs';
+import { useAsync } from '../hooks/useAsync';
+import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { errorMessage } from '../utils/errors';
+import { formatBytes } from '../utils/format';
+
+type BodyTab = 'text' | 'html' | 'headers';
+
+/** Renders one value of the parsed-message JSON: scalars inline, arrays as lines, objects as a nested list. */
+function HeaderValue({ value }: { value: unknown }) {
+    if (value === null || value === undefined || value === '') return <span className='text-muted'>-</span>;
+    if (Array.isArray(value)) {
+        if (value.length === 0) return <span className='text-muted'>-</span>;
+        return (
+            <ul className='flex flex-col gap-1'>
+                {value.map((v, i) => (
+                    <li key={i}>
+                        <HeaderValue value={v} />
+                    </li>
+                ))}
+            </ul>
+        );
+    }
+    if (typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>).filter(
+            ([, v]) => v !== null && v !== undefined && v !== ''
+        );
+        if (entries.length === 0) return <span className='text-muted'>-</span>;
+        return (
+            <dl className='rounded-md border border-line p-2'>
+                {entries.map(([k, v]) => (
+                    <div key={k} className='grid grid-cols-1 gap-x-3 py-0.5 sm:grid-cols-[10rem_1fr]'>
+                        <dt className='text-muted'>{k}</dt>
+                        <dd className='min-w-0'>
+                            <HeaderValue value={v} />
+                        </dd>
+                    </div>
+                ))}
+            </dl>
+        );
+    }
+    return <>{String(value)}</>;
+}
+
+const BUTTON_LINK =
+    'inline-flex min-h-tap items-center justify-center gap-2 rounded-md border border-line bg-surface px-4 py-2 text-base font-medium text-ink transition-colors hover:bg-well focus:outline-none focus-visible:ring-2 focus-visible:ring-accent';
+
+export function MailDetailPage() {
+    const { t } = useTranslation();
+    const { mailboxId = '', messageKey = '' } = useParams();
+    const id = Number(mailboxId);
+    const mailbox = useAsync(() => getMailbox(id), [id]);
+    const detail = useAsync(() => getMessage(id, messageKey), [id, messageKey]);
+    const [tab, setTab] = useState<BodyTab>('text');
+    useDocumentTitle(detail.data?.message.subject || t('mail.detail'));
+
+    if (detail.loading) return <LoadingBlock />;
+    if (detail.error || !detail.data) {
+        return (
+            <PageContainer>
+                <ErrorState message={errorMessage(detail.error, t)} onRetry={() => void detail.reload()} />
+            </PageContainer>
+        );
+    }
+
+    const { message, bounce, text, has_html, headers } = detail.data;
+    const headerEntries = Object.entries(headers ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '');
+
+    return (
+        <PageContainer wide>
+            <PageHeader
+                title={message.subject || t('mail.noSubject')}
+                crumbs={[
+                    { label: t('nav.mails'), to: '/mails' },
+                    { label: mailbox.data?.address ?? '...', to: `/mails/${id}` },
+                    { label: t('mail.detail') },
+                ]}
+                actions={
+                    <>
+                        <a href={messageRawUrl(id, messageKey)} download={`${messageKey}.eml`} className={BUTTON_LINK}>
+                            <Icon name='download' className='text-[20px]' />
+                            {t('mail.downloadRaw')}
+                        </a>
+                        {message.group_key && (
+                            <Link
+                                to={`/alerts/${id}/groups/${encodeURIComponent(message.group_key)}`}
+                                className={BUTTON_LINK}
+                            >
+                                <Icon name='notifications' className='text-[20px]' />
+                                {t('mail.openGroup')}
+                            </Link>
+                        )}
+                    </>
+                }
+            />
+
+            <div className='grid grid-cols-1 gap-6 lg:grid-cols-3'>
+                <div className='flex flex-col gap-6 lg:col-span-2'>
+                    <Card>
+                        <DescriptionList
+                            items={[
+                                {
+                                    label: t('mail.from'),
+                                    value: (
+                                        <span className='break-all'>
+                                            {message.from_name && (
+                                                <span className='font-medium'>{message.from_name} </span>
+                                            )}
+                                            {message.from_address}
+                                        </span>
+                                    ),
+                                },
+                                {
+                                    label: t('mail.to'),
+                                    value: <span className='break-all'>{message.to_address || '-'}</span>,
+                                },
+                                ...(message.date
+                                    ? [
+                                          { label: t('mail.date'), value: <DateTime value={message.date} /> },
+                                          {
+                                              label: t('mail.receivedAt'),
+                                              value: <DateTime value={message.received_at} />,
+                                          },
+                                      ]
+                                    : [
+                                          {
+                                              label: t('mail.receivedAt'),
+                                              value: <DateTime value={message.received_at} />,
+                                          },
+                                      ]),
+                                {
+                                    label: t('mail.messageId'),
+                                    value: (
+                                        <span className='inline-flex max-w-full items-center gap-1'>
+                                            <code className='truncate font-mono text-sm'>
+                                                {message.message_id || '-'}
+                                            </code>
+                                            {message.message_id && <CopyButton text={message.message_id} />}
+                                        </span>
+                                    ),
+                                    wide: true,
+                                },
+                                ...(message.folder
+                                    ? [{ label: t('mail.folder'), value: `${message.folder} (UID ${message.uid})` }]
+                                    : []),
+                                { label: t('mail.size'), value: formatBytes(message.size) },
+                                {
+                                    label: t('mail.kind'),
+                                    value: (
+                                        <span className='inline-flex flex-wrap items-center gap-2'>
+                                            <BounceKindBadge kind={message.bounce_kind} isBounce={message.is_bounce} />
+                                            {message.classify_reason && (
+                                                <span className='text-sm text-muted'>({message.classify_reason})</span>
+                                            )}
+                                        </span>
+                                    ),
+                                },
+                                {
+                                    label: t('mail.key'),
+                                    value: <code className='font-mono text-sm'>{message.message_key}</code>,
+                                },
+                            ]}
+                        />
+                    </Card>
+
+                    <Card>
+                        <Tabs<BodyTab>
+                            label={t('mail.bodyTabs')}
+                            value={tab}
+                            onChange={setTab}
+                            tabs={[
+                                { key: 'text', label: t('mail.tabText'), icon: 'notes' },
+                                ...(has_html ? [{ key: 'html' as const, label: t('mail.tabHtml'), icon: 'code' }] : []),
+                                { key: 'headers', label: t('mail.tabHeaders'), icon: 'list' },
+                            ]}
+                        />
+                        <TabPanel id='text' active={tab === 'text'}>
+                            {text ? (
+                                <pre className='max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-well p-3 font-mono text-sm leading-relaxed text-ink'>
+                                    {text}
+                                </pre>
+                            ) : (
+                                <EmptyState icon='notes' title={t('mail.noText')} />
+                            )}
+                        </TabPanel>
+                        <TabPanel id='html' active={tab === 'html'}>
+                            {has_html ? (
+                                <>
+                                    <Alert tone='info' className='mb-3'>
+                                        {t('mail.htmlSandboxNote')}
+                                    </Alert>
+                                    <iframe
+                                        src={messageHtmlUrl(id, messageKey)}
+                                        sandbox=''
+                                        referrerPolicy='no-referrer'
+                                        title={t('mail.tabHtml')}
+                                        className='h-[70vh] w-full rounded-md border border-line bg-white'
+                                    />
+                                </>
+                            ) : (
+                                <EmptyState icon='code' title={t('mail.noHtml')} />
+                            )}
+                        </TabPanel>
+                        <TabPanel id='headers' active={tab === 'headers'}>
+                            {headerEntries.length === 0 ? (
+                                <EmptyState icon='list' title={t('mail.noHeaders')} />
+                            ) : (
+                                <dl className='divide-y divide-line'>
+                                    {headerEntries.map(([name, value]) => (
+                                        <div
+                                            key={name}
+                                            className='grid grid-cols-1 gap-1 py-2 sm:grid-cols-[12rem_1fr] sm:gap-4'
+                                        >
+                                            <dt className='break-all font-mono text-sm font-semibold text-muted'>
+                                                {name}
+                                            </dt>
+                                            <dd className='min-w-0 break-all font-mono text-sm text-ink'>
+                                                <HeaderValue value={value} />
+                                            </dd>
+                                        </div>
+                                    ))}
+                                </dl>
+                            )}
+                        </TabPanel>
+                    </Card>
+                </div>
+
+                <aside>
+                    <Card>
+                        <CardHeader title={t('bounce.title')} />
+                        {bounce ? (
+                            <DescriptionList
+                                columns={1}
+                                items={[
+                                    {
+                                        label: t('bounce.originalRecipient'),
+                                        value: <span className='break-all'>{bounce.original_recipient || '-'}</span>,
+                                    },
+                                    { label: t('bounce.recipientDomain'), value: bounce.recipient_domain || '-' },
+                                    { label: t('bounce.action'), value: bounce.action || '-' },
+                                    {
+                                        label: t('bounce.statusCode'),
+                                        value: `${bounce.status_code || '-'} / ${bounce.smtp_code || '-'}`,
+                                    },
+                                    {
+                                        label: t('bounce.responsible'),
+                                        value: <ResponsibleBadge responsible={bounce.responsible} />,
+                                    },
+                                    {
+                                        label: t('bounce.remoteMta'),
+                                        value: <span className='break-all'>{bounce.remote_mta || '-'}</span>,
+                                    },
+                                    { label: t('bounce.remoteIp'), value: bounce.remote_ip || '-' },
+                                    {
+                                        label: t('bounce.reportingMta'),
+                                        value: <span className='break-all'>{bounce.reporting_mta || '-'}</span>,
+                                    },
+                                    {
+                                        label: t('bounce.diagnostic'),
+                                        value: (
+                                            <code className='block whitespace-pre-wrap break-words rounded-md bg-well p-2 font-mono text-sm'>
+                                                {bounce.diagnostic || '-'}
+                                            </code>
+                                        ),
+                                    },
+                                    {
+                                        label: t('bounce.originalSubject'),
+                                        value: <span className='break-words'>{bounce.original_subject || '-'}</span>,
+                                    },
+                                    {
+                                        label: t('bounce.originalFrom'),
+                                        value: <span className='break-all'>{bounce.original_from || '-'}</span>,
+                                    },
+                                    {
+                                        label: t('bounce.originalDate'),
+                                        value: <DateTime value={bounce.original_date} />,
+                                    },
+                                    {
+                                        label: t('bounce.originalMessageId'),
+                                        value: (
+                                            <code className='break-all font-mono text-sm'>
+                                                {bounce.original_message_id || '-'}
+                                            </code>
+                                        ),
+                                    },
+                                ]}
+                            />
+                        ) : (
+                            <EmptyState
+                                icon='report_off'
+                                title={t('bounce.none')}
+                                description={message.is_bounce ? undefined : t('bounce.notBounce')}
+                            />
+                        )}
+                    </Card>
+                </aside>
+            </div>
+        </PageContainer>
+    );
+}

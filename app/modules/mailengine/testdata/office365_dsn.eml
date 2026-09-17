@@ -1,0 +1,68 @@
+Return-Path: <>
+Received: from JPXP123MB4567.JPNP123.PROD.OUTLOOK.COM (2603:1096:400:1::10)
+ by TYAP123MB0001.JPNP123.PROD.OUTLOOK.COM with HTTPS; Sat, 6 Sep 2025
+ 04:10:00 +0000
+From: Microsoft Outlook <MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@corp.example.co.jp>
+To: newsletter@example.jp
+Date: Sat, 6 Sep 2025 04:10:00 +0000
+Subject: Undeliverable: Service maintenance notice
+Auto-Submitted: auto-generated
+Message-ID: <a1b2c3d4-e5f6-7890-abcd-ef1234567890@JPXP123MB4567.JPNP123.PROD.OUTLOOK.COM>
+Content-Type: multipart/report; report-type=delivery-status;
+	boundary="_000_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_"
+MIME-Version: 1.0
+
+--_000_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_
+Content-Type: multipart/alternative;
+	boundary="_001_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_"
+
+--_001_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: base64
+
+WW91ciBtZXNzYWdlIHRvIHNoaXJvQGNvcnAuZXhhbXBsZS5jby5qcCBjb3VsZG4ndCBiZSBkZWxp
+dmVyZWQuDQpzaGlybyB3YXNuJ3QgZm91bmQgYXQgY29ycC5leGFtcGxlLmNvLmpwLg0KDQpuZXdz
+bGV0dGVyICAgIE9mZmljZSAzNjUgICAgc2hpcm8NCkFjdGlvbiBSZXF1aXJlZCAgICAgICAgICAg
+ICAgICAgICAgICAgIFJlY2lwaWVudA0KVW5rbm93biBUbyBhZGRyZXNzDQoNCkRpYWdub3N0aWMg
+aW5mb3JtYXRpb24gZm9yIGFkbWluaXN0cmF0b3JzOg0KR2VuZXJhdGluZyBzZXJ2ZXI6IEpQWFAx
+MjNNQjQ1NjcuSlBOUDEyMy5QUk9ELk9VVExPT0suQ09NDQpzaGlyb0Bjb3JwLmV4YW1wbGUuY28u
+anANClJlbW90ZSBTZXJ2ZXIgcmV0dXJuZWQgJzU1MCA1LjEuMTAgUkVTT0xWRVIuQURSLlJlY2lw
+aWVudE5vdEZvdW5kOyBSZWNpcGllbnQgbm90IGZvdW5kIGJ5IFNNVFAgYWRkcmVzcyBsb29rdXAn
+DQo=
+
+--_001_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><p>Your message to shiro@corp.example.co.jp couldn't be delivered=
+.</p><p>Remote Server returned '550 5.1.10 RESOLVER.ADR.RecipientNotFound; Re=
+cipient not found by SMTP address lookup'</p></body></html>
+
+--_001_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_--
+
+--_000_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns;JPXP123MB4567.JPNP123.PROD.OUTLOOK.COM
+Received-From-MTA: dns;app01.example.jp
+Arrival-Date: Sat, 6 Sep 2025 04:09:58 +0000
+
+Final-Recipient: rfc822;shiro@corp.example.co.jp
+Action: failed
+Status: 5.1.10
+Diagnostic-Code: smtp;550 5.1.10 RESOLVER.ADR.RecipientNotFound; Recipient not found by SMTP address lookup
+X-Display-Name: shiro
+
+--_000_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_
+Content-Type: message/rfc822
+
+From: Newsletter <newsletter@example.jp>
+To: shiro@corp.example.co.jp
+Subject: Service maintenance notice
+Date: Sat, 6 Sep 2025 04:09:50 +0000
+Message-ID: <maint-0006@example.jp>
+Content-Type: text/plain; charset="utf-8"
+
+We will perform maintenance on Sunday.
+
+--_000_a1b2c3d4e5f67890abcdef1234567890JPXP123MB4567JPNP123PROD_--
