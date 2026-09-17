@@ -79,7 +79,7 @@ func (c *ScheduleSetCmd) Run() error {
 // SettingsCmd shows or changes server settings.
 type SettingsCmd struct {
 	Show SettingsShowCmd `cmd:"" help:"Show the settings"`
-	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, check_times, agent_provider, agent_enabled, cookie_ttl_hours)"`
+	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, cookie_ttl_hours)"`
 }
 
 // SettingsShowCmd prints every effective setting.
@@ -98,6 +98,7 @@ func (c *SettingsShowCmd) Run() error {
 	values := map[string]interface{}{
 		SettingWebListen:      ResolveWebListen(db, ""),
 		SettingWebPort:        ResolveWebPort(db, 0),
+		SettingWorkers:        ResolveWorkers(db),
 		SettingCheckTimes:     ResolveCheckTimes(db),
 		SettingAgentProvider:  provider,
 		SettingAgentEnabled:   ResolveAgentEnabled(db),
@@ -112,6 +113,7 @@ func (c *SettingsShowCmd) Run() error {
 	fmt.Printf("%-18s %s\n", "data_dir:", dataDir)
 	fmt.Printf("%-18s %v\n", SettingWebListen+":", values[SettingWebListen])
 	fmt.Printf("%-18s %v\n", SettingWebPort+":", values[SettingWebPort])
+	fmt.Printf("%-18s %v\n", SettingWorkers+":", values[SettingWorkers])
 	fmt.Printf("%-18s %s\n", SettingCheckTimes+":", FormatCheckTimes(ResolveCheckTimes(db)))
 	available := "not available"
 	if agent.ProviderAvailable(provider) {
@@ -157,6 +159,14 @@ func (c *SettingsSetCmd) Run() error {
 			def = DefaultCookieTTLHours
 		}
 		err = PersistSetting(db, key, strconv.Itoa(n), n == def)
+	case SettingWorkers:
+		n, perr := ParseWorkers(value)
+		if perr != nil {
+			return NewExitError(ExitArgument, perr.Error())
+		}
+		err = SaveWorkers(db, n)
+		value = strconv.Itoa(n)
+		fmt.Printf("(a running server applies the new worker count at its next start; use the Web settings to change it live)\n")
 	case SettingCheckTimes:
 		times, perr := ParseCheckTimes([]string{value})
 		if perr != nil {

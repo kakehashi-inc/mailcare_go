@@ -26,7 +26,7 @@ import (
 //   agent_reports app/models/agent_report.go  analysis produced by an agent CLI
 
 // MailIndexSchemaVersion is bumped whenever the index schema changes.
-const MailIndexSchemaVersion = 1
+const MailIndexSchemaVersion = 2
 
 // ErrMailIndexOutdated is returned by OpenMailIndex when the file was created
 // with an older schema and must be rebuilt.
@@ -53,9 +53,11 @@ CREATE TABLE IF NOT EXISTS messages (
     bounce_kind      TEXT    NOT NULL DEFAULT '',
     classify_reason  TEXT    NOT NULL DEFAULT '',
     group_key        TEXT    NOT NULL DEFAULT '',
+    classified       INTEGER NOT NULL DEFAULT 0,
     fetched_at       DATETIME NOT NULL,
     UNIQUE(uidvalidity, uid, folder)
 );
+CREATE INDEX IF NOT EXISTS idx_messages_classified ON messages(classified);
 CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date);
 CREATE INDEX IF NOT EXISTS idx_messages_group ON messages(group_key);
 CREATE INDEX IF NOT EXISTS idx_messages_bounce ON messages(is_bounce, date);
@@ -84,6 +86,10 @@ CREATE INDEX IF NOT EXISTS idx_bounces_domain ON bounces(recipient_domain);
 CREATE TABLE IF NOT EXISTS groups (
     group_key            TEXT PRIMARY KEY,
     title                TEXT NOT NULL DEFAULT '',
+    category             TEXT NOT NULL DEFAULT '',
+    unit_value           TEXT NOT NULL DEFAULT '',
+    authority            TEXT NOT NULL DEFAULT '',
+    actionable           INTEGER NOT NULL DEFAULT 1,
     bounce_kind          TEXT NOT NULL DEFAULT '',
     recipient_domain     TEXT NOT NULL DEFAULT '',
     status_code          TEXT NOT NULL DEFAULT '',
@@ -102,6 +108,7 @@ CREATE TABLE IF NOT EXISTS groups (
     updated_at           DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_groups_state ON groups(state, last_seen);
+CREATE INDEX IF NOT EXISTS idx_groups_actionable ON groups(actionable, state);
 
 CREATE TABLE IF NOT EXISTS agent_reports (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,7 +182,7 @@ func ClearMailIndex(db *sql.DB) error {
 func ClearMailClassification(db *sql.DB) error {
 	for _, q := range []string{
 		`DELETE FROM bounces`,
-		`UPDATE messages SET is_bounce = 0, bounce_kind = '', classify_reason = '', group_key = ''`,
+		`UPDATE messages SET is_bounce = 0, bounce_kind = '', classify_reason = '', group_key = '', classified = 0`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			return err

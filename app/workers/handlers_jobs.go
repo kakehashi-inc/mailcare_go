@@ -55,8 +55,15 @@ func (c *core) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": toJobDTOs(jobs, c.mailboxAddresses())})
 }
 
-// handleCreateJob queues a job. Check jobs may be queued by any user; the
-// other kinds need an administrator.
+// adminOnlyJobKind reports whether a job kind may be queued by
+// administrators only (the rebuilds); sync / fetch / group / analyze are
+// open to every user.
+func adminOnlyJobKind(kind string) bool {
+	return kind == modules.JobKindReindex || kind == modules.JobKindReclassify
+}
+
+// handleCreateJob queues a job. Reindex and reclassify need an administrator;
+// the other kinds may be queued by any user.
 func (c *core) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	var body modules.JobRequest
 	if !decodeJSON(w, r, &body) {
@@ -66,7 +73,7 @@ func (c *core) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if body.Kind != modules.JobKindCheck && userFrom(r).Role != modules.RoleAdmin {
+	if adminOnlyJobKind(body.Kind) && userFrom(r).Role != modules.RoleAdmin {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}

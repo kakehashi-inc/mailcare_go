@@ -24,12 +24,13 @@ type CLI struct {
 	User       modules.UserCmd       `cmd:"" help:"Manage users"`
 	Token      modules.TokenCmd      `cmd:"" help:"Manage login tokens"`
 	Mailbox    modules.MailboxCmd    `cmd:"" help:"Manage monitored mail addresses"`
-	Check      modules.CheckCmd      `cmd:"" help:"Fetch new mail and detect bounces"`
+	Sync       modules.SyncCmd       `cmd:"" help:"Fetch new mail, group the bounces and queue the analysis"`
+	Fetch      modules.FetchCmd      `cmd:"" help:"Fetch new mail only (no grouping)"`
+	Group      modules.GroupCmd      `cmd:"" help:"Group the mail not grouped yet (no fetch)"`
 	Reindex    modules.ReindexCmd    `cmd:"" help:"Rebuild the mail index from the raw files"`
-	Reclassify modules.ReclassifyCmd `cmd:"" help:"Re-run bounce detection and grouping"`
+	Reclassify modules.ReclassifyCmd `cmd:"" help:"Re-run bounce detection and grouping over every mail"`
 	Analyze    modules.AnalyzeCmd    `cmd:"" help:"Run the agent analysis over bounce groups"`
-	Groups     modules.GroupsCmd     `cmd:"" help:"List the bounce groups of a mail address"`
-	Group      modules.GroupCmd      `cmd:"" help:"Show a bounce group and its analysis report"`
+	Groups     modules.GroupsCmd     `cmd:"" help:"List the bounce groups of a mail address, or show one group (ADDRESS KEY)"`
 	Schedule   modules.ScheduleCmd   `cmd:"" help:"Show or set the daily check times"`
 	Settings   modules.SettingsCmd   `cmd:"" help:"Show or change settings"`
 	Jobs       modules.JobsCmd       `cmd:"" help:"Show the job history"`
@@ -64,6 +65,8 @@ func main() {
 			"default_imap_port":    strconv.Itoa(modules.DefaultIMAPPort),
 			"default_initial_days": strconv.Itoa(modules.DefaultInitialDays),
 			"default_recent_days":  strconv.Itoa(modules.DefaultRecentDays),
+			"default_workers":      strconv.Itoa(modules.DefaultWorkers),
+			"max_workers":          strconv.Itoa(modules.MaxWorkers),
 		},
 	)
 	modules.SetDataDir(cli.DataDir)

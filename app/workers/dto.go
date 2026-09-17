@@ -7,7 +7,7 @@ import (
 	"mailcare/app/models"
 )
 
-// Response DTOs (see Documents/システム設計書.md section 9.3). Times are
+// Response DTOs (see the system design document (Documents) section 9.3). Times are
 // RFC 3339 in UTC; nullable times are null.
 
 func timeString(t time.Time) string {
@@ -54,11 +54,16 @@ func toTokenDTO(t *models.Token, username string) TokenDTO {
 		ExpiresAt: nullTimeString(t.ExpiresAt), CreatedAt: timeString(t.CreatedAt), LastUsedAt: nullTimeString(t.LastUsedAt)}
 }
 
-// MailboxStatsDTO summarizes the index of a mailbox.
+// MailboxStatsDTO summarizes the index of a mailbox. Groups counts the
+// actionable groups only; ExcludedGroups is the number of recipient-side
+// groups kept out of Alerts; Unclassified is the number of messages the
+// grouping phase has not processed yet.
 type MailboxStatsDTO struct {
-	Messages int                `json:"messages"`
-	Bounces  int                `json:"bounces"`
-	Groups   models.GroupCounts `json:"groups"`
+	Messages       int                `json:"messages"`
+	Bounces        int                `json:"bounces"`
+	Unclassified   int                `json:"unclassified"`
+	Groups         models.GroupCounts `json:"groups"`
+	ExcludedGroups int                `json:"excluded_groups"`
 }
 
 // MailboxDTO is a mailbox without its password.
@@ -96,6 +101,10 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 type GroupDTO struct {
 	GroupKey           string  `json:"group_key"`
 	Title              string  `json:"title"`
+	Category           string  `json:"category"`
+	UnitValue          string  `json:"unit_value"`
+	Authority          string  `json:"authority"`
+	Actionable         bool    `json:"actionable"`
 	BounceKind         string  `json:"bounce_kind"`
 	RecipientDomain    string  `json:"recipient_domain"`
 	StatusCode         string  `json:"status_code"`
@@ -119,7 +128,8 @@ type GroupDTO struct {
 // be nil); latest is the newest report of any status (may be nil).
 func toGroupDTO(g *models.BounceGroup, completed, latest *models.AgentReport) GroupDTO {
 	dto := GroupDTO{
-		GroupKey: g.GroupKey, Title: g.Title, BounceKind: g.BounceKind, RecipientDomain: g.RecipientDomain,
+		GroupKey: g.GroupKey, Title: g.Title, Category: g.Category, UnitValue: g.UnitValue, Authority: g.Authority,
+		Actionable: g.Actionable, BounceKind: g.BounceKind, RecipientDomain: g.RecipientDomain,
 		StatusCode: g.StatusCode, SMTPCode: g.SMTPCode, DiagnosticTemplate: g.DiagnosticTemplate,
 		Responsible: g.Responsible, MessageCount: g.MessageCount, RecipientCount: g.RecipientCount,
 		RemoteIPCount: g.RemoteIPCount, FirstSeen: nullTimeString(g.FirstSeen), LastSeen: nullTimeString(g.LastSeen),
@@ -294,12 +304,14 @@ type DashboardDTO struct {
 	Agent        DashboardAgentDTO   `json:"agent"`
 }
 
-// DashboardTotalsDTO sums the per-mailbox counters.
+// DashboardTotalsDTO sums the per-mailbox counters. OpenGroups counts the
+// actionable open groups only.
 type DashboardTotalsDTO struct {
-	Mailboxes  int `json:"mailboxes"`
-	OpenGroups int `json:"open_groups"`
-	Bounces    int `json:"bounces"`
-	Messages   int `json:"messages"`
+	Mailboxes    int `json:"mailboxes"`
+	OpenGroups   int `json:"open_groups"`
+	Bounces      int `json:"bounces"`
+	Messages     int `json:"messages"`
+	Unclassified int `json:"unclassified"`
 }
 
 // DashboardAgentDTO describes the configured agent.

@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -19,6 +20,7 @@ func (c *core) settingsDTO() map[string]any {
 		"agent_provider": modules.ResolveAgentProvider(c.db),
 		"agent_enabled":  modules.ResolveAgentEnabled(c.db),
 		"providers":      providers,
+		"workers":        c.jm.Workers(),
 		"web_listen":     c.webListen,
 		"web_port":       c.webPort,
 		"data_dir":       c.dataDir,
@@ -29,15 +31,21 @@ func (c *core) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c.settingsDTO())
 }
 
-// handleUpdateSettings changes the check times, the agent provider and the
-// agent switch. Absent fields are left unchanged.
+// handleUpdateSettings changes the check times, the agent provider, the
+// agent switch and the worker count (applied to the job manager at once).
+// Absent fields are left unchanged.
 func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CheckTimes    *[]string `json:"check_times"`
 		AgentProvider *string   `json:"agent_provider"`
 		AgentEnabled  *bool     `json:"agent_enabled"`
+		Workers       *int      `json:"workers"`
 	}
 	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.Workers != nil && (*body.Workers < 1 || *body.Workers > modules.MaxWorkers) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("workers must be between 1 and %d", modules.MaxWorkers))
 		return
 	}
 	var times []string
@@ -77,6 +85,13 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "failed to save the agent switch", err)
 			return
 		}
+	}
+	if body.Workers != nil {
+		if err := modules.SaveWorkers(c.db, *body.Workers); err != nil {
+			writeInternalError(w, "failed to save the worker count", err)
+			return
+		}
+		c.jm.SetWorkers(*body.Workers)
 	}
 	writeJSON(w, http.StatusOK, c.settingsDTO())
 }

@@ -14,6 +14,7 @@ type ServiceCmd struct {
 type ServiceStartCmd struct {
 	WebListen string   `help:"Listen address (default: saved setting or ${default_web_listen})" name:"web-listen" default:""`
 	WebPort   int      `help:"Listen port (default: saved setting or ${default_web_port})" name:"web-port" default:"0"`
+	Workers   int      `help:"Jobs run at once, 1-${max_workers} (default: saved setting or ${default_workers}; saved)" name:"workers" default:"0"`
 	CheckTime []string `help:"Daily check time HH:MM (repeatable; saved as the new schedule)" name:"check-time" placeholder:"HH:MM"`
 }
 
@@ -24,6 +25,9 @@ func (c *ServiceStartCmd) Run() error {
 	if c.WebPort < 0 || c.WebPort > 65535 {
 		return NewExitError(ExitArgument, "web-port must be between 1 and 65535")
 	}
+	if c.Workers < 0 || c.Workers > MaxWorkers {
+		return NewExitErrorf(ExitArgument, "workers must be between 1 and %d", MaxWorkers)
+	}
 	var times []string
 	if len(c.CheckTime) > 0 {
 		var err error
@@ -32,7 +36,7 @@ func (c *ServiceStartCmd) Run() error {
 			return NewExitError(ExitArgument, err.Error())
 		}
 	}
-	if err := StartServer(c.WebListen, c.WebPort, times); err != nil {
+	if err := StartServer(c.WebListen, c.WebPort, c.Workers, times); err != nil {
 		return NewExitError(ExitExec, err.Error())
 	}
 	return nil

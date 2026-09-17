@@ -105,7 +105,7 @@ func listenWithLoopback(addr string, port int) ([]net.Listener, error) {
 	return []net.Listener{main, loop}, nil
 }
 
-func startServer(webListen string, webPort int, checkTimes []string) error {
+func startServer(webListen string, webPort int, workers int, checkTimes []string) error {
 	dataDir, err := modules.EnsureDataDir()
 	if err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
@@ -125,6 +125,11 @@ func startServer(webListen string, webPort int, checkTimes []string) error {
 	webListen = modules.ResolveWebListen(db, webListen)
 	webPort = modules.ResolveWebPort(db, webPort)
 	modules.SaveServerSettings(db, webListen, webPort)
+	if workers > 0 {
+		if err := modules.SaveWorkers(db, workers); err != nil {
+			log.Printf("failed to persist workers: %v", err)
+		}
+	}
 	if checkTimes != nil {
 		if err := modules.SaveCheckTimes(db, checkTimes); err != nil {
 			log.Printf("failed to persist check_times: %v", err)
@@ -174,6 +179,7 @@ func startServer(webListen string, webPort int, checkTimes []string) error {
 	} else {
 		log.Printf("check times: none (automatic checks are disabled)")
 	}
+	log.Printf("workers: %d", c.jm.Workers())
 
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup

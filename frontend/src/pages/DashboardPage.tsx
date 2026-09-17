@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { checkMailbox, createJob, getDashboard } from '../api/client';
+import { createJob, getDashboard, syncMailbox } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { GroupRow } from '../components/domain/GroupRow';
 import { JobList } from '../components/domain/JobList';
@@ -21,9 +21,12 @@ import { DASHBOARD_REFRESH_MS, JOB_POLL_INTERVAL_MS } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { usePolling } from '../hooks/usePolling';
-import type { MailboxDTO } from '../types';
+import type { JobKind, MailboxDTO } from '../types';
 import { errorMessage } from '../utils/errors';
 import { formatNumber } from '../utils/format';
+
+/** Job kinds that read or rewrite a mailbox's mails, shown as "syncing" on its card. */
+const MAILBOX_JOBS: readonly JobKind[] = ['sync', 'fetch', 'group', 'reindex', 'reclassify'];
 
 export function DashboardPage() {
     const { t } = useTranslation();
@@ -31,28 +34,31 @@ export function DashboardPage() {
     const { isAdmin } = useAuth();
     const toast = useToast();
     const { data, error, loading, reload } = useAsync(getDashboard, []);
-    const [checking, setChecking] = useState<number | 'all' | null>(null);
+    const [syncing, setSyncing] = useState<number | 'all' | null>(null);
 
     const hasActive = (data?.active_jobs.length ?? 0) > 0;
-    // A mailbox is being checked when a check job for it (or for all mailboxes) is queued or running.
-    const checkActive = (mailboxId: number) =>
+    // A mailbox is busy while a job that touches its mails (for it or for all mailboxes) is queued or running.
+    const syncActive = (mb: MailboxDTO) =>
+        mb.last_check_status === 'running' ||
         (data?.active_jobs ?? []).some(
-            j => j.kind === 'check' && (j.mailbox_id === null || j.mailbox_id === mailboxId)
+            j =>
+                (MAILBOX_JOBS as readonly string[]).includes(j.kind) &&
+                (j.mailbox_id === null || j.mailbox_id === mb.id)
         );
     usePolling(reload, !loading, hasActive ? JOB_POLL_INTERVAL_MS : DASHBOARD_REFRESH_MS);
 
-    async function runCheck(mb: MailboxDTO | null) {
-        setChecking(mb ? mb.id : 'all');
+    async function runSync(mb: MailboxDTO | null) {
+        setSyncing(mb ? mb.id : 'all');
         try {
-            const result = mb ? await checkMailbox(mb.id) : await createJob({ kind: 'check' });
+            // "All" is one expansion job; the server queues a sync per enabled address.
+            const result = mb ? await syncMailbox(mb.id) : await createJob({ kind: 'sync', mailbox_id: null });
             if (!result.created) toast.info(t('jobs.alreadyActive'));
-            else
-                toast.success(mb ? t('dashboard.checkQueued', { address: mb.address }) : t('dashboard.checkAllQueued'));
+            else toast.success(mb ? t('dashboard.syncQueued', { address: mb.address }) : t('dashboard.syncAllQueued'));
             await reload();
         } catch (err) {
             toast.error(errorMessage(err, t));
         } finally {
-            setChecking(null);
+            setSyncing(null);
         }
     }
 
@@ -81,6 +87,14 @@ export function DashboardPage() {
         { label: t('dashboard.totalBounces'), value: data.totals.bounces, icon: 'report', tone: 'text-ink' },
         { label: t('dashboard.totalMessages'), value: data.totals.messages, icon: 'mail', tone: 'text-ink' },
     ];
+    if (data.totals.unclassified > 0) {
+        totals.push({
+            label: t('dashboard.totalUnclassified'),
+            value: data.totals.unclassified,
+            icon: 'pending',
+            tone: 'text-warning',
+        });
+    }
 
     return (
         <PageContainer wide>
@@ -91,11 +105,11 @@ export function DashboardPage() {
                     <Button
                         variant='primary'
                         icon='sync'
-                        loading={checking === 'all'}
-                        disabled={data.mailboxes.length === 0 || checking !== null}
-                        onClick={() => void runCheck(null)}
+                        loading={syncing === 'all'}
+                        disabled={data.mailboxes.length === 0 || syncing !== null}
+                        onClick={() => void runSync(null)}
                     >
-                        {t('dashboard.checkAll')}
+                        {t('dashboard.syncAll')}
                     </Button>
                 }
             />
@@ -122,7 +136,10 @@ export function DashboardPage() {
                 </Alert>
             )}
 
-            <section aria-label={t('dashboard.totals')} className='grid grid-cols-2 gap-3 md:grid-cols-4'>
+            <section
+                aria-label={t('dashboard.totals')}
+                className={`grid grid-cols-2 gap-3 ${totals.length > 4 ? 'md:grid-cols-3 lg:grid-cols-5' : 'md:grid-cols-4'}`}
+            >
                 {totals.map(item => (
                     <Card key={item.label} className='flex items-center gap-3'>
                         <Icon name={item.icon} className='text-[28px] text-muted' />
@@ -168,7 +185,7 @@ export function DashboardPage() {
                                                         <p className='truncate text-sm text-muted'>{mb.address}</p>
                                                     )}
                                                 </div>
-                                                {checkActive(mb.id) ? (
+                                                {syncActive(mb) ? (
                                                     <Badge tone='info' icon='autorenew'>
                                                         {t('checkStatus.running')}
                                                     </Badge>
@@ -191,6 +208,27 @@ export function DashboardPage() {
                                                         {mb.stats ? formatNumber(mb.stats.bounces) : '-'}
                                                     </dd>
                                                 </div>
+                                                {(mb.stats?.unclassified ?? 0) > 0 && (
+                                                    <div>
+                                                        <dt className='text-muted'>{t('mailbox.unclassified')}</dt>
+                                                        <dd className='text-xl font-bold text-warning'>
+                                                            {formatNumber(mb.stats?.unclassified ?? 0)}
+                                                        </dd>
+                                                    </div>
+                                                )}
+                                                {(mb.stats?.excluded_groups ?? 0) > 0 && (
+                                                    <div>
+                                                        <dt className='text-muted'>{t('mailbox.excludedGroups')}</dt>
+                                                        <dd className='text-ink'>
+                                                            <Link
+                                                                to={`/alerts/${mb.id}?scope=excluded`}
+                                                                className='inline-flex min-h-tap items-center rounded text-xl font-bold hover:text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                                                            >
+                                                                {formatNumber(mb.stats?.excluded_groups ?? 0)}
+                                                            </Link>
+                                                        </dd>
+                                                    </div>
+                                                )}
                                                 <div className='col-span-2'>
                                                     <dt className='text-muted'>{t('mailbox.lastChecked')}</dt>
                                                     <dd className='text-ink'>
@@ -215,11 +253,11 @@ export function DashboardPage() {
                                                     size='sm'
                                                     variant='primary'
                                                     icon='sync'
-                                                    loading={checking === mb.id}
-                                                    disabled={checking !== null || checkActive(mb.id)}
-                                                    onClick={() => void runCheck(mb)}
+                                                    loading={syncing === mb.id}
+                                                    disabled={syncing !== null || syncActive(mb)}
+                                                    onClick={() => void runSync(mb)}
                                                 >
-                                                    {t('dashboard.checkNow')}
+                                                    {t('dashboard.syncNow')}
                                                 </Button>
                                                 <LinkButton size='sm' to={`/alerts/${mb.id}`} icon='notifications'>
                                                     {t('nav.alerts')}

@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"database/sql"
 	"log"
 	"net/http"
 
@@ -12,19 +13,36 @@ import (
 // that cannot be opened yields zeros (logged) so one broken mailbox does not
 // hide the others.
 func (c *core) mailboxStats(r *http.Request, mb *models.Mailbox) *MailboxStatsDTO {
-	st := &MailboxStatsDTO{}
 	idx, err := c.openIndex(r, mb)
 	if err != nil {
 		log.Printf("index of %s could not be opened: %v", mb.Address, err)
-		return st
+		return &MailboxStatsDTO{}
 	}
 	defer idx.Close()
+	return indexStats(idx, mb.Address)
+}
+
+// indexStats counts the contents of an open index. Group counts cover the
+// actionable groups; the excluded (recipient-side) groups are counted apart.
+func indexStats(idx *sql.DB, address string) *MailboxStatsDTO {
+	st := &MailboxStatsDTO{}
+	var err error
 	if st.Messages, st.Bounces, err = models.CountMessages(idx); err != nil {
-		log.Printf("failed to count messages of %s: %v", mb.Address, err)
+		log.Printf("failed to count messages of %s: %v", address, err)
 	}
-	if st.Groups, err = models.CountGroups(idx); err != nil {
-		log.Printf("failed to count groups of %s: %v", mb.Address, err)
+	if st.Unclassified, err = models.CountUnclassifiedMessages(idx); err != nil {
+		log.Printf("failed to count unclassified messages of %s: %v", address, err)
 	}
+	actionable := true
+	if st.Groups, err = models.CountGroups(idx, &actionable); err != nil {
+		log.Printf("failed to count groups of %s: %v", address, err)
+	}
+	excluded := false
+	counts, err := models.CountGroups(idx, &excluded)
+	if err != nil {
+		log.Printf("failed to count excluded groups of %s: %v", address, err)
+	}
+	st.ExcludedGroups = counts.Open + counts.Resolved + counts.Ignored
 	return st
 }
 
@@ -112,11 +130,11 @@ func (c *core) handleTestMailbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleCheckMailbox queues a check job for one mailbox.
-func (c *core) handleCheckMailbox(w http.ResponseWriter, r *http.Request) {
+// handleSyncMailbox queues a sync job (fetch, group, analyze) for one mailbox.
+func (c *core) handleSyncMailbox(w http.ResponseWriter, r *http.Request) {
 	mb, ok := c.mailboxFromPath(w, r)
 	if !ok {
 		return
 	}
-	c.enqueueAndRespond(w, r, modules.JobKindCheck, mb.ID, "")
+	c.enqueueAndRespond(w, r, modules.JobKindSync, mb.ID, "")
 }

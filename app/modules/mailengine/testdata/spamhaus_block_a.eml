@@ -1,0 +1,73 @@
+Return-Path: <>
+Received: from mx1.example.jp (mx1.example.jp [192.0.2.10])
+	by mail.example.jp (Postfix) with ESMTP id 4Xm2Aa1b2Cz9tQa
+	for <newsletter@example.jp>; Wed, 3 Sep 2025 10:00:00 +0900 (JST)
+Date: Wed, 3 Sep 2025 10:00:00 +0900 (JST)
+From: MAILER-DAEMON@mx1.example.jp (Mail Delivery System)
+Subject: Undelivered Mail Returned to Sender
+To: newsletter@example.jp
+Auto-Submitted: auto-replied
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status;
+	boundary="4Xm2Aa1b2Cz9tQa.1756900000/mx1.example.jp"
+Message-Id: <4Xm2Aa1b2Cz9tQa@mx1.example.jp>
+
+This is a MIME-encapsulated message.
+
+--4Xm2Aa1b2Cz9tQa.1756900000/mx1.example.jp
+Content-Description: Notification
+Content-Type: text/plain; charset=us-ascii
+
+This is the mail system at host mx1.example.jp.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can
+delete your own text from the attached returned message.
+
+                   The mail system
+
+<ichiro@customer.example.com>: host mx.customer.example.com[198.51.100.25]
+    said: 550 5.7.1 Service unavailable; Client host [203.0.113.5] blocked using
+    zen.spamhaus.org; https://www.spamhaus.org/query/ip/203.0.113.5 (in reply to RCPT TO command)
+
+--4Xm2Aa1b2Cz9tQa.1756900000/mx1.example.jp
+Content-Description: Delivery report
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; mx1.example.jp
+X-Postfix-Queue-ID: 4Xm2Aa1b2Cz9tQa
+X-Postfix-Sender: rfc822; newsletter@example.jp
+Arrival-Date: Wed, 3 Sep 2025 10:00:00 +0900 (JST)
+
+Final-Recipient: rfc822; ichiro@customer.example.com
+Original-Recipient: rfc822;ichiro@customer.example.com
+Action: failed
+Status: 5.7.1
+Remote-MTA: dns; mx.customer.example.com
+Diagnostic-Code: smtp; 550 5.7.1 Service unavailable; Client host [203.0.113.5] blocked using
+    zen.spamhaus.org; https://www.spamhaus.org/query/ip/203.0.113.5
+
+--4Xm2Aa1b2Cz9tQa.1756900000/mx1.example.jp
+Content-Description: Undelivered Message
+Content-Type: message/rfc822
+
+Return-Path: <newsletter@example.jp>
+Received: from app01.example.jp (app01.example.jp [192.0.2.20])
+	by mx1.example.jp (Postfix) with ESMTP id 4Xm2Aa1b2Cz9tQaX
+	for <ichiro@customer.example.com>; Wed, 3 Sep 2025 10:00:00 +0900 (JST)
+From: Newsletter <newsletter@example.jp>
+To: ichiro@customer.example.com
+Subject: September campaign
+Date: Wed, 3 Sep 2025 09:59:58 +0900
+Message-ID: <news-20250903-0011@example.jp>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+September campaign body.
+
+--4Xm2Aa1b2Cz9tQa.1756900000/mx1.example.jp--

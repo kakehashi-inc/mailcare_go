@@ -13,9 +13,10 @@ import (
 
 // StartServer is set by the workers package at init time to avoid an import
 // cycle (workers imports modules, but the CLI in modules must start the
-// server). checkTimes are the normalized --check-time values (nil = keep the
-// saved setting).
-var StartServer func(webListen string, webPort int, checkTimes []string) error
+// server). workers is the --workers value (0 = keep the saved setting);
+// checkTimes are the normalized --check-time values (nil = keep the saved
+// setting).
+var StartServer func(webListen string, webPort int, workers int, checkTimes []string) error
 
 // controlClient is used for every request to the local control endpoints.
 var controlClient = &http.Client{Timeout: 10 * time.Second}

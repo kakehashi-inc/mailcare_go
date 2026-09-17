@@ -126,34 +126,35 @@ func TestDiagnosticTemplate(t *testing.T) {
 	if a != b {
 		t.Errorf("templates differ:\n%s\n%s", a, b)
 	}
-	if GroupKey("failed", "x.example", "5.1.1", a) == GroupKey("failed", "y.example", "5.1.1", a) {
-		t.Error("group keys must differ per domain")
-	}
-	if len(GroupKey("failed", "x.example", "5.1.1", a)) != 16 {
-		t.Error("group key must be 16 hex digits")
-	}
 }
 
-func TestResponsible(t *testing.T) {
-	cases := []struct{ status, diag, want string }{
-		{"5.1.1", "", responsibleRecipient},
-		{"4.2.2", "", responsibleRecipient},
-		{"5.1.10", "", responsibleDomain},
-		{"5.4.4", "", responsibleDomain},
-		{"5.7.1", "", responsibleSender},
-		{"4.7.0", "", responsibleSender},
-		{"5.3.0", "", responsibleSender},
-		{"4.4.1", "", responsibleSender},
-		{"4.2.1", "", responsibleSender},
-		{"5.0.0", "", responsibleUnknown},
-		{"", "550 User unknown", responsibleRecipient},
-		{"", "Host or domain name not found", responsibleDomain},
-		{"", "554 Message rejected: blocked using spamhaus", responsibleSender},
-		{"", "", responsibleUnknown},
+func TestGroupKeyAndTitle(t *testing.T) {
+	key := GroupKey(categoryIPBlocked, "203.0.113.5", "spamhaus.org")
+	if len(key) != 16 {
+		t.Errorf("group key must be 16 hex digits: %q", key)
+	}
+	// unit_value and authority are compared lower-cased and trimmed.
+	if GroupKey(categoryIPBlocked, " 203.0.113.5 ", "Spamhaus.ORG") != key {
+		t.Error("group key must ignore case and surrounding spaces")
+	}
+	if GroupKey(categoryIPBlocked, "203.0.113.5", "barracudacentral.org") == key {
+		t.Error("a different authority must give a different key")
+	}
+	if GroupKey(categoryUserUnknown, "a@x.example", "") == GroupKey(categoryUserUnknown, "b@x.example", "") {
+		t.Error("a different unit must give a different key")
+	}
+	if GroupKey(categoryUserUnknown, "a@x.example", "") == GroupKey(categoryMailboxFull, "a@x.example", "") {
+		t.Error("a different category must give a different key")
+	}
+	cases := []struct{ category, unit, authority, want string }{
+		{categoryIPBlocked, "203.0.113.5", "spamhaus.org", "ip_blocked: 203.0.113.5 @ spamhaus.org"},
+		{categoryUserUnknown, "Taro@Customer.example.com", "", "user_unknown: taro@customer.example.com"},
+		{categoryUnknownFailure, "x.example", "550 " + strings.Repeat("w", 100), "unknown_failure: x.example @ " + strings.TrimSpace(("550 " + strings.Repeat("w", 100))[:templateTitleLen]) + "..."},
+		{"", "", "", "(no diagnostic)"},
 	}
 	for _, c := range cases {
-		if got := Responsible(c.status, c.diag); got != c.want {
-			t.Errorf("Responsible(%q, %q) = %q, want %q", c.status, c.diag, got, c.want)
+		if got := GroupTitle(c.category, c.unit, c.authority); got != c.want {
+			t.Errorf("GroupTitle(%q, %q, %q) = %q, want %q", c.category, c.unit, c.authority, got, c.want)
 		}
 	}
 }
@@ -178,6 +179,10 @@ type sample struct {
 	responsble string
 	diagHas    string
 	hasHTML    bool
+	category   string // expected group category ("" = not grouped)
+	unit       string
+	authority  string
+	actionable bool
 }
 
 var samples = []sample{
@@ -187,13 +192,15 @@ var samples = []sample{
 		recipient: "taro.yamada@customer.example.com", domain: "customer.example.com", status: "5.1.1", smtp: "550",
 		remoteMTA: "mx.customer.example.com", origSubj: "【重要】9月のお知らせ", origMsgID: "news-20250902-0001@example.jp",
 		responsble: responsibleRecipient, diagHas: "User unknown in virtual mailbox table",
+		category: categoryUserUnknown, unit: "taro.yamada@customer.example.com",
 	},
 	{
 		file: "postfix_delayed.eml", isBounce: true, kind: bounceKindDelayed, reason: "dsn_report",
 		subject: "Delayed Mail (still being retried)", fromAddr: "MAILER-DAEMON@mx1.example.jp",
 		recipient: "hanako@slowmail.example.net", domain: "slowmail.example.net", status: "4.4.1", smtp: "",
 		remoteIP: "203.0.113.7", remoteMTA: "mx.slowmail.example.net", origSubj: "Weekly digest", origMsgID: "digest-0003@example.jp",
-		responsble: responsibleSender, diagHas: "Connection timed out",
+		responsble: responsibleDomain, diagHas: "Connection timed out",
+		category: categoryDeliveryDelay, unit: "slowmail.example.net",
 	},
 	{
 		file: "exim_bounce.eml", isBounce: true, kind: bounceKindFailed, reason: "daemon_sender",
@@ -201,19 +208,22 @@ var samples = []sample{
 		recipient: "jiro@nowhere.example.org", domain: "nowhere.example.org", status: "5.1.1", smtp: "550",
 		remoteIP: "203.0.113.55", remoteMTA: "mx.nowhere.example.org",
 		responsble: responsibleRecipient, diagHas: "does not exist",
+		category: categoryUserUnknown, unit: "jiro@nowhere.example.org",
 	},
 	{
 		file: "qmail_bounce.eml", isBounce: true, kind: bounceKindFailed, reason: "daemon_sender",
 		subject: "failure notice", fromAddr: "MAILER-DAEMON@qmail.example.net",
 		recipient: "saburo@customer.example.com", domain: "customer.example.com", status: "5.1.1", smtp: "550",
 		remoteIP: "198.51.100.25", responsble: responsibleRecipient, diagHas: "User unknown",
+		category: categoryUserUnknown, unit: "saburo@customer.example.com",
 	},
 	{
 		file: "office365_dsn.eml", isBounce: true, kind: bounceKindFailed, reason: "dsn_report",
 		subject: "Undeliverable: Service maintenance notice", fromAddr: "MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@corp.example.co.jp",
 		recipient: "shiro@corp.example.co.jp", domain: "corp.example.co.jp", status: "5.1.10", smtp: "550",
 		origSubj: "Service maintenance notice", origMsgID: "maint-0006@example.jp",
-		responsble: responsibleDomain, diagHas: "RecipientNotFound", hasHTML: true,
+		responsble: responsibleRecipient, diagHas: "RecipientNotFound", hasHTML: true,
+		category: categoryUserUnknown, unit: "shiro@corp.example.co.jp",
 	},
 	{
 		file: "gmail_bounce.eml", isBounce: true, kind: bounceKindFailed, reason: "dsn_report",
@@ -221,6 +231,15 @@ var samples = []sample{
 		recipient: "goro@gmail.com", domain: "gmail.com", status: "5.1.1", smtp: "550",
 		remoteMTA: "gmail-smtp-in.l.google.com", origSubj: "Welcome aboard", origMsgID: "gm-0007@example.jp",
 		responsble: responsibleRecipient, diagHas: "does not exist", hasHTML: true,
+		category: categoryUserUnknown, unit: "goro@gmail.com",
+	},
+	{
+		file: "gmail_overquota.eml", isBounce: true, kind: bounceKindFailed, reason: "dsn_report",
+		subject: "Delivery Status Notification (Failure)", fromAddr: "mailer-daemon@googlemail.com",
+		recipient: "kyuro@gmail.com", domain: "gmail.com", status: "4.2.2", smtp: "452",
+		remoteMTA: "gmail-smtp-in.l.google.com", origSubj: "Welcome aboard", origMsgID: "gm-0009@example.jp",
+		responsble: responsibleRecipient, diagHas: "over quota",
+		category: categoryMailboxFull, unit: "kyuro@gmail.com",
 	},
 	{
 		file: "sendmail_bounce.eml", isBounce: true, kind: bounceKindFailed, reason: "dsn_report",
@@ -228,6 +247,23 @@ var samples = []sample{
 		recipient: "rokuro@dept.example.edu", domain: "dept.example.edu", status: "5.1.1", smtp: "550",
 		remoteMTA: "mail.dept.example.edu", origSubj: "Campus event", origMsgID: "campus-0008@example.jp",
 		responsble: responsibleRecipient, diagHas: "User unknown",
+		category: categoryUserUnknown, unit: "rokuro@dept.example.edu",
+	},
+	{
+		file: "spamhaus_block_a.eml", isBounce: true, kind: bounceKindFailed, reason: "dsn_report",
+		subject: "Undelivered Mail Returned to Sender", fromAddr: "MAILER-DAEMON@mx1.example.jp",
+		recipient: "ichiro@customer.example.com", domain: "customer.example.com", status: "5.7.1", smtp: "550",
+		remoteMTA: "mx.customer.example.com", origSubj: "September campaign", origMsgID: "news-20250903-0011@example.jp",
+		responsble: responsibleSender, diagHas: "blocked using zen.spamhaus.org",
+		category: categoryIPBlocked, unit: "203.0.113.5", authority: "spamhaus.org", actionable: true,
+	},
+	{
+		file: "spamhaus_block_b.eml", isBounce: true, kind: bounceKindFailed, reason: "dsn_report",
+		subject: "Undelivered Mail Returned to Sender", fromAddr: "MAILER-DAEMON@mx1.example.jp",
+		recipient: "hanako@partner.example.org", domain: "partner.example.org", status: "5.7.1", smtp: "550",
+		remoteMTA: "mx.partner.example.org", origSubj: "September campaign", origMsgID: "news-20250904-0012@example.jp",
+		responsble: responsibleSender, diagHas: "blocked using zen.spamhaus.org",
+		category: categoryIPBlocked, unit: "203.0.113.5", authority: "spamhaus.org", actionable: true,
 	},
 	{
 		file: "autoreply.eml", isBounce: true, kind: bounceKindAutoReply, reason: "auto_reply",
@@ -243,6 +279,10 @@ var samples = []sample{
 		recipient: "kuro@broken.example.net", domain: "broken.example.net", status: "5.7.1", smtp: "550",
 		remoteIP: "192.0.2.99", remoteMTA: "mx.broken.example.net", responsble: responsibleSender,
 		diagHas: "rejected due to policy",
+		// No original message in the broken sample: the sender address falls
+		// back to the reporting MTA, which the sample lacks too, so the unit
+		// stays empty and the group is per recipient domain / category.
+		category: categoryContentRejected, unit: "", authority: "broken.example.net", actionable: true,
 	},
 }
 
@@ -289,7 +329,9 @@ func TestParseClassifyExtractSamples(t *testing.T) {
 			check("remote_mta", b.RemoteMTA, s.remoteMTA)
 			check("original_subject", b.OriginalSubject, s.origSubj)
 			check("original_message_id", b.OriginalMessageID, s.origMsgID)
-			check("responsible", b.Responsible, s.responsble)
+			if b.Responsible != "" {
+				t.Errorf("ExtractBounce set responsible %q; the category decides it", b.Responsible)
+			}
 			if s.diagHas != "" && !strings.Contains(b.Diagnostic, s.diagHas) {
 				t.Errorf("diagnostic %q does not contain %q", b.Diagnostic, s.diagHas)
 			}
@@ -301,6 +343,20 @@ func TestParseClassifyExtractSamples(t *testing.T) {
 			}
 			if strings.Contains(b.DiagnosticTemplate, s.recipient) {
 				t.Errorf("template still contains the recipient: %q", b.DiagnosticTemplate)
+			}
+			c := Categorize(b, cls.Kind)
+			if c.Category != s.category || c.UnitValue != s.unit || c.Authority != s.authority || c.Actionable != s.actionable {
+				t.Errorf("category = %+v, want %s / %q / %q / actionable=%v", c, s.category, s.unit, s.authority, s.actionable)
+			}
+			g := groupForBounce(cls.Kind, b)
+			if g == nil || g.Category != c.Category || g.UnitValue != c.UnitValue || g.Authority != c.Authority ||
+				g.Actionable != c.Actionable || g.Responsible != c.Responsible || g.GroupKey != GroupKey(c.Category, c.UnitValue, c.Authority) {
+				t.Errorf("group row = %+v, want the category values %+v", g, c)
+			}
+			// The bounce row carries the same responsible party as its group.
+			check("responsible", b.Responsible, s.responsble)
+			if b.Responsible != c.Responsible || (g != nil && g.Responsible != b.Responsible) {
+				t.Errorf("bounce responsible %q differs from the category's %q", b.Responsible, c.Responsible)
 			}
 		})
 	}
@@ -417,30 +473,41 @@ func TestUnfoldAndClassifyText(t *testing.T) {
 	}
 }
 
-// buildMailbox stores every sample through storeMessage into a fresh index
-// and returns the paths (used by the round-trip tests).
+// buildMailbox stores every sample through storeMessage (the fetch phase)
+// into a fresh index, runs the grouping phase and returns the paths (used by
+// the round-trip tests).
 func buildMailbox(t *testing.T) (root, address string) {
 	t.Helper()
 	root = t.TempDir()
 	address = "newsletter@example.jp"
+	storeSamples(t, root, address, 1, samples...)
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+		t.Fatalf("group: %v", err)
+	}
+	return root, address
+}
+
+// storeSamples runs the fetch-equivalent storeMessage for the given samples
+// with UIDs starting at firstUID (no classification, classified = 0).
+func storeSamples(t *testing.T, root, address string, firstUID uint32, list ...sample) {
+	t.Helper()
 	dir := MailboxDir(root, address)
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	tracker := newGroupTracker()
-	for i, s := range samples {
+	for i, s := range list {
 		raw := readSample(t, s.file)
-		src := Source{Folder: "INBOX", UIDValidity: 1700000000, UID: uint32(i + 1), ReceivedAt: time.Now().UTC(), FetchedAt: time.Now().UTC()}
-		if _, _, err := storeMessage(db, dir, raw, src, storeOptions{writeEML: true}, tracker, address); err != nil {
+		src := Source{Folder: "INBOX", UIDValidity: 1700000000, UID: firstUID + uint32(i), ReceivedAt: time.Now().UTC(), FetchedAt: time.Now().UTC()}
+		msg, _, err := storeMessage(db, dir, raw, src, storeOptions{writeEML: true})
+		if err != nil {
 			t.Fatalf("store %s: %v", s.file, err)
 		}
+		if msg.Classified || msg.IsBounce || msg.GroupKey != "" {
+			t.Fatalf("store %s classified the message: %+v", s.file, msg)
+		}
 	}
-	if _, err := tracker.refresh(db); err != nil {
-		t.Fatal(err)
-	}
-	return root, address
 }
 
 func countRows(t *testing.T, db *sql.DB, table string) int {
@@ -517,16 +584,30 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 	if cnt == 0 || recipients == 0 || !first.Valid || !last.Valid {
 		t.Errorf("group counters not refreshed: count=%d recipients=%d first=%v last=%v", cnt, recipients, first, last)
 	}
-	// Two 5.1.1 "user unknown in virtual mailbox table" notices for the same
-	// domain (postfix and qmail samples) must land in one group.
-	var sameGroup int
-	if err := db.QueryRow(`SELECT COUNT(DISTINCT group_key) FROM messages WHERE message_key IN (
-		SELECT m.message_key FROM messages m JOIN bounces b ON b.message_id = m.id WHERE b.recipient_domain = 'customer.example.com')`).
-		Scan(&sameGroup); err != nil {
+	// The two Spamhaus listings of the same IP (different recipient domains)
+	// form one actionable group; the two 5.1.1 notices to customer.example.com
+	// (different recipients) form two recipient-side groups.
+	var spamhausGroups, unknownGroups int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT group_key) FROM messages m JOIN bounces b ON b.message_id = m.id
+		WHERE b.status_code = '5.7.1' AND b.diagnostic LIKE '%spamhaus%'`).Scan(&spamhausGroups); err != nil {
 		t.Fatal(err)
 	}
-	if sameGroup != 1 {
-		t.Errorf("customer.example.com notices spread over %d groups, want 1", sameGroup)
+	if spamhausGroups != 1 {
+		t.Errorf("spamhaus notices spread over %d groups, want 1", spamhausGroups)
+	}
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT group_key) FROM messages m JOIN bounces b ON b.message_id = m.id
+		WHERE b.recipient_domain = 'customer.example.com' AND b.status_code = '5.1.1'`).Scan(&unknownGroups); err != nil {
+		t.Fatal(err)
+	}
+	if unknownGroups != 2 {
+		t.Errorf("user_unknown notices to customer.example.com in %d groups, want 2 (one per recipient)", unknownGroups)
+	}
+	var unclassified int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE classified = 0`).Scan(&unclassified); err != nil {
+		t.Fatal(err)
+	}
+	if unclassified != 0 {
+		t.Errorf("%d messages still unclassified after grouping", unclassified)
 	}
 	rowsBefore := snapshotMessages(t, db)
 	db.Close()
@@ -578,18 +659,18 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Reclassify keeps the messages and rebuilds the classification.
-	res, err = Reclassify(context.Background(), root, address, nil)
+	// A full grouping keeps the messages and rebuilds the classification.
+	gres, err := GroupMailbox(context.Background(), root, address, true, nil)
 	if err != nil {
-		t.Fatalf("reclassify: %v", err)
+		t.Fatalf("full grouping: %v", err)
 	}
-	if res.Messages != len(samples) || res.Bounces != wantBounces || res.Groups != groupsBefore {
-		t.Errorf("reclassify result = %+v", res)
+	if gres.Processed != len(samples) || gres.Bounces != wantBounces || gres.Groups != groupsBefore {
+		t.Errorf("full grouping result = %+v, want %d/%d/%d", gres, len(samples), wantBounces, groupsBefore)
 	}
 	rowsReclassified := snapshotMessages(t, db)
 	for key, before := range rowsBefore {
 		if after := rowsReclassified[key]; after != before {
-			t.Errorf("message %s changed by reclassify:\n before %+v\n after  %+v", key, before, after)
+			t.Errorf("message %s changed by the full grouping:\n before %+v\n after  %+v", key, before, after)
 		}
 	}
 
@@ -728,13 +809,18 @@ func assertCarried(t *testing.T, root, address, kept, single string, stateUpdate
 	}
 }
 
-func TestReclassifyKeepsReports(t *testing.T) {
+func TestFullGroupingKeepsReports(t *testing.T) {
 	root, address := buildMailbox(t)
 	kept, single, stateUpdated := seedReport(t, root, address)
-	if _, err := Reclassify(context.Background(), root, address, nil); err != nil {
+	res, err := GroupMailbox(context.Background(), root, address, true, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	assertCarried(t, root, address, kept, single, stateUpdated, false, "reclassify")
+	// Nothing grew, so no actionable group is reported as touched.
+	if len(res.GroupsTouched) != 0 {
+		t.Errorf("full grouping touched %v although no group grew", res.GroupsTouched)
+	}
+	assertCarried(t, root, address, kept, single, stateUpdated, false, "full grouping")
 	// The report row itself survives with its id (nothing was deleted).
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
 	if err != nil {
@@ -885,8 +971,8 @@ func TestReindexWithoutJSONAndCancel(t *testing.T) {
 	if _, err := Reindex(ctx, root, address, nil); err != context.Canceled {
 		t.Errorf("cancelled reindex err = %v", err)
 	}
-	if _, err := Reclassify(ctx, root, address, nil); err != context.Canceled {
-		t.Errorf("cancelled reclassify err = %v", err)
+	if _, err := GroupMailbox(ctx, root, address, true, nil); err != context.Canceled {
+		t.Errorf("cancelled grouping err = %v", err)
 	}
 }
 
@@ -900,14 +986,13 @@ func TestStoreDedupesByMessageID(t *testing.T) {
 	}
 	defer db.Close()
 	raw := readSample(t, "postfix_dsn.eml")
-	tracker := newGroupTracker()
 	opts := storeOptions{writeEML: true, dedupeByMessageID: true}
-	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 1, UID: 1}, opts, tracker); err != nil {
+	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 1, UID: 1}, opts); err != nil {
 		t.Fatal(err)
 	}
 	// The same message seen again after a UIDVALIDITY change has a new key
 	// but the same Message-ID: it must be skipped.
-	_, _, err = storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: 7}, opts, tracker)
+	_, _, err = storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: 7}, opts)
 	if !errors.Is(err, errDuplicateMessage) {
 		t.Fatalf("second store err = %v, want errDuplicateMessage", err)
 	}
@@ -915,7 +1000,7 @@ func TestStoreDedupesByMessageID(t *testing.T) {
 		t.Errorf("index holds %d messages, want 1", total)
 	}
 	// Reindex does not deduplicate (files on disk are the truth).
-	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: 7}, storeOptions{}, tracker); err != nil {
+	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: 7}, storeOptions{}); err != nil {
 		t.Fatalf("store without dedupe: %v", err)
 	}
 }
@@ -929,12 +1014,11 @@ func TestDateFallbackWhenHeaderMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	tracker := newGroupTracker()
 	received := time.Date(2025, 9, 20, 1, 2, 3, 0, time.UTC)
 	fetched := time.Date(2025, 9, 21, 4, 5, 6, 0, time.UTC)
 
 	noDate := []byte("From: a@example.com\r\nTo: b@example.com\r\nSubject: no date\r\nMessage-ID: <nodate@example.com>\r\n\r\nbody\r\n")
-	msg, pm, err := storeMessage(db, dir, noDate, Source{Folder: "INBOX", UIDValidity: 1, UID: 1, ReceivedAt: received, FetchedAt: fetched}, storeOptions{writeEML: true}, tracker)
+	msg, pm, err := storeMessage(db, dir, noDate, Source{Folder: "INBOX", UIDValidity: 1, UID: 1, ReceivedAt: received, FetchedAt: fetched}, storeOptions{writeEML: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -956,7 +1040,7 @@ func TestDateFallbackWhenHeaderMissing(t *testing.T) {
 	}
 
 	badDate := []byte("From: a@example.com\r\nDate: yesterday-ish\r\nSubject: bad date\r\nMessage-ID: <baddate@example.com>\r\n\r\nbody\r\n")
-	msg, pm, err = storeMessage(db, dir, badDate, Source{Folder: "INBOX", UIDValidity: 1, UID: 2, FetchedAt: fetched}, storeOptions{writeEML: true}, tracker)
+	msg, pm, err = storeMessage(db, dir, badDate, Source{Folder: "INBOX", UIDValidity: 1, UID: 2, FetchedAt: fetched}, storeOptions{writeEML: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1009,5 +1093,424 @@ func TestTestConnectionRejectsBadInput(t *testing.T) {
 	}
 	if err := TestConnection(context.Background(), nil, "x"); err == nil {
 		t.Error("expected an error for a nil mailbox")
+	}
+}
+
+// categoryCase is one realistic diagnostic with the category, unit and
+// authority the rule table must derive for it.
+type categoryCase struct {
+	name       string
+	kind       string
+	status     string
+	diag       string
+	recipient  string
+	from       string // original_from
+	remoteIP   string
+	reporting  string
+	category   string
+	unit       string
+	authority  string
+	actionable bool
+	respons    string
+}
+
+var categoryCases = []categoryCase{
+	{
+		name: "gmail ip blocked", kind: bounceKindDelayed, status: "4.7.0",
+		diag:      "421-4.7.0 [203.0.113.5 19] Our system has detected an unusual rate of 421-4.7.0 unsolicited mail originating from your IP address. To protect our 421-4.7.0 users from spam, mail sent from your IP address has been blocked. 421-4.7.0 Please visit https://support.google.com/mail/answer/81126 for more information.",
+		recipient: "someone@gmail.com", from: "Newsletter <newsletter@example.jp>", reporting: "mx1.example.jp",
+		category: categoryIPBlocked, unit: "203.0.113.5", authority: "gmail.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "spamhaus listing", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "550 5.7.1 Service unavailable; Client host [203.0.113.5] blocked using zen.spamhaus.org; https://www.spamhaus.org/query/ip/203.0.113.5",
+		recipient: "a@customer.example.com", from: "newsletter@example.jp", remoteIP: "198.51.100.25", reporting: "mx1.example.jp",
+		category: categoryIPBlocked, unit: "203.0.113.5", authority: "spamhaus.org", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "barracuda listing", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "554 5.7.1 Service unavailable; Client host [203.0.113.5] blocked using b.barracudacentral.org; http://www.barracudanetworks.com/reputation/?pr=1&ip=203.0.113.5",
+		recipient: "b@other.example.net", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		category: categoryIPBlocked, unit: "203.0.113.5", authority: "barracudacentral.org", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "outlook block list", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "550 5.7.1 Unfortunately, messages from [203.0.113.5] weren't sent. Please contact your Internet service provider since part of their network is on our block list (S3140). You can also refer your provider to http://mail.live.com/mail/troubleshooting.aspx#errors.",
+		recipient: "c@outlook.com", from: "newsletter@example.jp",
+		category: categoryIPBlocked, unit: "203.0.113.5", authority: "outlook.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "unknown rbl by url", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "550 5.7.1 Your IP 203.0.113.5 is listed; see http://rbl.example-list.net/lookup?ip=203.0.113.5",
+		recipient: "d@customer.example.com", from: "newsletter@example.jp",
+		category: categoryIPBlocked, unit: "203.0.113.5", authority: "example-list.net", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "rate limited", kind: bounceKindDelayed, status: "4.7.0",
+		diag:      "421 4.7.0 Too many messages from 203.0.113.5, try again later",
+		recipient: "e@customer.example.com", from: "newsletter@example.jp",
+		category: categoryRateLimited, unit: "203.0.113.5", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "rate limited without ip uses reporting mta", kind: bounceKindFailed, status: "4.7.0",
+		diag:      "421 4.7.0 Temporarily rate limited due to too many connections",
+		recipient: "e@customer.example.com", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		category: categoryRateLimited, unit: "mx1.example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "dmarc failure", kind: bounceKindFailed, status: "5.7.26",
+		diag:      "550 5.7.26 Unauthenticated email from example.jp is not accepted due to domain's DMARC policy. Please contact the administrator of example.jp domain if this was a legitimate mail.",
+		recipient: "f@gmail.com", from: "Newsletter <newsletter@example.jp>",
+		category: categoryAuthFailure, unit: "example.jp", authority: "gmail.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "spf failure by text", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "550 5.7.1 SPF check failed for newsletter@example.jp",
+		recipient: "f@corp.example.co.jp", from: "newsletter@example.jp",
+		category: categoryAuthFailure, unit: "example.jp", authority: "corp.example.co.jp", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "sender address rejected", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "554 5.7.1 <newsletter@example.jp>: Sender address rejected: Access denied",
+		recipient: "g@customer.example.com", from: "Newsletter <newsletter@example.jp>",
+		category: categorySenderBlocked, unit: "newsletter@example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "sender rejected without original message", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "554 5.7.1 <newsletter@example.jp>: Sender address rejected: Access denied",
+		recipient: "g@customer.example.com",
+		category:  categorySenderBlocked, unit: "newsletter@example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "spam content", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "550 5.7.1 Message rejected as spam by Content Filtering.",
+		recipient: "h@customer.example.com", from: "newsletter@example.jp",
+		category: categoryContentRejected, unit: "newsletter@example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "gmail content spam", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "550-5.7.1 [203.0.113.5 12] Our system has detected that this message is 550-5.7.1 likely unsolicited mail. To reduce the amount of spam sent to Gmail, 550-5.7.1 this message has been blocked. Please visit 550 5.7.1 https://support.google.com/mail/?p=UnsolicitedMessageError for more information.",
+		recipient: "h@gmail.com", from: "newsletter@example.jp",
+		category: categoryContentRejected, unit: "newsletter@example.jp", authority: "gmail.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "too large", kind: bounceKindFailed, status: "5.2.3",
+		diag:      "552 5.2.3 Message size exceeds fixed maximum message size (10485760)",
+		recipient: "i@customer.example.com", from: "newsletter@example.jp",
+		category: categoryMessageTooLarge, unit: "newsletter@example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "relay denied", kind: bounceKindFailed, status: "5.7.1",
+		diag:      "554 5.7.1 <j@customer.example.com>: Relay access denied",
+		recipient: "j@customer.example.com", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		category: categoryServerConfig, unit: "mx1.example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "protocol error 5.5.x", kind: bounceKindFailed, status: "5.5.1",
+		diag:      "503 5.5.1 Error: need MAIL command",
+		recipient: "j@customer.example.com", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		category: categoryServerConfig, unit: "mx1.example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "tls required", kind: bounceKindFailed, status: "",
+		diag:      "530 Must issue a STARTTLS command first",
+		recipient: "j@customer.example.com", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		category: categoryServerConfig, unit: "mx1.example.jp", authority: "customer.example.com", actionable: true, respons: responsibleSender,
+	},
+	{
+		name: "gmail over quota", kind: bounceKindFailed, status: "4.2.2",
+		diag:      "452-4.2.2 The email account that you tried to reach is over quota. Please direct 452-4.2.2 the recipient to 452 4.2.2 https://support.google.com/mail/?p=OverQuotaTemp 41be03b00d2f7-7f0c4e1a2b3si7654321a12.34 - gsmtp",
+		recipient: "K@gmail.com", from: "newsletter@example.jp",
+		category: categoryMailboxFull, unit: "k@gmail.com", authority: "", actionable: false, respons: responsibleRecipient,
+	},
+	{
+		name: "user unknown", kind: bounceKindFailed, status: "5.1.1",
+		diag:      "550 5.1.1 <l@customer.example.com>: Recipient address rejected: User unknown in virtual mailbox table",
+		recipient: "l@customer.example.com", from: "newsletter@example.jp",
+		category: categoryUserUnknown, unit: "l@customer.example.com", authority: "", actionable: false, respons: responsibleRecipient,
+	},
+	{
+		name: "user unknown by text only", kind: bounceKindFailed, status: "",
+		diag:      "550 No such user here",
+		recipient: "l2@customer.example.com", from: "newsletter@example.jp",
+		category: categoryUserUnknown, unit: "l2@customer.example.com", authority: "", actionable: false, respons: responsibleRecipient,
+	},
+	{
+		name: "status wins over blocked wording", kind: bounceKindFailed, status: "5.1.1",
+		diag:      "550 5.1.1 Recipient address rejected: blocked",
+		recipient: "l3@customer.example.com", from: "newsletter@example.jp",
+		category: categoryUserUnknown, unit: "l3@customer.example.com", authority: "", actionable: false, respons: responsibleRecipient,
+	},
+	{
+		name: "mailbox disabled", kind: bounceKindFailed, status: "5.2.1",
+		diag:      "550 5.2.1 The email account that you tried to reach is disabled.",
+		recipient: "m@gmail.com", from: "newsletter@example.jp",
+		category: categoryMailboxDisabled, unit: "m@gmail.com", authority: "", actionable: false, respons: responsibleRecipient,
+	},
+	{
+		name: "domain not found", kind: bounceKindFailed, status: "5.1.2",
+		diag:      "550 5.1.2 <n@nowhere.example>: Host or domain name not found. Name service error for name=nowhere.example type=MX: Host not found",
+		recipient: "n@nowhere.example", from: "newsletter@example.jp",
+		category: categoryDomainNotFound, unit: "nowhere.example", authority: "", actionable: false, respons: responsibleDomain,
+	},
+	{
+		name: "timeout delay", kind: bounceKindDelayed, status: "4.4.1",
+		diag:      "connect to mx.slowmail.example.net[203.0.113.7]:25: Connection timed out",
+		recipient: "o@slowmail.example.net", from: "newsletter@example.jp", remoteIP: "203.0.113.7",
+		category: categoryDeliveryDelay, unit: "slowmail.example.net", authority: "", actionable: false, respons: responsibleDomain,
+	},
+	{
+		name: "greylisted failure kind", kind: bounceKindFailed, status: "4.7.1",
+		diag:      "451 4.7.1 Greylisting in action, please come back later",
+		recipient: "o2@slowmail.example.net", from: "newsletter@example.jp",
+		category: categoryDeliveryDelay, unit: "slowmail.example.net", authority: "", actionable: false, respons: responsibleDomain,
+	},
+	{
+		name: "unknown 550", kind: bounceKindFailed, status: "",
+		diag:      "550 Something odd happened here (id A1B2C3D4E5)",
+		recipient: "p@customer.example.com", from: "newsletter@example.jp",
+		category: categoryUnknownFailure, unit: "customer.example.com", authority: "550 something odd happened here (id <id>)", actionable: true, respons: responsibleUnknown,
+	},
+	{
+		name: "unknown with status", kind: bounceKindFailed, status: "5.0.0",
+		diag:      "550 5.0.0 Rejected",
+		recipient: "p@customer.example.com", from: "newsletter@example.jp",
+		category: categoryUnknownFailure, unit: "customer.example.com", authority: "5.0.0 550 5.0.0 rejected", actionable: true, respons: responsibleUnknown,
+	},
+	{
+		name: "success dsn without diagnostic", kind: bounceKindOther, status: "",
+		diag:      "",
+		recipient: "q@customer.example.com", from: "newsletter@example.jp",
+		category: categoryUnknownFailure, unit: "customer.example.com", authority: "", actionable: true, respons: responsibleUnknown,
+	},
+}
+
+func (c categoryCase) bounce() *models.Bounce {
+	return &models.Bounce{
+		OriginalRecipient:  c.recipient,
+		RecipientDomain:    domainOf(c.recipient),
+		StatusCode:         c.status,
+		Diagnostic:         c.diag,
+		DiagnosticTemplate: DiagnosticTemplate(c.diag),
+		RemoteIP:           c.remoteIP,
+		ReportingMTA:       c.reporting,
+		OriginalFrom:       c.from,
+	}
+}
+
+func TestCategorize(t *testing.T) {
+	seen := map[string]bool{}
+	for _, c := range categoryCases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Categorize(c.bounce(), c.kind)
+			if got.Category != c.category || got.UnitValue != c.unit || got.Authority != c.authority ||
+				got.Actionable != c.actionable || got.Responsible != c.respons {
+				t.Errorf("Categorize = %+v\nwant category=%s unit=%q authority=%q actionable=%v responsible=%s",
+					got, c.category, c.unit, c.authority, c.actionable, c.respons)
+			}
+			if got.Reason == "" {
+				t.Error("no rule name recorded")
+			}
+			seen[got.Category] = true
+		})
+	}
+	for category := range categoryDefs {
+		if !seen[category] {
+			t.Errorf("no test case produces category %s", category)
+		}
+	}
+	// Every category the rule table can produce is defined.
+	for _, r := range categoryRules {
+		if _, ok := categoryDefs[r.category]; !ok {
+			t.Errorf("rule %s names an undefined category %s", r.name, r.category)
+		}
+	}
+	if Categorize(nil, bounceKindFailed).Category != categoryUnknownFailure {
+		t.Error("nil bounce must be an unknown failure")
+	}
+}
+
+func TestGroupIdentityByUnit(t *testing.T) {
+	find := func(name string) categoryCase {
+		for _, c := range categoryCases {
+			if c.name == name {
+				return c
+			}
+		}
+		t.Fatalf("no case %q", name)
+		return categoryCase{}
+	}
+	// Two Gmail over-quota bounces to different recipients: two groups.
+	quotaA := find("gmail over quota")
+	quotaB := quotaA
+	quotaB.recipient = "someone-else@gmail.com"
+	ga, gb := groupForBounce(bounceKindFailed, quotaA.bounce()), groupForBounce(bounceKindFailed, quotaB.bounce())
+	if ga.GroupKey == gb.GroupKey {
+		t.Errorf("over-quota bounces to different recipients share group %s", ga.GroupKey)
+	}
+	if ga.Actionable || gb.Actionable || ga.Category != categoryMailboxFull {
+		t.Errorf("over-quota groups = %+v / %+v", ga, gb)
+	}
+	// Two Spamhaus listings of the same IP from different recipient domains:
+	// one group; a Barracuda listing of the same IP: another group.
+	spamA := find("spamhaus listing")
+	spamB := spamA
+	spamB.recipient = "other@partner.example.org"
+	spamB.remoteIP = "198.51.100.77"
+	spamB.diag = "550 5.7.1 Service unavailable; Client host [203.0.113.5] blocked using zen.spamhaus.org; https://www.spamhaus.org/query/ip/203.0.113.5 (in reply to RCPT TO command)"
+	sa, sb := groupForBounce(bounceKindFailed, spamA.bounce()), groupForBounce(bounceKindFailed, spamB.bounce())
+	if sa.GroupKey != sb.GroupKey {
+		t.Errorf("spamhaus listings of one IP form two groups:\n%+v\n%+v", sa, sb)
+	}
+	if !sa.Actionable || sa.UnitValue != "203.0.113.5" || sa.Authority != "spamhaus.org" || sa.Title != "ip_blocked: 203.0.113.5 @ spamhaus.org" {
+		t.Errorf("spamhaus group = %+v", sa)
+	}
+	if bc := groupForBounce(bounceKindFailed, find("barracuda listing").bounce()); bc.GroupKey == sa.GroupKey {
+		t.Error("a different blacklist must give a different group")
+	}
+	// Auto-replies and non-bounces have no group.
+	if groupForBounce(bounceKindAutoReply, spamA.bounce()) != nil || groupForBounce("", spamA.bounce()) != nil {
+		t.Error("auto-reply / non-bounce got a group")
+	}
+}
+
+func TestExtractors(t *testing.T) {
+	ipCases := []struct{ text, remote, want string }{
+		{"421-4.7.0 [203.0.113.5      19] our system has detected", "", "203.0.113.5"},
+		{"client host [203.0.113.5] blocked using zen.spamhaus.org", "198.51.100.25", "203.0.113.5"},
+		{"too many messages from 203.0.113.5, try again later", "", "203.0.113.5"},
+		{"your ip address 2001:db8::25 is listed", "", "2001:db8::25"},
+		{"connect to mx.example[203.0.113.7]:25: connection timed out at 09:15:30", "203.0.113.7", ""},
+		{"550 5.7.1 rejected on 2025-09-02 09:15:30", "", ""},
+		{"", "", ""},
+	}
+	for _, c := range ipCases {
+		if got := extractSendingIP(c.text, c.remote); got != c.want {
+			t.Errorf("extractSendingIP(%q) = %q, want %q", c.text, got, c.want)
+		}
+	}
+	domainCases := map[string]string{
+		"www.spamhaus.org": "spamhaus.org", "mx.corp.example.co.jp": "example.co.jp", "example.jp": "example.jp",
+		"localhost": "localhost", "a.b.c.example.com": "example.com", "": "",
+	}
+	for in, want := range domainCases {
+		if got := registrableDomain(in); got != want {
+			t.Errorf("registrableDomain(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := addressIn("Newsletter <Newsletter@Example.JP>"); got != "newsletter@example.jp" {
+		t.Errorf("addressIn = %q", got)
+	}
+	if got := listingAuthority("blocked; see https://support.google.com/mail/answer/81126", "gmail.com"); got != "" {
+		t.Errorf("help page taken as authority: %q", got)
+	}
+	if got := listingAuthority("is listed at http://rbl.example-list.net/lookup", "customer.example.com", "example.jp"); got != "example-list.net" {
+		t.Errorf("listing authority = %q", got)
+	}
+}
+
+// TestGroupIncremental checks the fetch / group split without IMAP: stored
+// messages stay unclassified until GroupMailbox runs, an incremental run
+// only processes the new rows and reports only the actionable groups that
+// grew.
+func TestGroupIncremental(t *testing.T) {
+	root := t.TempDir()
+	address := "newsletter@example.jp"
+	var first, later []sample
+	for _, s := range samples {
+		switch s.file {
+		case "spamhaus_block_b.eml", "gmail_overquota.eml":
+			later = append(later, s)
+		default:
+			first = append(first, s)
+		}
+	}
+	storeSamples(t, root, address, 1, first...)
+
+	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := models.CountUnclassifiedMessages(db); n != len(first) {
+		t.Errorf("%d unclassified messages after storing, want %d", n, len(first))
+	}
+	if _, bounces, _ := models.CountMessages(db); bounces != 0 {
+		t.Errorf("fetch phase marked %d bounces", bounces)
+	}
+	if countRows(t, db, "groups") != 0 || countRows(t, db, "bounces") != 0 {
+		t.Error("fetch phase created groups or bounces")
+	}
+	db.Close()
+
+	var lines []string
+	res, err := GroupMailbox(context.Background(), root, address, false, func(m string) { lines = append(lines, m) })
+	if err != nil {
+		t.Fatalf("group run 1: %v", err)
+	}
+	wantBounces := 0
+	for _, s := range first {
+		if s.isBounce {
+			wantBounces++
+		}
+	}
+	if res.Processed != len(first) || res.Bounces != wantBounces || res.Groups == 0 {
+		t.Errorf("group run 1 = %+v, want %d processed / %d bounces", res, len(first), wantBounces)
+	}
+	spamKey := GroupKey(categoryIPBlocked, "203.0.113.5", "spamhaus.org")
+	contentKey := GroupKey(categoryContentRejected, "", "broken.example.net")
+	if len(res.GroupsTouched) != 2 || res.GroupsTouched[0] != spamKey || res.GroupsTouched[1] != contentKey {
+		t.Errorf("group run 1 touched %v, want the actionable groups [%s %s] only", res.GroupsTouched, spamKey, contentKey)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "grouping ") {
+		t.Errorf("no progress reported: %v", lines)
+	}
+	groupsAfter1 := res.Groups
+
+	// Nothing new: nothing processed, nothing touched.
+	res, err = GroupMailbox(context.Background(), root, address, false, nil)
+	if err != nil {
+		t.Fatalf("group run 2: %v", err)
+	}
+	if res.Processed != 0 || res.Bounces != 0 || len(res.GroupsTouched) != 0 || res.Groups != groupsAfter1 {
+		t.Errorf("group run 2 = %+v, want nothing processed", res)
+	}
+
+	// Two more messages: the second Spamhaus listing joins the existing
+	// actionable group (touched), the over-quota bounce creates a
+	// recipient-side group (not touched).
+	storeSamples(t, root, address, uint32(len(first)+1), later...)
+	res, err = GroupMailbox(context.Background(), root, address, false, nil)
+	if err != nil {
+		t.Fatalf("group run 3: %v", err)
+	}
+	if res.Processed != 2 || res.Bounces != 2 || res.Groups != groupsAfter1+1 {
+		t.Errorf("group run 3 = %+v, want 2 processed / %d groups", res, groupsAfter1+1)
+	}
+	if len(res.GroupsTouched) != 1 || res.GroupsTouched[0] != spamKey {
+		t.Errorf("group run 3 touched %v, want [%s]", res.GroupsTouched, spamKey)
+	}
+	db, err = models.OpenMailIndex(MailboxIndexPath(root, address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	g, err := models.GetGroup(db, spamKey)
+	if err != nil || g.MessageCount != 2 || g.RecipientCount != 2 || !g.NeedsAnalysis || !g.Actionable {
+		t.Errorf("spamhaus group = %+v (err %v), want 2 messages / 2 recipients / needs analysis", g, err)
+	}
+	quota, err := models.GetGroup(db, GroupKey(categoryMailboxFull, "kyuro@gmail.com", ""))
+	if err != nil || quota.Actionable || quota.MessageCount != 1 || quota.Responsible != responsibleRecipient {
+		t.Errorf("over-quota group = %+v (err %v)", quota, err)
+	}
+	if n, _ := models.CountUnclassifiedMessages(db); n != 0 {
+		t.Errorf("%d messages left unclassified", n)
+	}
+	only := true
+	actionable, err := models.CountGroups(db, &only)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actionable.Open != 2 {
+		t.Errorf("actionable open groups = %d, want 2 (spamhaus, content)", actionable.Open)
 	}
 }

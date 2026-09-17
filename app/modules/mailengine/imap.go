@@ -145,15 +145,16 @@ func TestConnection(ctx context.Context, mb *models.Mailbox, password string) er
 	return err
 }
 
-// CheckMailbox downloads messages not yet indexed (initial_days back on the
-// first run, recent_days afterwards), stores them, classifies them and
-// updates the groups. It returns the run summary; the caller records the
-// outcome on the mailbox row and schedules agent analysis for GroupsTouched.
-func CheckMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, password string, progress Progress) (*CheckResult, error) {
+// FetchMailbox downloads the messages not yet indexed (initial_days back on
+// the first run, recent_days afterwards), stores their raw and derived files
+// and adds their index rows with classified = 0 (design 5.1). No
+// classification or grouping happens here; GroupMailbox does that. The
+// caller records the outcome on the mailbox row.
+func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, password string, progress Progress) (*FetchResult, error) {
 	if mb == nil {
 		return nil, errors.New("mailengine: mailbox is nil")
 	}
-	result := &CheckResult{GroupsTouched: []string{}}
+	result := &FetchResult{}
 
 	db, err := OpenIndex(ctx, mailsRoot, mb.Address, progress)
 	if err != nil {
@@ -247,8 +248,6 @@ func CheckMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 		toFetch = append(toFetch, uid)
 	}
 
-	tracker := newGroupTracker()
-	exclude := []string{mb.Address, mb.ImapUsername}
 	for start := 0; start < len(toFetch); start += fetchBatchSize {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -273,7 +272,7 @@ func CheckMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 				ReceivedAt:  internalDate.UTC(),
 				FetchedAt:   time.Now().UTC(),
 			}
-			msg, _, err := storeMessage(db, dir, raw, src, storeOptions{writeEML: true, dedupeByMessageID: true}, tracker, exclude...)
+			_, _, err := storeMessage(db, dir, raw, src, storeOptions{writeEML: true, dedupeByMessageID: true})
 			if err != nil {
 				if errors.Is(err, errDuplicateMessage) || isUniqueViolation(err) {
 					// Already indexed (same Message-ID after a UIDVALIDITY
@@ -284,9 +283,6 @@ func CheckMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 				return err
 			}
 			result.Fetched++
-			if msg.IsBounce {
-				result.Bounces++
-			}
 			return nil
 		})
 		if err != nil {
@@ -294,13 +290,7 @@ func CheckMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 		}
 	}
 
-	keys, err := tracker.refresh(db)
-	if err != nil {
-		return nil, fmt.Errorf("refresh groups: %w", err)
-	}
-	result.GroupsTouched = keys
-	report(progress, fmt.Sprintf("indexed %d messages, %d bounces, %d groups touched, %d skipped",
-		result.Fetched, result.Bounces, len(keys), result.Skipped))
+	report(progress, fmt.Sprintf("indexed %d messages, %d skipped", result.Fetched, result.Skipped))
 	return result, nil
 }
 

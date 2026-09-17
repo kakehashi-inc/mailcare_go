@@ -3,7 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { analyzeGroup, getGroup, getJob, getMailbox, setGroupState } from '../api/client';
 import {
+    ActionableBadge,
     BounceKindBadge,
+    CategoryBadge,
     GroupStateBadge,
     ReportStatusBadge,
     ResponsibleBadge,
@@ -29,6 +31,7 @@ import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { usePolling } from '../hooks/usePolling';
 import type { GroupState, JobDTO, MessageDTO, ReportDTO } from '../types';
+import { categoryDescription, groupHeadline } from '../utils/category';
 import { errorMessage } from '../utils/errors';
 import { formatDateTime } from '../utils/format';
 
@@ -122,9 +125,9 @@ export function AlertGroupDetailPage() {
     const [job, setJob] = useState<JobDTO | null>(null);
     const [analyzing, setAnalyzing] = useState(false);
     const [changing, setChanging] = useState<GroupState | null>(null);
-    useDocumentTitle(detail.data?.group.title ?? t('nav.alerts'));
-
     const group = detail.data?.group;
+    const headline = group ? groupHeadline(group, t) : '';
+    useDocumentTitle(headline || t('nav.alerts'));
     const reportRunning =
         group?.report_status === 'running' || (job !== null && (job.status === 'queued' || job.status === 'running'));
 
@@ -196,6 +199,7 @@ export function AlertGroupDetailPage() {
 
     const { stats, report, reports, messages } = detail.data;
     const history = reports.filter(r => !report || r.id !== report.id);
+    const description = categoryDescription(group.category, t);
 
     const messageColumns: Column<MessageDTO>[] = [
         {
@@ -221,7 +225,7 @@ export function AlertGroupDetailPage() {
     return (
         <PageContainer wide>
             <PageHeader
-                title={group.title}
+                title={headline}
                 crumbs={[
                     { label: t('nav.alerts'), to: '/alerts' },
                     { label: mailbox.data?.address ?? '...', to: `/alerts/${id}` },
@@ -251,18 +255,48 @@ export function AlertGroupDetailPage() {
                     <Card>
                         <CardHeader title={t('group.overview')} />
                         <div className='mb-4 flex flex-wrap gap-2'>
+                            <CategoryBadge category={group.category} />
+                            <ActionableBadge actionable={group.actionable} />
                             <GroupStateBadge state={group.state} />
-                            <SeverityBadge severity={group.report_severity} />
+                            {group.actionable && <SeverityBadge severity={group.report_severity} />}
                             <ResponsibleBadge responsible={group.responsible} />
                             <BounceKindBadge kind={group.bounce_kind} isBounce />
-                            {group.needs_analysis && group.report_status !== 'running' && (
+                            {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
                                 <Badge tone='warning' icon='pending_actions'>
                                     {t('group.needsAnalysis')}
                                 </Badge>
                             )}
                         </div>
+                        {description && (
+                            <p className='mb-4 flex items-start gap-2 rounded-md bg-well p-3 text-base text-ink'>
+                                <Icon name='lightbulb' className='mt-0.5 shrink-0 text-[20px] text-accent' />
+                                <span>{description}</span>
+                            </p>
+                        )}
                         <DescriptionList
                             items={[
+                                {
+                                    label: t('group.unitValue'),
+                                    value: group.unit_value ? (
+                                        <span className='inline-flex max-w-full items-center gap-1'>
+                                            <code className='break-all font-mono text-base'>{group.unit_value}</code>
+                                            <CopyButton
+                                                text={group.unit_value}
+                                                label={t('group.copyUnit', { value: group.unit_value })}
+                                            />
+                                        </span>
+                                    ) : (
+                                        '-'
+                                    ),
+                                },
+                                {
+                                    label: t('group.authority'),
+                                    value: group.authority ? (
+                                        <code className='break-all font-mono text-base'>{group.authority}</code>
+                                    ) : (
+                                        '-'
+                                    ),
+                                },
                                 { label: t('group.recipientDomain'), value: group.recipient_domain || '-' },
                                 {
                                     label: t('group.statusCode'),
@@ -284,6 +318,11 @@ export function AlertGroupDetailPage() {
                                     wide: true,
                                 },
                                 {
+                                    label: t('group.technicalTitle'),
+                                    value: <code className='break-words font-mono text-sm'>{group.title}</code>,
+                                    wide: true,
+                                },
+                                {
                                     label: t('group.key'),
                                     value: <code className='font-mono text-sm'>{group.group_key}</code>,
                                     wide: true,
@@ -296,18 +335,25 @@ export function AlertGroupDetailPage() {
                         <CardHeader
                             title={t('report.title')}
                             actions={
-                                <Button
-                                    size='sm'
-                                    variant='primary'
-                                    icon='psychology'
-                                    loading={analyzing}
-                                    disabled={reportRunning}
-                                    onClick={() => void analyze()}
-                                >
-                                    {reportRunning ? t('report.running') : t('report.reanalyze')}
-                                </Button>
+                                group.actionable ? (
+                                    <Button
+                                        size='sm'
+                                        variant='primary'
+                                        icon='psychology'
+                                        loading={analyzing}
+                                        disabled={reportRunning}
+                                        onClick={() => void analyze()}
+                                    >
+                                        {reportRunning ? t('report.running') : t('report.reanalyze')}
+                                    </Button>
+                                ) : undefined
                             }
                         />
+                        {!group.actionable && (
+                            <Alert tone='info' className='mb-4' title={t('report.excludedTitle')}>
+                                {t('report.excluded')}
+                            </Alert>
+                        )}
                         {reportRunning && (
                             <Alert tone='info' className='mb-4'>
                                 <span className='inline-flex items-center gap-2'>
@@ -318,9 +364,9 @@ export function AlertGroupDetailPage() {
                         )}
                         {report ? (
                             <ReportView report={report} />
-                        ) : (
+                        ) : group.actionable ? (
                             <EmptyState icon='psychology' title={t('report.none')} description={t('report.noneHint')} />
-                        )}
+                        ) : null}
                         {history.length > 0 && (
                             <details className='mt-6'>
                                 <summary className='cursor-pointer text-base font-medium text-muted hover:text-ink'>

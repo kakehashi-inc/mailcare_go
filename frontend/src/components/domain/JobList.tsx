@@ -1,5 +1,6 @@
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import type { JobDTO } from '../../types';
+import { JOB_KINDS, type JobDTO, type JobKind } from '../../types';
 import { formatDuration } from '../../utils/format';
 import { IconButton } from '../ui/Button';
 import { DateTime } from '../ui/DateTime';
@@ -7,16 +8,11 @@ import { EmptyState } from '../ui/EmptyState';
 import { Icon } from '../ui/Icon';
 import { JobStatusBadge } from './StatusBadges';
 
-export function jobKindLabel(kind: string, t: (k: string) => string): string {
-    switch (kind) {
-        case 'check':
-        case 'reindex':
-        case 'reclassify':
-        case 'analyze':
-            return t(`jobKind.${kind}`);
-        default:
-            return kind;
-    }
+/** Label of a job kind; kinds this build does not know (e.g. old "check" jobs) are shown as "Other (kind)". */
+export function jobKindLabel(kind: string, t: TFunction): string {
+    return (JOB_KINDS as readonly string[]).includes(kind)
+        ? t(`jobKind.${kind as JobKind}`)
+        : t('jobKind.other', { kind });
 }
 
 interface JobListProps {
@@ -47,14 +43,13 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                         <div className='flex flex-wrap items-start justify-between gap-2'>
                             <div className='min-w-0 flex-1'>
                                 <div className='flex flex-wrap items-center gap-2'>
-                                    <span className='font-medium text-ink'>
-                                        {jobKindLabel(job.kind, k => t(k as 'jobKind.check'))}
-                                    </span>
+                                    <span className='font-medium text-ink'>{jobKindLabel(job.kind, t)}</span>
                                     <JobStatusBadge status={job.status} />
                                     <span className='text-sm text-muted'>#{job.id}</span>
                                 </div>
                                 <p className='mt-1 break-all text-sm text-muted'>
                                     {job.mailbox_address || t('mailbox.all')}
+                                    {job.mailbox_id === null && ` / ${t('jobs.expanded')}`}
                                     {targetLabel && ` / ${targetLabel}`}
                                     {job.requested_by && ` / ${t('jobs.requestedBy', { name: job.requested_by })}`}
                                 </p>

@@ -6,10 +6,36 @@ export type GroupState = 'open' | 'resolved' | 'ignored';
 export type Responsible = 'sender' | 'recipient' | 'domain' | 'unknown';
 export type Severity = 'high' | 'medium' | 'low' | '';
 export type ImapSecurity = 'ssl' | 'starttls' | 'none';
-export type JobKind = 'check' | 'reindex' | 'reclassify' | 'analyze';
+export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify';
+/** All job kinds, in the order the tools page lists them. */
+export const JOB_KINDS: readonly JobKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify'];
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled';
-export type CheckStatus = '' | 'ok' | 'error';
+export type CheckStatus = '' | 'ok' | 'error' | 'running';
 export type ReportStatus = '' | 'running' | 'completed' | 'error';
+/** Which groups a list request returns: actionable (default), excluded (recipient-side problems) or both. */
+export type GroupScope = 'actionable' | 'excluded' | 'all';
+
+/**
+ * Bounce categories assigned by the grouping phase (design document 5.4).
+ * The first eight are actionable by the sending side; the last five describe
+ * recipient-side problems and are excluded from analysis.
+ */
+export const BOUNCE_CATEGORIES = [
+    'ip_blocked',
+    'rate_limited',
+    'auth_failure',
+    'sender_blocked',
+    'content_rejected',
+    'message_too_large',
+    'server_config',
+    'unknown_failure',
+    'user_unknown',
+    'mailbox_full',
+    'mailbox_disabled',
+    'domain_not_found',
+    'delivery_delay',
+] as const;
+export type BounceCategory = (typeof BOUNCE_CATEGORIES)[number];
 
 /** GET /api/v1/health */
 export interface Health {
@@ -51,7 +77,12 @@ export interface TokenDTO {
 export interface MailboxStats {
     messages: number;
     bounces: number;
+    /** Mails fetched but not grouped yet. */
+    unclassified: number;
+    /** Counts of actionable groups only. */
     groups: { open: number; resolved: number; ignored: number };
+    /** Number of excluded (recipient-side) groups. */
+    excluded_groups: number;
 }
 
 export interface MailboxDTO {
@@ -91,7 +122,15 @@ export interface MailboxInput {
 
 export interface GroupDTO {
     group_key: string;
+    /** Technical title "<category>: <unit_value> @ <authority>"; the UI builds a localized headline instead. */
     title: string;
+    category: BounceCategory | string;
+    /** What the administrator acts on: an IP, a sender address, a domain, ... */
+    unit_value: string;
+    /** Who decides: a block list provider, the recipient domain, ... (empty for excluded groups). */
+    authority: string;
+    /** False for recipient-side problems, which are never analyzed. */
+    actionable: boolean;
     bounce_kind: string;
     recipient_domain: string;
     status_code: string;
@@ -191,7 +230,8 @@ export interface JobDTO {
 
 export interface JobInput {
     kind: JobKind;
-    mailbox_id?: number;
+    /** null (or omitted) means every mail address: the server queues one child job per address. */
+    mailbox_id?: number | null;
     target?: string;
 }
 
@@ -214,7 +254,8 @@ export interface JobSubmitResult {
 
 export interface DashboardDTO {
     mailboxes: MailboxDTO[];
-    totals: { mailboxes: number; open_groups: number; bounces: number; messages: number };
+    /** open_groups counts actionable groups only; unclassified is the number of mails waiting to be grouped. */
+    totals: { mailboxes: number; open_groups: number; bounces: number; messages: number; unclassified: number };
     recent_groups: DashboardGroup[];
     active_jobs: JobDTO[];
     recent_jobs: JobDTO[];
@@ -235,6 +276,8 @@ export interface SettingsDTO {
     agent_provider: string;
     agent_enabled: boolean;
     providers: ProviderStatus[];
+    /** Jobs executed at the same time (1-16). */
+    workers: number;
     web_listen: string;
     web_port: number;
     data_dir: string;
@@ -244,12 +287,16 @@ export interface SettingsInput {
     check_times?: string[];
     agent_provider?: string;
     agent_enabled?: boolean;
+    workers?: number;
 }
 
 /** GET /api/v1/mailboxes/{id}/groups */
 export interface GroupListResponse {
     groups: GroupDTO[];
+    /** Per-state counts within the requested scope. */
     counts: { open: number; resolved: number; ignored: number };
+    /** Total number of excluded groups, regardless of scope. */
+    excluded_count: number;
 }
 
 /** GET /api/v1/mailboxes/{id}/groups/{key} */

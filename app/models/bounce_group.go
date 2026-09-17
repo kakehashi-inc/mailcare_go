@@ -6,13 +6,22 @@ import (
 	"time"
 )
 
-// BounceGroup is a row of the per-mailbox groups table: similar bounce messages
-// bundled by (bounce kind, recipient domain, status code, diagnostic template)
-// so that one row represents one problem an administrator should act on.
-// Membership is recorded in messages.group_key.
+// BounceGroup is a row of the per-mailbox groups table: bounce messages
+// bundled by the unit an administrator acts on. Category names the kind of
+// problem (ip_blocked, sender_blocked, user_unknown, ...), UnitValue the thing
+// to act on (a sending IP, a sender address, a sending domain, a recipient
+// address or domain) and Authority the party that decides the outcome (a
+// blacklist, the recipient domain). Actionable is false for recipient-side
+// problems the mail administrator cannot fix; those groups are kept for
+// reference but excluded from Alerts by default. Membership is recorded in
+// messages.group_key.
 type BounceGroup struct {
 	GroupKey           string       `json:"group_key"`
 	Title              string       `json:"title"`
+	Category           string       `json:"category"`
+	UnitValue          string       `json:"unit_value"`
+	Authority          string       `json:"authority"`
+	Actionable         bool         `json:"actionable"`
 	BounceKind         string       `json:"bounce_kind"`
 	RecipientDomain    string       `json:"recipient_domain"`
 	StatusCode         string       `json:"status_code"`
@@ -31,9 +40,9 @@ type BounceGroup struct {
 	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
-const groupColumns = `group_key, title, bounce_kind, recipient_domain, status_code, smtp_code, diagnostic_template,
-	responsible, message_count, recipient_count, remote_ip_count, first_seen, last_seen, state, state_updated_at,
-	needs_analysis, created_at, updated_at`
+const groupColumns = `group_key, title, category, unit_value, authority, actionable, bounce_kind, recipient_domain,
+	status_code, smtp_code, diagnostic_template, responsible, message_count, recipient_count, remote_ip_count,
+	first_seen, last_seen, state, state_updated_at, needs_analysis, created_at, updated_at`
 
 // UpsertGroup inserts a group or, when it exists, refreshes its descriptive
 // columns (title, kind, domain, codes, template, responsible). Counters, dates,
@@ -45,15 +54,18 @@ func UpsertGroup(db *sql.DB, g *BounceGroup) error {
 		g.State = "open"
 	}
 	_, err := db.Exec(
-		`INSERT INTO groups (group_key, title, bounce_kind, recipient_domain, status_code, smtp_code,
-		   diagnostic_template, responsible, state, needs_analysis, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-		 ON CONFLICT(group_key) DO UPDATE SET title = excluded.title, bounce_kind = excluded.bounce_kind,
-		   recipient_domain = excluded.recipient_domain, status_code = excluded.status_code,
-		   smtp_code = excluded.smtp_code, diagnostic_template = excluded.diagnostic_template,
-		   responsible = excluded.responsible, updated_at = excluded.updated_at`,
-		g.GroupKey, g.Title, g.BounceKind, g.RecipientDomain, g.StatusCode, g.SMTPCode, g.DiagnosticTemplate,
-		g.Responsible, g.State, now, now,
+		`INSERT INTO groups (group_key, title, category, unit_value, authority, actionable, bounce_kind,
+		   recipient_domain, status_code, smtp_code, diagnostic_template, responsible, state, needs_analysis,
+		   created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		 ON CONFLICT(group_key) DO UPDATE SET title = excluded.title, category = excluded.category,
+		   unit_value = excluded.unit_value, authority = excluded.authority, actionable = excluded.actionable,
+		   bounce_kind = excluded.bounce_kind, recipient_domain = excluded.recipient_domain,
+		   status_code = excluded.status_code, smtp_code = excluded.smtp_code,
+		   diagnostic_template = excluded.diagnostic_template, responsible = excluded.responsible,
+		   updated_at = excluded.updated_at`,
+		g.GroupKey, g.Title, g.Category, g.UnitValue, g.Authority, boolToInt(g.Actionable), g.BounceKind,
+		g.RecipientDomain, g.StatusCode, g.SMTPCode, g.DiagnosticTemplate, g.Responsible, g.State, now, now,
 	)
 	return err
 }
@@ -130,7 +142,9 @@ func GetGroup(db *sql.DB, groupKey string) (*BounceGroup, error) {
 type GroupFilter struct {
 	State       string // "" = all
 	Responsible string // "" = all
-	Query       string // matched against title, domain, template (LIKE)
+	Category    string // "" = all
+	Actionable  *bool  // nil = all; true = actionable only; false = excluded (recipient-side) only
+	Query       string // matched against title, unit, authority, domain, template (LIKE)
 }
 
 // ListGroups returns groups ordered by state (open first) then last seen desc.
@@ -145,10 +159,18 @@ func ListGroups(db *sql.DB, f GroupFilter) ([]*BounceGroup, error) {
 		conds = append(conds, `responsible = ?`)
 		args = append(args, f.Responsible)
 	}
+	if f.Category != "" {
+		conds = append(conds, `category = ?`)
+		args = append(args, f.Category)
+	}
+	if f.Actionable != nil {
+		conds = append(conds, `actionable = ?`)
+		args = append(args, boolToInt(*f.Actionable))
+	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		like := "%" + q + "%"
-		conds = append(conds, `(title LIKE ? OR recipient_domain LIKE ? OR diagnostic_template LIKE ? OR status_code LIKE ?)`)
-		args = append(args, like, like, like, like)
+		conds = append(conds, `(title LIKE ? OR unit_value LIKE ? OR authority LIKE ? OR recipient_domain LIKE ? OR diagnostic_template LIKE ? OR status_code LIKE ?)`)
+		args = append(args, like, like, like, like, like, like)
 	}
 	where := ""
 	if len(conds) > 0 {
@@ -171,9 +193,11 @@ func ListGroups(db *sql.DB, f GroupFilter) ([]*BounceGroup, error) {
 	return out, rows.Err()
 }
 
-// ListGroupsNeedingAnalysis returns open groups flagged for analysis, oldest last-seen first.
+// ListGroupsNeedingAnalysis returns open, actionable groups flagged for
+// analysis (new groups and groups that gained messages), oldest last-seen
+// first. Recipient-side groups are never analyzed.
 func ListGroupsNeedingAnalysis(db *sql.DB) ([]*BounceGroup, error) {
-	rows, err := db.Query(`SELECT ` + groupColumns + ` FROM groups WHERE needs_analysis = 1 AND state = 'open' ORDER BY last_seen ASC`)
+	rows, err := db.Query(`SELECT ` + groupColumns + ` FROM groups WHERE needs_analysis = 1 AND state = 'open' AND actionable = 1 ORDER BY last_seen ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -196,10 +220,17 @@ type GroupCounts struct {
 	Ignored  int `json:"ignored"`
 }
 
-// CountGroups returns the number of groups per state.
-func CountGroups(db *sql.DB) (GroupCounts, error) {
+// CountGroups returns the number of groups per state. actionable nil counts
+// every group; true/false counts only actionable or only excluded groups.
+func CountGroups(db *sql.DB, actionable *bool) (GroupCounts, error) {
 	var c GroupCounts
-	rows, err := db.Query(`SELECT state, COUNT(*) FROM groups GROUP BY state`)
+	where := ""
+	var args []any
+	if actionable != nil {
+		where = ` WHERE actionable = ?`
+		args = append(args, boolToInt(*actionable))
+	}
+	rows, err := db.Query(`SELECT state, COUNT(*) FROM groups`+where+` GROUP BY state`, args...)
 	if err != nil {
 		return c, err
 	}
@@ -224,13 +255,14 @@ func CountGroups(db *sql.DB) (GroupCounts, error) {
 
 func scanGroup(s rowScanner) (*BounceGroup, error) {
 	g := &BounceGroup{}
-	var needs int
-	if err := s.Scan(&g.GroupKey, &g.Title, &g.BounceKind, &g.RecipientDomain, &g.StatusCode, &g.SMTPCode,
-		&g.DiagnosticTemplate, &g.Responsible, &g.MessageCount, &g.RecipientCount, &g.RemoteIPCount, &g.FirstSeen,
-		&g.LastSeen, &g.State, &g.StateUpdatedAt, &needs, &g.CreatedAt, &g.UpdatedAt); err != nil {
+	var needs, actionable int
+	if err := s.Scan(&g.GroupKey, &g.Title, &g.Category, &g.UnitValue, &g.Authority, &actionable, &g.BounceKind,
+		&g.RecipientDomain, &g.StatusCode, &g.SMTPCode, &g.DiagnosticTemplate, &g.Responsible, &g.MessageCount,
+		&g.RecipientCount, &g.RemoteIPCount, &g.FirstSeen, &g.LastSeen, &g.State, &g.StateUpdatedAt, &needs,
+		&g.CreatedAt, &g.UpdatedAt); err != nil {
 		return nil, err
 	}
-	g.NeedsAnalysis = needs != 0
+	g.NeedsAnalysis, g.Actionable = needs != 0, actionable != 0
 	return g, nil
 }
 

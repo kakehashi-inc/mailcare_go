@@ -26,9 +26,9 @@ func (c *core) nextCheckAt() *string {
 	return &s
 }
 
-// handleDashboard aggregates every mailbox: counters, the newest open groups,
-// the active and recent jobs, the next check and the agent status. A mailbox
-// whose index cannot be opened contributes zeros (logged).
+// handleDashboard aggregates every mailbox: counters, the newest open
+// actionable groups, the active and recent jobs, the next check and the agent
+// status. A mailbox whose index cannot be opened contributes zeros (logged).
 func (c *core) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	mailboxes, err := models.ListMailboxes(c.db)
 	if err != nil {
@@ -56,16 +56,13 @@ func (c *core) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			dto.Mailboxes = append(dto.Mailboxes, mdto)
 			continue
 		}
-		if mdto.Stats.Messages, mdto.Stats.Bounces, err = models.CountMessages(idx); err != nil {
-			log.Printf("failed to count messages of %s: %v", mb.Address, err)
-		}
-		if mdto.Stats.Groups, err = models.CountGroups(idx); err != nil {
-			log.Printf("failed to count groups of %s: %v", mb.Address, err)
-		}
+		mdto.Stats = indexStats(idx, mb.Address)
 		dto.Totals.Messages += mdto.Stats.Messages
 		dto.Totals.Bounces += mdto.Stats.Bounces
+		dto.Totals.Unclassified += mdto.Stats.Unclassified
 		dto.Totals.OpenGroups += mdto.Stats.Groups.Open
-		groups, err := models.ListGroups(idx, models.GroupFilter{State: modules.GroupStateOpen})
+		actionable := true
+		groups, err := models.ListGroups(idx, models.GroupFilter{State: modules.GroupStateOpen, Actionable: &actionable})
 		if err != nil {
 			log.Printf("failed to list groups of %s: %v", mb.Address, err)
 		} else {

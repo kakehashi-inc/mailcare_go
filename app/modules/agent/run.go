@@ -21,10 +21,16 @@ import (
 // It returns the stored report (status completed or error) and an error only
 // when nothing could be recorded.
 //
-// Success is decided solely by whether a REPORT block was extracted. The CLI
-// exit code is not a reliable signal (codex exits non-zero on fine runs), so it
-// is ignored. A launch failure (CLI missing), a timeout, a cancellation or a
-// missing REPORT block fail the run and the reason is stored on the report.
+// Success is decided by whether a usable REPORT block was extracted from the
+// transcript after the echoed prompt is removed (see StripPromptEcho and
+// ValidateOutput: no template placeholders, not too short, no placeholder
+// summary). The CLI exit code is not a reliable signal (codex exits non-zero on
+// fine runs), so it is ignored. A launch failure (CLI missing), a timeout, a
+// cancellation, a usage/rate limit ("usage limit reached (retry after ...)"),
+// a missing REPORT block or an unusable report fail the run and the reason is
+// stored on the report. A failure never touches REPORT.md or the previous
+// completed report row and sets needs_analysis so the next sync retries the
+// group; RESULT.log keeps the full transcript.
 func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (*models.AgentReport, error) {
 	if progress == nil {
 		progress = func(string) {}
@@ -53,12 +59,17 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		return nil, fmt.Errorf("agent: record report: %w", err)
 	}
 
+	// Every failure re-flags the group so the next sync retries it, even
+	// when this run was triggered explicitly for a group whose flag was 0.
 	fail := func(reason error) (*models.AgentReport, error) {
 		progress("analysis failed: " + reason.Error())
 		report.Status = "error"
 		report.ErrorMessage = reason.Error()
 		if err := models.FailAgentReport(in.Index, report.ID, reason.Error()); err != nil {
 			return report, fmt.Errorf("agent: record failure: %w", err)
+		}
+		if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, true); err != nil {
+			progress("warning: could not set needs_analysis: " + err.Error())
 		}
 		return report, nil
 	}
@@ -105,13 +116,21 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 	runCtx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
 	out, runErr := runProvider(runCtx, provider, dir, promptText, promptFile)
-	parsed := ParseOutput(out)
+	// The echoed prompt is dropped before parsing so that its markers and
+	// placeholders (and its wording, for the rate-limit markers) are ignored.
+	answer := StripPromptEcho(out, promptText)
+	parsed := ParseOutput(answer)
 
 	var exitErr *exec.ExitError
 	launchErr := runErr != nil && !errors.As(runErr, &exitErr)
-	success := parsed.ReportParsed && !launchErr
+	var invalid error
+	if parsed.ReportParsed {
+		invalid = ValidateOutput(parsed)
+	}
+	success := parsed.ReportParsed && invalid == nil && !launchErr
 	var failure error
 	if !success {
+		limit := detectRateLimit(provider, answer)
 		switch {
 		case launchErr:
 			failure = fmt.Errorf("%s could not run: %v", provider.Label(), runErr)
@@ -119,8 +138,14 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 			failure = fmt.Errorf("%s timed out after %s", provider.Label(), Timeout)
 		case ctx.Err() != nil:
 			failure = fmt.Errorf("analysis canceled: %v", ctx.Err())
-		default:
+		case limit.Limited:
+			failure = errors.New(limit.ErrorMessage())
+		case !parsed.ReportParsed:
 			failure = fmt.Errorf("%s produced no report", provider.Label())
+		default:
+			// A REPORT block that still carries placeholders, is too short or
+			// comes with a placeholder summary must not replace a good report.
+			failure = fmt.Errorf("%s produced an unusable report: %v", provider.Label(), invalid)
 		}
 	}
 

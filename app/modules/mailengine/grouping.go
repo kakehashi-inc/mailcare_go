@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -110,37 +111,43 @@ func DiagnosticTemplate(diagnostic string) string {
 	return s
 }
 
-// GroupKey is the first 16 hex digits of sha1(kind|domain|status|template).
-func GroupKey(bounceKind, recipientDomain, statusCode, template string) string {
-	sum := sha1.Sum([]byte(bounceKind + "|" + recipientDomain + "|" + statusCode + "|" + template))
+// groupKeyPart normalizes one component of the group identity (design 5.4:
+// lower-cased, trimmed).
+func groupKeyPart(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+// GroupKey is the first 16 hex digits of sha1(category|unit_value|authority);
+// unit_value and authority are compared lower-cased and trimmed.
+func GroupKey(category, unitValue, authority string) string {
+	sum := sha1.Sum([]byte(groupKeyPart(category) + "|" + groupKeyPart(unitValue) + "|" + groupKeyPart(authority)))
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// GroupTitle renders "<domain> - <status> - <template head>" leaving out the
-// parts that are unknown.
-func GroupTitle(recipientDomain, statusCode, template string) string {
-	var parts []string
-	if recipientDomain != "" {
-		parts = append(parts, recipientDomain)
+// GroupTitle renders "<category>: <unit_value>" plus " @ <authority>" when
+// there is one. A long authority (the unknown_failure template) is cut.
+func GroupTitle(category, unitValue, authority string) string {
+	category, unitValue, authority = groupKeyPart(category), groupKeyPart(unitValue), groupKeyPart(authority)
+	title := category
+	if unitValue != "" {
+		title += ": " + unitValue
 	}
-	if statusCode != "" {
-		parts = append(parts, statusCode)
-	}
-	if template != "" {
-		head := template
-		if utf8.RuneCountInString(head) > templateTitleLen {
-			head = strings.TrimSpace(string([]rune(head)[:templateTitleLen])) + "..."
+	if authority != "" {
+		if utf8.RuneCountInString(authority) > templateTitleLen {
+			authority = strings.TrimSpace(string([]rune(authority)[:templateTitleLen])) + "..."
 		}
-		parts = append(parts, head)
+		title += " @ " + authority
 	}
-	if len(parts) == 0 {
+	if title == "" {
 		return "(no diagnostic)"
 	}
-	return strings.Join(parts, " - ")
+	return title
 }
 
-// groupForBounce builds the group row a bounce belongs to. Non-bounces and
-// auto-replies do not belong to any group (nil).
+// groupForBounce categorizes a bounce and builds the group row it belongs to.
+// The bounce's Responsible is set from the category so that the bounce row
+// and its group always agree. Non-bounces and auto-replies do not belong to
+// any group (nil).
 func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 	switch kind {
 	case bounceKindFailed, bounceKindDelayed, bounceKindOther:
@@ -150,52 +157,80 @@ func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 	if b == nil {
 		return nil
 	}
-	key := GroupKey(kind, b.RecipientDomain, b.StatusCode, b.DiagnosticTemplate)
+	c := Categorize(b, kind)
+	b.Responsible = c.Responsible
 	return &models.BounceGroup{
-		GroupKey:           key,
-		Title:              GroupTitle(b.RecipientDomain, b.StatusCode, b.DiagnosticTemplate),
+		GroupKey:           GroupKey(c.Category, c.UnitValue, c.Authority),
+		Title:              GroupTitle(c.Category, c.UnitValue, c.Authority),
+		Category:           c.Category,
+		UnitValue:          groupKeyPart(c.UnitValue),
+		Authority:          groupKeyPart(c.Authority),
+		Actionable:         c.Actionable,
 		BounceKind:         kind,
 		RecipientDomain:    b.RecipientDomain,
 		StatusCode:         b.StatusCode,
 		SMTPCode:           b.SMTPCode,
 		DiagnosticTemplate: b.DiagnosticTemplate,
-		Responsible:        b.Responsible,
+		Responsible:        c.Responsible,
 	}
 }
 
 // groupTracker collects the groups touched during one run so that their
-// counters are refreshed once at the end (design 5.4 "incremental").
+// counters are refreshed once at the end (design 5.4 "incremental") and
+// reports which actionable groups gained messages.
 type groupTracker struct {
-	order []string
-	seen  map[string]bool
+	order      []string
+	seen       map[string]bool
+	before     map[string]int  // message_count before the run (0 for new groups)
+	actionable map[string]bool // groups.actionable as written by the last upsert
 }
 
 func newGroupTracker() *groupTracker {
-	return &groupTracker{seen: map[string]bool{}}
+	return &groupTracker{seen: map[string]bool{}, before: map[string]int{}, actionable: map[string]bool{}}
 }
 
-// upsert stores the descriptive columns of the group and remembers its key.
+// upsert stores the descriptive columns of the group and remembers its key
+// together with its message count before the run.
 func (t *groupTracker) upsert(db *sql.DB, g *models.BounceGroup) error {
 	if g == nil {
 		return nil
 	}
+	if !t.seen[g.GroupKey] {
+		var count int
+		err := db.QueryRow(`SELECT message_count FROM groups WHERE group_key = ?`, g.GroupKey).Scan(&count)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		t.seen[g.GroupKey] = true
+		t.before[g.GroupKey] = count
+		t.order = append(t.order, g.GroupKey)
+	}
 	if err := models.UpsertGroup(db, g); err != nil {
 		return err
 	}
-	if !t.seen[g.GroupKey] {
-		t.seen[g.GroupKey] = true
-		t.order = append(t.order, g.GroupKey)
-	}
+	t.actionable[g.GroupKey] = g.Actionable
 	return nil
 }
 
 // refresh recomputes the counters of every touched group and returns the
-// touched keys in first-seen order.
+// keys of the actionable groups whose message count grew, in first-seen
+// order (GroupResult.GroupsTouched).
 func (t *groupTracker) refresh(db *sql.DB) ([]string, error) {
+	touched := []string{}
 	for _, key := range t.order {
 		if err := models.RefreshGroupCounters(db, key); err != nil {
 			return nil, err
 		}
+		if !t.actionable[key] {
+			continue
+		}
+		var count int
+		if err := db.QueryRow(`SELECT message_count FROM groups WHERE group_key = ?`, key).Scan(&count); err != nil {
+			return nil, err
+		}
+		if count > t.before[key] {
+			touched = append(touched, key)
+		}
 	}
-	return append([]string(nil), t.order...), nil
+	return touched, nil
 }

@@ -6,6 +6,7 @@ import type {
     GroupDTO,
     GroupListResponse,
     GroupResponse,
+    GroupScope,
     GroupState,
     Health,
     JobDTO,
@@ -206,14 +207,18 @@ export function testMailbox(input: MailboxInput): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(api('/mailboxes/test'), json('POST', input));
 }
 
-export function checkMailbox(id: number): Promise<JobSubmitResult> {
-    return request<JobSubmitResult>(api(`/mailboxes/${id}/check`), json('POST'));
+/** Queues a sync job (fetch, group, analyze) for one mailbox. */
+export function syncMailbox(id: number): Promise<JobSubmitResult> {
+    return request<JobSubmitResult>(api(`/mailboxes/${id}/sync`), json('POST'));
 }
 
 // --- Groups (alerts) ---
 
 export interface GroupListParams {
+    /** Defaults to "actionable" on the server. */
+    scope?: GroupScope;
     state?: GroupState | '';
+    category?: string;
     responsible?: string;
     q?: string;
 }

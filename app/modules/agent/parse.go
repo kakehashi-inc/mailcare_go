@@ -2,9 +2,29 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
+
+// MinReportRunes is the smallest report body (runes, headings and blank lines
+// removed) accepted as a real analysis. Anything shorter is treated as a
+// failed run (a truncated or refused answer) so that it never replaces a good
+// earlier report.
+const MinReportRunes = 40
+
+// placeholderLine matches a line that is nothing but a prompt template
+// placeholder such as "<what failed and why, citing ...>" or
+// "1. <concrete action>", optionally prefixed by a list number. The bracket
+// content must contain a space so that a lone token like "<addr>" or an
+// address in angle brackets quoted from a notice does not count.
+var placeholderLine = regexp.MustCompile(`(?m)^\s*(?:\d+[.)]\s*)?<[^<>\n]*\s[^<>\n]*>\s*$`)
+
+// placeholderSummary matches a META summary that is still the template
+// placeholder ("<one or two sentences>" or any bracketed phrase).
+var placeholderSummary = regexp.MustCompile(`^<[^<>]*>$`)
 
 // Meta is the machine-readable part of the agent output (the META block).
 type Meta struct {
@@ -21,18 +41,69 @@ type Output struct {
 	MetaParsed   bool   // false when the META block was absent or not valid JSON
 }
 
-// ParseOutput extracts the REPORT and META blocks from the raw CLI transcript.
-// The last complete REPORT marker pair wins (agents sometimes echo the prompt,
-// which contains the markers, before the real answer). META is parsed
-// tolerantly: surrounding whitespace and code fences are ignored and a block
-// that is still not a JSON object is dropped without failing the report. When
-// META carries no summary, one is derived from the first non-heading
-// paragraph of the report.
+// ParseTranscript strips the echoed prompt from the CLI transcript (codex
+// exec prints the whole prompt under a "user" line before answering) and
+// parses what remains. This is what AnalyzeGroup uses; ParseOutput is the
+// prompt-free core.
+func ParseTranscript(raw, prompt string) Output {
+	return ParseOutput(StripPromptEcho(raw, prompt))
+}
+
+// StripPromptEcho removes everything up to and including the first echo of
+// prompt from raw so that the markers and placeholders inside the prompt are
+// never mistaken for the answer. Line endings are normalized to LF first.
+// When the prompt is not echoed verbatim, the span from the first occurrence
+// of its first line to the following occurrence of its last line is removed
+// instead; when neither is found raw is returned unchanged.
+func StripPromptEcho(raw, prompt string) string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	prompt = strings.TrimSpace(strings.ReplaceAll(prompt, "\r\n", "\n"))
+	if prompt == "" {
+		return raw
+	}
+	if i := strings.Index(raw, prompt); i >= 0 {
+		return raw[i+len(prompt):]
+	}
+	var lines []string
+	for _, l := range strings.Split(prompt, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			lines = append(lines, t)
+		}
+	}
+	if len(lines) < 2 {
+		return raw
+	}
+	first, last := lines[0], lines[len(lines)-1]
+	fi := strings.Index(raw, first)
+	if fi < 0 {
+		return raw
+	}
+	li := strings.Index(raw[fi:], last)
+	if li < 0 {
+		return raw
+	}
+	return raw[fi+li+len(last):]
+}
+
+// ParseOutput extracts the REPORT and META blocks from a CLI transcript. The
+// last complete REPORT marker pair that is not merely the prompt template
+// (every prose line a placeholder) wins; template-only pairs are ignored, so
+// an echoed prompt never counts as a report. META is parsed tolerantly:
+// surrounding whitespace and code fences are ignored, a block that is still
+// not a JSON object or that only repeats the template placeholder is dropped
+// without failing the report. When META carries no summary, one is derived
+// from the first non-heading paragraph of the report.
 func ParseOutput(raw string) Output {
 	var out Output
-	out.Report, out.ReportParsed = extractBlock(raw, ReportBegin, ReportEnd)
-	if metaText, ok := extractBlock(raw, MetaBegin, MetaEnd); ok {
-		out.Meta, out.MetaParsed = parseMeta(metaText)
+	for _, block := range extractBlocks(raw, ReportBegin, ReportEnd) {
+		if !isTemplateReport(block) {
+			out.Report, out.ReportParsed = block, true
+		}
+	}
+	for _, block := range extractBlocks(raw, MetaBegin, MetaEnd) {
+		if m, ok := parseMeta(block); ok && !placeholderSummary.MatchString(m.Summary) {
+			out.Meta, out.MetaParsed = m, true
+		}
 	}
 	if out.Meta.Summary == "" {
 		out.Meta.Summary = deriveSummary(out.Report)
@@ -40,19 +111,77 @@ func ParseOutput(raw string) Output {
 	return out
 }
 
-// extractBlock returns the trimmed text between the last begin marker and the
-// following end marker.
-func extractBlock(s, begin, end string) (string, bool) {
-	bi := strings.LastIndex(s, begin)
-	if bi < 0 {
-		return "", false
+// isTemplateReport reports whether every prose line of a REPORT block is a
+// placeholder (the OUTPUT template of the prompt, echoed back).
+func isTemplateReport(block string) bool {
+	prose := 0
+	for _, line := range strings.Split(block, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if !placeholderLine.MatchString(t) {
+			return false
+		}
+		prose++
 	}
-	rest := s[bi+len(begin):]
-	ei := strings.Index(rest, end)
-	if ei < 0 {
-		return "", false
+	return prose > 0
+}
+
+// ValidateOutput reports why a parsed output that has a REPORT block is not
+// a usable analysis: the report still carries template placeholders (the
+// agent echoed the prompt), the report body is shorter than MinReportRunes,
+// or the META summary is a placeholder. It returns nil for a usable output.
+// Callers treat a non-nil error as a failed run so that the previous good
+// report is kept.
+func ValidateOutput(out Output) error {
+	if !out.ReportParsed {
+		return errors.New("no report block")
 	}
-	return strings.TrimSpace(rest[:ei]), true
+	if m := placeholderLine.FindString(out.Report); m != "" {
+		return fmt.Errorf("report still contains the template placeholder %q", strings.TrimSpace(m))
+	}
+	if n := utf8.RuneCountInString(reportBody(out.Report)); n < MinReportRunes {
+		return fmt.Errorf("report body too short (%d runes, minimum %d)", n, MinReportRunes)
+	}
+	if placeholderSummary.MatchString(strings.TrimSpace(out.Meta.Summary)) {
+		return fmt.Errorf("summary is the template placeholder %q", out.Meta.Summary)
+	}
+	return nil
+}
+
+// reportBody returns the report without heading lines, blank lines and
+// surrounding whitespace, joined by single spaces.
+func reportBody(report string) string {
+	var parts []string
+	for _, line := range strings.Split(report, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, " ")
+}
+
+// extractBlocks returns the trimmed text of every complete begin/end marker
+// pair in order of appearance. A begin marker without a following end marker
+// ends the scan.
+func extractBlocks(s, begin, end string) []string {
+	var blocks []string
+	for {
+		bi := strings.Index(s, begin)
+		if bi < 0 {
+			return blocks
+		}
+		rest := s[bi+len(begin):]
+		ei := strings.Index(rest, end)
+		if ei < 0 {
+			return blocks
+		}
+		blocks = append(blocks, strings.TrimSpace(rest[:ei]))
+		s = rest[ei+len(end):]
+	}
 }
 
 // parseMeta decodes the META block. Code fences and any text outside the

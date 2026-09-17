@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import type { CheckStatus, GroupState, JobStatus, ReportStatus } from '../../types';
+import { categoryDescription, categoryIcon, categoryLabel, categoryTone } from '../../utils/category';
 import { Badge, type BadgeTone } from '../ui/Badge';
 
 const GROUP_STATE: Record<GroupState, { tone: BadgeTone; icon: string }> = {
@@ -59,6 +60,30 @@ export function ResponsibleBadge({ responsible }: { responsible: string }) {
     );
 }
 
+/** Bounce category chip; hovering shows what the administrator should do. */
+export function CategoryBadge({ category }: { category: string }) {
+    const { t } = useTranslation();
+    return (
+        <Badge
+            tone={categoryTone(category)}
+            icon={categoryIcon(category)}
+            title={categoryDescription(category, t) || undefined}
+        >
+            {categoryLabel(category, t)}
+        </Badge>
+    );
+}
+
+/** Whether the sending side can act on the group, or it is a recipient-side problem. */
+export function ActionableBadge({ actionable }: { actionable: boolean }) {
+    const { t } = useTranslation();
+    return (
+        <Badge tone={actionable ? 'accent' : 'neutral'} icon={actionable ? 'build' : 'do_not_disturb_on'}>
+            {t(actionable ? 'group.actionable' : 'group.excluded')}
+        </Badge>
+    );
+}
+
 const JOB_STATUS: Record<JobStatus, { tone: BadgeTone; icon: string }> = {
     queued: { tone: 'neutral', icon: 'schedule' },
     running: { tone: 'info', icon: 'autorenew' },
@@ -81,6 +106,7 @@ const CHECK_STATUS: Record<CheckStatus, { tone: BadgeTone; icon: string }> = {
     '': { tone: 'neutral', icon: 'remove_circle_outline' },
     ok: { tone: 'success', icon: 'check_circle' },
     error: { tone: 'danger', icon: 'error_outline' },
+    running: { tone: 'info', icon: 'autorenew' },
 };
 
 export function CheckStatusBadge({ status }: { status: CheckStatus }) {

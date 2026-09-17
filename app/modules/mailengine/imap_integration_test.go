@@ -131,7 +131,7 @@ func TestTestConnectionAgainstMemServer(t *testing.T) {
 	}
 }
 
-func TestCheckMailboxAgainstMemServer(t *testing.T) {
+func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	srv := startMemIMAP(t)
 	root := t.TempDir()
 	mb := srv.mailbox()
@@ -152,6 +152,7 @@ func TestCheckMailboxAgainstMemServer(t *testing.T) {
 	}{
 		{"postfix_dsn.eml", 80},
 		{"office365_dsn.eml", 60},
+		{"spamhaus_block_a.eml", 50},
 		{"qmail_bounce.eml", 45},
 		{"gmail_bounce.eml", 20},
 		{"autoreply.eml", 10},
@@ -167,91 +168,114 @@ func TestCheckMailboxAgainstMemServer(t *testing.T) {
 	var lines []string
 	progress := func(m string) { lines = append(lines, m) }
 
-	// Run 1: initial window (90 days).
-	res, err := CheckMailbox(ctx, root, mb, memPassword, progress)
+	// Run 1: initial window (90 days). Fetching only downloads and indexes.
+	res, err := FetchMailbox(ctx, root, mb, memPassword, progress)
 	if err != nil {
 		t.Fatalf("run 1: %v\n%s", err, strings.Join(lines, "\n"))
 	}
 	if res.Fetched != len(recent) || res.Skipped != 0 {
 		t.Fatalf("run 1 fetched %d skipped %d, want %d / 0\n%s", res.Fetched, res.Skipped, len(recent), strings.Join(lines, "\n"))
 	}
-	if res.Bounces != len(recent) { // every recent sample except normal.eml is a bounce or auto-reply
-		t.Errorf("run 1 bounces = %d, want %d", res.Bounces, len(recent))
-	}
-	if len(res.GroupsTouched) == 0 {
-		t.Error("run 1 touched no groups")
-	}
 	if res.UIDValidity == 0 {
 		t.Error("run 1 reported no UIDVALIDITY")
 	}
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"connecting to " + srv.host, "searching since", "initial window, 90 days", "fetching", "indexed 6 messages"} {
+	for _, want := range []string{"connecting to " + srv.host, "searching since", "initial window, 90 days", "fetching", "indexed 7 messages"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("progress lacks %q:\n%s", want, joined)
 		}
 	}
 	mb.LastUIDValidity = int64(res.UIDValidity)
-	assertIndexState(t, root, mb.Address, len(recent), len(recent), "run 1")
-	for _, key := range res.GroupsTouched {
-		db, err := models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
-		if err != nil {
-			t.Fatal(err)
-		}
-		g, err := models.GetGroup(db, key)
-		db.Close()
-		if err != nil {
-			t.Errorf("touched group %s not found: %v", key, err)
-		} else if g.MessageCount == 0 || !g.NeedsAnalysis {
-			t.Errorf("group %s counters not refreshed: %+v", key, g)
-		}
+	assertIndexState(t, root, mb.Address, len(recent), 0, len(recent), 0, "run 1 fetch")
+
+	// Grouping processes the fetched rows; only the actionable Spamhaus
+	// group is reported as touched.
+	lines = nil
+	gres, err := GroupMailbox(ctx, root, mb.Address, false, progress)
+	if err != nil {
+		t.Fatalf("group 1: %v\n%s", err, strings.Join(lines, "\n"))
+	}
+	if gres.Processed != len(recent) || gres.Bounces != len(recent) { // every recent sample is a bounce or auto-reply
+		t.Errorf("group 1 = %+v, want %d processed / %d bounces", gres, len(recent), len(recent))
+	}
+	spamKey := GroupKey(categoryIPBlocked, "203.0.113.5", "spamhaus.org")
+	if len(gres.GroupsTouched) != 1 || gres.GroupsTouched[0] != spamKey {
+		t.Errorf("group 1 touched %v, want [%s]", gres.GroupsTouched, spamKey)
+	}
+	assertIndexState(t, root, mb.Address, len(recent), len(recent), 0, gres.Groups, "run 1 group")
+	db, err := models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := models.GetGroup(db, spamKey)
+	db.Close()
+	if err != nil {
+		t.Errorf("touched group %s not found: %v", spamKey, err)
+	} else if g.MessageCount != 1 || !g.NeedsAnalysis || !g.Actionable {
+		t.Errorf("group %s counters not refreshed: %+v", spamKey, g)
 	}
 
 	// Run 2: recent window, nothing new.
 	lines = nil
-	res, err = CheckMailbox(ctx, root, mb, memPassword, progress)
+	res, err = FetchMailbox(ctx, root, mb, memPassword, progress)
 	if err != nil {
 		t.Fatalf("run 2: %v", err)
 	}
-	if res.Fetched != 0 || res.Skipped != 0 || len(res.GroupsTouched) != 0 {
+	if res.Fetched != 0 || res.Skipped != 0 {
 		t.Errorf("run 2 = %+v, want nothing fetched", res)
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "recent window, 30 days") {
 		t.Errorf("run 2 did not use the recent window:\n%s", strings.Join(lines, "\n"))
 	}
+	if gres, err = GroupMailbox(ctx, root, mb.Address, false, nil); err != nil || gres.Processed != 0 || len(gres.GroupsTouched) != 0 {
+		t.Errorf("group 2 = %+v (err %v), want nothing processed", gres, err)
+	}
 
-	// Run 3: one fresh bounce, one bounce older than the recent window (not
-	// fetched) and one oversized message (skipped by size).
+	// Run 3: a fresh recipient-side bounce, a second Spamhaus listing (same
+	// IP, other recipient domain), a bounce older than the recent window (not
+	// fetched) and an oversized message (skipped by size).
 	srv.appendSample(t, "exim_bounce.eml", 0)
+	srv.appendSample(t, "spamhaus_block_b.eml", 0)
 	srv.appendRaw(t, withNewMessageID(readSample(t, "sendmail_bounce.eml"), "old-but-new@example.jp"), time.Now().AddDate(0, 0, -45))
 	big := append([]byte("From: big@example.jp\r\nSubject: big\r\nMessage-ID: <big@example.jp>\r\n\r\n"), bytes.Repeat([]byte("x"), maxMessageSize+1)...)
 	srv.appendRaw(t, big, time.Now())
 	lines = nil
-	res, err = CheckMailbox(ctx, root, mb, memPassword, progress)
+	res, err = FetchMailbox(ctx, root, mb, memPassword, progress)
 	if err != nil {
 		t.Fatalf("run 3: %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if res.Fetched != 1 || res.Bounces != 1 || res.Skipped != 1 || len(res.GroupsTouched) != 1 {
-		t.Fatalf("run 3 = %+v, want 1 fetched / 1 bounce / 1 skipped / 1 group\n%s", res, strings.Join(lines, "\n"))
+	if res.Fetched != 2 || res.Skipped != 1 {
+		t.Fatalf("run 3 = %+v, want 2 fetched / 1 skipped\n%s", res, strings.Join(lines, "\n"))
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "exceeds the limit") {
 		t.Errorf("oversized skip not reported:\n%s", strings.Join(lines, "\n"))
 	}
-	assertIndexState(t, root, mb.Address, len(recent)+1, len(recent)+1, "run 3")
-	db, err := models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
+	assertIndexState(t, root, mb.Address, len(recent)+2, len(recent), 2, gres.Groups, "run 3 fetch")
+	gres, err = GroupMailbox(ctx, root, mb.Address, false, nil)
+	if err != nil {
+		t.Fatalf("group 3: %v", err)
+	}
+	if gres.Processed != 2 || gres.Bounces != 2 || len(gres.GroupsTouched) != 1 || gres.GroupsTouched[0] != spamKey {
+		t.Fatalf("group 3 = %+v, want 2 processed / touched [%s]", gres, spamKey)
+	}
+	assertIndexState(t, root, mb.Address, len(recent)+2, len(recent)+2, 0, gres.Groups, "run 3 group")
+	db, err = models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
 	if err != nil {
 		t.Fatal(err)
 	}
-	msgs, _, err := models.ListMessages(db, models.MessageFilter{GroupKey: res.GroupsTouched[0]})
+	msgs, _, err := models.ListMessages(db, models.MessageFilter{GroupKey: spamKey})
 	db.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 1 || msgs[0].Subject != "Mail delivery failed: returning message to sender" {
-		t.Errorf("run 3 group members = %+v", msgs)
+	if len(msgs) != 2 {
+		t.Errorf("run 3 spamhaus group members = %+v", msgs)
 	}
-	for _, ext := range []string{"eml", "txt", "json"} {
-		if _, err := ReadMessageFile(root, mb.Address, msgs[0].MessageKey, ext); err != nil {
-			t.Errorf("missing %s for run 3 message: %v", ext, err)
+	for _, m := range msgs {
+		for _, ext := range []string{"eml", "txt", "json"} {
+			if _, err := ReadMessageFile(root, mb.Address, m.MessageKey, ext); err != nil {
+				t.Errorf("missing %s for %s: %v", ext, m.MessageKey, err)
+			}
 		}
 	}
 
@@ -267,32 +291,33 @@ func TestCheckMailboxAgainstMemServer(t *testing.T) {
 	srv.appendSample(t, "exim_bounce.eml", 0)
 	srv.appendSample(t, "postfix_dsn.eml", 80) // outside the recent window anyway
 	lines = nil
-	res, err = CheckMailbox(ctx, root, mb, memPassword, progress)
+	res, err = FetchMailbox(ctx, root, mb, memPassword, progress)
 	if err != nil {
 		t.Fatalf("run 4: %v\n%s", err, strings.Join(lines, "\n"))
 	}
 	if int64(res.UIDValidity) == mb.LastUIDValidity {
 		t.Skip("memserver kept the same UIDVALIDITY after re-creating the folder")
 	}
-	if res.Fetched != 0 || res.Skipped != 2 || len(res.GroupsTouched) != 0 {
+	if res.Fetched != 0 || res.Skipped != 2 {
 		t.Errorf("run 4 = %+v, want 0 fetched / 2 skipped duplicates\n%s", res, strings.Join(lines, "\n"))
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "uidvalidity changed") {
 		t.Errorf("UIDVALIDITY change not reported:\n%s", strings.Join(lines, "\n"))
 	}
-	assertIndexState(t, root, mb.Address, len(recent)+1, len(recent)+1, "run 4")
+	assertIndexState(t, root, mb.Address, len(recent)+2, len(recent)+2, 0, gres.Groups, "run 4")
 
 	// Cancellation is honoured mid-run.
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := CheckMailbox(cctx, root, mb, memPassword, nil); err == nil {
-		t.Error("cancelled check succeeded")
+	if _, err := FetchMailbox(cctx, root, mb, memPassword, nil); err == nil {
+		t.Error("cancelled fetch succeeded")
 	}
 }
 
-// assertIndexState checks the number of index rows and that every row has
-// its .eml / .txt / .json files.
-func assertIndexState(t *testing.T, root, address string, wantMessages, wantBounces int, label string) {
+// assertIndexState checks the number of index rows (total, detected bounces,
+// rows still awaiting grouping, groups) and that every row has its .eml /
+// .txt / .json files.
+func assertIndexState(t *testing.T, root, address string, wantMessages, wantBounces, wantUnclassified, wantGroups int, label string) {
 	t.Helper()
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
 	if err != nil {
@@ -305,6 +330,12 @@ func assertIndexState(t *testing.T, root, address string, wantMessages, wantBoun
 	}
 	if total != wantMessages || bounces != wantBounces {
 		t.Errorf("%s: index has %d messages / %d bounces, want %d / %d", label, total, bounces, wantMessages, wantBounces)
+	}
+	if n, err := models.CountUnclassifiedMessages(db); err != nil || n != wantUnclassified {
+		t.Errorf("%s: %d unclassified messages (err %v), want %d", label, n, err, wantUnclassified)
+	}
+	if n, err := countAllGroups(db); err != nil || n != wantGroups {
+		t.Errorf("%s: %d groups (err %v), want %d", label, n, err, wantGroups)
 	}
 	msgs, err := models.ListAllMessages(db)
 	if err != nil {

@@ -48,13 +48,17 @@ func samplePromptInput(t *testing.T, mailsRoot string) PromptInput {
 		Address:   addr,
 		Group: &models.BounceGroup{
 			GroupKey:           "abcdef0123456789",
-			Title:              "example.net - 5.1.1 - user unknown",
+			Title:              "ip_blocked: 203.0.113.5 @ spamhaus.org",
+			Category:           CategoryIPBlocked,
+			UnitValue:          "203.0.113.5",
+			Authority:          "spamhaus.org",
+			Actionable:         true,
 			BounceKind:         "failed",
 			RecipientDomain:    "example.net",
-			StatusCode:         "5.1.1",
-			SMTPCode:           "550",
-			DiagnosticTemplate: "550 5.1.1 <addr>: recipient address rejected: user unknown",
-			Responsible:        ResponsibleRecipient,
+			StatusCode:         "5.7.1",
+			SMTPCode:           "554",
+			DiagnosticTemplate: "554 5.7.1 service unavailable; client host [<ip>] blocked using zen.spamhaus.org",
+			Responsible:        ResponsibleSender,
 			MessageCount:       2,
 			RecipientCount:     35,
 			RemoteIPCount:      1,
@@ -80,12 +84,19 @@ func TestBuildPromptJapanese(t *testing.T) {
 		"## 原因の分析", "## 影響範囲", "## 推奨する対応", "## 対応すべき担当",
 		"Write the REPORT in Japanese",
 		"READ-ONLY", "UNTRUSTED DATA", "No network access",
-		"Title: example.net - 5.1.1 - user unknown",
-		"Bounce kind: failed", "Recipient domain: example.net", "Status code: 5.1.1", "SMTP code: 550",
-		"Diagnostic template: 550 5.1.1 <addr>: recipient address rejected: user unknown",
+		"This group is ACTIONABLE by the mail administrator.",
+		"delisting steps for the named blacklist",
+		"Category: ip_blocked - " + CategoryGlossary[CategoryIPBlocked].Description,
+		"Action unit (unit_value): 203.0.113.5 - the sending IP address that is blocked",
+		"Authority: spamhaus.org - the blacklist provider that lists the IP",
+		"Actionable by the mail administrator: yes",
+		"Title: ip_blocked: 203.0.113.5 @ spamhaus.org",
+		"Bounce kind: failed", "Recipient domain: example.net", "Status code: 5.7.1", "SMTP code: 554",
+		"Diagnostic template: 554 5.7.1 service unavailable; client host [<ip>] blocked using zen.spamhaus.org",
 		"Messages: 2", "Distinct recipients: 35", "Distinct remote IPs: 1",
 		"First seen: 2026-09-01T12:00:00Z", "Last seen: 2026-09-02T12:00:00Z",
-		"Responsible (machine guess): recipient",
+		"Responsible (machine guess): sender",
+		"1. <concrete action the mail administrator takes for the action unit>",
 		"Recipients (35): user00@example.net", "user29@example.net, ... (5 more)",
 		"Remote IPs (1): 192.0.2.10", "Remote MTAs (1): mx.example.net",
 		"- " + filepath.Join(root, in.Address, "20260902-120000_bbbbbbbbbbbb.eml") + "\n",
@@ -102,10 +113,101 @@ func TestBuildPromptJapanese(t *testing.T) {
 	if strings.Contains(p, "20260902-120000_bbbbbbbbbbbb.txt") {
 		t.Error("a missing .txt must not be listed")
 	}
-	// Section order: constraints, summary, files, output.
+	if strings.Contains(p, "NOT actionable") {
+		t.Error("an actionable group must not get the recipient-side instructions")
+	}
+	// Section order: constraints, task, summary, files, output.
 	idx := func(s string) int { return strings.Index(p, s) }
-	if !(idx("=== CONSTRAINTS ===") < idx("=== GROUP SUMMARY") && idx("=== GROUP SUMMARY") < idx("=== MAIL FILES") && idx("=== MAIL FILES") < idx("=== OUTPUT")) {
+	if !(idx("=== CONSTRAINTS ===") < idx("=== TASK ===") && idx("=== TASK ===") < idx("=== GROUP SUMMARY") && idx("=== GROUP SUMMARY") < idx("=== MAIL FILES") && idx("=== MAIL FILES") < idx("=== OUTPUT")) {
 		t.Error("sections out of order")
+	}
+	// The summary leads with the category, unit, authority and actionability
+	// before the descriptive columns.
+	if !(idx("Mailbox: ") < idx("Category: ") && idx("Category: ") < idx("Action unit (unit_value): ") &&
+		idx("Action unit (unit_value): ") < idx("Authority: ") && idx("Authority: ") < idx("Actionable by the mail administrator: ") &&
+		idx("Actionable by the mail administrator: ") < idx("Title: ")) {
+		t.Error("group summary must lead with category, unit, authority and actionability")
+	}
+}
+
+func TestBuildPromptNotActionable(t *testing.T) {
+	stubMessageFilePath(t)
+	in := samplePromptInput(t, t.TempDir())
+	in.Group.Category = CategoryUserUnknown
+	in.Group.UnitValue = "alice@example.net"
+	in.Group.Authority = ""
+	in.Group.Actionable = false
+	in.Group.Title = "user_unknown: alice@example.net"
+	p := BuildPrompt(in)
+	for _, want := range []string{
+		"This group is NOT actionable by the mail administrator",
+		"what to tell the recipient-side owner",
+		CategoryGlossary[CategoryUserUnknown].Guidance,
+		"Category: user_unknown - " + CategoryGlossary[CategoryUserUnknown].Description,
+		"Action unit (unit_value): alice@example.net - the recipient address that does not exist",
+		"Actionable by the mail administrator: no (recipient-side problem)",
+		"1. <short note on what to tell the recipient-side owner>",
+		ReportBegin, ReportEnd, MetaBegin, MetaEnd,
+		"## 原因の分析", "## 影響範囲", "## 推奨する対応", "## 対応すべき担当",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q\n%s", want, p)
+		}
+	}
+	for _, unwanted := range []string{"Authority:", "This group is ACTIONABLE", "<next action>"} {
+		if strings.Contains(p, unwanted) {
+			t.Errorf("prompt must not contain %q for a recipient-side group\n%s", unwanted, p)
+		}
+	}
+}
+
+func TestBuildPromptUnknownCategory(t *testing.T) {
+	stubMessageFilePath(t)
+	in := samplePromptInput(t, t.TempDir())
+	in.Group.Category = ""
+	in.Group.UnitValue = ""
+	in.Group.Authority = ""
+	in.Group.Actionable = true
+	p := BuildPrompt(in)
+	for _, want := range []string{
+		"Category: (not classified) - " + unknownCategory.Description,
+		"Actionable by the mail administrator: yes",
+		"This group is ACTIONABLE by the mail administrator",
+		unknownCategory.Guidance,
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "Action unit (unit_value):") || strings.Contains(p, "Authority:") {
+		t.Errorf("empty unit and authority must be skipped\n%s", p)
+	}
+	in.Group.Category = "  IP_Blocked "
+	if !strings.Contains(BuildPrompt(in), "Category: IP_Blocked - "+CategoryGlossary[CategoryIPBlocked].Description) {
+		t.Error("category lookup must be case- and space-insensitive")
+	}
+}
+
+func TestCategoryGlossaryComplete(t *testing.T) {
+	for name, info := range CategoryGlossary {
+		if info.Description == "" || info.Unit == "" || info.Guidance == "" {
+			t.Errorf("%s: description, unit and guidance are required", name)
+		}
+		if info.Actionable && info.Authority == "" {
+			t.Errorf("%s: an actionable category names its authority", name)
+		}
+		if !info.Actionable && info.Authority != "" {
+			t.Errorf("%s: a recipient-side category has no authority", name)
+		}
+	}
+	for _, name := range []string{
+		CategoryIPBlocked, CategoryRateLimited, CategorySenderBlocked, CategoryAuthFailure, CategoryContentRejected,
+		CategoryMessageTooLarge, CategoryServerConfig, CategoryUnknownFailure, CategoryUserUnknown, CategoryMailboxFull,
+		CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDeliveryDelay,
+	} {
+		if _, ok := CategoryGlossary[name]; !ok {
+			t.Errorf("%s missing from the glossary", name)
+		}
 	}
 }
 

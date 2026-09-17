@@ -30,12 +30,13 @@ type Message struct {
 	BounceKind     string       `json:"bounce_kind"`
 	ClassifyReason string       `json:"classify_reason"`
 	GroupKey       string       `json:"group_key"`
+	Classified     bool         `json:"classified"` // false until the grouping phase processed the message
 	FetchedAt      time.Time    `json:"fetched_at"`
 }
 
 const messageColumns = `id, message_key, uid, uidvalidity, folder, message_id, subject, from_address, from_name,
 	to_address, date, received_at, size, has_text, has_html, is_bounce, bounce_kind, classify_reason, group_key,
-	fetched_at`
+	classified, fetched_at`
 
 // InsertMessage adds a message row and fills in its ID.
 func InsertMessage(db *sql.DB, m *Message) error {
@@ -49,11 +50,11 @@ func InsertMessage(db *sql.DB, m *Message) error {
 	res, err := db.Exec(
 		`INSERT INTO messages (message_key, uid, uidvalidity, folder, message_id, subject, from_address, from_name,
 		   to_address, date, received_at, size, has_text, has_html, is_bounce, bounce_kind, classify_reason, group_key,
-		   fetched_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   classified, fetched_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.MessageKey, m.UID, m.UIDValidity, m.Folder, m.MessageID, m.Subject, m.FromAddress, m.FromName,
 		m.ToAddress, m.Date, m.ReceivedAt, m.Size, boolToInt(m.HasText), boolToInt(m.HasHTML),
-		boolToInt(m.IsBounce), m.BounceKind, m.ClassifyReason, m.GroupKey, m.FetchedAt,
+		boolToInt(m.IsBounce), m.BounceKind, m.ClassifyReason, m.GroupKey, boolToInt(m.Classified), m.FetchedAt,
 	)
 	if err != nil {
 		return err
@@ -62,13 +63,40 @@ func InsertMessage(db *sql.DB, m *Message) error {
 	return nil
 }
 
-// UpdateMessageClassification stores the bounce-detection outcome of a message.
+// UpdateMessageClassification stores the bounce-detection outcome of a message
+// and marks it as classified.
 func UpdateMessageClassification(db *sql.DB, id int64, isBounce bool, bounceKind, reason, groupKey string) error {
 	_, err := db.Exec(
-		`UPDATE messages SET is_bounce = ?, bounce_kind = ?, classify_reason = ?, group_key = ? WHERE id = ?`,
+		`UPDATE messages SET is_bounce = ?, bounce_kind = ?, classify_reason = ?, group_key = ?, classified = 1 WHERE id = ?`,
 		boolToInt(isBounce), bounceKind, reason, groupKey, id,
 	)
 	return err
+}
+
+// ListUnclassifiedMessages returns the messages the grouping phase has not
+// processed yet, oldest first.
+func ListUnclassifiedMessages(db *sql.DB) ([]*Message, error) {
+	rows, err := db.Query(`SELECT ` + messageColumns + ` FROM messages WHERE classified = 0 ORDER BY date ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Message
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// CountUnclassifiedMessages returns how many messages still await grouping.
+func CountUnclassifiedMessages(db *sql.DB) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE classified = 0`).Scan(&n)
+	return n, err
 }
 
 // GetMessageByKey returns one message (sql.ErrNoRows when absent).
@@ -182,13 +210,13 @@ func messageWhere(f MessageFilter) (string, []any) {
 
 func scanMessage(s rowScanner) (*Message, error) {
 	m := &Message{}
-	var hasText, hasHTML, isBounce int
+	var hasText, hasHTML, isBounce, classified int
 	if err := s.Scan(&m.ID, &m.MessageKey, &m.UID, &m.UIDValidity, &m.Folder, &m.MessageID, &m.Subject,
 		&m.FromAddress, &m.FromName, &m.ToAddress, &m.Date, &m.ReceivedAt, &m.Size, &hasText, &hasHTML, &isBounce,
-		&m.BounceKind, &m.ClassifyReason, &m.GroupKey, &m.FetchedAt); err != nil {
+		&m.BounceKind, &m.ClassifyReason, &m.GroupKey, &classified, &m.FetchedAt); err != nil {
 		return nil, err
 	}
-	m.HasText, m.HasHTML, m.IsBounce = hasText != 0, hasHTML != 0, isBounce != 0
+	m.HasText, m.HasHTML, m.IsBounce, m.Classified = hasText != 0, hasHTML != 0, isBounce != 0, classified != 0
 	return m, nil
 }
 

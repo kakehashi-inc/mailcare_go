@@ -48,7 +48,7 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}", c.handleGetMailbox)
 	mux.HandleFunc("PUT /api/v1/mailboxes/{id}", c.requireAdmin(c.handleUpdateMailbox))
 	mux.HandleFunc("DELETE /api/v1/mailboxes/{id}", c.requireAdmin(c.handleDeleteMailbox))
-	mux.HandleFunc("POST /api/v1/mailboxes/{id}/check", c.handleCheckMailbox)
+	mux.HandleFunc("POST /api/v1/mailboxes/{id}/sync", c.handleSyncMailbox)
 
 	// Bounce groups (alerts).
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups", c.handleListGroups)

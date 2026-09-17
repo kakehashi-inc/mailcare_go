@@ -67,7 +67,18 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	filter := models.GroupFilter{State: q.Get("state"), Responsible: q.Get("responsible"), Query: q.Get("q")}
+	filter := models.GroupFilter{State: q.Get("state"), Responsible: q.Get("responsible"), Category: q.Get("category"),
+		Query: q.Get("q")}
+	actionable, ok := modules.ActionableFilter(q.Get("scope"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid scope")
+		return
+	}
+	filter.Actionable = actionable
+	if filter.Category != "" && !modules.IsKnownCategory(filter.Category) {
+		writeError(w, http.StatusBadRequest, "invalid category")
+		return
+	}
 	switch filter.State {
 	case "", modules.GroupStateOpen, modules.GroupStateResolved, modules.GroupStateIgnored:
 	default:
@@ -100,12 +111,19 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "failed to load reports", err)
 		return
 	}
-	counts, err := models.CountGroups(idx)
+	counts, err := models.CountGroups(idx, actionable)
 	if err != nil {
 		writeInternalError(w, "failed to count groups", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": out, "counts": counts})
+	excluded := false
+	excludedCounts, err := models.CountGroups(idx, &excluded)
+	if err != nil {
+		writeInternalError(w, "failed to count excluded groups", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": out, "counts": counts,
+		"excluded_count": excludedCounts.Open + excludedCounts.Resolved + excludedCounts.Ignored})
 }
 
 func (c *core) handleGetGroup(w http.ResponseWriter, r *http.Request) {

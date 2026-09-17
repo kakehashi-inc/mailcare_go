@@ -1,22 +1,35 @@
 package modules
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"mailcare/app/models"
 )
 
-// --- job-running commands (check / reindex / reclassify / analyze / jobs) ---
+// --- job-running commands (sync / fetch / group / reindex / reclassify / analyze / jobs) ---
 
 // jobSpec is one job to run or submit.
 type jobSpec struct {
 	kind      string
 	mailboxID int64
-	address   string // for display; "" = every mailbox
+	address   string // for display; "" = every mailbox (expansion job)
 	target    string
+}
+
+func (s jobSpec) label() string {
+	label := s.kind
+	if s.address != "" {
+		label += " " + s.address
+	}
+	if s.target != "" {
+		label += " " + s.target
+	}
+	return label
 }
 
 // echoProgress prints a progress line to stdout.
@@ -39,32 +52,23 @@ func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {
 			if err != nil {
 				return NewExitError(ExitExec, err.Error())
 			}
-			label := spec.kind
-			if spec.address != "" {
-				label += " " + spec.address
-			}
-			if spec.target != "" {
-				label += " " + spec.target
-			}
 			if created {
-				fmt.Printf("Queued job #%d (%s)\n", job.ID, label)
+				fmt.Printf("Queued job #%d (%s)\n", job.ID, spec.label())
 			} else {
-				fmt.Printf("Job #%d (%s) is already %s\n", job.ID, label, job.Status)
+				fmt.Printf("Job #%d (%s) is already %s\n", job.ID, spec.label(), job.Status)
 			}
 			if !wait {
 				continue
 			}
-			final, err := WaitForJob(ctx, port, job.ID, echoProgress)
+			n, err := waitForJobTree(ctx, db, port, job.ID)
 			if err != nil {
 				if ctx.Err() != nil {
-					fmt.Println("Stopped waiting; the job keeps running on the server.")
+					fmt.Println("Stopped waiting; the jobs keep running on the server.")
 					return NewExitError(ExitGeneral, "interrupted")
 				}
 				return NewExitError(ExitExec, err.Error())
 			}
-			if !printJobOutcome(final.ID, final.Status, final.Result, final.ErrorMessage) {
-				failed++
-			}
+			failed += n
 		}
 	} else {
 		jm, err := newCLIJobManager(db)
@@ -72,14 +76,7 @@ func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {
 			return err
 		}
 		for _, spec := range specs {
-			label := spec.kind
-			if spec.address != "" {
-				label += " " + spec.address
-			}
-			if spec.target != "" {
-				label += " " + spec.target
-			}
-			fmt.Printf("Running %s in this process...\n", label)
+			fmt.Printf("Running %s in this process...\n", spec.label())
 			job, err := jm.RunJobInline(ctx, spec.kind, spec.mailboxID, spec.target, RequestedByCLI, echoProgress)
 			if err != nil && job == nil {
 				return NewExitError(ExitArgument, err.Error())
@@ -93,12 +90,101 @@ func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {
 			if !printJobOutcome(job.ID, job.Status, job.Result, job.ErrorMessage) {
 				failed++
 			}
+			failed += reportFollowUps(db, job.ID)
 		}
 	}
 	if failed > 0 {
 		return NewExitErrorf(ExitExec, "%d job(s) failed", failed)
 	}
 	return nil
+}
+
+// waitForJobTree waits for a job submitted to the server and then for the
+// jobs it caused (the children of an expansion job and the follow-up
+// analysis, recognizable by the CLI requester tag and a later id), printing
+// the progress and outcome of each. It returns the number of failed jobs.
+func waitForJobTree(ctx context.Context, db *sql.DB, port int, id int64) (int, error) {
+	failed := 0
+	final, err := WaitForJob(ctx, port, id, echoProgress)
+	if err != nil {
+		return failed, err
+	}
+	if !printJobOutcome(final.ID, final.Status, final.Result, final.ErrorMessage) {
+		failed++
+	}
+	waited := map[int64]bool{id: true}
+	for {
+		next, err := nextFollowUp(db, id, waited)
+		if err != nil {
+			return failed, err
+		}
+		if next == nil {
+			return failed, nil
+		}
+		waited[next.ID] = true
+		fmt.Printf("--- job #%d (%s)\n", next.ID, jobLabel(db, next))
+		final, err := WaitForJob(ctx, port, next.ID, echoProgress)
+		if err != nil {
+			return failed, err
+		}
+		if !printJobOutcome(final.ID, final.Status, final.Result, final.ErrorMessage) {
+			failed++
+		}
+	}
+}
+
+// nextFollowUp returns the oldest job queued by the CLI after job afterID
+// that was not waited for yet (nil when there is none).
+func nextFollowUp(db *sql.DB, afterID int64, waited map[int64]bool) (*models.Job, error) {
+	jobs, err := models.ListJobs(db, 500)
+	if err != nil {
+		return nil, err
+	}
+	var next *models.Job
+	for _, j := range jobs {
+		if j.ID <= afterID || j.RequestedBy != RequestedByCLI || waited[j.ID] {
+			continue
+		}
+		if next == nil || j.ID < next.ID {
+			next = j
+		}
+	}
+	return next, nil
+}
+
+// reportFollowUps prints the outcome of the jobs an inline run executed
+// after the first one (children and follow-ups; their progress was echoed
+// while they ran) and returns how many failed.
+func reportFollowUps(db *sql.DB, firstID int64) int {
+	jobs, err := models.ListJobs(db, 500)
+	if err != nil {
+		return 0
+	}
+	failed := 0
+	for i := len(jobs) - 1; i >= 0; i-- {
+		j := jobs[i]
+		if j.ID <= firstID || j.RequestedBy != RequestedByCLI || j.Status == JobStatusQueued {
+			continue
+		}
+		if !printJobOutcome(j.ID, j.Status, j.Result, j.ErrorMessage) {
+			failed++
+		}
+	}
+	return failed
+}
+
+// jobLabel renders "kind address target" for a job.
+func jobLabel(db *sql.DB, j *models.Job) string {
+	label := j.Kind
+	if j.MailboxID.Valid {
+		if mb, err := models.GetMailboxByID(db, j.MailboxID.Int64); err == nil {
+			label += " " + mb.Address
+		}
+	}
+	if j.Target != "" {
+		label += " " + j.Target
+	}
+	return label
 }
 
 // printJobOutcome prints the final state of a job and reports success.
@@ -126,8 +212,8 @@ func printJobOutcome(id int64, status, result, errMsg string) bool {
 	}
 }
 
-// specsForAddresses builds one spec per address, or a single all-mailbox
-// spec when no address is given.
+// specsForAddresses builds one spec per address, or a single expansion spec
+// (every mailbox) when no address is given.
 func specsForAddresses(db *sql.DB, kind string, addresses []string) ([]jobSpec, error) {
 	if len(addresses) == 0 {
 		return []jobSpec{{kind: kind}}, nil
@@ -143,23 +229,48 @@ func specsForAddresses(db *sql.DB, kind string, addresses []string) ([]jobSpec, 
 	return specs, nil
 }
 
-// CheckCmd fetches new mail.
-type CheckCmd struct {
-	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every enabled address)"`
-	Wait      bool     `help:"When submitted to a running server, wait for completion and show progress"`
-}
-
-func (c *CheckCmd) Run() error {
+// runKindForAddresses opens the database and runs kind for the addresses.
+func runKindForAddresses(kind string, addresses []string, wait bool) error {
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	specs, err := specsForAddresses(db, JobKindCheck, c.Addresses)
+	specs, err := specsForAddresses(db, kind, addresses)
 	if err != nil {
 		return err
 	}
-	return runJobs(db, specs, c.Wait)
+	return runJobs(db, specs, wait)
+}
+
+// SyncCmd fetches new mail, groups the bounces and queues the analysis.
+type SyncCmd struct {
+	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every enabled address)"`
+	Wait      bool     `help:"When submitted to a running server, wait for completion and show progress"`
+}
+
+func (c *SyncCmd) Run() error {
+	return runKindForAddresses(JobKindSync, c.Addresses, c.Wait)
+}
+
+// FetchCmd downloads new mail without grouping it.
+type FetchCmd struct {
+	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every enabled address)"`
+}
+
+func (c *FetchCmd) Run() error {
+	return runKindForAddresses(JobKindFetch, c.Addresses, true)
+}
+
+// GroupCmd runs the grouping phase: classifies and groups the mail not
+// grouped yet, then queues the analysis. The detail of one group is shown by
+// "groups ADDRESS KEY" (cli_groups.go).
+type GroupCmd struct {
+	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every address)"`
+}
+
+func (c *GroupCmd) Run() error {
+	return runKindForAddresses(JobKindGroup, c.Addresses, true)
 }
 
 // ReindexCmd rebuilds the index from the raw files.
@@ -168,41 +279,23 @@ type ReindexCmd struct {
 }
 
 func (c *ReindexCmd) Run() error {
-	db, err := openDBForCLI()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	specs, err := specsForAddresses(db, JobKindReindex, c.Addresses)
-	if err != nil {
-		return err
-	}
-	return runJobs(db, specs, true)
+	return runKindForAddresses(JobKindReindex, c.Addresses, true)
 }
 
-// ReclassifyCmd re-runs bounce detection and grouping.
+// ReclassifyCmd re-runs bounce detection and grouping over every mail.
 type ReclassifyCmd struct {
 	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every address)"`
 }
 
 func (c *ReclassifyCmd) Run() error {
-	db, err := openDBForCLI()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	specs, err := specsForAddresses(db, JobKindReclassify, c.Addresses)
-	if err != nil {
-		return err
-	}
-	return runJobs(db, specs, true)
+	return runKindForAddresses(JobKindReclassify, c.Addresses, true)
 }
 
 // AnalyzeCmd runs the agent over bounce groups.
 type AnalyzeCmd struct {
 	Address string `arg:"" optional:"" help:"Mail address (default: every address)"`
 	Group   string `help:"Analyze only this group key"`
-	All     bool   `help:"Analyze every group, not only those flagged for analysis"`
+	All     bool   `help:"Analyze every actionable group, not only those flagged for analysis"`
 }
 
 func (c *AnalyzeCmd) Run() error {
@@ -223,25 +316,15 @@ func (c *AnalyzeCmd) Run() error {
 	} else if c.Group != "" {
 		target = strings.TrimSpace(c.Group)
 	}
-	var mailboxes []*models.Mailbox
+	spec := jobSpec{kind: JobKindAnalyze, target: target}
 	if c.Address != "" {
 		mb, err := findMailbox(db, c.Address)
 		if err != nil {
 			return err
 		}
-		mailboxes = []*models.Mailbox{mb}
-	} else if mailboxes, err = models.ListMailboxes(db); err != nil {
-		return NewExitError(ExitGeneral, err.Error())
+		spec.mailboxID, spec.address = mb.ID, mb.Address
 	}
-	if len(mailboxes) == 0 {
-		fmt.Println("No mailboxes.")
-		return nil
-	}
-	var specs []jobSpec
-	for _, mb := range mailboxes {
-		specs = append(specs, jobSpec{kind: JobKindAnalyze, mailboxID: mb.ID, address: mb.Address, target: target})
-	}
-	return runJobs(db, specs, true)
+	return runJobs(db, []jobSpec{spec}, true)
 }
 
 // JobsCmd lists the job history.
@@ -287,7 +370,7 @@ func (c *JobsCmd) Run() error {
 			out = append(out, map[string]interface{}{
 				"id": j.ID, "kind": j.Kind, "mailbox_id": mailboxID, "mailbox_address": addressOf(j), "target": j.Target,
 				"status": j.Status, "progress": j.Progress, "result": j.Result, "error_message": j.ErrorMessage,
-				"requested_by": j.RequestedBy, "created_at": j.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+				"requested_by": j.RequestedBy, "created_at": j.CreatedAt.UTC().Format(time.RFC3339),
 				"started_at": rfc3339OrNull(j.StartedAt), "finished_at": rfc3339OrNull(j.FinishedAt),
 			})
 		}

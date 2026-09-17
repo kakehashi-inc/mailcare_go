@@ -135,16 +135,19 @@
         "canceled": "Canceled"
     },
     "jobKind": {
-        "check": "Mail check",
+        "sync": "Sync",
+        "fetch": "Fetch",
+        "group": "Group",
+        "analyze": "Analyze",
         "reindex": "Reindex",
         "reclassify": "Reclassify",
-        "analyze": "Re-run analysis"
+        "other": "Other ({{kind}})"
     },
     "checkStatus": {
-        "never": "Never checked",
+        "never": "Never synced",
         "ok": "OK",
         "error": "Error",
-        "running": "Checking"
+        "running": "Syncing"
     },
     "reportStatus": {
         "none": "No report",
@@ -171,17 +174,18 @@
         "totalOpenGroups": "Open groups",
         "totalBounces": "Bounces",
         "totalMessages": "Fetched mails",
+        "totalUnclassified": "Awaiting grouping",
         "mailboxes": "Mailboxes",
-        "checkNow": "Check now",
-        "checkAll": "Check all",
-        "checkQueued": "Started checking {{address}}.",
-        "checkAllQueued": "Started checking all mailboxes.",
+        "syncNow": "Sync now",
+        "syncAll": "Sync all",
+        "syncQueued": "Started syncing {{address}}.",
+        "syncAllQueued": "Started syncing all mailboxes.",
         "recentGroups": "Recent bounce groups",
-        "recentGroupsHint": "Recently updated groups across all mailboxes.",
+        "recentGroupsHint": "Recently updated actionable groups across all mailboxes.",
         "noRecentGroups": "No recent bounces.",
         "schedule": "Schedule",
-        "nextCheck": "Next check",
-        "checkTimes": "Check times",
+        "nextCheck": "Next sync",
+        "checkTimes": "Sync times",
         "noSchedule": "No schedule",
         "agent": "Agent",
         "activeJobs": "Active jobs",
@@ -206,15 +210,17 @@
         "editAria": "Edit {{address}}",
         "openGroups": "Open groups",
         "bounces": "Bounces",
+        "unclassified": "Awaiting grouping",
+        "excludedGroups": "Excluded groups",
         "messages": "Fetched mails",
-        "lastChecked": "Last check",
-        "disabledNote": "This mailbox is disabled and excluded from scheduled checks.",
+        "lastChecked": "Last synced",
+        "disabledNote": "This mailbox is disabled and is skipped by scheduled syncs.",
         "address": "Email address",
         "addressHint": "The address to monitor. It is stored in lower case.",
         "addressInvalid": "Enter a valid email address.",
         "displayName": "Display name",
         "enabled": "Enable monitoring",
-        "enabledHint": "When disabled, the mailbox is skipped by scheduled checks.",
+        "enabledHint": "When disabled, the mailbox is skipped by scheduled syncs.",
         "server": "Server",
         "host": "IMAP host",
         "port": "Port",
@@ -230,9 +236,9 @@
         "sectionRange": "Fetch range",
         "sectionRangeHint": "The first check looks back initial_days; later checks look back recent_days.",
         "initialDays": "Initial days",
-        "initialDaysHint": "Days to look back on the first check (default 90)",
+        "initialDaysHint": "Days to look back on the first sync (default 90)",
         "recentDays": "Recent days",
-        "recentDaysHint": "Days to look back on later checks (default 30)",
+        "recentDaysHint": "Days to look back on later syncs (default 30)",
         "daysInvalid": "Enter a whole number of 1 or more.",
         "test": "Test connection",
         "testOk": "Connected to {{address}}.",
@@ -250,7 +256,12 @@
     },
     "alerts": {
         "chooseMailbox": "Choose the mailbox whose alerts you want to review.",
-        "searchPlaceholder": "Search title, domain or diagnostic",
+        "scope": "Scope",
+        "scopeActionable": "Actionable",
+        "scopeExcluded": "Excluded (recipient-side problems)",
+        "scopeExcludedHint": "Problems solved on the recipient side, such as missing addresses or full mailboxes. They are not analyzed.",
+        "categoryFilter": "Category",
+        "searchPlaceholder": "Search unit, authority, domain or diagnostic",
         "responsibleFilter": "Responsible party",
         "stateTabs": "State",
         "sortLastSeenDesc": "Last seen (newest)",
@@ -262,7 +273,8 @@
             "resolved": "No resolved groups",
             "ignored": "No ignored groups"
         },
-        "emptyFiltered": "Try changing the filters."
+        "emptyFiltered": "Try changing the filters.",
+        "emptyExcluded": "Excluded groups appear here."
     },
     "group": {
         "detail": "Group detail",
@@ -295,7 +307,17 @@
         "copyAll": "Copy all {{what}}",
         "copyValue": "Copy {{value}}",
         "messagesTitle": "Source messages ({{count}})",
-        "noMessages": "This group has no messages."
+        "noMessages": "This group has no messages.",
+        "category": "Category",
+        "unitValue": "Action unit",
+        "authority": "Decided by",
+        "actionable": "Actionable",
+        "excluded": "Excluded (recipient-side problem)",
+        "headline": "{{label}}: {{unit}}",
+        "headlineWithAuthority": "{{label}}: {{unit}} ({{authority}})",
+        "copyUnit": "Copy action unit \"{{value}}\"",
+        "technicalTitle": "Internal title",
+        "headlineNoUnit": "{{label}} ({{where}})"
     },
     "report": {
         "title": "Analysis report",
@@ -310,7 +332,9 @@
         "noBody": "The report has no body.",
         "provider": "Provider",
         "sampled": "Sampled messages: {{count}}",
-        "history": "Previous reports ({{count}})"
+        "history": "Previous reports ({{count}})",
+        "excludedTitle": "This group is not analyzed",
+        "excluded": "Recipient-side problems (missing addresses, full mailboxes, ...) cannot be fixed by the sender, so the agent does not analyze them."
     },
     "mails": {
         "chooseMailbox": "Choose the mailbox whose messages you want to browse.",
@@ -371,58 +395,82 @@
         "requestedBy": "by {{name}}",
         "targetAll": "all groups",
         "targetNeeds": "groups awaiting analysis",
-        "alreadyActive": "The same job is already queued or running."
+        "alreadyActive": "The same job is already queued or running.",
+        "expanded": "expanded per mailbox"
     },
     "tools": {
-        "description": "Rebuild the index or classification, or re-run the agent analysis.",
-        "adminOnlyTitle": "Only administrators can run tools",
-        "adminOnly": "Members can view job status but cannot run tools. Ask an administrator if needed.",
-        "target": "Target",
-        "targetHint": "Choose \"All mailboxes\" to process every registered mailbox.",
+        "description": "Run fetch, grouping and analysis separately or together, rebuild the index, or redo the classification.",
+        "adminOnlyTitle": "Only administrators can reindex or reclassify",
+        "adminOnly": "Members can run sync, fetch, group and analyze. Ask an administrator when a reindex or reclassify is needed.",
+        "target": "Target mailbox",
+        "targetAll": "All",
+        "allNote": "With \"All\", one job is expanded per mailbox and they run in parallel within the worker limit.",
         "analyzeScope": "Analysis scope",
-        "analyzeScopeHint": "Used only by \"Re-run analysis\".",
-        "scopeNeeds": "Groups awaiting analysis only",
+        "scopeNeeds": "Awaiting analysis only",
         "scopeAll": "All groups",
         "run": "Run",
         "queued": "{{tool}} queued.",
         "confirmTitle": "Run {{tool}}?",
         "confirmMessage": "Target: {{target}}. {{tool}} runs in the background.",
-        "analyzeAllNote": "One analysis job is queued for each of the {{count}} enabled mailboxes.",
         "jobs": "Job history",
-        "jobsHint": "Active jobs refresh automatically.",
-        "reindex": {
-            "description": "Deletes the index database and re-parses, re-classifies and re-groups every stored raw message.",
-            "warning": "Existing analysis reports are discarded and every group is analyzed again."
+        "jobsHint": "Active jobs refresh automatically. Jobs queued for \"All\" appear as one child job per mailbox.",
+        "sync": {
+            "title": "Sync all (fetch, group, analyze)",
+            "description": "Fetches mail, groups new bounces and analyzes the actionable groups. The same processing as a scheduled sync.",
+            "warning": ""
         },
-        "reclassify": {
-            "description": "Keeps the messages and re-runs only bounce classification and grouping. Use after classification rules change.",
+        "fetch": {
+            "title": "Fetch only",
+            "description": "Stores mail not yet fetched from the IMAP server. No grouping or analysis.",
+            "warning": ""
+        },
+        "group": {
+            "title": "Group only",
+            "description": "Classifies fetched mail that is awaiting grouping, groups it and analyzes the groups awaiting analysis.",
             "warning": ""
         },
         "analyze": {
-            "description": "Re-runs the agent analysis, either for groups awaiting analysis or for every group.",
+            "title": "Analyze only",
+            "description": "Runs the agent analysis, either for groups awaiting analysis or for every actionable group.",
             "warning": ""
         },
+        "reindex": {
+            "title": "Reindex",
+            "description": "Rebuilds the index database and re-parses, re-classifies and re-groups every stored raw message.",
+            "warning": "This takes a while. Group states and analysis reports are kept only for groups that appear again."
+        },
+        "reclassify": {
+            "title": "Reclassify",
+            "description": "Keeps the messages and re-runs only bounce classification and grouping. Use after classification rules change.",
+            "warning": ""
+        },
+        "adminOnlyBadge": "Admin only",
         "runAria": "Start {{tool}}"
     },
     "settings": {
         "description": "Manage system settings and your own account.",
         "adminOnly": "Admin",
         "menu": {
-            "general": "Check times, agent and server information",
+            "general": "Sync times, workers, agent and server information",
             "mailboxes": "Register, edit and test monitored mailboxes",
             "users": "Add users, change roles and reset passwords",
             "tokens": "Issue and revoke login tokens that replace a password",
             "account": "Change your own password"
         },
         "saved": "Settings saved.",
-        "checkTimes": "Check times",
-        "checkTimesHint": "All enabled mailboxes are checked automatically at these times (server local time).",
-        "noCheckTimes": "No check times configured. Automatic checks are off.",
+        "checkTimes": "Sync times",
+        "checkTimesHint": "All enabled mailboxes are synced automatically at these times (server local time).",
+        "noCheckTimes": "No sync times configured. Automatic syncs are off.",
         "addTime": "Add time",
         "addTimeHint": "HH:MM format (e.g. 09:00)",
         "removeTime": "Remove {{time}}",
         "invalidTime": "Times must use the HH:MM format.",
         "duplicateTime": "This time is already listed.",
+        "jobs": "Job execution",
+        "jobsHint": "Settings for the jobs that run in the background.",
+        "workers": "Workers",
+        "workersHint": "Number of jobs that run at the same time. Accounts on the same IMAP server are processed one after another automatically.",
+        "workersInvalid": "Enter a whole number from 1 to 16.",
         "agent": "Agent",
         "agentHint": "The external CLI that analyzes bounce causes.",
         "agentProvider": "Provider",
@@ -432,7 +480,7 @@
         "providerUnknown": "Unknown",
         "providerUnavailableHint": "The {{provider}} command was not found on the server. Install it or choose another provider.",
         "agentEnabled": "Enable agent analysis",
-        "agentEnabledHint": "When enabled, new bounces found by a mail check are analyzed automatically.",
+        "agentEnabledHint": "When enabled, new bounces found by a sync are analyzed automatically.",
         "server": "Server information",
         "serverHint": "Set by the start-up parameters. Cannot be changed here.",
         "webListen": "Listen address",
@@ -444,7 +492,7 @@
         "usernameHint": "The ID used to log in.",
         "displayName": "Display name",
         "role": "Role",
-        "roleHint": "Administrators manage settings, users and mailboxes, and can run tools.",
+        "roleHint": "Administrators manage settings, users and mailboxes, and can reindex and reclassify.",
         "password": "Password",
         "passwordConfirm": "Confirm password",
         "passwordHint": "At least {{min}} characters",
@@ -517,5 +565,59 @@
         "jobNotQueued": "This job has already started and cannot be canceled.",
         "passwordTooShort": "The password is too short.",
         "invalidTime": "The time format is invalid."
+    },
+    "category": {
+        "ip_blocked": {
+            "label": "Sending IP blocked",
+            "description": "The sending server's IP is on a block list. Request delisting at the listing service (the authority) and review what triggered it."
+        },
+        "rate_limited": {
+            "label": "Rate limited",
+            "description": "The recipient domain is throttling mail from this IP. Lower the sending rate and concurrency, then retry later."
+        },
+        "auth_failure": {
+            "label": "Sender authentication failed",
+            "description": "SPF, DKIM, DMARC or reverse DNS checks failed. Review the sending domain's DNS records and the sending server's configuration."
+        },
+        "sender_blocked": {
+            "label": "Sender address rejected",
+            "description": "The recipient domain rejects mail from this sender address. Ask the recipient's administrator to unblock it, or change the sender address."
+        },
+        "content_rejected": {
+            "label": "Content rejected",
+            "description": "The body or an attachment was rejected as spam, a virus or by policy. Review the message content and attachments."
+        },
+        "message_too_large": {
+            "label": "Message too large",
+            "description": "The message exceeds the recipient's size limit. Reduce the attachments or share them another way."
+        },
+        "server_config": {
+            "label": "Sending server misconfigured",
+            "description": "Relay, TLS or HELO settings do not meet the recipient's requirements. Check the sending server (MTA) configuration."
+        },
+        "unknown_failure": {
+            "label": "Unknown failure",
+            "description": "A delivery failure that matches no known pattern. Read the diagnostic and the source messages, and use the analysis report if needed."
+        },
+        "user_unknown": {
+            "label": "Recipient does not exist",
+            "description": "The recipient address does not exist. Remove it from the list or ask the recipient for the correct address."
+        },
+        "mailbox_full": {
+            "label": "Recipient mailbox full",
+            "description": "The recipient's mailbox is over quota. Nothing can be done on the sending side; mail arrives once they free space."
+        },
+        "mailbox_disabled": {
+            "label": "Recipient address disabled",
+            "description": "The recipient address is disabled or suspended. Remove it from the list or ask the recipient for another address."
+        },
+        "domain_not_found": {
+            "label": "Recipient domain not found",
+            "description": "The recipient domain has no DNS (MX) record. Check the spelling; otherwise wait for the recipient's DNS to recover."
+        },
+        "delivery_delay": {
+            "label": "Delivery delayed",
+            "description": "The recipient server is temporarily unreachable. Mail is retried automatically; contact the recipient side only if it persists."
+        }
     }
 }

@@ -7,7 +7,7 @@ import { Button, IconButton } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { DescriptionList } from '../components/ui/DescriptionList';
 import { ErrorState } from '../components/ui/ErrorState';
-import { SelectField, ToggleField, controlClass } from '../components/ui/Field';
+import { InputField, SelectField, ToggleField, controlClass } from '../components/ui/Field';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
@@ -16,6 +16,8 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { errorMessage } from '../utils/errors';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const WORKERS_MIN = 1;
+const WORKERS_MAX = 16;
 
 export function SettingsGeneralPage() {
     const { t } = useTranslation();
@@ -26,6 +28,7 @@ export function SettingsGeneralPage() {
     const [newTime, setNewTime] = useState('');
     const [provider, setProvider] = useState('');
     const [enabled, setEnabled] = useState(false);
+    const [workers, setWorkers] = useState('');
     const [saving, setSaving] = useState(false);
     const [dirty, setDirty] = useState(false);
 
@@ -34,6 +37,7 @@ export function SettingsGeneralPage() {
         setTimes(settings.data.check_times);
         setProvider(settings.data.agent_provider);
         setEnabled(settings.data.agent_enabled);
+        setWorkers(String(settings.data.workers));
         setDirty(false);
     }, [settings.data]);
 
@@ -42,7 +46,9 @@ export function SettingsGeneralPage() {
     const newTimeValid = newTime === '' || TIME_RE.test(newTime);
     const newTimeDuplicate = newTime !== '' && times.includes(newTime);
     const selectedProvider = settings.data?.providers.find(p => p.name === provider);
-    const canSave = dirty && invalidTimes.length === 0 && !duplicate && !saving;
+    const workersValue = Number(workers);
+    const workersValid = /^\d+$/.test(workers.trim()) && workersValue >= WORKERS_MIN && workersValue <= WORKERS_MAX;
+    const canSave = dirty && invalidTimes.length === 0 && !duplicate && workersValid && !saving;
 
     function addTime() {
         if (!TIME_RE.test(newTime) || times.includes(newTime)) return;
@@ -59,7 +65,12 @@ export function SettingsGeneralPage() {
     async function save() {
         setSaving(true);
         try {
-            await updateSettings({ check_times: times, agent_provider: provider, agent_enabled: enabled });
+            await updateSettings({
+                check_times: times,
+                agent_provider: provider,
+                agent_enabled: enabled,
+                workers: workersValue,
+            });
             toast.success(t('settings.saved'));
             await settings.reload();
         } catch (err) {
@@ -164,6 +175,26 @@ export function SettingsGeneralPage() {
                             {t('common.add')}
                         </Button>
                     </form>
+                </Card>
+
+                <Card>
+                    <CardHeader title={t('settings.jobs')} description={t('settings.jobsHint')} />
+                    <InputField
+                        label={t('settings.workers')}
+                        type='number'
+                        inputMode='numeric'
+                        min={WORKERS_MIN}
+                        max={WORKERS_MAX}
+                        step={1}
+                        value={workers}
+                        onChange={e => {
+                            setWorkers(e.target.value);
+                            setDirty(true);
+                        }}
+                        hint={t('settings.workersHint')}
+                        error={workersValid ? undefined : t('settings.workersInvalid')}
+                        wrapperClassName='max-w-xs'
+                    />
                 </Card>
 
                 <Card>

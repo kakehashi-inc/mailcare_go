@@ -21,3 +21,11 @@ func (codexProvider) Label() string { return "Codex" }
 func (codexProvider) Command() []string {
 	return []string{"codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check"}
 }
+
+// DetectRateLimit (RateLimitDetector): codex exec prints its refusal as
+// "ERROR: You've hit your usage limit. ... or try again at 7:22 PM." on
+// stderr, which the generic markers recognize; the "ERROR:" prefix is not
+// required because the same text also appears without it in some versions.
+func (codexProvider) DetectRateLimit(out string) RateLimitOutcome {
+	return DetectRateLimitMarkers(out)
+}

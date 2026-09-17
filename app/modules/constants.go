@@ -119,10 +119,12 @@ const (
 // --- Job kinds and statuses (jobs table) ---
 
 const (
-	JobKindCheck      = "check"      // fetch new mail and index it
-	JobKindReindex    = "reindex"    // rebuild the index from the raw files
-	JobKindReclassify = "reclassify" // re-run bounce detection and grouping only
-	JobKindAnalyze    = "analyze"    // run the agent on groups
+	JobKindSync       = "sync"       // fetch, then group, then queue analysis (one mailbox; NULL expands to every enabled mailbox)
+	JobKindFetch      = "fetch"      // download new mail and index it (no classification)
+	JobKindGroup      = "group"      // classify and group the messages not grouped yet, then queue analysis
+	JobKindAnalyze    = "analyze"    // run the agent on groups that need it
+	JobKindReindex    = "reindex"    // rebuild the index from the raw files (fetch-equivalent + full grouping)
+	JobKindReclassify = "reclassify" // re-run classification and grouping over every message
 
 	JobStatusQueued   = "queued"
 	JobStatusRunning  = "running"
@@ -138,6 +140,51 @@ const (
 	GroupStateResolved = "resolved"
 	GroupStateIgnored  = "ignored"
 )
+
+// --- Group categories (per-mailbox groups.category) ---
+//
+// A category is the kind of problem a bounce group represents and decides the
+// unit an administrator acts on (groups.unit_value), the party that decides
+// the outcome (groups.authority) and whether the group is actionable by the
+// mail administrator at all (groups.actionable). The rules that map a bounce
+// to a category live in app/modules/mailengine/category.go.
+
+const (
+	// Actionable by the mail administrator (shown in Alerts).
+	CategoryIPBlocked       = "ip_blocked"        // unit: sending IP, authority: blacklist or recipient domain
+	CategoryRateLimited     = "rate_limited"      // unit: sending IP/server, authority: recipient domain
+	CategorySenderBlocked   = "sender_blocked"    // unit: sender address, authority: recipient domain
+	CategoryAuthFailure     = "auth_failure"      // unit: sending domain (SPF/DKIM/DMARC/PTR), authority: recipient domain
+	CategoryContentRejected = "content_rejected"  // unit: sender address, authority: recipient domain
+	CategoryMessageTooLarge = "message_too_large" // unit: sender address, authority: recipient domain
+	CategoryServerConfig    = "server_config"     // unit: our reporting MTA, authority: recipient domain
+	CategoryUnknownFailure  = "unknown_failure"   // unit: recipient domain, authority: status code + diagnostic template
+	// Not actionable by the mail administrator (recipient side; excluded from Alerts by default).
+	CategoryUserUnknown     = "user_unknown"     // unit: recipient address
+	CategoryMailboxFull     = "mailbox_full"     // unit: recipient address
+	CategoryMailboxDisabled = "mailbox_disabled" // unit: recipient address
+	CategoryDomainNotFound  = "domain_not_found" // unit: recipient domain
+	CategoryDeliveryDelay   = "delivery_delay"   // unit: recipient domain
+)
+
+// KnownCategories lists every group category (actionable ones first).
+func KnownCategories() []string {
+	return []string{
+		CategoryIPBlocked, CategoryRateLimited, CategorySenderBlocked, CategoryAuthFailure, CategoryContentRejected,
+		CategoryMessageTooLarge, CategoryServerConfig, CategoryUnknownFailure,
+		CategoryUserUnknown, CategoryMailboxFull, CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDeliveryDelay,
+	}
+}
+
+// IsKnownCategory reports whether s is one of the group categories.
+func IsKnownCategory(s string) bool {
+	for _, c := range KnownCategories() {
+		if c == s {
+			return true
+		}
+	}
+	return false
+}
 
 // --- Responsible parties (who should act on a group) ---
 
@@ -169,6 +216,17 @@ const (
 	SettingAgentProvider  = "agent_provider"
 	SettingAgentEnabled   = "agent_enabled" // "1" (default) or "0"
 	SettingCookieTTLHours = "cookie_ttl_hours"
+	SettingWorkers        = "workers"
+)
+
+// --- Job workers ---
+
+const (
+	// DefaultWorkers is the number of jobs that run at once. Jobs that touch
+	// the same IMAP server, the same mailbox index or the agent CLI are
+	// serialized regardless of this number (see app/modules/jobs.go).
+	DefaultWorkers = 2
+	MaxWorkers     = 16
 )
 
 // --- Polling / timing intervals ---

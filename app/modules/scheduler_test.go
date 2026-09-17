@@ -72,7 +72,7 @@ func TestDueCheckTimes(t *testing.T) {
 	}
 }
 
-func TestSchedulerTickQueuesOneCheckJob(t *testing.T) {
+func TestSchedulerTickQueuesOneSyncJob(t *testing.T) {
 	db := newTestDB(t)
 	if err := SaveCheckTimes(db, []string{"06:00", "18:00"}); err != nil {
 		t.Fatal(err)
@@ -89,14 +89,14 @@ func TestSchedulerTickQueuesOneCheckJob(t *testing.T) {
 	if jobs, _ := models.ListActiveJobs(db); len(jobs) != 0 {
 		t.Fatalf("job queued before the check time: %d", len(jobs))
 	}
-	// 06:00 arrives: exactly one check job for every mailbox.
+	// 06:00 arrives: exactly one sync expansion job (every enabled mailbox).
 	clock = localDate(2026, 9, 17, 6, 0, 10)
 	s.Tick()
 	jobs, err := models.ListActiveJobs(db)
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("after 06:00: %d jobs, %v", len(jobs), err)
 	}
-	if jobs[0].Kind != JobKindCheck || jobs[0].MailboxID.Valid || jobs[0].RequestedBy != RequestedByScheduler {
+	if jobs[0].Kind != JobKindSync || jobs[0].MailboxID.Valid || jobs[0].RequestedBy != RequestedByScheduler {
 		t.Errorf("unexpected job %+v", jobs[0])
 	}
 	// The same minute does not fire twice.
@@ -109,7 +109,7 @@ func TestSchedulerTickQueuesOneCheckJob(t *testing.T) {
 	clock = localDate(2026, 9, 17, 18, 0, 5)
 	s.Tick()
 	if jobs, _ = models.ListActiveJobs(db); len(jobs) != 1 {
-		t.Errorf("duplicate queued while the check job was active: %d", len(jobs))
+		t.Errorf("duplicate queued while the sync job was active: %d", len(jobs))
 	}
 	// Once it finished, the following occurrence queues a new one.
 	if err := models.FinishJob(db, jobs[0].ID, "done", ""); err != nil {

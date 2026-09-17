@@ -75,6 +75,41 @@ func SaveServerSettings(db *sql.DB, webListen string, webPort int) {
 	persistOrLog(db, SettingWebPort, strconv.Itoa(webPort), webPort == DefaultWebPort)
 }
 
+// --- Workers ---
+
+// ClampWorkers bounds a worker count to 1..MaxWorkers (0 or less means the
+// default).
+func ClampWorkers(n int) int {
+	switch {
+	case n <= 0:
+		return DefaultWorkers
+	case n > MaxWorkers:
+		return MaxWorkers
+	}
+	return n
+}
+
+// ParseWorkers parses a worker count given as text (1..MaxWorkers).
+func ParseWorkers(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 1 || n > MaxWorkers {
+		return 0, fmt.Errorf("workers must be an integer between 1 and %d", MaxWorkers)
+	}
+	return n, nil
+}
+
+// ResolveWorkers returns the number of jobs that run at once (arg > saved >
+// default), clamped to 1..MaxWorkers.
+func ResolveWorkers(db *sql.DB) int {
+	return ClampWorkers(resolveInt(db, SettingWorkers, 0, DefaultWorkers))
+}
+
+// SaveWorkers persists the worker count (non-default only).
+func SaveWorkers(db *sql.DB, n int) error {
+	n = ClampWorkers(n)
+	return PersistSetting(db, SettingWorkers, strconv.Itoa(n), n == DefaultWorkers)
+}
+
 // ResolveAgentProvider returns the configured agent provider name.
 func ResolveAgentProvider(db *sql.DB) string {
 	return resolveStr(db, SettingAgentProvider, "", DefaultAgentProvider)

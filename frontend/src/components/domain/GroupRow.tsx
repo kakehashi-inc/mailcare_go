@@ -1,10 +1,11 @@
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import type { GroupDTO } from '../../types';
+import { groupHeadline } from '../../utils/category';
 import { Badge } from '../ui/Badge';
 import { DateTime } from '../ui/DateTime';
 import { Icon } from '../ui/Icon';
-import { GroupStateBadge, ResponsibleBadge, SeverityBadge } from './StatusBadges';
+import { CategoryBadge, GroupStateBadge, ResponsibleBadge, SeverityBadge } from './StatusBadges';
 
 interface GroupRowProps {
     group: GroupDTO;
@@ -17,6 +18,7 @@ interface GroupRowProps {
 /** One bounce group as a clickable card; used by the alerts list and the dashboard. */
 export function GroupRow({ group, to, mailboxAddress, showState = false }: GroupRowProps) {
     const { t } = useTranslation();
+    const headline = groupHeadline(group, t);
     return (
         <li>
             <Link
@@ -25,9 +27,10 @@ export function GroupRow({ group, to, mailboxAddress, showState = false }: Group
             >
                 {mailboxAddress && <p className='mb-1 truncate text-sm text-muted'>{mailboxAddress}</p>}
                 <div className='flex flex-wrap items-center gap-2'>
-                    <SeverityBadge severity={group.report_severity} />
+                    <CategoryBadge category={group.category} />
+                    {group.actionable && <SeverityBadge severity={group.report_severity} />}
                     {showState && <GroupStateBadge state={group.state} />}
-                    {group.needs_analysis && group.report_status !== 'running' && (
+                    {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
                         <Badge tone='warning' icon='pending_actions'>
                             {t('group.needsAnalysis')}
                         </Badge>
@@ -38,18 +41,23 @@ export function GroupRow({ group, to, mailboxAddress, showState = false }: Group
                         </Badge>
                     )}
                 </div>
-                <p className='mt-2 break-words text-base font-semibold text-ink'>{group.title}</p>
+                <p className='mt-2 break-words text-base font-semibold text-ink'>{headline}</p>
                 <div className='mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted'>
-                    <span className='inline-flex items-center gap-1'>
-                        <Icon name='dns' className='text-[16px]' />
-                        {group.recipient_domain || '-'}
-                    </span>
                     <span className='inline-flex items-center gap-1'>
                         <Icon name='code' className='text-[16px]' />
                         {group.status_code || group.smtp_code || '-'}
                     </span>
+                    <span className='inline-flex items-center gap-1'>
+                        <Icon name='dns' className='text-[16px]' />
+                        {group.recipient_domain || '-'}
+                    </span>
                     <ResponsibleBadge responsible={group.responsible} />
                 </div>
+                {group.diagnostic_template && (
+                    <p className='mt-1 truncate font-mono text-sm text-muted' title={group.diagnostic_template}>
+                        {group.diagnostic_template}
+                    </p>
+                )}
                 {group.report_summary && <p className='mt-2 line-clamp-2 text-sm text-ink'>{group.report_summary}</p>}
                 <div className='mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted'>
                     <span>{t('group.messages', { count: group.message_count })}</span>

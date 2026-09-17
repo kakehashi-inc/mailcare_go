@@ -247,14 +247,14 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /api/v1/settings as user: status %d", rec.Code)
 	}
-	// A non-check job needs an administrator; a check job does not.
+	// The rebuild jobs need an administrator; a sync job does not.
 	rec = do(t, h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "reindex"}, user)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("POST reindex job as user: status %d, want 403", rec.Code)
 	}
-	rec = do(t, h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "check"}, user)
+	rec = do(t, h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync"}, user)
 	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"requested_by":"web:bob"`) {
-		t.Errorf("POST check job as user: status %d, body %s", rec.Code, rec.Body.String())
+		t.Errorf("POST sync job as user: status %d, body %s", rec.Code, rec.Body.String())
 	}
 	// The last administrator can neither be demoted nor deleted.
 	var users struct {
@@ -348,13 +348,17 @@ func TestMailboxesRequireAdminForWrites(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"imap_username":"bounce"`) {
 		t.Errorf("list mailboxes as user: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/check", nil, user)
-	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"mailbox_address":"bounce@example.com"`) {
-		t.Errorf("queue check as user: status %d, body %s", rec.Code, rec.Body.String())
+	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, user)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"mailbox_address":"bounce@example.com"`) ||
+		!strings.Contains(rec.Body.String(), `"kind":"sync"`) {
+		t.Errorf("queue sync as user: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/check", nil, user)
+	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, user)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"created":false`) {
-		t.Errorf("duplicate check suppressed: status %d, body %s", rec.Code, rec.Body.String())
+		t.Errorf("duplicate sync suppressed: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/check", nil, user); rec.Code != http.StatusNotFound {
+		t.Errorf("the old check route should be gone: status %d", rec.Code)
 	}
 	rec = do(t, h, http.MethodDelete, "/api/v1/mailboxes/"+itoa(mb.ID)+"?keep_data=1", nil, admin)
 	if rec.Code != http.StatusOK {
@@ -389,7 +393,7 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	}
 
 	// Jobs can be queued and read back over the control endpoints.
-	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"check"}`))
+	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"sync"}`))
 	req.RemoteAddr = "127.0.0.1:40000"
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
@@ -408,12 +412,12 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"queued"`) {
 		t.Errorf("control job read: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"analyze"}`))
+	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"analyze","target":"0123456789abcdef"}`))
 	req.RemoteAddr = "127.0.0.1:40000"
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("analyze without a mailbox: status %d, want 400", rec.Code)
+		t.Errorf("analyze of one group without a mailbox: status %d, want 400", rec.Code)
 	}
 }
 

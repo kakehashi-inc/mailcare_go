@@ -24,8 +24,8 @@ import (
 //	cli_user.go     user ...
 //	cli_token.go    token ...
 //	cli_mailbox.go  mailbox ...
-//	cli_jobs.go     check / reindex / reclassify / analyze / jobs
-//	cli_groups.go   groups / group
+//	cli_jobs.go     sync / fetch / group / reindex / reclassify / analyze / jobs
+//	cli_groups.go   groups ADDRESS [KEY]
 //	cli_settings.go schedule / settings
 
 // cliTimeFmt is the local timestamp layout used across CLI output.

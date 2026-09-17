@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,11 +19,14 @@ import (
 
 // Jobs (jobs table).
 //
-// A job is one unit of background work: check / reindex / reclassify /
-// analyze. Jobs are queued in the master database and executed one at a time
-// by a single worker goroutine (JobManager) so that a per-mailbox index is
-// never written by two operations at once. The CLI uses the same runner in
-// process (RunJobInline) when no server is running.
+// A job is one unit of background work: sync / fetch / group / analyze /
+// reindex / reclassify. Jobs are queued in the master database and executed
+// by the JobManager, which runs up to "workers" jobs at once. Jobs that touch
+// the same IMAP server, the same mailbox index or the agent CLI hold resource
+// keys (see resourceKeys) and are serialized against each other. A job
+// without a mailbox is an expansion job: it queues one child per target
+// mailbox and finishes. The CLI uses the same runner in process
+// (RunJobInline) when no server is running.
 
 const (
 	// progressFlushInterval throttles progress writes to the jobs table.
@@ -31,8 +35,16 @@ const (
 	progressMaxLines = 200
 	// jobRetention is how long finished jobs are kept.
 	jobRetention = 30 * 24 * time.Hour
-	// analyzeAllTarget is the analyze job target meaning "every group".
+	// analyzeAllTarget is the analyze job target meaning "every actionable group".
 	analyzeAllTarget = "*"
+)
+
+// Resource keys held by running jobs (see the system design document (Documents) 7.2).
+const (
+	lockAgent         = "agent"
+	lockHostPrefix    = "host:"
+	lockMailboxPrefix = "mailbox:"
+	lockAnalyzePrefix = "analyze:"
 )
 
 // Requester tags stored in jobs.requested_by.
@@ -47,7 +59,7 @@ var ErrJobKind = errors.New("unknown job kind")
 // ValidateJobKind reports whether kind is one of the known job kinds.
 func ValidateJobKind(kind string) error {
 	switch kind {
-	case JobKindCheck, JobKindReindex, JobKindReclassify, JobKindAnalyze:
+	case JobKindSync, JobKindFetch, JobKindGroup, JobKindAnalyze, JobKindReindex, JobKindReclassify:
 		return nil
 	}
 	return fmt.Errorf("%w %q", ErrJobKind, kind)
@@ -61,20 +73,49 @@ type JobManager struct {
 	agentRoot string
 	templates fs.FS
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	wake   chan struct{}
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	wake    chan struct{}
+	workers int
+	running int
+
+	// claimMu serializes claim attempts so the lock check and the claim of
+	// a job form one step within this process.
+	claimMu sync.Mutex
+	// lockMu guards locks: resource key -> id of the job holding it.
+	lockMu sync.Mutex
+	locks  map[string]int64
 }
 
 // NewJobManager creates a manager over the master database. key is the
-// master key (to decrypt IMAP passwords); templates may be nil.
+// master key (to decrypt IMAP passwords); templates may be nil. The worker
+// count starts from the workers setting.
 func NewJobManager(db *sql.DB, key []byte, mailsRoot, agentRoot string, templates fs.FS) *JobManager {
 	return &JobManager{db: db, key: key, mailsRoot: mailsRoot, agentRoot: agentRoot, templates: templates,
-		wake: make(chan struct{}, 1)}
+		wake: make(chan struct{}, 1), workers: ResolveWorkers(db), locks: map[string]int64{}}
 }
 
-// Start launches the worker goroutine. It is a no-op when already running.
+// Workers returns the number of jobs that may run at once.
+func (m *JobManager) Workers() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.workers
+}
+
+// SetWorkers changes the number of jobs that may run at once (clamped to
+// 1..MaxWorkers). It takes effect immediately: a running dispatcher starts
+// more jobs when the number grew, and lets running jobs finish when it
+// shrank.
+func (m *JobManager) SetWorkers(n int) {
+	n = ClampWorkers(n)
+	m.mu.Lock()
+	m.workers = n
+	m.mu.Unlock()
+	m.notify()
+}
+
+// Start launches the dispatcher goroutine. It is a no-op when already running.
 func (m *JobManager) Start() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -87,7 +128,8 @@ func (m *JobManager) Start() {
 	go m.loop(ctx)
 }
 
-// Stop cancels the running job (if any) and waits for the worker to exit.
+// Stop cancels the running jobs (if any) and waits for the dispatcher and
+// every job goroutine to exit.
 func (m *JobManager) Stop() {
 	m.mu.Lock()
 	cancel := m.cancel
@@ -100,22 +142,20 @@ func (m *JobManager) Stop() {
 	m.wg.Wait()
 }
 
+// notify wakes the dispatcher (non-blocking).
+func (m *JobManager) notify() {
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
 func (m *JobManager) loop(ctx context.Context) {
 	defer m.wg.Done()
 	ticker := time.NewTicker(JobPollInterval)
 	defer ticker.Stop()
 	for {
-		for ctx.Err() == nil {
-			job, err := models.ClaimNextJob(m.db)
-			if err != nil {
-				log.Printf("job claim failed: %v", err)
-				break
-			}
-			if job == nil {
-				break
-			}
-			m.execute(ctx, job, nil)
-		}
+		m.dispatch(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -125,9 +165,153 @@ func (m *JobManager) loop(ctx context.Context) {
 	}
 }
 
+// dispatch starts runnable jobs until the worker count is reached or no
+// queued job can run with the resource keys currently held.
+func (m *JobManager) dispatch(ctx context.Context) {
+	for ctx.Err() == nil {
+		m.mu.Lock()
+		free := m.running < m.workers
+		m.mu.Unlock()
+		if !free {
+			return
+		}
+		job, err := m.claimRunnable(nil)
+		if err != nil {
+			log.Printf("job claim failed: %v", err)
+			return
+		}
+		if job == nil {
+			return
+		}
+		m.mu.Lock()
+		m.running++
+		m.mu.Unlock()
+		m.wg.Add(1)
+		go func(job *models.Job) {
+			defer m.wg.Done()
+			m.execute(ctx, job, nil)
+			m.releaseLocks(job.ID)
+			m.mu.Lock()
+			m.running--
+			m.mu.Unlock()
+			m.notify()
+		}(job)
+	}
+}
+
+// claimRunnable claims the oldest queued job whose resource keys are free
+// (and that accept accepts, when given) and reserves its keys. It returns
+// nil when nothing is runnable.
+func (m *JobManager) claimRunnable(accept func(*models.Job) bool) (*models.Job, error) {
+	m.claimMu.Lock()
+	defer m.claimMu.Unlock()
+	keysOf := map[int64][]string{}
+	job, err := models.ClaimNextRunnableJob(m.db, func(j *models.Job) bool {
+		if accept != nil && !accept(j) {
+			return false
+		}
+		keys := m.resourceKeys(j)
+		keysOf[j.ID] = keys
+		return m.locksFree(keys)
+	})
+	if err != nil || job == nil {
+		return nil, err
+	}
+	m.acquireLocks(job.ID, keysOf[job.ID])
+	return job, nil
+}
+
+// claimByID claims one specific queued job and reserves its resource keys
+// (used by the in-process CLI runner, which waits for nothing: no other job
+// runs in that process).
+func (m *JobManager) claimByID(id int64) (*models.Job, error) {
+	m.claimMu.Lock()
+	defer m.claimMu.Unlock()
+	job, err := models.ClaimJobByID(m.db, id)
+	if err != nil || job == nil {
+		return nil, err
+	}
+	m.acquireLocks(job.ID, m.resourceKeys(job))
+	return job, nil
+}
+
+// resourceKeys returns the resource keys a job holds while it runs. Mailbox
+// host and address are read from the mailboxes row at claim time; a job
+// whose mailbox is gone holds nothing (it fails when it runs).
+func (m *JobManager) resourceKeys(job *models.Job) []string {
+	if !job.MailboxID.Valid {
+		return nil
+	}
+	mb, err := models.GetMailboxByID(m.db, job.MailboxID.Int64)
+	if err != nil {
+		return nil
+	}
+	return jobResourceKeys(job.Kind, mb)
+}
+
+// jobResourceKeys maps a job kind and its mailbox to the resource keys of
+// the system design document (Documents) 7.2.
+func jobResourceKeys(kind string, mb *models.Mailbox) []string {
+	mailboxKey := lockMailboxPrefix + mb.Address
+	switch kind {
+	case JobKindSync, JobKindFetch:
+		return []string{lockHostPrefix + strings.ToLower(strings.TrimSpace(mb.ImapHost)), mailboxKey}
+	case JobKindGroup, JobKindReclassify:
+		return []string{mailboxKey}
+	case JobKindAnalyze:
+		return []string{lockAgent, lockAnalyzePrefix + mb.Address}
+	case JobKindReindex:
+		return []string{mailboxKey, lockAgent}
+	}
+	return nil
+}
+
+func (m *JobManager) locksFree(keys []string) bool {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+	for _, k := range keys {
+		if _, held := m.locks[k]; held {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *JobManager) acquireLocks(jobID int64, keys []string) {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+	for _, k := range keys {
+		m.locks[k] = jobID
+	}
+}
+
+// releaseLocks frees every resource key held by the job.
+func (m *JobManager) releaseLocks(jobID int64) {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+	for k, id := range m.locks {
+		if id == jobID {
+			delete(m.locks, k)
+		}
+	}
+}
+
+// HeldLocks returns the resource keys currently held, sorted (for status
+// output and tests).
+func (m *JobManager) HeldLocks() []string {
+	m.lockMu.Lock()
+	defer m.lockMu.Unlock()
+	out := make([]string, 0, len(m.locks))
+	for k := range m.locks {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Enqueue queues a job unless an identical queued/running job exists, in
 // which case that job is returned with created=false. mailboxID 0 means "no
-// mailbox" (every mailbox).
+// mailbox": an expansion job over every (enabled) mailbox.
 func (m *JobManager) Enqueue(kind string, mailboxID int64, target, requestedBy string) (job *models.Job, created bool, err error) {
 	return EnqueueJob(m.db, kind, mailboxID, target, requestedBy, m.wake)
 }
@@ -138,11 +322,12 @@ func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy st
 	if err := ValidateJobKind(kind); err != nil {
 		return nil, false, err
 	}
-	if kind == JobKindAnalyze && mailboxID == 0 {
-		return nil, false, errors.New("analyze requires a mailbox")
-	}
 	if kind != JobKindAnalyze {
 		target = ""
+	}
+	target = strings.TrimSpace(target)
+	if kind == JobKindAnalyze && mailboxID == 0 && target != "" && target != analyzeAllTarget {
+		return nil, false, errors.New("analyze of one group requires a mailbox")
 	}
 	if mailboxID != 0 {
 		if _, err := models.GetMailboxByID(db, mailboxID); err == sql.ErrNoRows {
@@ -333,27 +518,47 @@ func (m *JobManager) execute(ctx context.Context, job *models.Job, echo func(str
 }
 
 // RunJob dispatches a job by kind and returns its result text. It does not
-// touch the job row itself (execute / RunJobInline do).
+// touch the job row itself (execute / RunJobInline do). A job without a
+// mailbox expands into one child job per target mailbox.
 func (m *JobManager) RunJob(ctx context.Context, job *models.Job, progress func(string)) (string, error) {
 	if progress == nil {
 		progress = func(string) {}
 	}
+	if err := ValidateJobKind(job.Kind); err != nil {
+		return "", err
+	}
+	if !job.MailboxID.Valid {
+		return m.runExpansion(ctx, job, progress)
+	}
+	mb, err := models.GetMailboxByID(m.db, job.MailboxID.Int64)
+	if err == sql.ErrNoRows {
+		return "", errors.New("mailbox not found")
+	}
+	if err != nil {
+		return "", err
+	}
+	report := func(msg string) { progress("[" + mb.Address + "] " + msg) }
 	switch job.Kind {
-	case JobKindCheck:
-		return m.runCheck(ctx, job, progress)
-	case JobKindReindex:
-		return m.runRebuild(ctx, job, progress, mailengine.Reindex, "reindex")
+	case JobKindSync:
+		return m.runSync(ctx, job, mb, report)
+	case JobKindFetch:
+		return m.runFetch(ctx, mb, report)
+	case JobKindGroup:
+		return m.runGroup(ctx, job, mb, false, report)
 	case JobKindReclassify:
-		return m.runRebuild(ctx, job, progress, mailengine.Reclassify, "reclassify")
+		return m.runGroup(ctx, job, mb, true, report)
+	case JobKindReindex:
+		return m.runReindex(ctx, job, mb, report)
 	case JobKindAnalyze:
-		return m.runAnalyze(ctx, job, progress)
+		return m.runAnalyze(ctx, job, mb, report)
 	}
 	return "", fmt.Errorf("%w %q", ErrJobKind, job.Kind)
 }
 
 // RunJobInline creates a job row, runs it in the current process and then
-// runs the follow-up jobs it queued (agent analysis). Progress lines are
-// passed to echo. It is used by the CLI when no server is running.
+// runs the jobs it caused (children of an expansion job and the follow-up
+// analysis) one after another. Progress lines are passed to echo. It is
+// used by the CLI when no server is running.
 func (m *JobManager) RunJobInline(ctx context.Context, kind string, mailboxID int64, target, requestedBy string, echo func(string)) (*models.Job, error) {
 	job, created, err := EnqueueJob(m.db, kind, mailboxID, target, requestedBy, nil)
 	if err != nil {
@@ -362,64 +567,87 @@ func (m *JobManager) RunJobInline(ctx context.Context, kind string, mailboxID in
 	if !created {
 		return job, fmt.Errorf("an identical job (#%d) is already %s", job.ID, job.Status)
 	}
-	first := job
-	for {
-		claimed, err := models.ClaimJobByID(m.db, job.ID)
-		if err != nil {
-			return first, err
-		}
-		if claimed == nil {
-			return first, fmt.Errorf("job #%d was taken by another process", job.ID)
-		}
-		if claimed.ID != first.ID && echo != nil {
-			echo(fmt.Sprintf("--- job #%d (%s %s)", claimed.ID, claimed.Kind, claimed.Target))
-		}
-		m.execute(ctx, claimed, echo)
-		if claimed.ID == first.ID {
-			first = claimed
-		}
-		if ctx.Err() != nil {
-			return first, ctx.Err()
-		}
-		next, err := models.NextQueuedJobAfter(m.db, first.ID, requestedBy)
+	first, err := m.claimByID(job.ID)
+	if err != nil {
+		return job, err
+	}
+	if first == nil {
+		return job, fmt.Errorf("job #%d was taken by another process", job.ID)
+	}
+	m.execute(ctx, first, echo)
+	m.releaseLocks(first.ID)
+	for ctx.Err() == nil {
+		next, err := m.claimRunnable(func(j *models.Job) bool {
+			return j.RequestedBy == requestedBy && j.ID > first.ID
+		})
 		if err != nil || next == nil {
 			return first, err
 		}
-		job = next
+		if echo != nil {
+			echo(fmt.Sprintf("--- job #%d (%s %s)", next.ID, next.Kind, strings.TrimSpace(next.Target+" "+m.addressOf(next))))
+		}
+		m.execute(ctx, next, echo)
+		m.releaseLocks(next.ID)
 	}
+	return first, ctx.Err()
 }
 
-// targetMailboxes resolves the mailboxes a job applies to: the one named by
-// mailbox_id, or (when NULL) every mailbox; enabledOnly filters disabled ones.
-func (m *JobManager) targetMailboxes(job *models.Job, enabledOnly bool) ([]*models.Mailbox, error) {
-	if job.MailboxID.Valid {
-		mb, err := models.GetMailboxByID(m.db, job.MailboxID.Int64)
-		if err == sql.ErrNoRows {
-			return nil, errors.New("mailbox not found")
-		}
-		if err != nil {
-			return nil, err
-		}
-		return []*models.Mailbox{mb}, nil
+// addressOf returns the mailbox address of a job ("" when it has none).
+func (m *JobManager) addressOf(job *models.Job) string {
+	if !job.MailboxID.Valid {
+		return ""
 	}
+	mb, err := models.GetMailboxByID(m.db, job.MailboxID.Int64)
+	if err != nil {
+		return ""
+	}
+	return mb.Address
+}
+
+// runExpansion queues one child job per target mailbox (enabled mailboxes
+// for sync / fetch, every mailbox otherwise) with the requester of the
+// parent, and finishes.
+func (m *JobManager) runExpansion(ctx context.Context, job *models.Job, progress func(string)) (string, error) {
 	all, err := models.ListMailboxes(m.db)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	if !enabledOnly {
-		return all, nil
-	}
-	var out []*models.Mailbox
+	enabledOnly := job.Kind == JobKindSync || job.Kind == JobKindFetch
+	var targets []*models.Mailbox
 	for _, mb := range all {
-		if mb.Enabled {
-			out = append(out, mb)
+		if enabledOnly && !mb.Enabled {
+			continue
+		}
+		targets = append(targets, mb)
+	}
+	if len(targets) == 0 {
+		if enabledOnly {
+			return "queued 0 jobs (no enabled mailbox)", nil
+		}
+		return "queued 0 jobs (no mailbox)", nil
+	}
+	queued := 0
+	for _, mb := range targets {
+		if ctx.Err() != nil {
+			return fmt.Sprintf("queued %d jobs", queued), errors.New("server shutting down")
+		}
+		child, created, err := m.Enqueue(job.Kind, mb.ID, job.Target, job.RequestedBy)
+		if err != nil {
+			progress(fmt.Sprintf("[%s] failed to queue %s: %v", mb.Address, job.Kind, err))
+			continue
+		}
+		if created {
+			queued++
+			progress(fmt.Sprintf("[%s] queued %s job #%d", mb.Address, job.Kind, child.ID))
+		} else {
+			progress(fmt.Sprintf("[%s] %s job #%d is already %s", mb.Address, job.Kind, child.ID, child.Status))
 		}
 	}
-	return out, nil
+	return fmt.Sprintf("queued %d jobs", queued), nil
 }
 
 // agentAutoAnalysis reports whether analysis jobs should be queued after a
-// check: the agent must be enabled and its CLI available.
+// sync / group / rebuild: the agent must be enabled and its CLI available.
 func (m *JobManager) agentAutoAnalysis(progress func(string)) bool {
 	if !ResolveAgentEnabled(m.db) {
 		return false
@@ -432,59 +660,28 @@ func (m *JobManager) agentAutoAnalysis(progress func(string)) bool {
 	return true
 }
 
-func (m *JobManager) runCheck(ctx context.Context, job *models.Job, progress func(string)) (string, error) {
-	mailboxes, err := m.targetMailboxes(job, true)
-	if err != nil {
-		return "", err
+// queueAnalysis queues the follow-up analysis of the groups of a mailbox
+// that need it, when the agent is enabled and available.
+func (m *JobManager) queueAnalysis(job *models.Job, mb *models.Mailbox, progress func(string)) {
+	if !m.agentAutoAnalysis(progress) {
+		return
 	}
-	if len(mailboxes) == 0 {
-		return "no enabled mailbox", nil
+	if _, _, err := m.Enqueue(JobKindAnalyze, mb.ID, "", job.RequestedBy); err != nil {
+		progress(fmt.Sprintf("failed to queue analysis: %v", err))
+		return
 	}
-	var summary, failures []string
-	autoAnalyze := m.agentAutoAnalysis(progress)
-	for _, mb := range mailboxes {
-		if ctx.Err() != nil {
-			return strings.Join(summary, "; "), errors.New("server shutting down")
-		}
-		progress(fmt.Sprintf("[%s] checking", mb.Address))
-		res, err := m.checkOne(ctx, mb, progress)
-		if err != nil {
-			progress(fmt.Sprintf("[%s] error: %v", mb.Address, err))
-			failures = append(failures, fmt.Sprintf("%s: %v", mb.Address, err))
-			continue
-		}
-		line := fmt.Sprintf("%s: fetched %d, bounces %d, skipped %d", mb.Address, res.Fetched, res.Bounces, res.Skipped)
-		progress("[" + line + "]")
-		summary = append(summary, line)
-		if autoAnalyze {
-			for _, key := range res.GroupsTouched {
-				if _, _, err := m.Enqueue(JobKindAnalyze, mb.ID, key, job.RequestedBy); err != nil {
-					progress(fmt.Sprintf("[%s] failed to queue analysis of %s: %v", mb.Address, key, err))
-				}
-			}
-			if len(res.GroupsTouched) > 0 {
-				progress(fmt.Sprintf("[%s] queued analysis of %d group(s)", mb.Address, len(res.GroupsTouched)))
-			}
-		}
-	}
-	result := strings.Join(summary, "; ")
-	if len(failures) > 0 {
-		return result, errors.New(strings.Join(failures, "; "))
-	}
-	return result, nil
+	progress("queued analysis of groups that need it")
 }
 
-// checkOne runs CheckMailbox for one mailbox and records the outcome on the
+// fetchOne runs FetchMailbox for one mailbox and records the outcome on the
 // mailbox row.
-func (m *JobManager) checkOne(ctx context.Context, mb *models.Mailbox, progress func(string)) (*mailengine.CheckResult, error) {
+func (m *JobManager) fetchOne(ctx context.Context, mb *models.Mailbox, progress func(string)) (*mailengine.FetchResult, error) {
 	password, err := MailboxPassword(m.key, mb)
 	if err != nil {
 		_ = models.UpdateMailboxCheckResult(m.db, mb.ID, "error", err.Error(), mb.LastUIDValidity)
 		return nil, err
 	}
-	res, err := mailengine.CheckMailbox(ctx, m.mailsRoot, mb, password, func(msg string) {
-		progress("[" + mb.Address + "] " + msg)
-	})
+	res, err := mailengine.FetchMailbox(ctx, m.mailsRoot, mb, password, mailengine.Progress(progress))
 	if err != nil {
 		_ = models.UpdateMailboxCheckResult(m.db, mb.ID, "error", err.Error(), mb.LastUIDValidity)
 		return nil, err
@@ -499,60 +696,87 @@ func (m *JobManager) checkOne(ctx context.Context, mb *models.Mailbox, progress 
 	return res, nil
 }
 
-type rebuildFunc func(ctx context.Context, mailsRoot, address string, progress mailengine.Progress) (*mailengine.ReindexResult, error)
-
-func (m *JobManager) runRebuild(ctx context.Context, job *models.Job, progress func(string), fn rebuildFunc, name string) (string, error) {
-	mailboxes, err := m.targetMailboxes(job, false)
+// runFetch downloads new mail into the index (no classification).
+func (m *JobManager) runFetch(ctx context.Context, mb *models.Mailbox, progress func(string)) (string, error) {
+	progress("fetching")
+	res, err := m.fetchOne(ctx, mb, progress)
 	if err != nil {
-		return "", err
+		progress(fmt.Sprintf("error: %v", err))
+		return "", fmt.Errorf("%s: %w", mb.Address, err)
 	}
-	if len(mailboxes) == 0 {
-		return "no mailbox", nil
-	}
-	var summary, failures []string
-	autoAnalyze := m.agentAutoAnalysis(progress)
-	for _, mb := range mailboxes {
-		if ctx.Err() != nil {
-			return strings.Join(summary, "; "), errors.New("server shutting down")
-		}
-		progress(fmt.Sprintf("[%s] %s", mb.Address, name))
-		res, err := fn(ctx, m.mailsRoot, mb.Address, func(msg string) { progress("[" + mb.Address + "] " + msg) })
-		if err != nil {
-			progress(fmt.Sprintf("[%s] error: %v", mb.Address, err))
-			failures = append(failures, fmt.Sprintf("%s: %v", mb.Address, err))
-			continue
-		}
-		line := fmt.Sprintf("%s: messages %d, bounces %d, groups %d", mb.Address, res.Messages, res.Bounces, res.Groups)
-		progress("[" + line + "]")
-		summary = append(summary, line)
-		// Reports of groups whose key survived the rebuild are carried over,
-		// so only groups flagged needs_analysis (new or grown) are analyzed.
-		if autoAnalyze && res.Groups > 0 {
-			if _, _, err := m.Enqueue(JobKindAnalyze, mb.ID, "", job.RequestedBy); err != nil {
-				progress(fmt.Sprintf("[%s] failed to queue analysis: %v", mb.Address, err))
-			} else {
-				progress(fmt.Sprintf("[%s] queued analysis of groups that need it", mb.Address))
-			}
-		}
-	}
-	result := strings.Join(summary, "; ")
-	if len(failures) > 0 {
-		return result, errors.New(strings.Join(failures, "; "))
-	}
-	return result, nil
+	line := fmt.Sprintf("fetched %d, skipped %d", res.Fetched, res.Skipped)
+	progress(line)
+	return line, nil
 }
 
-func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, progress func(string)) (string, error) {
-	if !job.MailboxID.Valid {
-		return "", errors.New("analyze requires a mailbox")
+// runGroup classifies and groups the messages not grouped yet (full = false)
+// or every message (full = true, reclassify), then queues the analysis.
+func (m *JobManager) runGroup(ctx context.Context, job *models.Job, mb *models.Mailbox, full bool, progress func(string)) (string, error) {
+	if full {
+		progress("reclassifying")
+	} else {
+		progress("grouping")
 	}
-	mb, err := models.GetMailboxByID(m.db, job.MailboxID.Int64)
-	if err == sql.ErrNoRows {
-		return "", errors.New("mailbox not found")
-	}
+	res, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, full, mailengine.Progress(progress))
 	if err != nil {
-		return "", err
+		progress(fmt.Sprintf("error: %v", err))
+		return "", fmt.Errorf("%s: %w", mb.Address, err)
 	}
+	line := fmt.Sprintf("processed %d, bounces %d, groups %d", res.Processed, res.Bounces, res.Groups)
+	progress(line)
+	m.queueAnalysis(job, mb, progress)
+	return line, nil
+}
+
+// runSync fetches, groups the new messages and queues the analysis when an
+// actionable group gained messages.
+func (m *JobManager) runSync(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
+	progress("fetching")
+	fetched, err := m.fetchOne(ctx, mb, progress)
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return "", fmt.Errorf("%s: %w", mb.Address, err)
+	}
+	progress(fmt.Sprintf("fetched %d, skipped %d", fetched.Fetched, fetched.Skipped))
+	if ctx.Err() != nil {
+		return fmt.Sprintf("fetched %d, skipped %d", fetched.Fetched, fetched.Skipped), errors.New("server shutting down")
+	}
+	progress("grouping")
+	grouped, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, false, mailengine.Progress(progress))
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return fmt.Sprintf("fetched %d, skipped %d", fetched.Fetched, fetched.Skipped), fmt.Errorf("%s: %w", mb.Address, err)
+	}
+	line := fmt.Sprintf("fetched %d, skipped %d, processed %d, bounces %d, groups %d",
+		fetched.Fetched, fetched.Skipped, grouped.Processed, grouped.Bounces, grouped.Groups)
+	progress(line)
+	if len(grouped.GroupsTouched) > 0 {
+		progress(fmt.Sprintf("%d group(s) need analysis", len(grouped.GroupsTouched)))
+		m.queueAnalysis(job, mb, progress)
+	}
+	return line, nil
+}
+
+// runReindex rebuilds the index from the raw files, then queues the analysis
+// (reports of groups whose key survived are carried over, so only groups
+// flagged needs_analysis are analyzed).
+func (m *JobManager) runReindex(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
+	progress("reindexing")
+	res, err := mailengine.Reindex(ctx, m.mailsRoot, mb.Address, mailengine.Progress(progress))
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return "", fmt.Errorf("%s: %w", mb.Address, err)
+	}
+	line := fmt.Sprintf("messages %d, bounces %d, groups %d", res.Messages, res.Bounces, res.Groups)
+	progress(line)
+	m.queueAnalysis(job, mb, progress)
+	return line, nil
+}
+
+// runAnalyze runs the agent over the groups named by the target: "" = the
+// actionable groups flagged for analysis, "*" = every actionable group, or
+// one group key.
+func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
 	provider := ResolveAgentProvider(m.db)
 	if !agent.IsValidProvider(provider) {
 		return "", fmt.Errorf("agent provider %q is not registered", provider)
@@ -560,7 +784,7 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, progress f
 	if !agent.ProviderAvailable(provider) {
 		return "", fmt.Errorf("agent provider %q is not available on this machine", provider)
 	}
-	idx, err := mailengine.OpenIndex(ctx, m.mailsRoot, mb.Address, func(msg string) { progress("[" + mb.Address + "] " + msg) })
+	idx, err := mailengine.OpenIndex(ctx, m.mailsRoot, mb.Address, mailengine.Progress(progress))
 	if err != nil {
 		return "", fmt.Errorf("failed to open the index of %s: %w", mb.Address, err)
 	}
@@ -571,7 +795,8 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, progress f
 	case "":
 		groups, err = models.ListGroupsNeedingAnalysis(idx)
 	case analyzeAllTarget:
-		groups, err = models.ListGroups(idx, models.GroupFilter{})
+		actionable := true
+		groups, err = models.ListGroups(idx, models.GroupFilter{Actionable: &actionable})
 	default:
 		var g *models.BounceGroup
 		g, err = models.GetGroup(idx, job.Target)
@@ -588,30 +813,30 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, progress f
 	if len(groups) == 0 {
 		return "no group needs analysis", nil
 	}
-	progress(fmt.Sprintf("[%s] analyzing %d group(s) with %s", mb.Address, len(groups), provider))
+	progress(fmt.Sprintf("analyzing %d group(s) with %s", len(groups), provider))
 	done, failed := 0, 0
 	var failures []string
 	for i, g := range groups {
 		if ctx.Err() != nil {
 			return fmt.Sprintf("analyzed %d, failed %d", done, failed), errors.New("server shutting down")
 		}
-		progress(fmt.Sprintf("[%s] (%d/%d) %s", mb.Address, i+1, len(groups), g.Title))
+		progress(fmt.Sprintf("(%d/%d) %s", i+1, len(groups), g.Title))
 		report, err := agent.AnalyzeGroup(ctx, agent.AnalyzeInput{
 			MailsRoot: m.mailsRoot, AgentRoot: m.agentRoot, TemplatesFS: m.templates,
 			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Language: "ja",
-		}, func(msg string) { progress("[" + mb.Address + "] " + msg) })
+		}, progress)
 		switch {
 		case err != nil:
 			failed++
 			failures = append(failures, fmt.Sprintf("%s: %v", g.GroupKey, err))
-			progress(fmt.Sprintf("[%s] %s: error: %v", mb.Address, g.GroupKey, err))
+			progress(fmt.Sprintf("%s: error: %v", g.GroupKey, err))
 		case report != nil && report.Status == "error":
 			failed++
 			failures = append(failures, fmt.Sprintf("%s: %s", g.GroupKey, report.ErrorMessage))
-			progress(fmt.Sprintf("[%s] %s: agent failed: %s", mb.Address, g.GroupKey, report.ErrorMessage))
+			progress(fmt.Sprintf("%s: agent failed: %s", g.GroupKey, report.ErrorMessage))
 		default:
 			done++
-			progress(fmt.Sprintf("[%s] %s: completed", mb.Address, g.GroupKey))
+			progress(fmt.Sprintf("%s: completed", g.GroupKey))
 		}
 	}
 	result := fmt.Sprintf("analyzed %d, failed %d", done, failed)

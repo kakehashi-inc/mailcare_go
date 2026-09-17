@@ -13,12 +13,12 @@ import (
 	"mailcare/app/models"
 )
 
-// storeOptions controls how storeMessage behaves for check vs. reindex.
+// storeOptions controls how storeMessage behaves for fetch vs. reindex.
 type storeOptions struct {
-	writeEML bool // write the .eml (check); reindex reads it instead
+	writeEML bool // write the .eml (fetch); reindex reads it instead
 	// dedupeByMessageID skips a message whose Message-ID is already indexed.
 	// A UIDVALIDITY change gives every message a new key, so this is what
-	// keeps the re-scanned window from being indexed twice (check only).
+	// keeps the re-scanned window from being indexed twice (fetch only).
 	dedupeByMessageID bool
 }
 
@@ -26,14 +26,12 @@ type storeOptions struct {
 // indexed under another key (see storeOptions.dedupeByMessageID).
 var errDuplicateMessage = errors.New("mailengine: message already indexed")
 
-// storeMessage writes the derived files of one message, inserts its index row,
-// classifies it and records its bounce details and group. The group counters
-// are not refreshed here; the caller does that once per run through tracker.
+// storeMessage writes the derived files of one message and inserts its index
+// row with classified = 0 (design 5.1). Classification, extraction and
+// grouping happen later in the grouping phase (groupMessage).
 //
-// raw is the original message, src its IMAP identity. exclude lists the
-// addresses never taken as failed recipient (the monitored address).
-func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOptions, tracker *groupTracker,
-	exclude ...string) (*models.Message, *ParsedMessage, error) {
+// raw is the original message, src its IMAP identity.
+func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOptions) (*models.Message, *ParsedMessage, error) {
 	pm := ParseMessage(raw)
 	if opts.dedupeByMessageID && pm.MessageID != "" {
 		exists, err := models.MessageIDExists(db, pm.MessageID)
@@ -87,63 +85,10 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 		HasHTML:    pm.HasHTML,
 		FetchedAt:  pm.Source.FetchedAt,
 	}
-	cls := Classify(pm)
-	var bounce *models.Bounce
-	var group *models.BounceGroup
-	if cls.IsBounce {
-		msg.IsBounce = true
-		msg.BounceKind = cls.Kind
-		msg.ClassifyReason = cls.Reason
-		if cls.Kind != bounceKindAutoReply {
-			bounce = ExtractBounce(pm, cls.Kind, append([]string{pm.FromAddress}, exclude...)...)
-			group = groupForBounce(cls.Kind, bounce)
-			if group != nil {
-				msg.GroupKey = group.GroupKey
-			}
-		}
-	}
 	if err := models.InsertMessage(db, msg); err != nil {
 		return nil, pm, fmt.Errorf("insert message %s: %w", key, err)
 	}
-	if bounce != nil {
-		bounce.MessageID = msg.ID
-		if err := models.UpsertBounce(db, bounce); err != nil {
-			return nil, pm, fmt.Errorf("insert bounce %s: %w", key, err)
-		}
-	}
-	if err := tracker.upsert(db, group); err != nil {
-		return nil, pm, fmt.Errorf("upsert group for %s: %w", key, err)
-	}
 	return msg, pm, nil
-}
-
-// reclassifyMessage re-runs classification, extraction and grouping for an
-// existing index row (Reclassify). The bounces and groups tables were cleared
-// beforehand by the caller.
-func reclassifyMessage(db *sql.DB, msg *models.Message, pm *ParsedMessage, tracker *groupTracker,
-	exclude ...string) error {
-	cls := Classify(pm)
-	var bounce *models.Bounce
-	var group *models.BounceGroup
-	groupKey := ""
-	if cls.IsBounce && cls.Kind != bounceKindAutoReply {
-		bounce = ExtractBounce(pm, cls.Kind, append([]string{pm.FromAddress}, exclude...)...)
-		group = groupForBounce(cls.Kind, bounce)
-		if group != nil {
-			groupKey = group.GroupKey
-		}
-	}
-	if err := models.UpdateMessageClassification(db, msg.ID, cls.IsBounce, cls.Kind, cls.Reason, groupKey); err != nil {
-		return err
-	}
-	msg.IsBounce, msg.BounceKind, msg.ClassifyReason, msg.GroupKey = cls.IsBounce, cls.Kind, cls.Reason, groupKey
-	if bounce != nil {
-		bounce.MessageID = msg.ID
-		if err := models.UpsertBounce(db, bounce); err != nil {
-			return err
-		}
-	}
-	return tracker.upsert(db, group)
 }
 
 // writeDerivedFiles writes <key>.txt, <key>.html (only when present, removed

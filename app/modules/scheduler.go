@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// Scheduler queues a check job for every mailbox at each configured check
-// time (HH:MM, local wall clock). It re-reads check_times on every tick so a
+// Scheduler queues a sync job for every enabled mailbox at each configured
+// check time (HH:MM, local wall clock). It re-reads check_times on every tick so a
 // change in the settings takes effect immediately, and it never fires the
 // same time twice within one minute.
 type Scheduler struct {
@@ -72,7 +72,8 @@ func (s *Scheduler) Stop() {
 }
 
 // Tick evaluates the check times once: every configured time that arrived
-// since the previous tick queues one check job (all mailboxes).
+// since the previous tick queues one sync job (mailbox NULL: expanded into
+// one child per enabled mailbox by the job manager).
 func (s *Scheduler) Tick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,14 +86,14 @@ func (s *Scheduler) Tick() {
 	for _, key := range due {
 		s.lastFired[key.time] = key.minute
 	}
-	job, created, err := s.jm.Enqueue(JobKindCheck, 0, "", RequestedByScheduler)
+	job, created, err := s.jm.Enqueue(JobKindSync, 0, "", RequestedByScheduler)
 	switch {
 	case err != nil:
-		log.Printf("scheduler: failed to queue the check job: %v", err)
+		log.Printf("scheduler: failed to queue the sync job: %v", err)
 	case created:
-		log.Printf("scheduler: queued check job #%d", job.ID)
+		log.Printf("scheduler: queued sync job #%d", job.ID)
 	default:
-		log.Printf("scheduler: check job #%d is already %s", job.ID, job.Status)
+		log.Printf("scheduler: sync job #%d is already %s", job.ID, job.Status)
 	}
 }
 

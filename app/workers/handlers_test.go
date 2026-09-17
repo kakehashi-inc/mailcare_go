@@ -82,34 +82,88 @@ func decode(t *testing.T, body []byte, v any) {
 }
 
 type groupsResponse struct {
-	Groups []GroupDTO         `json:"groups"`
-	Counts models.GroupCounts `json:"counts"`
+	Groups        []GroupDTO         `json:"groups"`
+	Counts        models.GroupCounts `json:"counts"`
+	ExcludedCount int                `json:"excluded_count"`
+}
+
+// seededGroupCounts returns how many of the seeded groups are actionable and
+// how many are excluded (recipient-side); the split depends on the category
+// rules of mailengine, so the tests derive their expectations from it.
+func seededGroupCounts(t *testing.T, s *seededCore) (all groupsResponse, actionable, excluded int) {
+	t.Helper()
+	rec := do(t, s.h, http.MethodGet, s.path("/groups?scope=all"), nil, s.user)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list all groups: %d %s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec.Body.Bytes(), &all)
+	if len(all.Groups) != s.reindex.Groups {
+		t.Fatalf("scope=all lists %d groups, reindex made %d", len(all.Groups), s.reindex.Groups)
+	}
+	for _, g := range all.Groups {
+		if g.Actionable {
+			actionable++
+		} else {
+			excluded++
+		}
+	}
+	return all, actionable, excluded
 }
 
 func TestGroupsEndpoints(t *testing.T) {
 	s := newSeededCore(t)
-
+	all, actionable, excluded := seededGroupCounts(t, s)
+	if all.Counts.Open != len(all.Groups) || all.Counts.Resolved != 0 || all.ExcludedCount != excluded {
+		t.Fatalf("scope=all counts %+v excluded %d (want %d)", all.Counts, all.ExcludedCount, excluded)
+	}
+	for _, g := range all.Groups {
+		if g.State != "open" || g.MessageCount != 1 || g.ReportStatus != "" || g.ReportSummary != "" || !g.NeedsAnalysis {
+			t.Errorf("unexpected group %+v", g)
+		}
+		if g.RecipientDomain == "" || g.Title == "" || g.LastSeen == nil || g.Category == "" || g.UnitValue == "" {
+			t.Errorf("group lacks fields %+v", g)
+		}
+	}
+	// The default scope is the actionable groups; excluded lists the rest.
 	rec := do(t, s.h, http.MethodGet, s.path("/groups"), nil, s.user)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list groups: %d %s", rec.Code, rec.Body.String())
 	}
 	var list groupsResponse
 	decode(t, rec.Body.Bytes(), &list)
-	if len(list.Groups) != 2 || list.Counts.Open != 2 || list.Counts.Resolved != 0 {
-		t.Fatalf("groups %d counts %+v", len(list.Groups), list.Counts)
+	if len(list.Groups) != actionable || list.Counts.Open != actionable || list.ExcludedCount != excluded {
+		t.Errorf("default scope: %d groups, counts %+v, excluded %d (want %d / %d)", len(list.Groups), list.Counts, list.ExcludedCount, actionable, excluded)
 	}
 	for _, g := range list.Groups {
-		if g.State != "open" || g.MessageCount != 1 || g.ReportStatus != "" || g.ReportSummary != "" || !g.NeedsAnalysis {
-			t.Errorf("unexpected group %+v", g)
+		if !g.Actionable {
+			t.Errorf("excluded group in the default scope: %+v", g)
 		}
-		if g.RecipientDomain == "" || g.Title == "" || g.LastSeen == nil {
-			t.Errorf("group lacks fields %+v", g)
+	}
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=excluded"), nil, s.user)
+	decode(t, rec.Body.Bytes(), &list)
+	if len(list.Groups) != excluded || list.Counts.Open != excluded {
+		t.Errorf("scope=excluded: %d groups, counts %+v (want %d)", len(list.Groups), list.Counts, excluded)
+	}
+	// Category filter and validation of scope / category.
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all&category="+all.Groups[0].Category), nil, s.user)
+	decode(t, rec.Body.Bytes(), &list)
+	if len(list.Groups) == 0 {
+		t.Errorf("category filter %s: no groups", all.Groups[0].Category)
+	}
+	for _, g := range list.Groups {
+		if g.Category != all.Groups[0].Category {
+			t.Errorf("category filter: %+v", g)
+		}
+	}
+	for _, bad := range []string{"?scope=bogus", "?category=bogus"} {
+		if rec := do(t, s.h, http.MethodGet, s.path("/groups"+bad), nil, s.user); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", bad, rec.Code)
 		}
 	}
 	// Filters: state, q, and validation of both.
-	rec = do(t, s.h, http.MethodGet, s.path("/groups?state=resolved"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all&state=resolved"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
-	if len(list.Groups) != 0 || list.Counts.Open != 2 {
+	if len(list.Groups) != 0 || list.Counts.Open != len(all.Groups) {
 		t.Errorf("state filter: %d groups, counts %+v", len(list.Groups), list.Counts)
 	}
 	rec = do(t, s.h, http.MethodGet, s.path("/groups?state=bogus"), nil, s.user)
@@ -120,18 +174,18 @@ func TestGroupsEndpoints(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("invalid responsible: %d", rec.Code)
 	}
-	rec = do(t, s.h, http.MethodGet, s.path("/groups?q=nowhere.example.org"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all&q=nowhere.example.org"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
 	if len(list.Groups) != 1 || list.Groups[0].RecipientDomain != "nowhere.example.org" {
 		t.Errorf("q filter: %+v", list.Groups)
 	}
-	rec = do(t, s.h, http.MethodGet, s.path("/groups?q=no-such-domain"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all&q=no-such-domain"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
 	if len(list.Groups) != 0 {
 		t.Errorf("q filter miss: %+v", list.Groups)
 	}
 	// Detail.
-	rec = do(t, s.h, http.MethodGet, s.path("/groups?q=nowhere.example.org"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all&q=nowhere.example.org"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
 	gk := list.Groups[0].GroupKey
 	rec = do(t, s.h, http.MethodGet, s.path("/groups/"+gk), nil, s.user)
@@ -183,13 +237,13 @@ func TestGroupsEndpoints(t *testing.T) {
 	if changed.Group.State != "resolved" || changed.Group.StateUpdatedAt == nil {
 		t.Errorf("state response %+v", changed.Group)
 	}
-	rec = do(t, s.h, http.MethodGet, s.path("/groups"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
-	if list.Counts.Open != 1 || list.Counts.Resolved != 1 {
+	if list.Counts.Open != len(all.Groups)-1 || list.Counts.Resolved != 1 {
 		t.Errorf("counts after resolve %+v", list.Counts)
 	}
-	if list.Groups[0].State != "open" || list.Groups[1].State != "resolved" {
-		t.Errorf("open groups should sort first: %s / %s", list.Groups[0].State, list.Groups[1].State)
+	if list.Groups[0].State != "open" || list.Groups[len(list.Groups)-1].State != "resolved" {
+		t.Errorf("open groups should sort first: %s / %s", list.Groups[0].State, list.Groups[len(list.Groups)-1].State)
 	}
 
 	// Analyze queues a job for that group.
@@ -327,14 +381,26 @@ func TestMessagesEndpoints(t *testing.T) {
 
 func TestJobsEndpoints(t *testing.T) {
 	s := newSeededCore(t)
-	// A user may queue a check, not a reindex.
-	rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "reindex", "mailbox_id": s.mb.ID}, s.user)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("reindex as user: %d", rec.Code)
+	// A user may queue sync / fetch / group / analyze, not the rebuilds.
+	for _, kind := range []string{"reindex", "reclassify"} {
+		rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind, "mailbox_id": s.mb.ID}, s.user)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s as user: %d", kind, rec.Code)
+		}
 	}
-	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "check", "mailbox_id": s.mb.ID}, s.user)
+	for _, kind := range []string{"fetch", "group", "analyze"} {
+		rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind, "mailbox_id": s.mb.ID}, s.user)
+		if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"kind":"`+kind+`"`) {
+			t.Errorf("%s as user: %d %s", kind, rec.Code, rec.Body.String())
+		}
+	}
+	rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "analyze", "target": "*"}, s.user)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"mailbox_id":null`) {
+		t.Errorf("all-mailbox analyze as user: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": s.mb.ID}, s.user)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("check as user: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("sync as user: %d %s", rec.Code, rec.Body.String())
 	}
 	var env struct {
 		Job     JobDTO `json:"job"`
@@ -344,9 +410,9 @@ func TestJobsEndpoints(t *testing.T) {
 	if !env.Created || env.Job.Status != "queued" || env.Job.MailboxAddress != s.mb.Address || env.Job.RequestedBy != "web:bob" {
 		t.Errorf("job %+v created %v", env.Job, env.Created)
 	}
-	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "check", "mailbox_id": s.mb.ID}, s.admin)
+	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": s.mb.ID}, s.admin)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("duplicate check: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("duplicate sync: %d %s", rec.Code, rec.Body.String())
 	}
 	var dup struct {
 		Job     JobDTO `json:"job"`
@@ -356,7 +422,8 @@ func TestJobsEndpoints(t *testing.T) {
 	if dup.Created || dup.Job.ID != env.Job.ID {
 		t.Errorf("duplicate: %+v created %v", dup.Job, dup.Created)
 	}
-	for _, bad := range []map[string]any{{"kind": "bogus"}, {"kind": "analyze"}, {"kind": "check", "mailbox_id": 999}, {"kind": "check", "mailbox_id": -1}} {
+	for _, bad := range []map[string]any{{"kind": "bogus"}, {"kind": "check"}, {"kind": "analyze", "target": "0123456789abcdef"},
+		{"kind": "sync", "mailbox_id": 999}, {"kind": "sync", "mailbox_id": -1}} {
 		if rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", bad, s.admin); rec.Code != http.StatusBadRequest {
 			t.Errorf("%v: %d, want 400", bad, rec.Code)
 		}
@@ -402,6 +469,8 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		{"check_times": []string{"25:00"}},
 		{"check_times": []string{"6:5"}},
 		{"agent_provider": "no-such-provider"},
+		{"workers": 0},
+		{"workers": modules.MaxWorkers + 1},
 	} {
 		rec := do(t, s.h, http.MethodPut, "/api/v1/settings", bad, s.admin)
 		if rec.Code != http.StatusBadRequest {
@@ -416,13 +485,30 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		CheckTimes    []string `json:"check_times"`
 		AgentProvider string   `json:"agent_provider"`
 		AgentEnabled  bool     `json:"agent_enabled"`
+		Workers       int      `json:"workers"`
 		WebPort       int      `json:"web_port"`
 		DataDir       string   `json:"data_dir"`
 	}
 	decode(t, rec.Body.Bytes(), &st)
 	if strings.Join(st.CheckTimes, ",") != "07:30,23:00" || st.AgentEnabled || st.AgentProvider != modules.DefaultAgentProvider ||
-		st.WebPort != modules.DefaultWebPort || st.DataDir != s.dataDir {
+		st.WebPort != modules.DefaultWebPort || st.DataDir != s.dataDir || st.Workers != modules.DefaultWorkers {
 		t.Errorf("settings %+v", st)
+	}
+	// The worker count is persisted and applied to the job manager at once.
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"workers": 5}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workers: %d %s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec.Body.Bytes(), &st)
+	if st.Workers != 5 || s.jm.Workers() != 5 || models.GetSetting(s.db, modules.SettingWorkers) != "5" {
+		t.Errorf("workers not applied: dto %d manager %d stored %q", st.Workers, s.jm.Workers(), models.GetSetting(s.db, modules.SettingWorkers))
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"workers": modules.DefaultWorkers}, s.admin)
+	if rec.Code != http.StatusOK || s.jm.Workers() != modules.DefaultWorkers {
+		t.Errorf("workers back to default: %d manager %d", rec.Code, s.jm.Workers())
+	}
+	if _, found, _ := models.GetSettingStrict(s.db, modules.SettingWorkers); found {
+		t.Errorf("default workers still stored")
 	}
 	if got := models.GetSetting(s.db, modules.SettingCheckTimes); got != "07:30,23:00" {
 		t.Errorf("check_times persisted as %q", got)
@@ -452,23 +538,30 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 
 func TestDashboardAndMailboxStats(t *testing.T) {
 	s := newSeededCore(t)
+	_, actionable, excluded := seededGroupCounts(t, s)
 	rec := do(t, s.h, http.MethodGet, "/api/v1/dashboard", nil, s.user)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dashboard: %d %s", rec.Code, rec.Body.String())
 	}
 	var d DashboardDTO
 	decode(t, rec.Body.Bytes(), &d)
-	if d.Totals.Mailboxes != 1 || d.Totals.Messages != 3 || d.Totals.Bounces != 2 || d.Totals.OpenGroups != 2 {
-		t.Errorf("totals %+v", d.Totals)
+	if d.Totals.Mailboxes != 1 || d.Totals.Messages != 3 || d.Totals.Bounces != 2 || d.Totals.OpenGroups != actionable || d.Totals.Unclassified != 0 {
+		t.Errorf("totals %+v (actionable %d)", d.Totals, actionable)
 	}
-	if len(d.Mailboxes) != 1 || d.Mailboxes[0].Stats == nil || d.Mailboxes[0].Stats.Messages != 3 || d.Mailboxes[0].Stats.Groups.Open != 2 {
-		t.Errorf("mailboxes %+v", d.Mailboxes)
+	if len(d.Mailboxes) != 1 || d.Mailboxes[0].Stats == nil || d.Mailboxes[0].Stats.Messages != 3 ||
+		d.Mailboxes[0].Stats.Groups.Open != actionable || d.Mailboxes[0].Stats.ExcludedGroups != excluded {
+		t.Errorf("mailboxes %+v (actionable %d, excluded %d)", d.Mailboxes, actionable, excluded)
 	}
-	if len(d.RecentGroups) != 2 || d.RecentGroups[0].MailboxAddress != s.mb.Address || d.RecentGroups[0].MailboxID != s.mb.ID {
-		t.Errorf("recent groups %+v", d.RecentGroups)
+	if len(d.RecentGroups) != actionable {
+		t.Errorf("recent groups %+v (want %d actionable)", d.RecentGroups, actionable)
 	}
-	if d.RecentGroups[0].LastSeen == nil || d.RecentGroups[1].LastSeen == nil || *d.RecentGroups[0].LastSeen < *d.RecentGroups[1].LastSeen {
-		t.Errorf("recent groups not newest first: %+v", d.RecentGroups)
+	for i, g := range d.RecentGroups {
+		if !g.Actionable || g.MailboxAddress != s.mb.Address || g.MailboxID != s.mb.ID || g.LastSeen == nil {
+			t.Errorf("recent group %+v", g)
+		}
+		if i > 0 && *d.RecentGroups[i-1].LastSeen < *g.LastSeen {
+			t.Errorf("recent groups not newest first: %+v", d.RecentGroups)
+		}
 	}
 	if d.NextCheckAt == nil || len(d.CheckTimes) != 3 || d.Agent.Provider != modules.DefaultAgentProvider || !d.Agent.Enabled {
 		t.Errorf("schedule/agent %+v %v %+v", d.CheckTimes, d.NextCheckAt, d.Agent)
@@ -493,8 +586,24 @@ func TestDashboardAndMailboxStats(t *testing.T) {
 		t.Errorf("list without stats: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodGet, "/api/v1/mailboxes?stats=1", nil, s.user)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"stats":{"messages":3,"bounces":2,"groups":{"open":2,"resolved":0,"ignored":0}}`) {
-		t.Errorf("list with stats: %d %s", rec.Code, rec.Body.String())
+	var listed struct {
+		Mailboxes []MailboxDTO `json:"mailboxes"`
+	}
+	decode(t, rec.Body.Bytes(), &listed)
+	if rec.Code != http.StatusOK || len(listed.Mailboxes) != 2 || listed.Mailboxes[0].Stats == nil {
+		t.Fatalf("list with stats: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, mb := range listed.Mailboxes {
+		if mb.Address != s.mb.Address {
+			continue
+		}
+		st := mb.Stats
+		if st.Messages != 3 || st.Bounces != 2 || st.Unclassified != 0 || st.Groups.Open != actionable || st.ExcludedGroups != excluded {
+			t.Errorf("stats %+v (actionable %d, excluded %d)", st, actionable, excluded)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), `"unclassified":0`) || !strings.Contains(rec.Body.String(), `"excluded_groups":`) {
+		t.Errorf("stats fields missing: %s", rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodGet, "/api/v1/mailboxes/"+itoa(s.mb.ID), nil, s.user)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"stats":{"messages":3`) {

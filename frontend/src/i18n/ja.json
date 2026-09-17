@@ -135,16 +135,19 @@
         "canceled": "取消"
     },
     "jobKind": {
-        "check": "メールチェック",
+        "sync": "同期",
+        "fetch": "受信",
+        "group": "纏め",
+        "analyze": "解析",
         "reindex": "再索引",
         "reclassify": "再判定",
-        "analyze": "分析の再実行"
+        "other": "その他 ({{kind}})"
     },
     "checkStatus": {
-        "never": "未チェック",
+        "never": "未同期",
         "ok": "正常",
         "error": "エラー",
-        "running": "チェック中"
+        "running": "同期中"
     },
     "reportStatus": {
         "none": "報告なし",
@@ -171,17 +174,18 @@
         "totalOpenGroups": "未対応グループ",
         "totalBounces": "バウンス",
         "totalMessages": "取得メール",
+        "totalUnclassified": "纏め待ち",
         "mailboxes": "メールアドレス",
-        "checkNow": "今すぐチェック",
-        "checkAll": "すべてチェック",
-        "checkQueued": "{{address}}のチェックを開始しました。",
-        "checkAllQueued": "すべてのメールアドレスのチェックを開始しました。",
+        "syncNow": "今すぐ同期",
+        "syncAll": "すべて同期",
+        "syncQueued": "{{address}}の同期を開始しました。",
+        "syncAllQueued": "すべてのメールアドレスの同期を開始しました。",
         "recentGroups": "直近の纏めグループ",
-        "recentGroupsHint": "すべてのメールアドレスから、最近更新されたグループを表示します。",
+        "recentGroupsHint": "すべてのメールアドレスから、最近更新された対応対象のグループを表示します。",
         "noRecentGroups": "最近のバウンスはありません。",
         "schedule": "スケジュール",
-        "nextCheck": "次回チェック",
-        "checkTimes": "チェック時刻",
+        "nextCheck": "次回同期",
+        "checkTimes": "同期時刻",
         "noSchedule": "スケジュール未設定",
         "agent": "エージェント",
         "activeJobs": "実行中のジョブ",
@@ -206,15 +210,17 @@
         "editAria": "{{address}}を編集",
         "openGroups": "未対応グループ",
         "bounces": "バウンス",
+        "unclassified": "纏め待ち",
+        "excludedGroups": "対象外グループ",
         "messages": "取得メール",
-        "lastChecked": "最終チェック",
-        "disabledNote": "このメールアドレスは無効化されており、自動チェックの対象外です。",
+        "lastChecked": "最終同期",
+        "disabledNote": "このメールアドレスは無効化されており、自動同期の対象外です。",
         "address": "メールアドレス",
         "addressHint": "監視対象のアドレスです。登録後は小文字で保存されます。",
         "addressInvalid": "メールアドレスの形式が正しくありません。",
         "displayName": "表示名",
         "enabled": "監視を有効にする",
-        "enabledHint": "無効にするとスケジュールによる自動チェックの対象外になります。",
+        "enabledHint": "無効にするとスケジュールによる自動同期の対象外になります。",
         "server": "サーバー",
         "host": "IMAP ホスト名",
         "port": "ポート",
@@ -230,9 +236,9 @@
         "sectionRange": "取得範囲",
         "sectionRangeHint": "初回は initial_days、2 回目以降は recent_days の期間を対象に未取得メールを探します。",
         "initialDays": "初回取得日数",
-        "initialDaysHint": "初回チェックで遡る日数 (既定 90 日)",
+        "initialDaysHint": "初回同期で遡る日数 (既定 90 日)",
         "recentDays": "通常取得日数",
-        "recentDaysHint": "2 回目以降のチェックで遡る日数 (既定 30 日)",
+        "recentDaysHint": "2 回目以降の同期で遡る日数 (既定 30 日)",
         "daysInvalid": "1 以上の整数を入力してください。",
         "test": "接続テスト",
         "testOk": "{{address}}に接続できました。",
@@ -250,7 +256,12 @@
     },
     "alerts": {
         "chooseMailbox": "アラートを確認するメールアドレスを選択してください。",
-        "searchPlaceholder": "タイトル、ドメイン、診断文で検索",
+        "scope": "表示範囲",
+        "scopeActionable": "対応対象",
+        "scopeExcluded": "対象外（宛先側の問題）",
+        "scopeExcludedHint": "存在しないアドレスや容量超過など、宛先側で解決される問題です。解析は行われません。",
+        "categoryFilter": "カテゴリ",
+        "searchPlaceholder": "対応単位、判断主体、ドメイン、診断文で検索",
         "responsibleFilter": "対応者区分",
         "stateTabs": "対応状態",
         "sortLastSeenDesc": "最終日時 (新しい順)",
@@ -262,7 +273,8 @@
             "resolved": "対応済のグループはありません",
             "ignored": "無視したグループはありません"
         },
-        "emptyFiltered": "絞り込み条件を変えてみてください。"
+        "emptyFiltered": "絞り込み条件を変えてみてください。",
+        "emptyExcluded": "対象外のグループはここに表示されます。"
     },
     "group": {
         "detail": "グループ詳細",
@@ -295,7 +307,17 @@
         "copyAll": "{{what}}をすべてコピー",
         "copyValue": "{{value}}をコピー",
         "messagesTitle": "元メール ({{count}} 件)",
-        "noMessages": "このグループにメールはありません。"
+        "noMessages": "このグループにメールはありません。",
+        "category": "カテゴリ",
+        "unitValue": "対応単位",
+        "authority": "判断主体",
+        "actionable": "対応対象",
+        "excluded": "対象外（宛先側の問題）",
+        "headline": "{{label}}: {{unit}}",
+        "headlineWithAuthority": "{{label}}: {{unit}}（{{authority}}）",
+        "copyUnit": "対応単位「{{value}}」をコピー",
+        "technicalTitle": "内部タイトル",
+        "headlineNoUnit": "{{label}}（{{where}}）"
     },
     "report": {
         "title": "分析報告",
@@ -310,7 +332,9 @@
         "noBody": "報告本文はありません。",
         "provider": "プロバイダー",
         "sampled": "参照メール {{count}} 件",
-        "history": "過去の報告 ({{count}} 件)"
+        "history": "過去の報告 ({{count}} 件)",
+        "excludedTitle": "このグループは分析しません",
+        "excluded": "宛先側の問題（存在しないアドレス、容量超過など）は送信側で対応できないため、エージェントによる分析は行いません。"
     },
     "mails": {
         "chooseMailbox": "メールを閲覧するメールアドレスを選択してください。",
@@ -370,59 +394,83 @@
         "canceled": "ジョブを取り消しました。",
         "requestedBy": "実行者: {{name}}",
         "targetAll": "全グループ",
-        "targetNeeds": "分析待ちのグループ",
-        "alreadyActive": "同じジョブがすでに待機中または実行中です。"
+        "targetNeeds": "解析待ちのグループ",
+        "alreadyActive": "同じジョブがすでに待機中または実行中です。",
+        "expanded": "アドレスごとに展開"
     },
     "tools": {
-        "description": "索引や判定をやり直したり、エージェント分析を再実行します。",
-        "adminOnlyTitle": "ツールの実行は管理者のみ可能です",
-        "adminOnly": "一般利用者はジョブの状況を閲覧できますが、実行はできません。必要な場合は管理者に依頼してください。",
-        "target": "対象",
-        "targetHint": "「すべて」を選ぶと登録済みの全メールアドレスが対象になります。",
-        "analyzeScope": "分析の範囲",
-        "analyzeScopeHint": "「分析の再実行」でのみ使われます。",
-        "scopeNeeds": "分析待ちのグループのみ",
-        "scopeAll": "すべてのグループ",
+        "description": "受信・纏め・解析を個別に、またはまとめて実行します。索引の再構築や判定のやり直しもここから行います。",
+        "adminOnlyTitle": "再索引と再判定は管理者のみ実行できます",
+        "adminOnly": "一般利用者は同期・受信・纏め・解析を実行できます。再索引や再判定が必要な場合は管理者に依頼してください。",
+        "target": "対象アドレス",
+        "targetAll": "すべて",
+        "allNote": "「すべて」を選ぶと、メールアドレスごとに 1 件ずつジョブが展開され、ワーカー数の範囲で並列に実行されます。",
+        "analyzeScope": "解析の範囲",
+        "scopeNeeds": "解析待ちのみ",
+        "scopeAll": "全グループ",
         "run": "実行",
         "queued": "{{tool}}を投入しました。",
         "confirmTitle": "{{tool}}を実行しますか？",
         "confirmMessage": "対象: {{target}}。{{tool}}をバックグラウンドで実行します。",
-        "analyzeAllNote": "有効な {{count}} 件のメールアドレスそれぞれに分析ジョブを投入します。",
         "jobs": "ジョブ履歴",
-        "jobsHint": "実行中のジョブは自動で更新されます。",
-        "reindex": {
-            "description": "索引 DB を削除し、保存済みの原文からメールの解析・判定・纏めをすべてやり直します。",
-            "warning": "既存の分析報告は消去され、すべてのグループが再分析されます。"
+        "jobsHint": "実行中のジョブは自動で更新されます。「すべて」で投入したジョブは、アドレスごとの子ジョブとして表示されます。",
+        "sync": {
+            "title": "全アドレス同期（受信 → 纏め → 解析）",
+            "description": "メールを受信し、新しいバウンスを纏め、対応対象のグループを解析します。スケジュールで実行されるのと同じ処理です。",
+            "warning": ""
         },
-        "reclassify": {
-            "description": "メールを残したまま、バウンス判定と纏めだけをやり直します。判定ルールの更新後に使います。",
+        "fetch": {
+            "title": "受信のみ",
+            "description": "IMAP サーバーから未取得のメールを保存します。纏めと解析は行いません。",
+            "warning": ""
+        },
+        "group": {
+            "title": "纏めのみ",
+            "description": "受信済みで纏め待ちのメールを判定してグループに纏め、解析待ちのグループを解析します。",
             "warning": ""
         },
         "analyze": {
-            "description": "エージェントによる原因分析を再実行します。分析待ちのグループのみ、または全グループを対象にできます。",
+            "title": "解析のみ",
+            "description": "エージェントによる原因分析を実行します。解析待ちのグループのみ、または対応対象の全グループを対象にできます。",
             "warning": ""
         },
+        "reindex": {
+            "title": "再索引",
+            "description": "索引 DB を作り直し、保存済みの原文からメールの解析・判定・纏めをすべてやり直します。",
+            "warning": "時間がかかります。グループの状態と分析報告は、同じグループが再び現れた場合のみ引き継がれます。"
+        },
+        "reclassify": {
+            "title": "再判定",
+            "description": "メールを残したまま、バウンス判定と纏めだけをやり直します。判定ルールの更新後に使います。",
+            "warning": ""
+        },
+        "adminOnlyBadge": "管理者のみ",
         "runAria": "{{tool}}を開始"
     },
     "settings": {
         "description": "システムの設定と自分のアカウントを管理します。",
         "adminOnly": "管理者",
         "menu": {
-            "general": "チェック時刻、エージェント、サーバー情報",
+            "general": "同期時刻、ワーカー数、エージェント、サーバー情報",
             "mailboxes": "監視するメールアドレスの登録・編集・接続テスト",
             "users": "利用者の追加、役割の変更、パスワードのリセット",
             "tokens": "パスワードの代わりに使えるログイントークンの発行と削除",
             "account": "自分のパスワードを変更"
         },
         "saved": "設定を保存しました。",
-        "checkTimes": "チェック時刻",
-        "checkTimesHint": "指定した時刻 (サーバーのローカル時刻) に、有効な全メールアドレスのチェックを自動で行います。",
-        "noCheckTimes": "チェック時刻が設定されていません。自動チェックは行われません。",
+        "checkTimes": "同期時刻",
+        "checkTimesHint": "指定した時刻 (サーバーのローカル時刻) に、有効な全メールアドレスを自動で同期します。",
+        "noCheckTimes": "同期時刻が設定されていません。自動同期は行われません。",
         "addTime": "時刻を追加",
         "addTimeHint": "HH:MM 形式 (例: 09:00)",
         "removeTime": "{{time}}を削除",
         "invalidTime": "時刻は HH:MM 形式で指定してください。",
         "duplicateTime": "同じ時刻が重複しています。",
+        "jobs": "ジョブの実行",
+        "jobsHint": "バックグラウンドで実行するジョブの設定です。",
+        "workers": "ワーカー数",
+        "workersHint": "同時に実行するジョブ数。同じ IMAP サーバーのアカウントは自動的に順番に処理されます。",
+        "workersInvalid": "1〜16 の整数を入力してください。",
         "agent": "エージェント",
         "agentHint": "バウンスの原因を分析する外部 CLI の設定です。",
         "agentProvider": "プロバイダー",
@@ -432,7 +480,7 @@
         "providerUnknown": "不明",
         "providerUnavailableHint": "{{provider}}のコマンドがサーバーで見つかりません。インストールするか、別のプロバイダーを選んでください。",
         "agentEnabled": "エージェント分析を有効にする",
-        "agentEnabledHint": "有効にすると、メールチェックで新しいバウンスが見つかったときに自動で分析します。",
+        "agentEnabledHint": "有効にすると、同期で新しいバウンスが見つかったときに自動で分析します。",
         "server": "サーバー情報",
         "serverHint": "起動パラメータで決まる値です。ここでは変更できません。",
         "webListen": "待受アドレス",
@@ -444,7 +492,7 @@
         "usernameHint": "ログインに使う ID です。",
         "displayName": "表示名",
         "role": "役割",
-        "roleHint": "管理者は設定・利用者・メールアドレスの管理とツールの実行ができます。",
+        "roleHint": "管理者は設定・利用者・メールアドレスの管理と、再索引・再判定の実行ができます。",
         "password": "パスワード",
         "passwordConfirm": "パスワード (確認)",
         "passwordHint": "{{min}} 文字以上",
@@ -517,5 +565,59 @@
         "jobNotQueued": "このジョブはすでに開始しているため取り消せません。",
         "passwordTooShort": "パスワードが短すぎます。",
         "invalidTime": "時刻の形式が正しくありません。"
+    },
+    "category": {
+        "ip_blocked": {
+            "label": "送信 IP のブロック",
+            "description": "送信サーバーの IP がブラックリストに登録されています。登録先（判断主体）のサイトで解除を申請し、原因となった送信内容を見直してください。"
+        },
+        "rate_limited": {
+            "label": "送信レート制限",
+            "description": "宛先ドメインが短時間の大量送信を制限しています。送信速度や同時接続数を下げ、時間をおいて再送してください。"
+        },
+        "auth_failure": {
+            "label": "送信ドメイン認証の失敗",
+            "description": "SPF / DKIM / DMARC や逆引き DNS の検証に失敗しています。送信ドメインの DNS レコードと送信サーバーの設定を確認してください。"
+        },
+        "sender_blocked": {
+            "label": "送信元アドレスの拒否",
+            "description": "宛先ドメインがこの送信元アドレスからのメールを拒否しています。宛先側の管理者に解除を依頼するか、送信元アドレスを見直してください。"
+        },
+        "content_rejected": {
+            "label": "内容による拒否",
+            "description": "本文や添付ファイルがスパム・ウイルス・ポリシーなどの理由で拒否されています。送信内容と添付ファイルを見直してください。"
+        },
+        "message_too_large": {
+            "label": "サイズ超過",
+            "description": "メールのサイズが宛先の上限を超えています。添付ファイルを小さくするか、別の手段で共有してください。"
+        },
+        "server_config": {
+            "label": "送信サーバーの設定不備",
+            "description": "リレー・TLS・HELO などの設定が宛先の要件を満たしていません。送信サーバー（MTA）の設定を確認してください。"
+        },
+        "unknown_failure": {
+            "label": "原因不明の失敗",
+            "description": "既知のパターンに当てはまらない配信失敗です。診断文と元メールを確認し、必要に応じて分析報告を参照してください。"
+        },
+        "user_unknown": {
+            "label": "宛先アドレスが存在しない",
+            "description": "宛先アドレスが存在しません。宛先リストから該当アドレスを除外するか、相手に正しいアドレスを確認してください。"
+        },
+        "mailbox_full": {
+            "label": "宛先の容量超過",
+            "description": "宛先のメールボックスが容量上限に達しています。送信側でできることはなく、相手が整理するまで届きません。"
+        },
+        "mailbox_disabled": {
+            "label": "宛先アドレスの停止",
+            "description": "宛先アドレスが無効化・停止されています。宛先リストから除外するか、相手に別の連絡先を確認してください。"
+        },
+        "domain_not_found": {
+            "label": "宛先ドメインが見つからない",
+            "description": "宛先ドメインの DNS（MX）が見つかりません。ドメインの綴りを確認し、誤りでなければ宛先側の DNS 復旧を待ちます。"
+        },
+        "delivery_delay": {
+            "label": "配信の遅延",
+            "description": "宛先サーバーに一時的に接続できず配信が遅れています。通常は自動で再送されるため、長引く場合のみ宛先側に確認してください。"
+        }
     }
 }

@@ -28,7 +28,8 @@ func openIndexForCLI(ctx context.Context, mb *models.Mailbox) (*sql.DB, error) {
 // groupRow renders a group for JSON output.
 func groupRow(g *models.BounceGroup, report *models.AgentReport) map[string]interface{} {
 	row := map[string]interface{}{
-		"group_key": g.GroupKey, "title": g.Title, "bounce_kind": g.BounceKind, "recipient_domain": g.RecipientDomain,
+		"group_key": g.GroupKey, "title": g.Title, "category": g.Category, "unit_value": g.UnitValue,
+		"authority": g.Authority, "actionable": g.Actionable, "bounce_kind": g.BounceKind, "recipient_domain": g.RecipientDomain,
 		"status_code": g.StatusCode, "smtp_code": g.SMTPCode, "diagnostic_template": g.DiagnosticTemplate,
 		"responsible": g.Responsible, "message_count": g.MessageCount, "recipient_count": g.RecipientCount,
 		"remote_ip_count": g.RemoteIPCount, "first_seen": rfc3339OrNull(g.FirstSeen), "last_seen": rfc3339OrNull(g.LastSeen),
@@ -42,14 +43,52 @@ func groupRow(g *models.BounceGroup, report *models.AgentReport) map[string]inte
 	return row
 }
 
-// GroupsCmd lists the bounce groups of a mailbox.
+// Group list scopes: actionable groups (the default), the recipient-side
+// groups excluded from Alerts, or both.
+const (
+	GroupScopeActionable = "actionable"
+	GroupScopeExcluded   = "excluded"
+	GroupScopeAll        = "all"
+)
+
+// ActionableFilter maps a scope to the ListGroups / CountGroups filter
+// (nil = every group). ok is false for an unknown scope.
+func ActionableFilter(scope string) (actionable *bool, ok bool) {
+	switch scope {
+	case "", GroupScopeActionable:
+		v := true
+		return &v, true
+	case GroupScopeExcluded:
+		v := false
+		return &v, true
+	case GroupScopeAll:
+		return nil, true
+	}
+	return nil, false
+}
+
+// GroupsCmd lists the bounce groups of a mailbox ("groups ADDRESS") or, with
+// a group key, shows one group with its latest report ("groups ADDRESS KEY").
 type GroupsCmd struct {
-	Address string `arg:"" help:"Mail address"`
-	State   string `help:"Filter by state" enum:",open,resolved,ignored" default:""`
-	JSON    bool   `help:"Output as JSON"`
+	Address  string `arg:"" help:"Mail address"`
+	Key      string `arg:"" optional:"" help:"Group key: show that group instead of the list"`
+	State    string `help:"Filter by state" enum:",open,resolved,ignored" default:""`
+	Scope    string `help:"Which groups: actionable (default), excluded (recipient-side problems) or all" enum:"actionable,excluded,all" default:"actionable"`
+	Category string `help:"Filter by category (ip_blocked, user_unknown, ...)" default:""`
+	JSON     bool   `help:"Output as JSON"`
 }
 
 func (c *GroupsCmd) Run() error {
+	if strings.TrimSpace(c.Key) != "" {
+		return showGroup(c.Address, c.Key, c.JSON)
+	}
+	actionable, ok := ActionableFilter(c.Scope)
+	if !ok {
+		return NewExitErrorf(ExitArgument, "unknown scope %q", c.Scope)
+	}
+	if c.Category != "" && !IsKnownCategory(c.Category) {
+		return NewExitErrorf(ExitArgument, "unknown category %q (known: %s)", c.Category, strings.Join(KnownCategories(), ", "))
+	}
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
@@ -66,7 +105,7 @@ func (c *GroupsCmd) Run() error {
 		return err
 	}
 	defer idx.Close()
-	groups, err := models.ListGroups(idx, models.GroupFilter{State: c.State})
+	groups, err := models.ListGroups(idx, models.GroupFilter{State: c.State, Category: c.Category, Actionable: actionable})
 	if err != nil {
 		return NewExitError(ExitGeneral, err.Error())
 	}
@@ -86,32 +125,27 @@ func (c *GroupsCmd) Run() error {
 		fmt.Println("No groups.")
 		return nil
 	}
-	fmt.Printf("%-16s %-8s %-9s %-5s %-20s %-8s %s\n", "KEY", "STATE", "RESP", "MSGS", "LAST SEEN", "SEVERITY", "TITLE")
+	fmt.Printf("%-16s %-8s %-17s %-9s %-5s %-20s %-8s %s\n", "KEY", "STATE", "CATEGORY", "RESP", "MSGS", "LAST SEEN", "SEVERITY", "TITLE")
 	for _, g := range groups {
 		severity := ""
 		if r := reports[g.GroupKey]; r != nil {
 			severity = r.Severity
 		}
-		fmt.Printf("%-16s %-8s %-9s %-5d %-20s %-8s %s\n", g.GroupKey, g.State, g.Responsible, g.MessageCount,
-			formatNullTime(g.LastSeen), severity, clip(g.Title, 60))
+		fmt.Printf("%-16s %-8s %-17s %-9s %-5d %-20s %-8s %s\n", g.GroupKey, g.State, clip(g.Category, 17), g.Responsible,
+			g.MessageCount, formatNullTime(g.LastSeen), severity, clip(g.Title, 60))
 	}
 	return nil
 }
 
-// GroupCmd shows one bounce group with its latest report.
-type GroupCmd struct {
-	Address string `arg:"" help:"Mail address"`
-	Key     string `arg:"" help:"Group key"`
-	JSON    bool   `help:"Output as JSON"`
-}
-
-func (c *GroupCmd) Run() error {
+// showGroup prints one bounce group with its latest report ("groups ADDRESS
+// KEY").
+func showGroup(address, key string, asJSON bool) error {
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	mb, err := findMailbox(db, c.Address)
+	mb, err := findMailbox(db, address)
 	if err != nil {
 		return err
 	}
@@ -122,9 +156,9 @@ func (c *GroupCmd) Run() error {
 		return err
 	}
 	defer idx.Close()
-	g, err := models.GetGroup(idx, strings.TrimSpace(c.Key))
+	g, err := models.GetGroup(idx, strings.TrimSpace(key))
 	if err == sql.ErrNoRows {
-		return NewExitErrorf(ExitArgument, "group %q not found", c.Key)
+		return NewExitErrorf(ExitArgument, "group %q not found", key)
 	}
 	if err != nil {
 		return NewExitError(ExitGeneral, err.Error())
@@ -137,7 +171,7 @@ func (c *GroupCmd) Run() error {
 	if err != nil && err != sql.ErrNoRows {
 		return NewExitError(ExitGeneral, err.Error())
 	}
-	if c.JSON {
+	if asJSON {
 		row := groupRow(g, report)
 		row["stats"] = stats
 		if report != nil {
@@ -155,6 +189,10 @@ func (c *GroupCmd) Run() error {
 	fmt.Printf("key:           %s\n", g.GroupKey)
 	fmt.Printf("title:         %s\n", g.Title)
 	fmt.Printf("state:         %s\n", g.State)
+	fmt.Printf("category:      %s\n", g.Category)
+	fmt.Printf("unit:          %s\n", g.UnitValue)
+	fmt.Printf("authority:     %s\n", g.Authority)
+	fmt.Printf("actionable:    %v\n", g.Actionable)
 	fmt.Printf("kind:          %s\n", g.BounceKind)
 	fmt.Printf("domain:        %s\n", g.RecipientDomain)
 	fmt.Printf("status code:   %s (smtp %s)\n", g.StatusCode, g.SMTPCode)

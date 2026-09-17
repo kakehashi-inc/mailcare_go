@@ -223,3 +223,43 @@ func NextQueuedJobAfter(db *sql.DB, afterID int64, requestedBy string) (*Job, er
 	}
 	return j, err
 }
+
+// ClaimNextRunnableJob walks the queued jobs oldest first and atomically
+// moves the first one accepted by canRun to running, returning it, or nil
+// when no queued job is runnable. canRun decides whether the job may start
+// now (the job manager checks the resource keys of the job against the jobs
+// already running). The claim itself is an atomic conditional update, so two
+// callers can never claim the same job.
+func ClaimNextRunnableJob(db *sql.DB, canRun func(*Job) bool) (*Job, error) {
+	rows, err := db.Query(`SELECT ` + jobColumns + ` FROM jobs WHERE status = 'queued' ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	var queued []*Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		queued = append(queued, j)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for _, j := range queued {
+		if canRun != nil && !canRun(j) {
+			continue
+		}
+		claimed, err := ClaimJobByID(db, j.ID)
+		if err != nil {
+			return nil, err
+		}
+		if claimed != nil {
+			return claimed, nil
+		}
+	}
+	return nil, nil
+}

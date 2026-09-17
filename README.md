@@ -17,17 +17,23 @@ has to act on.
 - **Detection** - the sender, sender name, subject and `multipart/report` delivery status decide whether a
   mail is a bounce and of which kind (failed / delayed / auto-reply). The failing recipient, the extended
   status code (`5.1.1`), the remote MTA and IP and the diagnostic text are extracted.
-- **Grouping** - bounces with the same recipient domain, status code and normalized diagnostic text form one
-  group, with a machine-derived guess of who should act (sending server, recipient address owner, recipient
-  domain).
+- **Grouping** - each bounce is assigned a category (sending IP blocked, sender address rejected, sending
+  domain authentication failure, user unknown, mailbox full, ...) and grouped by the unit the administrator
+  acts on (the sending server IP, the sender address, the sending domain) and the party deciding the outcome
+  (a blacklist provider, the recipient domain). Recipient-side problems (user unknown, mailbox full, ...) are
+  recorded but excluded from Alerts, which show only what the mail administrator has to act on.
 - **Agent analysis** - an agent CLI installed on the machine (Codex CLI today; more can be added) is given the
-  paths of the raw mails of a group and writes a cause analysis with recommended actions, stored per group.
-- **Scheduled checks** - mail is fetched at the configured daily times (default 06:00, 12:00 and 18:00). The
-  first check of an address looks back 90 days, later checks 30 days, and only mails not fetched yet are
-  taken.
+  paths of the raw mails of an actionable group and writes a cause analysis with recommended actions, stored
+  per group. A group that gains new mails is analyzed again.
+- **Independent phases** - fetching, grouping and analysis are separate jobs that can be run one by one from
+  the Tools screen or the CLI, or together as a sync of all addresses. The number of concurrent jobs
+  (workers) is configurable; accounts on the same IMAP server are processed one after another automatically.
+- **Scheduled checks** - all addresses are synced at the configured daily times (default 06:00, 12:00 and
+  18:00). The first fetch of an address looks back 90 days, later fetches 30 days, and only mails not fetched
+  yet are taken.
 - **Web and CLI** - everything can be done from the Web UI (port 9790). The command line covers starting and
-  stopping the service, user and login-token management, mail address registration, mail checks, reindexing,
-  analysis runs and group listings (reading mail bodies is Web only).
+  stopping the service, user and login-token management, mail address registration, sync / fetch / group /
+  analyze runs, reindexing and group listings (reading mail bodies is Web only).
 - One binary for Windows, macOS and Linux.
 
 ### 1.1 Quick start
@@ -42,8 +48,13 @@ mailcare user create --username admin --role admin
 # Register a mail address (the password is prompted when omitted)
 mailcare mailbox add --address bounce@example.com --host imap.example.com --username bounce@example.com
 
-# Check mail now (submitted to the running server; --wait shows the progress until it finishes)
-mailcare check --wait
+# Sync now (fetch, group, analyze; submitted to the running server; --wait shows the progress)
+mailcare sync --wait
+
+# Run only one phase
+mailcare fetch
+mailcare group
+mailcare analyze
 
 # Change the check times (the same as --check-time 06:00 --check-time 12:00 ... at start; saved for later runs)
 mailcare schedule set 06:00 12:00 18:00
@@ -53,11 +64,11 @@ Web navigation:
 
 | Menu | Content |
 | --- | --- |
-| Dashboard (click the brand) | Open groups and last check per address, recent groups, running jobs, next check time |
-| Alerts | Mail address -> bounce group (with the agent report) -> original mails -> mail detail |
+| Dashboard (click the brand) | Actionable open groups and last fetch per address, recent groups, running jobs, next check time |
+| Alerts | Mail address -> bounce group (actionable / excluded switch, with the agent report) -> original mails -> mail detail |
 | Mail | Raw mail viewer per address (text / HTML / original download) |
-| Tools | Rebuild the index, re-run detection, re-run the agent analysis, job history |
-| Settings | Check times and agent, mail addresses, users, login tokens, account |
+| Tools | Sync all addresses, fetch only, group only, analyze only, rebuild the index, re-run detection, job history |
+| Settings | Check times, workers and agent, mail addresses, users, login tokens, account |
 
 See [Documents/システム設計書.md](Documents/システム設計書.md) for the design,
 [Documents/テーブル定義.md](Documents/テーブル定義.md) for the tables and

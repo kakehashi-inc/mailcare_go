@@ -54,7 +54,8 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 		templateSource = pm.Subject
 	}
 	b.DiagnosticTemplate = DiagnosticTemplate(templateSource)
-	b.Responsible = Responsible(b.StatusCode, b.Diagnostic)
+	// Responsible is set by groupForBounce from the category (design 5.4) so
+	// that the bounce row and its group never disagree.
 	return b
 }
 
@@ -328,62 +329,3 @@ func unfold(body string) string {
 // bareCodeLineRe matches a line that ends with an SMTP reply code, i.e. the
 // remainder of the reply was wrapped to the next line.
 var bareCodeLineRe = regexp.MustCompile(`(?:said:|:)\s*[245][0-9]{2}(?:[ \-][245]\.[0-9]{1,3}\.[0-9]{1,3})?\s*$`)
-
-// responsibleRule maps a status code (exact value or class prefix) to the
-// party that should act (design 5.3). Exact codes are listed before the
-// class prefixes so that 4.2.2 wins over 4.2.x.
-type responsibleRule struct {
-	code        string // "5.1.1" exact, or "5.7." prefix
-	responsible string
-}
-
-var responsibleRules = []responsibleRule{
-	// The recipient address itself is the problem (list maintainer).
-	{"5.1.1", responsibleRecipient}, {"5.1.0", responsibleRecipient}, {"5.1.3", responsibleRecipient},
-	{"5.1.6", responsibleRecipient}, {"5.2.1", responsibleRecipient}, {"5.2.2", responsibleRecipient},
-	{"4.2.2", responsibleRecipient},
-	// The recipient domain / its DNS or MX is the problem.
-	{"5.1.2", responsibleDomain}, {"5.4.4", responsibleDomain}, {"5.4.6", responsibleDomain},
-	{"5.1.10", responsibleDomain}, {"5.4.1", responsibleDomain},
-	// Policy, content or protocol trouble: our side must act.
-	{"5.7.", responsibleSender}, {"4.7.", responsibleSender}, {"5.3.0", responsibleSender},
-	{"5.5.", responsibleSender}, {"5.6.", responsibleSender},
-	// Delays are watched on the sending side.
-	{"4.4.", responsibleSender}, {"4.3.", responsibleSender}, {"4.2.", responsibleSender},
-}
-
-// responsibleTextRules are consulted only when no status code is known: the
-// wording of the diagnostic often still tells who should act.
-var responsibleTextRules = []struct {
-	re          *regexp.Regexp
-	responsible string
-}{
-	{regexp.MustCompile(`(?i)user unknown|unknown user|no such user|no such recipient|recipient address rejected|does not exist|mailbox (?:unavailable|not found|disabled|full)|over quota|no mailbox here|address rejected|invalid recipient|recipient not found|recipnotfound|account (?:is )?(?:disabled|inactive)`), responsibleRecipient},
-	{regexp.MustCompile(`(?i)host or domain name not found|domain (?:does not exist|not found)|no mx|name service error|unrouteable address|dns|mx record|no route to host|connection (?:timed out|refused)`), responsibleDomain},
-	{regexp.MustCompile(`(?i)spam|blocked|blacklist|block list|listed|reputation|policy|rejected due to|access denied|relay(?:ing)? denied|not authorized|authentication|spf|dkim|dmarc|too large|message size|content rejected|virus`), responsibleSender},
-}
-
-// Responsible decides who should act on a bounce from its status code, falling
-// back to the diagnostic wording when no status code is known.
-func Responsible(status, diagnostic string) string {
-	status = strings.TrimSpace(status)
-	if status != "" {
-		for _, r := range responsibleRules {
-			if strings.HasSuffix(r.code, ".") {
-				if strings.HasPrefix(status, r.code) {
-					return r.responsible
-				}
-			} else if status == r.code {
-				return r.responsible
-			}
-		}
-	}
-	if status == "" && diagnostic != "" {
-		for _, r := range responsibleTextRules {
-			if r.re.MatchString(diagnostic) {
-				return r.responsible
-			}
-		}
-	}
-	return responsibleUnknown
-}
