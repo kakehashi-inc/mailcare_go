@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__serena",
+      "WebSearch",
+      "WebFetch",
+      "SemanticSearch",
+      "Bash(find:*)",
+      "Bash(diff:*)",
+      "Bash(grep:*)",
+      "Bash(glob:*)",
+      "Bash(ls:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go vet:*)",
+      "Bash(go build:*)",
+      "Bash(test:*)",
+      "Bash(go run:*)",
+      "Bash(golangci-lint run:*)",
+      "Bash(xargs:*)",
+      "Bash(go test:*)",
+      "Bash(staticcheck:*)",
+      "Bash(go get:*)",
+      "Bash(curl:*)",
+      "Bash(lsof:*)",
+      "Bash(go doc:*)",
+      "Bash(~/go/bin/staticcheck:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

@@ -1,0 +1,42 @@
+// Material Icons shared base
+%material-icon-base {
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "liga";
+}
+
+.material-icons {
+  font-family: "Material Icons";
+  @extend %material-icon-base;
+}
+
+.material-icons-outlined {
+  font-family: "Material Icons Outlined";
+  @extend %material-icon-base;
+}
+
+.material-icons-round {
+  font-family: "Material Icons Round";
+  @extend %material-icon-base;
+}
+
+.material-icons-sharp {
+  font-family: "Material Icons Sharp";
+  @extend %material-icon-base;
+}
+
+.material-icons-two-tone {
+  font-family: "Material Icons Two Tone";
+  @extend %material-icon-base;
+}

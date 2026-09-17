@@ -1,0 +1,21 @@
+{
+    "app": {
+        "title": "Develop App"
+    },
+    "header": {
+        "language": "言語"
+    },
+    "lang": {
+        "ja": "日本語",
+        "en": "English"
+    },
+    "home": {
+        "greeting": "Hello world",
+        "description": "テンプレートのセットアップが完了しました。この画面を置き換えて開発を始めてください。"
+    },
+    "notFound": {
+        "title": "ページが見つかりません",
+        "description": "お探しのページは存在しないか、移動した可能性があります。",
+        "back": "ホームへ戻る"
+    }
+}

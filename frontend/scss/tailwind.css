@@ -1,0 +1,22 @@
+@import 'tailwindcss';
+
+/* Tailwind v4 needs the JavaScript config loaded explicitly. */
+@config '../tailwind.config.js';
+
+@layer base {
+    /* Opt into both color schemes so the light-dark() tokens declared in
+       tailwind.config.js follow the OS preference, and native controls
+       (scrollbars, form fields) match the page. */
+    :root {
+        color-scheme: light dark;
+    }
+
+    html,
+    body {
+        min-height: 100%;
+    }
+
+    body {
+        @apply bg-canvas font-sans text-ink antialiased;
+    }
+}

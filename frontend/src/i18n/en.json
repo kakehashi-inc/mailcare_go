@@ -1,0 +1,21 @@
+{
+    "app": {
+        "title": "Develop App"
+    },
+    "header": {
+        "language": "Language"
+    },
+    "lang": {
+        "ja": "日本語",
+        "en": "English"
+    },
+    "home": {
+        "greeting": "Hello world",
+        "description": "The template is up and running. Replace this screen to start building."
+    },
+    "notFound": {
+        "title": "Page not found",
+        "description": "The page you are looking for does not exist or has moved.",
+        "back": "Back to home"
+    }
+}

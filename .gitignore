@@ -1,0 +1,42 @@
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# local setting files
+setting*.yaml
+!setting*.example.yaml
+
+# Editor directories and files
+.idea
+.vscode/*
+!.vscode/launch.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Mac OSX
+.DS_Store
+
+# Vim swap files
+*.swp
+
+# Etc
+*.yaml
+!*.example.yaml
+tmp/
+bin/
+*.exe
+__debug_bin*
+
+# develop_app runtime data (created next to the executable) and dev binary
+/data/
+/develop_app
+/develop_app_*
