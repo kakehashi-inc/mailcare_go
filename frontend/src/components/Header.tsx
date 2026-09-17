@@ -6,7 +6,6 @@ import { BREAKPOINT_LG } from '../constants';
 import { useClickOutside } from '../hooks/useClickOutside';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { formatVersion } from '../utils/format';
-import { LanguageSwitch } from './LanguageSwitch';
 import { Icon } from './ui/Icon';
 
 interface NavEntry {
@@ -19,11 +18,14 @@ interface NavEntry {
 const NAV_CLASS =
     'inline-flex min-h-tap items-center gap-1.5 rounded-md px-3 text-base font-medium text-muted transition-colors hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent';
 const NAV_ACTIVE = 'bg-accent-soft text-accent';
+const MENU_ITEM_CLASS =
+    'flex min-h-tap w-full items-center gap-2 px-4 text-left text-base hover:bg-well focus:bg-well focus:outline-none';
 
 /**
- * Site header: brand + version, primary navigation with a settings dropdown,
- * user name, language switch and logout. Below the lg breakpoint the
- * navigation folds into a hamburger drawer.
+ * Site header: brand + version, primary navigation with an admin-only
+ * settings dropdown, language switch and a user menu (profile, logout) opened
+ * from the user name. Below the lg breakpoint the navigation folds into a
+ * hamburger drawer that also carries the user menu entries.
  */
 export function Header() {
     const { t } = useTranslation();
@@ -33,13 +35,17 @@ export function Header() {
     const wide = useMediaQuery(`(min-width: ${BREAKPOINT_LG}px)`);
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [userOpen, setUserOpen] = useState(false);
     const settingsRef = useRef<HTMLDivElement>(null);
+    const userRef = useRef<HTMLDivElement>(null);
     useClickOutside(settingsRef, settingsOpen, () => setSettingsOpen(false));
+    useClickOutside(userRef, userOpen, () => setUserOpen(false));
 
-    // Close the drawer on navigation.
+    // Close the drawer and the menus on navigation.
     useEffect(() => {
         setDrawerOpen(false);
         setSettingsOpen(false);
+        setUserOpen(false);
     }, [location.pathname]);
 
     // Lock body scroll while the drawer is open.
@@ -62,31 +68,22 @@ export function Header() {
         { to: '/mails', label: t('nav.mails'), icon: 'mail' },
         { to: '/tools', label: t('nav.tools'), icon: 'build' },
     ];
-    // Admin-only entries are hidden for members (direct URLs still show the "admins only" screen).
+    // The whole settings menu is for administrators (direct URLs show the "admins only" screen).
     const settingsEntries: NavEntry[] = [
-        ...(isAdmin
-            ? [
-                  { to: '/settings/general', label: t('nav.settingsGeneral'), icon: 'tune' },
-                  { to: '/settings/mailboxes', label: t('nav.settingsMailboxes'), icon: 'alternate_email' },
-                  { to: '/settings/users', label: t('nav.settingsUsers'), icon: 'group' },
-              ]
-            : []),
+        { to: '/settings/general', label: t('nav.settingsGeneral'), icon: 'tune' },
+        { to: '/settings/notifications', label: t('nav.settingsNotifications'), icon: 'mark_email_unread' },
+        { to: '/settings/mailboxes', label: t('nav.settingsMailboxes'), icon: 'alternate_email' },
+        { to: '/settings/users', label: t('nav.settingsUsers'), icon: 'group' },
         { to: '/settings/tokens', label: t('nav.settingsTokens'), icon: 'key' },
-        { to: '/settings/account', label: t('nav.settingsAccount'), icon: 'manage_accounts' },
     ];
-    const settingsActive = location.pathname.startsWith('/settings');
+    const settingsActive = location.pathname.startsWith('/settings') && location.pathname !== '/settings/profile';
+    const userName = me ? me.user.display_name || me.user.username : '';
 
     async function handleLogout() {
+        setUserOpen(false);
         await logout();
         navigate('/login', { replace: true });
     }
-
-    const userBlock = me && (
-        <span className='inline-flex items-center gap-1.5 text-sm text-muted' title={me.user.username}>
-            <Icon name={isAdmin ? 'admin_panel_settings' : 'person'} className='text-[20px]' />
-            <span className='max-w-40 truncate'>{me.user.display_name || me.user.username}</span>
-        </span>
-    );
 
     return (
         <header className='sticky top-0 z-30'>
@@ -106,12 +103,15 @@ export function Header() {
                             <Icon name={drawerOpen ? 'close' : 'menu'} className='text-[26px]' />
                         </button>
                     )}
+                    {/* The brand and the version share a baseline inside a box that is itself centered in the bar. */}
                     <Link
                         to='/'
-                        className='flex min-h-tap items-baseline gap-2 rounded px-1 text-lg font-bold text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                        className='flex min-h-tap items-center rounded px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
                     >
-                        {t('app.title')}
-                        {me && <span className='text-xs font-normal text-muted'>{formatVersion(me.version)}</span>}
+                        <span className='flex items-baseline gap-2 text-lg font-bold leading-none text-ink'>
+                            {t('app.title')}
+                            {me && <span className='text-xs font-normal text-muted'>{formatVersion(me.version)}</span>}
+                        </span>
                     </Link>
 
                     {wide && (
@@ -126,68 +126,99 @@ export function Header() {
                                     {entry.label}
                                 </NavLink>
                             ))}
-                            <div className='relative flex items-center' ref={settingsRef}>
-                                <NavLink
-                                    to='/settings'
-                                    end
-                                    className={`${NAV_CLASS} rounded-r-none pr-2 ${settingsActive ? NAV_ACTIVE : ''}`}
-                                >
-                                    <Icon name='settings' className='text-[20px]' />
-                                    {t('nav.settings')}
-                                </NavLink>
-                                <button
-                                    type='button'
-                                    aria-label={t('header.settingsMenu')}
-                                    aria-haspopup='menu'
-                                    aria-expanded={settingsOpen}
-                                    onClick={() => setSettingsOpen(v => !v)}
-                                    className={`inline-flex min-h-tap items-center rounded-r-md px-1 text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                                        settingsActive ? NAV_ACTIVE : ''
-                                    }`}
-                                >
-                                    <Icon name={settingsOpen ? 'expand_less' : 'expand_more'} className='text-[22px]' />
-                                </button>
-                                {settingsOpen && (
-                                    <div
-                                        role='menu'
-                                        className='absolute left-0 top-full z-20 mt-1 min-w-56 overflow-hidden rounded-md border border-line bg-surface py-1 shadow-xl'
+                            {isAdmin && (
+                                <div className='relative flex items-center' ref={settingsRef}>
+                                    <NavLink
+                                        to='/settings'
+                                        end
+                                        className={`${NAV_CLASS} rounded-r-none pr-2 ${settingsActive ? NAV_ACTIVE : ''}`}
                                     >
-                                        {settingsEntries.map(entry => (
-                                            <NavLink
-                                                key={entry.to}
-                                                to={entry.to}
-                                                role='menuitem'
-                                                onClick={() => setSettingsOpen(false)}
-                                                className={({ isActive }) =>
-                                                    `flex min-h-tap items-center gap-2 px-4 text-base hover:bg-well focus:bg-well focus:outline-none ${
-                                                        isActive ? 'text-accent' : 'text-ink'
-                                                    }`
-                                                }
-                                            >
-                                                <Icon name={entry.icon} className='text-[20px]' />
-                                                {entry.label}
-                                            </NavLink>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
+                                        <Icon name='settings' className='text-[20px]' />
+                                        {t('nav.settings')}
+                                    </NavLink>
+                                    <button
+                                        type='button'
+                                        aria-label={t('header.settingsMenu')}
+                                        aria-haspopup='menu'
+                                        aria-expanded={settingsOpen}
+                                        onClick={() => setSettingsOpen(v => !v)}
+                                        className={`inline-flex min-h-tap items-center rounded-r-md px-1 text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                                            settingsActive ? NAV_ACTIVE : ''
+                                        }`}
+                                    >
+                                        <Icon
+                                            name={settingsOpen ? 'expand_less' : 'expand_more'}
+                                            className='text-[22px]'
+                                        />
+                                    </button>
+                                    {settingsOpen && (
+                                        <div
+                                            role='menu'
+                                            className='absolute left-0 top-full z-20 mt-1 min-w-56 overflow-hidden rounded-md border border-line bg-surface py-1 shadow-xl'
+                                        >
+                                            {settingsEntries.map(entry => (
+                                                <NavLink
+                                                    key={entry.to}
+                                                    to={entry.to}
+                                                    role='menuitem'
+                                                    onClick={() => setSettingsOpen(false)}
+                                                    className={({ isActive }) =>
+                                                        `${MENU_ITEM_CLASS} ${isActive ? 'text-accent' : 'text-ink'}`
+                                                    }
+                                                >
+                                                    <Icon name={entry.icon} className='text-[20px]' />
+                                                    {entry.label}
+                                                </NavLink>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </nav>
                     )}
 
                     <div className='ml-auto flex items-center gap-1'>
-                        {wide && userBlock}
-                        <LanguageSwitch />
-                        {me && (
-                            <button
-                                type='button'
-                                onClick={handleLogout}
-                                aria-label={t('header.logout')}
-                                title={t('header.logout')}
-                                className='inline-flex min-h-tap min-w-tap items-center justify-center gap-1 rounded-md px-2 text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
-                            >
-                                <Icon name='logout' className='text-[22px]' />
-                                {wide && <span className='text-sm'>{t('header.logout')}</span>}
-                            </button>
+                        {wide && me && (
+                            <div className='relative' ref={userRef}>
+                                <button
+                                    type='button'
+                                    aria-label={t('header.userMenu', { name: userName })}
+                                    aria-haspopup='menu'
+                                    aria-expanded={userOpen}
+                                    title={me.user.username}
+                                    onClick={() => setUserOpen(v => !v)}
+                                    className='inline-flex min-h-tap items-center gap-1.5 rounded-md px-2 text-sm text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                                >
+                                    <span className='max-w-40 truncate'>{userName}</span>
+                                </button>
+                                {userOpen && (
+                                    <div
+                                        role='menu'
+                                        className='absolute right-0 top-full z-20 mt-1 min-w-48 overflow-hidden rounded-md border border-line bg-surface py-1 shadow-xl'
+                                    >
+                                        <NavLink
+                                            to='/settings/profile'
+                                            role='menuitem'
+                                            onClick={() => setUserOpen(false)}
+                                            className={({ isActive }) =>
+                                                `${MENU_ITEM_CLASS} ${isActive ? 'text-accent' : 'text-ink'}`
+                                            }
+                                        >
+                                            <Icon name='manage_accounts' className='text-[20px]' />
+                                            {t('nav.settingsProfile')}
+                                        </NavLink>
+                                        <button
+                                            type='button'
+                                            role='menuitem'
+                                            onClick={() => void handleLogout()}
+                                            className={`${MENU_ITEM_CLASS} text-ink`}
+                                        >
+                                            <Icon name='logout' className='text-[20px]' />
+                                            {t('header.logout')}
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                         )}
                     </div>
                 </div>
@@ -205,7 +236,6 @@ export function Header() {
                         className='max-h-full overflow-y-auto border-b border-line bg-surface px-4 pb-4 pt-2 shadow-xl'
                         onClick={e => e.stopPropagation()}
                     >
-                        {me && <div className='border-b border-line py-3'>{userBlock}</div>}
                         <ul className='mt-2 flex flex-col gap-1'>
                             <li>
                                 <NavLink
@@ -230,32 +260,69 @@ export function Header() {
                                     </NavLink>
                                 </li>
                             ))}
-                            <li>
-                                <NavLink
-                                    to='/settings'
-                                    end
-                                    className={({ isActive }) => `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`}
-                                >
-                                    <Icon name='settings' className='text-[20px]' />
-                                    {t('nav.settings')}
-                                </NavLink>
-                                <ul className='ml-6 mt-1 flex flex-col gap-1 border-l border-line pl-2'>
-                                    {settingsEntries.map(entry => (
-                                        <li key={entry.to}>
-                                            <NavLink
-                                                to={entry.to}
-                                                className={({ isActive }) =>
-                                                    `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`
-                                                }
-                                            >
-                                                <Icon name={entry.icon} className='text-[20px]' />
-                                                {entry.label}
-                                            </NavLink>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </li>
+                            {isAdmin && (
+                                <li>
+                                    <NavLink
+                                        to='/settings'
+                                        end
+                                        className={({ isActive }) =>
+                                            `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`
+                                        }
+                                    >
+                                        <Icon name='settings' className='text-[20px]' />
+                                        {t('nav.settings')}
+                                    </NavLink>
+                                    <ul className='ml-6 mt-1 flex flex-col gap-1 border-l border-line pl-2'>
+                                        {settingsEntries.map(entry => (
+                                            <li key={entry.to}>
+                                                <NavLink
+                                                    to={entry.to}
+                                                    className={({ isActive }) =>
+                                                        `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`
+                                                    }
+                                                >
+                                                    <Icon name={entry.icon} className='text-[20px]' />
+                                                    {entry.label}
+                                                </NavLink>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </li>
+                            )}
                         </ul>
+                        {me && (
+                            <div className='mt-3 border-t border-line pt-3'>
+                                <p
+                                    className='inline-flex min-h-tap items-center gap-1.5 px-3 text-sm text-muted'
+                                    title={me.user.username}
+                                >
+                                    <span className='max-w-60 truncate'>{userName}</span>
+                                </p>
+                                <ul className='ml-6 mt-1 flex flex-col gap-1 border-l border-line pl-2'>
+                                    <li>
+                                        <NavLink
+                                            to='/settings/profile'
+                                            className={({ isActive }) =>
+                                                `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`
+                                            }
+                                        >
+                                            <Icon name='manage_accounts' className='text-[20px]' />
+                                            {t('nav.settingsProfile')}
+                                        </NavLink>
+                                    </li>
+                                    <li>
+                                        <button
+                                            type='button'
+                                            onClick={() => void handleLogout()}
+                                            className={`${NAV_CLASS} w-full`}
+                                        >
+                                            <Icon name='logout' className='text-[20px]' />
+                                            {t('header.logout')}
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
+                        )}
                     </nav>
                 </div>
             )}

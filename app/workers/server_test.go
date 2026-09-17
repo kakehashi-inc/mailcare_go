@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
@@ -154,11 +155,10 @@ func TestSetupFlow(t *testing.T) {
 	}
 }
 
-func TestLoginWithPasswordAndToken(t *testing.T) {
+func TestLoginWithPasswordAndRememberMe(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
-	u, err := modules.CreateUser(c.db, "alice", "Alice", "correct-horse", modules.RoleUser)
-	if err != nil {
+	if _, err := modules.CreateUser(c.db, "alice", "Alice", "correct-horse", modules.RoleUser); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
@@ -170,36 +170,70 @@ func TestLoginWithPasswordAndToken(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("unknown user: status %d, want 401", rec.Code)
 	}
-	ck := login(t, h, "alice", "correct-horse")
+	// There is no token login: a token value is not a credential.
+	tok, err := modules.CreateToken(c.db, "laptop", "", sql.NullTime{}, false)
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	rec = do(t, h, http.MethodPost, "/web/login", map[string]string{"token": tok.Token}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("token login: status %d, want 400", rec.Code)
+	}
+	rec = do(t, h, http.MethodPost, "/web/login", map[string]string{"username": "alice", "password": tok.Token}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("token as password: status %d, want 401", rec.Code)
+	}
+
+	// Default login: a browser-session cookie (no Max-Age) valid for
+	// SessionCookieTTLHours, not refreshed.
+	rec = do(t, h, http.MethodPost, "/web/login", map[string]string{"username": "alice", "password": "correct-horse"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	ck := sessionCookie(t, rec)
+	if ck.MaxAge != 0 || !ck.Expires.IsZero() {
+		t.Errorf("session cookie is persistent: max-age %d expires %v", ck.MaxAge, ck.Expires)
+	}
+	sess, err := modules.ValidateSessionCookie(c.db, c.key, ck.Value)
+	if err != nil || sess.Remember {
+		t.Fatalf("session: %v %+v", err, sess)
+	}
+	if until := time.Until(sess.Expiry); until > time.Duration(modules.SessionCookieTTLHours)*time.Hour || until < 23*time.Hour {
+		t.Errorf("browser-session expiry %v away", until)
+	}
 	rec = do(t, h, http.MethodGet, "/api/v1/me", nil, ck)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"username":"alice"`) {
 		t.Errorf("GET /api/v1/me: status %d, body %s", rec.Code, rec.Body.String())
 	}
 
-	// Token login.
-	tok, err := modules.CreateLoginToken(c.db, u.ID, "laptop", "", sql.NullTime{})
-	if err != nil {
-		t.Fatalf("create token: %v", err)
-	}
-	rec = do(t, h, http.MethodPost, "/web/login", map[string]string{"token": "mlc_0000"}, nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("bad token: status %d, want 401", rec.Code)
-	}
-	rec = do(t, h, http.MethodPost, "/web/login", map[string]string{"token": tok.Token}, nil)
+	// Remember me: a persistent cookie with the configured TTL.
+	rec = do(t, h, http.MethodPost, "/web/login", map[string]any{"username": "alice", "password": "correct-horse", "remember": true}, nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("token login: status %d, body %s", rec.Code, rec.Body.String())
+		t.Fatalf("remembered login: status %d", rec.Code)
 	}
 	ck2 := sessionCookie(t, rec)
-	rec = do(t, h, http.MethodGet, "/api/v1/me", nil, ck2)
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET /api/v1/me with the token session: status %d", rec.Code)
+	if ck2.MaxAge != c.cookieTTLHours*3600 {
+		t.Errorf("remembered cookie max-age %d, want %d", ck2.MaxAge, c.cookieTTLHours*3600)
 	}
-	stored, err := models.GetTokenByIdentifier(c.db, tok.Identifier)
-	if err != nil || !stored.LastUsedAt.Valid {
-		t.Errorf("token last_used_at not recorded (err %v)", err)
+	sess, err = modules.ValidateSessionCookie(c.db, c.key, ck2.Value)
+	if err != nil || !sess.Remember {
+		t.Fatalf("remembered session: %v %+v", err, sess)
+	}
+	if until := time.Until(sess.Expiry); until < time.Duration(c.cookieTTLHours)*time.Hour-time.Hour {
+		t.Errorf("remembered expiry only %v away", until)
+	}
+	// The form-encoded login accepts remember too.
+	form := httptest.NewRequest(http.MethodPost, "/web/login", strings.NewReader("username=alice&password=correct-horse&remember=1"))
+	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	form.RemoteAddr = "192.168.1.5:40000"
+	formRec := httptest.NewRecorder()
+	h.ServeHTTP(formRec, form)
+	if formRec.Code != http.StatusOK || sessionCookie(t, formRec).MaxAge == 0 {
+		t.Errorf("form login with remember: status %d", formRec.Code)
 	}
 
-	// Logout clears the cookie; a password change invalidates old sessions.
+	// Logout clears the cookie; a password change invalidates old sessions
+	// and re-issues the cookie in the mode of the current session.
 	rec = do(t, h, http.MethodPost, "/web/logout", nil, ck)
 	if rec.Code != http.StatusOK {
 		t.Errorf("logout: status %d", rec.Code)
@@ -207,6 +241,9 @@ func TestLoginWithPasswordAndToken(t *testing.T) {
 	rec = do(t, h, http.MethodPut, "/api/v1/me/password", map[string]string{"current_password": "correct-horse", "new_password": "battery-staple"}, ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("change password: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if fresh := sessionCookie(t, rec); fresh.MaxAge != 0 {
+		t.Errorf("re-issued cookie became persistent: max-age %d", fresh.MaxAge)
 	}
 	rec = do(t, h, http.MethodGet, "/api/v1/me", nil, ck2)
 	if rec.Code != http.StatusUnauthorized {
@@ -247,14 +284,20 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /api/v1/settings as user: status %d", rec.Code)
 	}
-	// The rebuild jobs need an administrator; a sync job does not.
-	rec = do(t, h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "reindex"}, user)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("POST reindex job as user: status %d, want 403", rec.Code)
+	// The user role is read-only: every job kind needs an administrator.
+	for _, kind := range []string{"reindex", "sync", "fetch", "group", "analyze", "notify"} {
+		rec = do(t, h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind}, user)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("POST %s job as user: status %d, want 403", kind, rec.Code)
+		}
 	}
-	rec = do(t, h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync"}, user)
-	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"requested_by":"web:bob"`) {
-		t.Errorf("POST sync job as user: status %d, body %s", rec.Code, rec.Body.String())
+	rec = do(t, h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync"}, admin)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"requested_by":"web:admin"`) {
+		t.Errorf("POST sync job as admin: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodGet, "/api/v1/jobs", nil, user)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/jobs as user: status %d", rec.Code)
 	}
 	// The last administrator can neither be demoted nor deleted.
 	var users struct {
@@ -278,31 +321,122 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 	}
 }
 
-func TestTokensAreScopedToTheUser(t *testing.T) {
+func TestTokensAreAdminOnly(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
-	adminUser, _ := modules.CreateUser(c.db, "admin", "", "password123", modules.RoleAdmin)
+	if _, err := modules.CreateUser(c.db, "admin", "", "password123", modules.RoleAdmin); err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
 	if _, err := modules.CreateUser(c.db, "bob", "", "password123", modules.RoleUser); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	admin := login(t, h, "admin", "password123")
 	user := login(t, h, "bob", "password123")
 
-	rec := do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "phone"}, user)
-	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"value":"mlc_`) {
-		t.Fatalf("create own token: status %d, body %s", rec.Code, rec.Body.String())
+	for _, req := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/tokens"}, {http.MethodPost, "/api/v1/tokens"}, {http.MethodDelete, "/api/v1/tokens/default"},
+	} {
+		if rec := do(t, h, req.method, req.path, map[string]any{"name": "phone"}, user); rec.Code != http.StatusForbidden {
+			t.Errorf("%s %s as user: status %d, want 403", req.method, req.path, rec.Code)
+		}
 	}
-	rec = do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "sneaky", "user_id": adminUser.ID}, user)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("create token for another user: status %d, want 403", rec.Code)
+	rec := do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "phone"}, admin)
+	// The first token into an empty table is the default one.
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"value":"mlc_`) || !strings.Contains(rec.Body.String(), `"is_default":true`) {
+		t.Fatalf("create token: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, h, http.MethodGet, "/api/v1/tokens?user_id="+itoa(adminUser.ID), nil, user)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("list another user's tokens: status %d, want 403", rec.Code)
+	var created struct {
+		Token TokenDTO `json:"token"`
+		Value string   `json:"value"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if createdAt, err := time.Parse(time.RFC3339, created.Token.CreatedAt); err != nil || time.Since(createdAt) > time.Minute || createdAt.IsZero() {
+		t.Errorf("created_at of a new token = %q", created.Token.CreatedAt)
 	}
 	rec = do(t, h, http.MethodGet, "/api/v1/tokens", nil, admin)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"username":"bob"`) {
-		t.Errorf("admin lists every token: status %d, body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"identifier":"phone"`) || strings.Contains(rec.Body.String(), created.Value) ||
+		strings.Contains(rec.Body.String(), `"user`) {
+		t.Errorf("list tokens: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, h, http.MethodDelete, "/api/v1/tokens/nope", nil, admin); rec.Code != http.StatusNotFound {
+		t.Errorf("delete unknown token: status %d", rec.Code)
+	}
+	if rec := do(t, h, http.MethodDelete, "/api/v1/tokens/"+created.Token.Identifier, nil, admin); rec.Code != http.StatusOK {
+		t.Errorf("delete token: status %d", rec.Code)
+	}
+}
+
+func TestDefaultToken(t *testing.T) {
+	c := newTestCore(t)
+	h := c.webHandler()
+	// Setup does not create a token; only the server start does.
+	rec := do(t, h, http.MethodPost, "/web/setup", map[string]string{"username": "admin", "password": "password123"}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	if n, _ := models.CountTokens(c.db); n != 0 {
+		t.Fatalf("tokens after setup: %d", n)
+	}
+	// No default token: "default" is created (what the server start does).
+	tok, promoted, err := modules.EnsureDefaultToken(c.db)
+	if err != nil || promoted || tok == nil || !tok.IsDefault || tok.Identifier != "default" || tok.Name != "default" ||
+		tok.ExpiresAt.Valid || !strings.HasPrefix(tok.Token, modules.TokenPrefix) {
+		t.Fatalf("default token: %+v %v %v", tok, promoted, err)
+	}
+	if stored, err := models.GetDefaultToken(c.db); err != nil || stored.ID != tok.ID {
+		t.Errorf("stored default: %+v %v", stored, err)
+	}
+	// With a default present nothing happens.
+	if again, promoted, err := modules.EnsureDefaultToken(c.db); err != nil || promoted || again != nil {
+		t.Errorf("touched with a default present: %+v %v %v", again, promoted, err)
+	}
+	// Deleting the default never promotes another token; the next start
+	// creates "default" again even though other tokens exist.
+	admin := login(t, h, "admin", "password123")
+	if rec := do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "other"}, admin); rec.Code != http.StatusCreated {
+		t.Fatal(rec.Body.String())
+	}
+	if rec := do(t, h, http.MethodDelete, "/api/v1/tokens/default", nil, admin); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if _, err := models.GetDefaultToken(c.db); err != sql.ErrNoRows {
+		t.Errorf("another token was promoted to default: %v", err)
+	}
+	if fresh, promoted, err := modules.EnsureDefaultToken(c.db); err != nil || promoted || fresh == nil || !fresh.IsDefault {
+		t.Errorf("recreated next to other tokens: %+v %v %v", fresh, promoted, err)
+	}
+	if n, _ := models.CountTokens(c.db); n != 2 {
+		t.Errorf("tokens: %d, want 2", n)
+	}
+	// A token "default" that lost the flag is promoted instead of duplicated.
+	if err := models.SetDefaultToken(c.db, "other"); err != nil {
+		t.Fatal(err)
+	}
+	if rec := do(t, h, http.MethodDelete, "/api/v1/tokens/other", nil, admin); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if fresh, promoted, err := modules.EnsureDefaultToken(c.db); err != nil || !promoted || fresh != nil {
+		t.Errorf("promotion: %+v %v %v", fresh, promoted, err)
+	}
+	if def, err := models.GetDefaultToken(c.db); err != nil || def.Identifier != "default" {
+		t.Errorf("\"default\" not promoted: %+v %v", def, err)
+	}
+	// The first token created into an empty table becomes the default.
+	if rec := do(t, h, http.MethodDelete, "/api/v1/tokens/default", nil, admin); rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	rec = do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{"identifier": "ci", "expires": "720h"}, admin)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"is_default":true`) || !strings.Contains(rec.Body.String(), `"name":"ci"`) {
+		t.Errorf("first token into an empty table: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{"identifier": "ci"}, admin); rec.Code != http.StatusBadRequest {
+		t.Errorf("duplicate identifier: %d", rec.Code)
+	}
+	if rec := do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{"identifier": "bad id"}, admin); rec.Code != http.StatusBadRequest {
+		t.Errorf("invalid identifier: %d", rec.Code)
+	}
+	if rec := do(t, h, http.MethodPost, "/api/v1/tokens", map[string]any{}, admin); rec.Code != http.StatusBadRequest {
+		t.Errorf("no name and no identifier: %d", rec.Code)
 	}
 }
 
@@ -348,12 +482,15 @@ func TestMailboxesRequireAdminForWrites(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"imap_username":"bounce"`) {
 		t.Errorf("list mailboxes as user: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, user)
+	if rec := do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, user); rec.Code != http.StatusForbidden {
+		t.Errorf("queue sync as user: status %d, want 403", rec.Code)
+	}
+	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, admin)
 	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"mailbox_address":"bounce@example.com"`) ||
 		!strings.Contains(rec.Body.String(), `"kind":"sync"`) {
-		t.Errorf("queue sync as user: status %d, body %s", rec.Code, rec.Body.String())
+		t.Errorf("queue sync as admin: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, user)
+	rec = do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/sync", nil, admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"created":false`) {
 		t.Errorf("duplicate sync suppressed: status %d, body %s", rec.Code, rec.Body.String())
 	}

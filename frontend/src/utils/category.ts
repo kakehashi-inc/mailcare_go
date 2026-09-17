@@ -62,15 +62,14 @@ export function categoryDescription(category: string, t: TFunction): string {
  * The authority of an unknown failure is the status code plus the diagnostic
  * template, which the technical line shows already, so it is left out here.
  * Without an action unit the label is followed by the authority or the
- * recipient domain, e.g. "Content rejected (broken.example.net)". The raw
- * internal title is used only when the category itself is unknown.
+ * recipient domain, e.g. "Content rejected (broken.example.net)". An unknown
+ * category is shown by its raw name.
  */
 export function groupHeadline(
-    group: Pick<GroupDTO, 'category' | 'unit_value' | 'authority' | 'recipient_domain' | 'title'>,
+    group: Pick<GroupDTO, 'category' | 'unit_value' | 'authority' | 'recipient_domain'>,
     t: TFunction
 ): string {
-    if (!isBounceCategory(group.category)) return group.title;
-    const label = categoryLabel(group.category, t);
+    const label = isBounceCategory(group.category) ? categoryLabel(group.category, t) : group.category;
     const authority = group.category === 'unknown_failure' ? '' : group.authority;
     if (group.unit_value) {
         return authority

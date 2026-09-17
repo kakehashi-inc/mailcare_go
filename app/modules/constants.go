@@ -37,6 +37,10 @@ const (
 	TokenRandomBytes = 20 // -> 40 hex chars, full token "mlc_" + 40 = 44 chars
 	// CookieName is the Web session cookie.
 	CookieName = "mlc_session"
+	// SessionCookieTTLHours is the lifetime of a session that was opened
+	// without "remember me": a browser-session cookie (no Max-Age) whose
+	// sealed expiry is this many hours away and which is never refreshed.
+	SessionCookieTTLHours = 24
 	// SessionRefreshInterval throttles sliding session-cookie re-issuance.
 	SessionRefreshInterval = 24 * time.Hour
 	// PasswordMinLength is the minimum accepted password length.
@@ -125,6 +129,7 @@ const (
 	JobKindAnalyze    = "analyze"    // run the agent on groups that need it
 	JobKindReindex    = "reindex"    // rebuild the index from the raw files (fetch-equivalent + full grouping)
 	JobKindReclassify = "reclassify" // re-run classification and grouping over every message
+	JobKindNotify     = "notify"     // send the alert summary mail to the notification recipients
 
 	JobStatusQueued   = "queued"
 	JobStatusRunning  = "running"
@@ -217,6 +222,35 @@ const (
 	SettingAgentEnabled   = "agent_enabled" // "1" (default) or "0"
 	SettingCookieTTLHours = "cookie_ttl_hours"
 	SettingWorkers        = "workers"
+	// Notification mail (SMTP) settings. The password is stored encrypted with
+	// the master key (see secret.go).
+	SettingSMTPHost        = "smtp_host"
+	SettingSMTPPort        = "smtp_port"
+	SettingSMTPSecurity    = "smtp_security" // ssl | starttls | none
+	SettingSMTPUsername    = "smtp_username"
+	SettingSMTPPasswordEnc = "smtp_password_enc"
+	SettingSMTPFrom        = "smtp_from"
+	SettingPublicBaseURL   = "public_base_url" // e.g. https://mailcare.example.com (links in mails)
+	SettingNotifyEnabled   = "notify_enabled"  // "1" or "0" (default)
+	SettingNotifyTime      = "notify_time"     // HH:MM local
+	SettingNotifyInterval  = "notify_interval_days"
+	SettingNotifyUserIDs   = "notify_user_ids" // comma-separated users.id
+	SettingNotifyLastSent  = "notify_last_sent_at"
+)
+
+// --- Notification defaults ---
+
+const (
+	DefaultSMTPPort           = 587
+	DefaultSMTPSecurity       = IMAPSecurityStartTLS // the security values are shared with IMAP
+	DefaultNotifyTime         = "09:00"
+	DefaultNotifyIntervalDays = 1
+	MinNotifyIntervalDays     = 1
+	MaxNotifyIntervalDays     = 7
+	// SMTPTimeout bounds one SMTP session.
+	SMTPTimeout = 60 * time.Second
+	// NotifyMailSubjectPrefix starts the subject of every notification mail.
+	NotifyMailSubjectPrefix = "[MailCare] "
 )
 
 // --- Job workers ---

@@ -78,8 +78,18 @@ export function MailDetailPage() {
         );
     }
 
-    const { message, bounce, text, has_html, headers } = detail.data;
+    const { message, bounce, text, headers } = detail.data;
     const headerEntries = Object.entries(headers ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '');
+    // Only body parts with content get a tab; the headers tab is always there.
+    const hasText = message.has_text && text !== '';
+    const hasHtml = message.has_html || detail.data.has_html;
+    const bodyTabs: { key: BodyTab; label: string; icon: string }[] = [
+        ...(hasText ? [{ key: 'text' as const, label: t('mail.tabText'), icon: 'notes' }] : []),
+        ...(hasHtml ? [{ key: 'html' as const, label: t('mail.tabHtml'), icon: 'code' }] : []),
+        { key: 'headers', label: t('mail.tabHeaders'), icon: 'list' },
+    ];
+    const activeTab = bodyTabs.some(b => b.key === tab) ? tab : bodyTabs[0].key;
+    const bodySourceKey = message.body_source === 'text' ? 'text' : message.body_source === 'html' ? 'html' : 'none';
 
     return (
         <PageContainer wide>
@@ -127,7 +137,12 @@ export function MailDetailPage() {
                                 },
                                 {
                                     label: t('mail.to'),
-                                    value: <span className='break-all'>{message.to_address || '-'}</span>,
+                                    value: (
+                                        <span className='break-all'>
+                                            {message.to_name && <span className='font-medium'>{message.to_name} </span>}
+                                            {message.to_address || '-'}
+                                        </span>
+                                    ),
                                 },
                                 ...(message.date
                                     ? [
@@ -179,17 +194,13 @@ export function MailDetailPage() {
                     </Card>
 
                     <Card>
-                        <Tabs<BodyTab>
-                            label={t('mail.bodyTabs')}
-                            value={tab}
-                            onChange={setTab}
-                            tabs={[
-                                { key: 'text', label: t('mail.tabText'), icon: 'notes' },
-                                ...(has_html ? [{ key: 'html' as const, label: t('mail.tabHtml'), icon: 'code' }] : []),
-                                { key: 'headers', label: t('mail.tabHeaders'), icon: 'list' },
-                            ]}
-                        />
-                        <TabPanel id='text' active={tab === 'text'}>
+                        {!hasText && !hasHtml && (
+                            <Alert tone='info' className='mb-4' title={t('mail.noBody')}>
+                                {t('mail.noBodyHint')}
+                            </Alert>
+                        )}
+                        <Tabs<BodyTab> label={t('mail.bodyTabs')} value={activeTab} onChange={setTab} tabs={bodyTabs} />
+                        <TabPanel id='text' active={activeTab === 'text'}>
                             {text ? (
                                 <pre className='max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-well p-3 font-mono text-sm leading-relaxed text-ink'>
                                     {text}
@@ -198,8 +209,8 @@ export function MailDetailPage() {
                                 <EmptyState icon='notes' title={t('mail.noText')} />
                             )}
                         </TabPanel>
-                        <TabPanel id='html' active={tab === 'html'}>
-                            {has_html ? (
+                        <TabPanel id='html' active={activeTab === 'html'}>
+                            {hasHtml ? (
                                 <>
                                     <Alert tone='info' className='mb-3'>
                                         {t('mail.htmlSandboxNote')}
@@ -216,7 +227,7 @@ export function MailDetailPage() {
                                 <EmptyState icon='code' title={t('mail.noHtml')} />
                             )}
                         </TabPanel>
-                        <TabPanel id='headers' active={tab === 'headers'}>
+                        <TabPanel id='headers' active={activeTab === 'headers'}>
                             {headerEntries.length === 0 ? (
                                 <EmptyState icon='list' title={t('mail.noHeaders')} />
                             ) : (
@@ -243,6 +254,10 @@ export function MailDetailPage() {
                 <aside>
                     <Card>
                         <CardHeader title={t('bounce.title')} />
+                        <p className='mb-3 text-sm text-muted'>
+                            {t('bounce.bodySource')}:{' '}
+                            <span className='text-ink'>{t(`bounce.bodySource_${bodySourceKey}`)}</span>
+                        </p>
                         {bounce ? (
                             <DescriptionList
                                 columns={1}

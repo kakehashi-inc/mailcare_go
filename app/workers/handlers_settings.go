@@ -24,6 +24,8 @@ func (c *core) settingsDTO() map[string]any {
 		"web_listen":     c.webListen,
 		"web_port":       c.webPort,
 		"data_dir":       c.dataDir,
+		// check_times and notify_time are interpreted in this zone.
+		"server_timezone": modules.ServerTimezone(),
 	}
 }
 

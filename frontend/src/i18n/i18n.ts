@@ -1,35 +1,19 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-import { DEFAULT_LANG, LANG_STORAGE_KEY, SUPPORTED_LANGS, type Lang } from '../constants';
+import { DEFAULT_LANG, SUPPORTED_LANGS, type Lang } from '../constants';
 import en from './en.json';
 import ja from './ja.json';
 
-function isLang(value: unknown): value is Lang {
+export function isLang(value: unknown): value is Lang {
     return SUPPORTED_LANGS.includes(value as Lang);
 }
 
-/**
- * Initial language: an explicit choice saved earlier wins, then the browser's
- * preferred languages in order, then the default.
- */
-function detectLang(): Lang {
-    try {
-        const stored = localStorage.getItem(LANG_STORAGE_KEY);
-        if (isLang(stored)) return stored;
-    } catch {
-        // Storage can be unavailable (private mode, blocked site data).
-    }
-    const candidates = typeof navigator !== 'undefined' ? navigator.languages : [];
-    for (const tag of candidates) {
-        const base = tag.toLowerCase().split('-')[0];
-        if (isLang(base)) return base;
-    }
-    return DEFAULT_LANG;
-}
-
+// The UI always starts in the default language (also on /login and /setup);
+// the AuthProvider switches to the signed-in user's language (users.language)
+// after login. Neither the browser language nor local storage is consulted.
 i18n.use(initReactI18next).init({
     resources: { ja: { translation: ja }, en: { translation: en } },
-    lng: detectLang(),
+    lng: DEFAULT_LANG,
     fallbackLng: DEFAULT_LANG,
     supportedLngs: [...SUPPORTED_LANGS],
     interpolation: { escapeValue: false }, // React already escapes
@@ -42,14 +26,11 @@ function applyDocumentLang(lng: string) {
 applyDocumentLang(i18n.language);
 i18n.on('languageChanged', applyDocumentLang);
 
-/** Switches the UI language and remembers the choice for the next visit. */
-export function changeLanguage(lng: Lang): Promise<unknown> {
-    try {
-        localStorage.setItem(LANG_STORAGE_KEY, lng);
-    } catch {
-        // Not fatal: the choice simply is not remembered.
-    }
-    return i18n.changeLanguage(lng);
+/** Switches the UI language; an unknown value selects the default. */
+export function applyLanguage(lng: string | null | undefined): Promise<unknown> {
+    const next = isLang(lng) ? lng : DEFAULT_LANG;
+    if (next === currentLang()) return Promise.resolve();
+    return i18n.changeLanguage(next);
 }
 
 /** The currently active language, narrowed to one the UI supports. */

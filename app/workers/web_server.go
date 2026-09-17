@@ -24,6 +24,8 @@ func init() {
 
 // webHandler builds the server's handler: the cookie-authenticated internal
 // API, the login endpoints, the loopback-only control endpoints and the SPA.
+// The user role is read-only: every write except the caller's own password
+// and profile needs an administrator.
 func (c *core) webHandler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -37,6 +39,7 @@ func (c *core) webHandler() http.Handler {
 	// Account.
 	mux.HandleFunc("GET /api/v1/me", c.handleMe)
 	mux.HandleFunc("PUT /api/v1/me/password", c.handleChangeMyPassword)
+	mux.HandleFunc("PUT /api/v1/me/profile", c.handleChangeMyProfile)
 
 	// Dashboard.
 	mux.HandleFunc("GET /api/v1/dashboard", c.handleDashboard)
@@ -48,13 +51,13 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}", c.handleGetMailbox)
 	mux.HandleFunc("PUT /api/v1/mailboxes/{id}", c.requireAdmin(c.handleUpdateMailbox))
 	mux.HandleFunc("DELETE /api/v1/mailboxes/{id}", c.requireAdmin(c.handleDeleteMailbox))
-	mux.HandleFunc("POST /api/v1/mailboxes/{id}/sync", c.handleSyncMailbox)
+	mux.HandleFunc("POST /api/v1/mailboxes/{id}/sync", c.requireAdmin(c.handleSyncMailbox))
 
 	// Bounce groups (alerts).
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups", c.handleListGroups)
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups/{key}", c.handleGetGroup)
-	mux.HandleFunc("PUT /api/v1/mailboxes/{id}/groups/{key}/state", c.handleSetGroupState)
-	mux.HandleFunc("POST /api/v1/mailboxes/{id}/groups/{key}/analyze", c.handleAnalyzeGroup)
+	mux.HandleFunc("PUT /api/v1/mailboxes/{id}/groups/{key}/state", c.requireAdmin(c.handleSetGroupState))
+	mux.HandleFunc("POST /api/v1/mailboxes/{id}/groups/{key}/analyze", c.requireAdmin(c.handleAnalyzeGroup))
 
 	// Messages.
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages", c.handleListMessages)
@@ -64,13 +67,17 @@ func (c *core) webHandler() http.Handler {
 
 	// Jobs.
 	mux.HandleFunc("GET /api/v1/jobs", c.handleListJobs)
-	mux.HandleFunc("POST /api/v1/jobs", c.handleCreateJob)
+	mux.HandleFunc("POST /api/v1/jobs", c.requireAdmin(c.handleCreateJob))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", c.handleGetJob)
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", c.requireAdmin(c.handleCancelJob))
 
 	// Settings.
 	mux.HandleFunc("GET /api/v1/settings", c.handleGetSettings)
 	mux.HandleFunc("PUT /api/v1/settings", c.requireAdmin(c.handleUpdateSettings))
+	mux.HandleFunc("GET /api/v1/settings/notifications", c.requireAdmin(c.handleGetNotificationSettings))
+	mux.HandleFunc("PUT /api/v1/settings/notifications", c.requireAdmin(c.handleUpdateNotificationSettings))
+	mux.HandleFunc("POST /api/v1/notifications/test", c.requireAdmin(c.handleTestNotification))
+	mux.HandleFunc("POST /api/v1/notifications/send", c.requireAdmin(c.handleSendNotification))
 
 	// Users (admin only).
 	mux.HandleFunc("GET /api/v1/users", c.requireAdmin(c.handleListUsers))
@@ -79,10 +86,10 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/users/{id}/password", c.requireAdmin(c.handleSetUserPassword))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", c.requireAdmin(c.handleDeleteUser))
 
-	// Login tokens (a user sees only their own).
-	mux.HandleFunc("GET /api/v1/tokens", c.handleListTokens)
-	mux.HandleFunc("POST /api/v1/tokens", c.handleCreateToken)
-	mux.HandleFunc("DELETE /api/v1/tokens/{identifier}", c.handleDeleteToken)
+	// Tokens (admin only; reserved for the future API, not used for login).
+	mux.HandleFunc("GET /api/v1/tokens", c.requireAdmin(c.handleListTokens))
+	mux.HandleFunc("POST /api/v1/tokens", c.requireAdmin(c.handleCreateToken))
+	mux.HandleFunc("DELETE /api/v1/tokens/{identifier}", c.requireAdmin(c.handleDeleteToken))
 
 	// Control plane (loopback only, no cookie).
 	mux.HandleFunc("POST /control/shutdown", c.handleControlShutdown)
@@ -136,7 +143,7 @@ func (c *core) webMiddleware(next http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		case strings.HasPrefix(p, "/api/v1/") && !isPublicAPIPath(p):
-			u, expiry, err := modules.ValidateSessionCookie(c.db, c.key, cookieValue(r))
+			sess, err := modules.ValidateSessionCookie(c.db, c.key, cookieValue(r))
 			if err != nil {
 				// 401 strictly means "this session is invalid; log in again".
 				// An internal failure (e.g. a transient DB error) says nothing
@@ -150,13 +157,15 @@ func (c *core) webMiddleware(next http.Handler) http.Handler {
 				}
 				return
 			}
-			// Sliding expiry, throttled: re-issue the cookie at most once per
-			// SessionRefreshInterval. It was issued at expiry - cookie TTL.
-			issued := expiry.Add(-time.Duration(c.cookieTTLHours) * time.Hour)
-			if time.Since(issued) >= modules.SessionRefreshInterval {
-				c.setSessionCookie(w, u)
+			// Sliding expiry for remembered sessions only, throttled: re-issue
+			// the cookie at most once per SessionRefreshInterval. It was
+			// issued at expiry - cookie TTL. A browser-session cookie keeps
+			// its fixed expiry.
+			issued := sess.Expiry.Add(-time.Duration(c.cookieTTLHours) * time.Hour)
+			if sess.Remember && time.Since(issued) >= modules.SessionRefreshInterval {
+				c.setSessionCookie(w, sess.User, true)
 			}
-			next.ServeHTTP(w, withUser(r, u))
+			next.ServeHTTP(w, withUser(r, sess.User))
 		default:
 			next.ServeHTTP(w, r)
 		}

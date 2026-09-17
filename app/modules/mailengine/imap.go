@@ -204,8 +204,17 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 		return nil, err
 	}
 	result.UIDValidity = sel.UIDValidity
-	if mb.LastUIDValidity != 0 && uint32(mb.LastUIDValidity) != sel.UIDValidity {
-		report(progress, fmt.Sprintf("uidvalidity changed (%d -> %d); re-scanning the window", mb.LastUIDValidity, sel.UIDValidity))
+	if total > 0 {
+		// The index holds messages but none under this UIDVALIDITY: the
+		// folder was re-created and the window is re-scanned (duplicates are
+		// recognised by Message-ID).
+		maxUID, err := models.MaxUIDForValidity(db, sel.UIDValidity, folder)
+		if err != nil {
+			return nil, fmt.Errorf("lookup uidvalidity: %w", err)
+		}
+		if maxUID == 0 {
+			report(progress, fmt.Sprintf("uidvalidity changed (now %d); re-scanning the window", sel.UIDValidity))
+		}
 	}
 
 	since := time.Now().UTC().AddDate(0, 0, -days)

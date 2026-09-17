@@ -70,25 +70,30 @@ func TestSessionCookieRoundTrip(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 	expiry := time.Now().Add(time.Hour)
-	value, err := IssueSessionCookie(key, u, expiry)
+	value, err := IssueSessionCookie(key, u, expiry, true)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	got, gotExpiry, err := ValidateSessionCookie(db, key, value)
-	if err != nil || got.ID != u.ID || gotExpiry.Unix() != expiry.Unix() {
-		t.Fatalf("validate: %v (user %v, expiry %v)", err, got, gotExpiry)
+	got, err := ValidateSessionCookie(db, key, value)
+	if err != nil || got.User.ID != u.ID || got.Expiry.Unix() != expiry.Unix() || !got.Remember {
+		t.Fatalf("validate: %v (%+v)", err, got)
 	}
-	if _, _, err := ValidateSessionCookie(db, key, value+"x"); err == nil {
+	// The remember flag travels inside the sealed value.
+	plain, _ := IssueSessionCookie(key, u, expiry, false)
+	if got, err := ValidateSessionCookie(db, key, plain); err != nil || got.Remember {
+		t.Errorf("browser-session cookie: %v (%+v)", err, got)
+	}
+	if _, err := ValidateSessionCookie(db, key, value+"x"); err == nil {
 		t.Errorf("tampered cookie accepted")
 	}
-	expired, _ := IssueSessionCookie(key, u, time.Now().Add(-time.Minute))
-	if _, _, err := ValidateSessionCookie(db, key, expired); err == nil {
+	expired, _ := IssueSessionCookie(key, u, time.Now().Add(-time.Minute), true)
+	if _, err := ValidateSessionCookie(db, key, expired); err == nil {
 		t.Errorf("expired cookie accepted")
 	}
 	if err := ChangePassword(db, u.ID, "another-password"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ValidateSessionCookie(db, key, value); err == nil {
+	if _, err := ValidateSessionCookie(db, key, value); err == nil {
 		t.Errorf("session survived a password change")
 	}
 	if _, err := AuthenticateUser(db, "alice", "another-password"); err != nil {

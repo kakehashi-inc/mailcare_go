@@ -16,7 +16,8 @@ import (
 // Web session cookie (mlc_session).
 //
 // The cookie value is one opaque base64url string: nonce || AES-256-GCM(
-// user_id || SHA256(password_hash) || expiry ) sealed with the master key.
+// user_id || SHA256(password_hash) || expiry || flags ) sealed with the
+// master key.
 //
 //   - user_id identifies the session owner.
 //   - SHA256(password_hash) binds the session to the password in force when it
@@ -24,12 +25,23 @@ import (
 //     existing session without any server-side session table.
 //   - expiry is authenticated by the GCM tag, so it cannot be extended by the
 //     client; it is enforced server-side on every request.
+//   - flags carries the "remember me" bit: a remembered session is a
+//     persistent cookie (Max-Age = cookie_ttl_hours) refreshed on use; one
+//     without it is a browser-session cookie with a SessionCookieTTLHours
+//     expiry that is never refreshed. The bit lives inside the sealed value
+//     so a refresh keeps the mode the user chose at login.
 
 const (
 	sessionUserIDLen = 8
 	sessionHashLen   = sha256.Size
 	sessionExpiryLen = 8
-	sessionPlainLen  = sessionUserIDLen + sessionHashLen + sessionExpiryLen
+	sessionFlagsLen  = 1
+	sessionPlainLen  = sessionUserIDLen + sessionHashLen + sessionExpiryLen + sessionFlagsLen
+	// sessionLegacyPlainLen is the layout without the flags byte (cookies
+	// issued before "remember me" existed); such a cookie counts as remembered.
+	sessionLegacyPlainLen = sessionUserIDLen + sessionHashLen + sessionExpiryLen
+
+	sessionFlagRemember = 0x01
 )
 
 // ErrSessionInvalid marks a cookie that is genuinely not a valid session:
@@ -46,7 +58,8 @@ func passwordFingerprint(passwordHash string) []byte {
 }
 
 // IssueSessionCookie builds the cookie value for a user, valid until expiry.
-func IssueSessionCookie(key []byte, u *models.User, expiry time.Time) (string, error) {
+// remember marks a persistent ("remember me") session.
+func IssueSessionCookie(key []byte, u *models.User, expiry time.Time, remember bool) (string, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return "", err
@@ -55,6 +68,11 @@ func IssueSessionCookie(key []byte, u *models.User, expiry time.Time) (string, e
 	plain = binary.BigEndian.AppendUint64(plain, uint64(u.ID))
 	plain = append(plain, passwordFingerprint(u.PasswordHash)...)
 	plain = binary.BigEndian.AppendUint64(plain, uint64(expiry.Unix()))
+	var flags byte
+	if remember {
+		flags |= sessionFlagRemember
+	}
+	plain = append(plain, flags)
 	blob, err := seal(gcm, plain)
 	if err != nil {
 		return "", err
@@ -62,44 +80,54 @@ func IssueSessionCookie(key []byte, u *models.User, expiry time.Time) (string, e
 	return base64.RawURLEncoding.EncodeToString(blob), nil
 }
 
+// Session is the decoded content of a valid session cookie.
+type Session struct {
+	User     *models.User
+	Expiry   time.Time // lets the caller derive when the cookie was issued (to throttle sliding re-issuance)
+	Remember bool      // persistent session ("remember me")
+}
+
 // ValidateSessionCookie decodes a cookie value, rejects it when expired and
-// returns the owning user after confirming the password fingerprint still
-// matches. It also returns the cookie's expiry so the caller can derive when
-// it was issued (to throttle sliding re-issuance). A genuinely invalid cookie
-// yields an error wrapping ErrSessionInvalid; internal failures yield other
-// errors.
-func ValidateSessionCookie(db *sql.DB, key []byte, value string) (*models.User, time.Time, error) {
+// returns the session after confirming the password fingerprint of its user
+// still matches. A genuinely invalid cookie yields an error wrapping
+// ErrSessionInvalid; internal failures yield other errors.
+func ValidateSessionCookie(db *sql.DB, key []byte, value string) (*Session, error) {
 	if value == "" {
-		return nil, time.Time{}, ErrSessionInvalid
+		return nil, ErrSessionInvalid
 	}
 	blob, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
-		return nil, time.Time{}, ErrSessionInvalid
+		return nil, ErrSessionInvalid
 	}
 	gcm, err := newGCM(key)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, err
 	}
 	plain, err := open(gcm, blob)
-	if err != nil || len(plain) != sessionPlainLen {
-		return nil, time.Time{}, ErrSessionInvalid
+	if err != nil || (len(plain) != sessionPlainLen && len(plain) != sessionLegacyPlainLen) {
+		return nil, ErrSessionInvalid
 	}
 	userID := int64(binary.BigEndian.Uint64(plain[:sessionUserIDLen]))
 	storedHash := plain[sessionUserIDLen : sessionUserIDLen+sessionHashLen]
-	expiry := time.Unix(int64(binary.BigEndian.Uint64(plain[sessionUserIDLen+sessionHashLen:])), 0)
+	expiryOff := sessionUserIDLen + sessionHashLen
+	expiry := time.Unix(int64(binary.BigEndian.Uint64(plain[expiryOff:expiryOff+sessionExpiryLen])), 0)
+	remember := true
+	if len(plain) == sessionPlainLen {
+		remember = plain[expiryOff+sessionExpiryLen]&sessionFlagRemember != 0
+	}
 	if time.Now().After(expiry) {
-		return nil, time.Time{}, fmt.Errorf("session expired: %w", ErrSessionInvalid)
+		return nil, fmt.Errorf("session expired: %w", ErrSessionInvalid)
 	}
 	u, err := models.GetUserByID(db, userID)
 	if err == sql.ErrNoRows {
-		return nil, time.Time{}, fmt.Errorf("user not found: %w", ErrSessionInvalid)
+		return nil, fmt.Errorf("user not found: %w", ErrSessionInvalid)
 	}
 	if err != nil {
 		// Internal failure (e.g. DB busy): NOT an invalid session.
-		return nil, time.Time{}, fmt.Errorf("session user lookup failed: %w", err)
+		return nil, fmt.Errorf("session user lookup failed: %w", err)
 	}
 	if subtle.ConstantTimeCompare(passwordFingerprint(u.PasswordHash), storedHash) != 1 {
-		return nil, time.Time{}, fmt.Errorf("password changed: %w", ErrSessionInvalid)
+		return nil, fmt.Errorf("password changed: %w", ErrSessionInvalid)
 	}
-	return u, expiry, nil
+	return &Session{User: u, Expiry: expiry, Remember: remember}, nil
 }

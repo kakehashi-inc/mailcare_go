@@ -21,7 +21,7 @@ const SERVER_MESSAGES: { match: RegExp; key: string }[] = [
         key: 'serverError.mailboxExists',
     },
     {
-        match: /invalid credentials|invalid username or password|invalid token|login failed/i,
+        match: /invalid credentials|invalid username or password|login failed/i,
         key: 'serverError.invalidCredentials',
     },
     { match: /^forbidden$/i, key: 'error.forbidden' },

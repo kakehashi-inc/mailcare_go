@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 
+	"mailcare/app/models"
 	"mailcare/app/modules"
 	_ "mailcare/app/workers" // registers modules.StartServer via init()
 
@@ -22,7 +23,7 @@ type CLI struct {
 
 	Service    modules.ServiceCmd    `cmd:"" help:"Start, stop or inspect the Web server"`
 	User       modules.UserCmd       `cmd:"" help:"Manage users"`
-	Token      modules.TokenCmd      `cmd:"" help:"Manage login tokens"`
+	Token      modules.TokenCmd      `cmd:"" help:"Manage API tokens (reserved for the future API)"`
 	Mailbox    modules.MailboxCmd    `cmd:"" help:"Manage monitored mail addresses"`
 	Sync       modules.SyncCmd       `cmd:"" help:"Fetch new mail, group the bounces and queue the analysis"`
 	Fetch      modules.FetchCmd      `cmd:"" help:"Fetch new mail only (no grouping)"`
@@ -30,6 +31,7 @@ type CLI struct {
 	Reindex    modules.ReindexCmd    `cmd:"" help:"Rebuild the mail index from the raw files"`
 	Reclassify modules.ReclassifyCmd `cmd:"" help:"Re-run bounce detection and grouping over every mail"`
 	Analyze    modules.AnalyzeCmd    `cmd:"" help:"Run the agent analysis over bounce groups"`
+	Notify     modules.NotifyCmd     `cmd:"" help:"Send the alert notification mail now, or an SMTP test mail (--test)"`
 	Groups     modules.GroupsCmd     `cmd:"" help:"List the bounce groups of a mail address, or show one group (ADDRESS KEY)"`
 	Schedule   modules.ScheduleCmd   `cmd:"" help:"Show or set the daily check times"`
 	Settings   modules.SettingsCmd   `cmd:"" help:"Show or change settings"`
@@ -67,6 +69,9 @@ func main() {
 			"default_recent_days":  strconv.Itoa(modules.DefaultRecentDays),
 			"default_workers":      strconv.Itoa(modules.DefaultWorkers),
 			"max_workers":          strconv.Itoa(modules.MaxWorkers),
+			"default_timezone":     models.DefaultTimezone,
+			"default_language":     models.DefaultLanguage,
+			"default_theme":        models.DefaultTheme,
 		},
 	)
 	modules.SetDataDir(cli.DataDir)

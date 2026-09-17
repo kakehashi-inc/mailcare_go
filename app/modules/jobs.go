@@ -20,7 +20,7 @@ import (
 // Jobs (jobs table).
 //
 // A job is one unit of background work: sync / fetch / group / analyze /
-// reindex / reclassify. Jobs are queued in the master database and executed
+// reindex / reclassify / notify. Jobs are queued in the master database and executed
 // by the JobManager, which runs up to "workers" jobs at once. Jobs that touch
 // the same IMAP server, the same mailbox index or the agent CLI hold resource
 // keys (see resourceKeys) and are serialized against each other. A job
@@ -42,6 +42,7 @@ const (
 // Resource keys held by running jobs (see the system design document (Documents) 7.2).
 const (
 	lockAgent         = "agent"
+	lockNotify        = "notify"
 	lockHostPrefix    = "host:"
 	lockMailboxPrefix = "mailbox:"
 	lockAnalyzePrefix = "analyze:"
@@ -59,10 +60,36 @@ var ErrJobKind = errors.New("unknown job kind")
 // ValidateJobKind reports whether kind is one of the known job kinds.
 func ValidateJobKind(kind string) error {
 	switch kind {
-	case JobKindSync, JobKindFetch, JobKindGroup, JobKindAnalyze, JobKindReindex, JobKindReclassify:
+	case JobKindSync, JobKindFetch, JobKindGroup, JobKindAnalyze, JobKindReindex, JobKindReclassify, JobKindNotify:
 		return nil
 	}
 	return fmt.Errorf("%w %q", ErrJobKind, kind)
+}
+
+// NotifyTestTarget builds the notify job target that sends a test mail to
+// one address instead of the notification.
+func NotifyTestTarget(address string) string {
+	return notifyTestPrefix + address
+}
+
+// normalizeNotifyTarget validates a notify job target: "" (send the
+// notification) or "test:<address>".
+func normalizeNotifyTarget(target string) (string, error) {
+	if target == "" {
+		return "", nil
+	}
+	raw, ok := strings.CutPrefix(target, notifyTestPrefix)
+	if !ok {
+		return "", fmt.Errorf("invalid notify target %q (use \"\" or \"test:<address>\")", target)
+	}
+	address, err := NormalizeEmail(raw)
+	if err != nil {
+		return "", err
+	}
+	if address == "" {
+		return "", errors.New("the test mail needs a recipient address")
+	}
+	return NotifyTestTarget(address), nil
 }
 
 // JobManager queues and runs jobs.
@@ -239,6 +266,9 @@ func (m *JobManager) claimByID(id int64) (*models.Job, error) {
 // host and address are read from the mailboxes row at claim time; a job
 // whose mailbox is gone holds nothing (it fails when it runs).
 func (m *JobManager) resourceKeys(job *models.Job) []string {
+	if job.Kind == JobKindNotify {
+		return []string{lockNotify}
+	}
 	if !job.MailboxID.Valid {
 		return nil
 	}
@@ -322,12 +352,22 @@ func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy st
 	if err := ValidateJobKind(kind); err != nil {
 		return nil, false, err
 	}
-	if kind != JobKindAnalyze {
-		target = ""
-	}
 	target = strings.TrimSpace(target)
-	if kind == JobKindAnalyze && mailboxID == 0 && target != "" && target != analyzeAllTarget {
-		return nil, false, errors.New("analyze of one group requires a mailbox")
+	switch kind {
+	case JobKindAnalyze:
+		if mailboxID == 0 && target != "" && target != analyzeAllTarget {
+			return nil, false, errors.New("analyze of one group requires a mailbox")
+		}
+	case JobKindNotify:
+		if mailboxID != 0 {
+			return nil, false, errors.New("notify takes no mailbox")
+		}
+		var err error
+		if target, err = normalizeNotifyTarget(target); err != nil {
+			return nil, false, err
+		}
+	default:
+		target = ""
 	}
 	if mailboxID != 0 {
 		if _, err := models.GetMailboxByID(db, mailboxID); err == sql.ErrNoRows {
@@ -527,6 +567,12 @@ func (m *JobManager) RunJob(ctx context.Context, job *models.Job, progress func(
 	if err := ValidateJobKind(job.Kind); err != nil {
 		return "", err
 	}
+	if job.Kind == JobKindNotify {
+		if job.MailboxID.Valid {
+			return "", errors.New("notify takes no mailbox")
+		}
+		return m.runNotify(ctx, job, progress)
+	}
 	if !job.MailboxID.Valid {
 		return m.runExpansion(ctx, job, progress)
 	}
@@ -678,19 +724,15 @@ func (m *JobManager) queueAnalysis(job *models.Job, mb *models.Mailbox, progress
 func (m *JobManager) fetchOne(ctx context.Context, mb *models.Mailbox, progress func(string)) (*mailengine.FetchResult, error) {
 	password, err := MailboxPassword(m.key, mb)
 	if err != nil {
-		_ = models.UpdateMailboxCheckResult(m.db, mb.ID, "error", err.Error(), mb.LastUIDValidity)
+		_ = models.UpdateMailboxFetchResult(m.db, mb.ID, err.Error())
 		return nil, err
 	}
 	res, err := mailengine.FetchMailbox(ctx, m.mailsRoot, mb, password, mailengine.Progress(progress))
 	if err != nil {
-		_ = models.UpdateMailboxCheckResult(m.db, mb.ID, "error", err.Error(), mb.LastUIDValidity)
+		_ = models.UpdateMailboxFetchResult(m.db, mb.ID, err.Error())
 		return nil, err
 	}
-	uidValidity := mb.LastUIDValidity
-	if res.UIDValidity != 0 {
-		uidValidity = int64(res.UIDValidity)
-	}
-	if err := models.UpdateMailboxCheckResult(m.db, mb.ID, "ok", "", uidValidity); err != nil {
+	if err := models.UpdateMailboxFetchResult(m.db, mb.ID, ""); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -820,7 +862,7 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 		if ctx.Err() != nil {
 			return fmt.Sprintf("analyzed %d, failed %d", done, failed), errors.New("server shutting down")
 		}
-		progress(fmt.Sprintf("(%d/%d) %s", i+1, len(groups), g.Title))
+		progress(fmt.Sprintf("(%d/%d) %s", i+1, len(groups), g.Label()))
 		report, err := agent.AnalyzeGroup(ctx, agent.AnalyzeInput{
 			MailsRoot: m.mailsRoot, AgentRoot: m.agentRoot, TemplatesFS: m.templates,
 			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Language: "ja",
@@ -844,4 +886,41 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 		return result, errors.New(strings.Join(failures, "; "))
 	}
 	return result, nil
+}
+
+// runNotify sends the notification mail (target "") or a test mail (target
+// "test:<address>"). A notification that the send conditions rule out is
+// not an error: the result records the reason.
+func (m *JobManager) runNotify(ctx context.Context, job *models.Job, progress func(string)) (string, error) {
+	if address, ok := strings.CutPrefix(job.Target, notifyTestPrefix); ok {
+		s, err := ResolveNotificationSettings(m.db, m.key)
+		if err != nil {
+			return "", err
+		}
+		progress("sending a test mail to " + address)
+		if err := TestSMTP(ctx, s.SMTP, address); err != nil {
+			progress(fmt.Sprintf("error: %v", err))
+			return "", err
+		}
+		line := "sent a test mail to " + address
+		progress(line)
+		return line, nil
+	}
+	if job.Target != "" {
+		return "", fmt.Errorf("invalid notify target %q", job.Target)
+	}
+	progress("collecting the groups that need attention")
+	res, err := SendNotification(ctx, m.db, m.key, m.mailsRoot, time.Now())
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return "", err
+	}
+	if !res.Sent {
+		line := "skipped: " + res.Skipped
+		progress(line)
+		return line, nil
+	}
+	line := fmt.Sprintf("sent %d group(s) to %s", res.Groups, strings.Join(res.Recipients, ", "))
+	progress(line)
+	return line, nil
 }

@@ -59,6 +59,7 @@ type ServerStatus struct {
 	WebListen   string `json:"web_listen"`
 	Uptime      string `json:"uptime"`
 	Users       int    `json:"users"`
+	Tokens      int    `json:"tokens"`
 	Mailboxes   int    `json:"mailboxes"`
 	ActiveJobs  int    `json:"active_jobs"`
 	NextCheckAt string `json:"next_check_at"`
@@ -99,6 +100,7 @@ func ShowServerStatus(port int) error {
 	fmt.Printf("%-12s %v\n", "web_listen:", st.WebListen)
 	fmt.Printf("%-12s %v\n", "uptime:", st.Uptime)
 	fmt.Printf("%-12s %v\n", "users:", st.Users)
+	fmt.Printf("%-12s %v\n", "tokens:", st.Tokens)
 	fmt.Printf("%-12s %v\n", "mailboxes:", st.Mailboxes)
 	fmt.Printf("%-12s %v\n", "active_jobs:", st.ActiveJobs)
 	fmt.Printf("%-12s %v\n", "next_check:", next)

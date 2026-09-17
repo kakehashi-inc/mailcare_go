@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { deleteMailbox, listMailboxes, testMailbox } from '../api/client';
-import { EnabledBadge, CheckStatusBadge } from '../components/domain/StatusBadges';
+import { EnabledBadge, CheckStatusBadge, fetchStatus } from '../components/domain/StatusBadges';
 import { Button, LinkButton } from '../components/ui/Button';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { DateTime } from '../components/ui/DateTime';
@@ -92,9 +92,9 @@ export function SettingsMailboxesPage() {
             header: t('mailbox.lastChecked'),
             cell: mb => (
                 <span className='flex flex-col gap-1'>
-                    <CheckStatusBadge status={mb.last_check_status} />
+                    <CheckStatusBadge status={fetchStatus(mb)} />
                     <DateTime
-                        value={mb.last_checked_at}
+                        value={mb.last_fetched_at}
                         relative
                         empty={t('checkStatus.never')}
                         className='text-sm text-muted'

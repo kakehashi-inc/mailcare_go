@@ -2,12 +2,14 @@ package models
 
 import (
 	"database/sql"
-	"time"
 )
 
-// Bounce is a row of the per-mailbox bounces table: the details extracted from
-// one bounce message (delivery-status part and/or body text). It is keyed by
-// the message id and removed with the message.
+// Bounce is the detail extracted from one bounce message (delivery-status part
+// and/or body text). It is stored in the detail_info JSON column of the message row
+// (messages.detail_info, next to the "rule" name of the detection rule), so there is
+// no separate table: the details are read only together with their message,
+// and the per-group aggregates (recipients, remote IPs, MTAs) are computed with
+// json_extract over the group's messages.
 type Bounce struct {
 	MessageID          int64        `json:"-"`
 	OriginalRecipient  string       `json:"original_recipient"`
@@ -20,33 +22,83 @@ type Bounce struct {
 	RemoteMTA          string       `json:"remote_mta"`
 	RemoteIP           string       `json:"remote_ip"`
 	ReportingMTA       string       `json:"reporting_mta"`
-	OriginalMessageID  string       `json:"original_message_id"`
-	OriginalSubject    string       `json:"original_subject"`
-	OriginalFrom       string       `json:"original_from"`
-	OriginalDate       sql.NullTime `json:"-"`
 	Responsible        string       `json:"responsible"`
+	OriginalMessageID  string       `json:"original_message_id"`
+	OriginalFrom       string       `json:"original_from"`
+	OriginalSubject    string       `json:"original_subject"`
+	OriginalDate       sql.NullTime `json:"-"`
 }
 
-const bounceColumns = `message_id, original_recipient, recipient_domain, action, status_code, smtp_code, diagnostic,
-	diagnostic_template, remote_mta, remote_ip, reporting_mta, original_message_id, original_subject, original_from,
-	original_date, responsible`
+// bounceJSON is the JSON shape of messages.detail_info (only "rule" for a non-bounce).
+type bounceJSON struct {
+	OriginalRecipient  string `json:"recipient,omitempty"`
+	RecipientDomain    string `json:"recipient_domain,omitempty"`
+	Action             string `json:"action,omitempty"`
+	StatusCode         string `json:"status_code,omitempty"`
+	SMTPCode           string `json:"smtp_code,omitempty"`
+	Diagnostic         string `json:"diagnostic,omitempty"`
+	DiagnosticTemplate string `json:"diagnostic_template,omitempty"`
+	RemoteMTA          string `json:"remote_mta,omitempty"`
+	RemoteIP           string `json:"remote_ip,omitempty"`
+	ReportingMTA       string `json:"reporting_mta,omitempty"`
+	Responsible        string `json:"responsible,omitempty"`
+	OriginalMessageID  string `json:"original_message_id,omitempty"`
+	OriginalFrom       string `json:"original_from,omitempty"`
+	OriginalSubject    string `json:"original_subject,omitempty"`
+	OriginalDate       string `json:"original_date,omitempty"`
+}
 
-// UpsertBounce stores (or replaces) the bounce details of a message.
+// UpsertBounce stores the bounce details in the message row. Text values are
+// truncated to sensible bounds.
 func UpsertBounce(db *sql.DB, b *Bounce) error {
-	b.OriginalDate = utcNullTime(b.OriginalDate)
-	_, err := db.Exec(
-		`INSERT OR REPLACE INTO bounces (`+bounceColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.MessageID, b.OriginalRecipient, b.RecipientDomain, b.Action, b.StatusCode, b.SMTPCode, b.Diagnostic,
-		b.DiagnosticTemplate, b.RemoteMTA, b.RemoteIP, b.ReportingMTA, b.OriginalMessageID, b.OriginalSubject,
-		b.OriginalFrom, b.OriginalDate, b.Responsible,
-	)
-	return err
+	j := bounceJSON{
+		OriginalRecipient:  truncateRunes(b.OriginalRecipient, 320),
+		RecipientDomain:    truncateRunes(b.RecipientDomain, 253),
+		Action:             b.Action,
+		StatusCode:         truncateRunes(b.StatusCode, 11),
+		SMTPCode:           truncateRunes(b.SMTPCode, 3),
+		Diagnostic:         truncateRunes(b.Diagnostic, 4000),
+		DiagnosticTemplate: truncateRunes(b.DiagnosticTemplate, 300),
+		RemoteMTA:          truncateRunes(b.RemoteMTA, 253),
+		RemoteIP:           truncateRunes(b.RemoteIP, 45),
+		ReportingMTA:       truncateRunes(b.ReportingMTA, 253),
+		Responsible:        b.Responsible,
+		OriginalMessageID:  truncateRunes(b.OriginalMessageID, 998),
+		OriginalFrom:       truncateRunes(b.OriginalFrom, 500),
+		OriginalSubject:    truncateRunes(b.OriginalSubject, 2000),
+		OriginalDate:       jsonTime(utcNullTime(b.OriginalDate)),
+	}
+	// Keep the detection rule name already stored in the column.
+	res, err := db.Exec(`UPDATE messages SET detail_info = json_set(?, '$.rule', json_extract(detail_info, '$.rule')) WHERE id = ?`,
+		marshalJSON(j), b.MessageID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
-// GetBounceByMessageID returns the bounce details of a message (sql.ErrNoRows when absent).
+// GetBounceByMessageID returns the bounce details of a message. sql.ErrNoRows
+// is returned when the message does not exist or carries no bounce details.
 func GetBounceByMessageID(db *sql.DB, messageID int64) (*Bounce, error) {
-	return scanBounce(db.QueryRow(`SELECT `+bounceColumns+` FROM bounces WHERE message_id = ?`, messageID))
+	var raw string
+	if err := db.QueryRow(`SELECT detail_info FROM messages WHERE id = ?`, messageID).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var j bounceJSON
+	unmarshalJSON(raw, &j)
+	if j.OriginalRecipient == "" && j.StatusCode == "" && j.Diagnostic == "" && j.RemoteMTA == "" {
+		return nil, sql.ErrNoRows
+	}
+	return &Bounce{
+		MessageID: messageID, OriginalRecipient: j.OriginalRecipient, RecipientDomain: j.RecipientDomain,
+		Action: j.Action, StatusCode: j.StatusCode, SMTPCode: j.SMTPCode, Diagnostic: j.Diagnostic,
+		DiagnosticTemplate: j.DiagnosticTemplate, RemoteMTA: j.RemoteMTA, RemoteIP: j.RemoteIP,
+		ReportingMTA: j.ReportingMTA, Responsible: j.Responsible, OriginalMessageID: j.OriginalMessageID,
+		OriginalFrom: j.OriginalFrom, OriginalSubject: j.OriginalSubject, OriginalDate: parseJSONTime(j.OriginalDate),
+	}, nil
 }
 
 // GroupBounceStats summarizes the bounces of a group for display.
@@ -60,15 +112,15 @@ type GroupBounceStats struct {
 func GroupStats(db *sql.DB, groupKey string) (*GroupBounceStats, error) {
 	st := &GroupBounceStats{Recipients: []string{}, RemoteIPs: []string{}, RemoteMTAs: []string{}}
 	for _, q := range []struct {
-		col string
-		dst *[]string
+		path string
+		dst  *[]string
 	}{
-		{"original_recipient", &st.Recipients},
-		{"remote_ip", &st.RemoteIPs},
-		{"remote_mta", &st.RemoteMTAs},
+		{"$.recipient", &st.Recipients},
+		{"$.remote_ip", &st.RemoteIPs},
+		{"$.remote_mta", &st.RemoteMTAs},
 	} {
-		rows, err := db.Query(`SELECT DISTINCT b.`+q.col+` FROM bounces b JOIN messages m ON m.id = b.message_id
-			WHERE m.group_key = ? AND b.`+q.col+` <> '' ORDER BY b.`+q.col, groupKey)
+		rows, err := db.Query(`SELECT DISTINCT json_extract(detail_info, ?) AS v FROM messages
+			WHERE group_key = ? AND v IS NOT NULL AND v <> '' ORDER BY v`, q.path, groupKey)
 		if err != nil {
 			return nil, err
 		}
@@ -86,34 +138,4 @@ func GroupStats(db *sql.DB, groupKey string) (*GroupBounceStats, error) {
 		}
 	}
 	return st, nil
-}
-
-func scanBounce(s rowScanner) (*Bounce, error) {
-	b := &Bounce{}
-	if err := s.Scan(&b.MessageID, &b.OriginalRecipient, &b.RecipientDomain, &b.Action, &b.StatusCode, &b.SMTPCode,
-		&b.Diagnostic, &b.DiagnosticTemplate, &b.RemoteMTA, &b.RemoteIP, &b.ReportingMTA, &b.OriginalMessageID,
-		&b.OriginalSubject, &b.OriginalFrom, &b.OriginalDate, &b.Responsible); err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
-// nullTime converts a time to sql.NullTime (zero -> NULL).
-func nullTime(t time.Time) sql.NullTime {
-	if t.IsZero() {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: t.UTC(), Valid: true}
-}
-
-// NullTime is the exported form of nullTime for callers in other packages.
-func NullTime(t time.Time) sql.NullTime { return nullTime(t) }
-
-// utcNullTime normalizes a valid NullTime to UTC (and drops the monotonic
-// clock reading) so the driver stores a canonical, sortable text value.
-func utcNullTime(t sql.NullTime) sql.NullTime {
-	if !t.Valid {
-		return sql.NullTime{}
-	}
-	return sql.NullTime{Time: t.Time.UTC().Round(0), Valid: true}
 }

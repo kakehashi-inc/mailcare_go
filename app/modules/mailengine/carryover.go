@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"mailcare/app/models"
 )
@@ -26,10 +25,16 @@ type carryover struct {
 	reports []*models.AgentReport // in old id order
 }
 
-// readCarryover reads the groups and agent reports of the index at path. The
-// file is opened directly (not through OpenMailIndex) so that an index with
-// an outdated schema can still be read; on any error nil is returned with the
-// error and the caller continues without carrying anything over.
+// errCarryoverOutdated is returned by readCarryover when the previous index
+// has an older schema: its rows cannot be read through the models, so
+// nothing is carried over.
+var errCarryoverOutdated = errors.New("previous index has an outdated schema")
+
+// readCarryover reads the groups and agent reports of the index at path
+// through the models. The file is opened directly (not through OpenMailIndex,
+// which would fail on an outdated schema); when its schema version is not
+// the current one, errCarryoverOutdated is returned and the caller continues
+// without carrying anything over. A missing file yields nil, nil.
 func readCarryover(path string) (*carryover, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -37,71 +42,35 @@ func readCarryover(path string) (*carryover, error) {
 		}
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_time_format=sqlite")
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return nil, err
+	}
+	if version != models.MailIndexSchemaVersion {
+		return nil, fmt.Errorf("%w (version %d, current %d)", errCarryoverOutdated, version, models.MailIndexSchemaVersion)
+	}
+
 	c := &carryover{groups: map[string]carriedGroup{}}
-	rows, err := db.Query(`SELECT group_key, state, state_updated_at, needs_analysis, message_count FROM groups`)
+	groups, err := models.ListGroups(db, models.GroupFilter{})
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var key, state string
-		var stateUpdated any
-		var needs, count int
-		if err := rows.Scan(&key, &state, &stateUpdated, &needs, &count); err != nil {
-			rows.Close()
-			return nil, err
+	for _, g := range groups {
+		c.groups[g.GroupKey] = carriedGroup{
+			State: g.State, StateUpdatedAt: g.StateUpdatedAt, NeedsAnalysis: g.NeedsAnalysis, MessageCount: g.MessageCount,
 		}
-		c.groups[key] = carriedGroup{State: state, StateUpdatedAt: anyToNullTime(stateUpdated), NeedsAnalysis: needs != 0, MessageCount: count}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	rows, err = db.Query(`SELECT id, group_key, provider, status, summary, responsible, severity, report_markdown,
-		error_message, message_count, started_at, finished_at, created_at FROM agent_reports ORDER BY id`)
+	c.reports, err = models.ListAllAgentReports(db)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		r := &models.AgentReport{}
-		var started, finished, created any
-		if err := rows.Scan(&r.ID, &r.GroupKey, &r.Provider, &r.Status, &r.Summary, &r.Responsible, &r.Severity,
-			&r.ReportMarkdown, &r.ErrorMessage, &r.MessageCount, &started, &finished, &created); err != nil {
-			return nil, err
-		}
-		r.StartedAt = anyToNullTime(started)
-		r.FinishedAt = anyToNullTime(finished)
-		if t := anyToNullTime(created); t.Valid {
-			r.CreatedAt = t.Time
-		} else {
-			r.CreatedAt = time.Now().UTC()
-		}
-		c.reports = append(c.reports, r)
-	}
-	return c, rows.Err()
-}
-
-// anyToNullTime converts a DATETIME value as returned by the driver (time.Time,
-// text or NULL) to sql.NullTime.
-func anyToNullTime(v any) sql.NullTime {
-	switch t := v.(type) {
-	case nil:
-		return sql.NullTime{}
-	case time.Time:
-		return sql.NullTime{Time: t.UTC(), Valid: true}
-	case string:
-		return models.ParseSQLiteTime(sql.NullString{String: t, Valid: true})
-	case []byte:
-		return models.ParseSQLiteTime(sql.NullString{String: string(t), Valid: true})
-	}
-	return sql.NullTime{}
+	return c, nil
 }
 
 // apply restores the carried state and reports into the rebuilt index for
@@ -114,15 +83,14 @@ func (c *carryover) apply(db *sql.DB) (groups, reports int, err error) {
 	}
 	restored := map[string]bool{}
 	for key, old := range c.groups {
-		var count int
-		err := db.QueryRow(`SELECT message_count FROM groups WHERE group_key = ?`, key).Scan(&count)
+		g, err := models.GetGroup(db, key)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return groups, reports, fmt.Errorf("lookup group %s: %w", key, err)
 		}
-		needs := old.NeedsAnalysis || count > old.MessageCount
+		needs := old.NeedsAnalysis || g.MessageCount > old.MessageCount
 		if err := models.RestoreGroupState(db, key, old.State, old.StateUpdatedAt, needs); err != nil {
 			return groups, reports, fmt.Errorf("restore group %s: %w", key, err)
 		}
@@ -143,7 +111,7 @@ func (c *carryover) apply(db *sql.DB) (groups, reports int, err error) {
 
 // reapplyReportResponsible re-applies the responsible party named by the
 // latest completed agent report of every group, because the group upsert of
-// a reclassify / reindex resets it to the machine-derived value.
+// a grouping / reindex resets it to the machine-derived value.
 func reapplyReportResponsible(db *sql.DB) error {
 	latest, err := models.LatestCompletedAgentReports(db)
 	if err != nil {

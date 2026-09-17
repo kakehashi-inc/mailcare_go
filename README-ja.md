@@ -23,8 +23,10 @@ MailCare は、複数のメールアドレスを IMAP で監視し、メール�
   同時実行数（ワーカー数）は設定でき、同じ IMAP サーバーのアカウントは自動的に順番に処理されます。
 - **定時チェック** — 1 日のチェック時刻（既定 6:00 / 12:00 / 18:00）に自動で全アドレスを同期します。
   アドレス追加後の初回は 90 日、以降は 30 日以内の未取得メールが対象です。
-- **Web と CLI** — すべての操作は Web 画面（ポート 9790）から行えます。CLI からはサービスの起動・停止、利用者とログイントークンの管理、
-  メールアドレスの登録、同期・受信・纏め・解析の実行、再索引、纏めグループの確認ができます（メール本文の閲覧は Web のみ）。
+- **メール通知** — SMTP を設定すると、通知先に選んだ利用者（利用者ごとに任意で登録したメールアドレス）へ、
+  解析済みの対応対象グループの要約・対象メール件数・アラートを開く URL を 1 通にまとめて送ります。通知時刻と通知間隔（毎日〜7 日ごと）を設定できます。
+- **Web と CLI** — すべての操作は Web 画面（ポート 9790）から行えます。CLI からはサービスの起動・停止、利用者とトークンの管理、
+  メールアドレスの登録、同期・受信・纏め・解析の実行、再索引、纏めグループの確認ができます（メール本文の閲覧は Web のみ）。トークンは将来の API 用の予約機能です。
 - Windows / macOS / Linux で動作する単一バイナリです。
 
 ### 1.1 かんたんな使い方
@@ -55,11 +57,12 @@ Web 画面のナビゲーション:
 
 | メニュー | 内容 |
 | --- | --- |
-| ダッシュボード（ブランドをクリック） | メールアドレスごとの対応対象グループ数・最終受信、直近の纏めグループ、実行中ジョブ、次回チェック時刻 |
+| ダッシュボード（ブランドをクリック） | メールアドレスごとの対応対象グループ数・最終受信、直近の纏めグループ、実行中ジョブ、次回チェック時刻（一般利用者は閲覧のみ） |
 | アラート | メールアドレス → 纏めグループ（対応対象 / 対象外の切替、分析報告付き） → 元メール一覧 → メール詳細 |
 | メール | メールアドレスごとの生メール閲覧（テキスト / HTML / 原文ダウンロード） |
 | ツール | 全アドレス同期、受信のみ、纏めのみ、解析のみ、索引の再作成、判定の再実行、ジョブ履歴 |
-| 設定 | チェック時刻・ワーカー数・エージェント、メールアドレス、利用者、ログイントークン、アカウント |
+| 設定（管理者のみ） | チェック時刻・ワーカー数・エージェント、通知（SMTP・通知先・時刻・間隔）、メールアドレス、利用者、トークン（将来の API 用） |
+| 右上の利用者名 | プロファイル（表示名、通知用メールアドレス、言語、タイムゾーン、テーマ、パスワード）、ログアウト |
 
 詳しい設計は [Documents/システム設計書.md](Documents/システム設計書.md)、テーブルは [Documents/テーブル定義.md](Documents/テーブル定義.md)、
 エージェントへのプロンプトは [Documents/プロンプト仕様](Documents/プロンプト仕様) を参照してください。
@@ -71,6 +74,28 @@ Web 画面のナビゲーション:
   `data/mailcare.key` は IMAP パスワードの暗号化と Web セッションの署名に使う秘密鍵です。バックアップと権限（0600）に注意してください。
 
 ## 2. 開発者向けリファレンス
+
+### デバッグ用にWSL内でIPを調べるには
+
+```bash
+hostname -I | awk '{print $1}'
+```
+
+### アイコン生成
+
+```bash
+convert frontend/public/icons/app-icon-org.png -define icon:auto-resize=256,128,96,64,48,32,24,16 frontend/public/favicon.ico
+
+convert frontend/public/icons/app-icon-org.png -resize 72x72   frontend/public/icons/icon-72x72.png
+convert frontend/public/icons/app-icon-org.png -resize 96x96   frontend/public/icons/icon-96x96.png
+convert frontend/public/icons/app-icon-org.png -resize 128x128 frontend/public/icons/icon-128x128.png
+convert frontend/public/icons/app-icon-org.png -resize 144x144 frontend/public/icons/icon-144x144.png
+convert frontend/public/icons/app-icon-org.png -resize 152x152 frontend/public/icons/icon-152x152.png
+convert frontend/public/icons/app-icon-org.png -resize 192x192 frontend/public/icons/icon-192x192.png
+convert frontend/public/icons/app-icon-org.png -resize 384x384 frontend/public/icons/icon-384x384.png
+convert frontend/public/icons/app-icon-org.png -resize 512x512 frontend/public/icons/icon-512x512.png
+convert frontend/public/icons/app-icon-org.png -resize 180x180 frontend/public/icons/apple-touch-icon.png
+```
 
 ### Go 操作コマンド
 

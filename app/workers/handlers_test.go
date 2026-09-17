@@ -120,7 +120,7 @@ func TestGroupsEndpoints(t *testing.T) {
 		if g.State != "open" || g.MessageCount != 1 || g.ReportStatus != "" || g.ReportSummary != "" || !g.NeedsAnalysis {
 			t.Errorf("unexpected group %+v", g)
 		}
-		if g.RecipientDomain == "" || g.Title == "" || g.LastSeen == nil || g.Category == "" || g.UnitValue == "" {
+		if g.RecipientDomain == "" || g.LastSeen == nil || g.Category == "" || g.UnitValue == "" {
 			t.Errorf("group lacks fields %+v", g)
 		}
 	}
@@ -221,12 +221,15 @@ func TestGroupsEndpoints(t *testing.T) {
 		t.Errorf("malformed group key: %d", rec.Code)
 	}
 
-	// State changes.
-	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "done"}, s.user)
+	// State changes (administrators only; the user role is read-only).
+	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "resolved"}, s.user); rec.Code != http.StatusForbidden {
+		t.Errorf("set state as user: %d, want 403", rec.Code)
+	}
+	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "done"}, s.admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("invalid state: %d %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "resolved"}, s.user)
+	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "resolved"}, s.admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("set state: %d %s", rec.Code, rec.Body.String())
 	}
@@ -246,8 +249,11 @@ func TestGroupsEndpoints(t *testing.T) {
 		t.Errorf("open groups should sort first: %s / %s", list.Groups[0].State, list.Groups[len(list.Groups)-1].State)
 	}
 
-	// Analyze queues a job for that group.
-	rec = do(t, s.h, http.MethodPost, s.path("/groups/"+gk+"/analyze"), nil, s.user)
+	// Analyze queues a job for that group (administrators only).
+	if rec := do(t, s.h, http.MethodPost, s.path("/groups/"+gk+"/analyze"), nil, s.user); rec.Code != http.StatusForbidden {
+		t.Errorf("analyze as user: %d, want 403", rec.Code)
+	}
+	rec = do(t, s.h, http.MethodPost, s.path("/groups/"+gk+"/analyze"), nil, s.admin)
 	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"target":"`+gk+`"`) {
 		t.Errorf("analyze: %d %s", rec.Code, rec.Body.String())
 	}
@@ -381,33 +387,33 @@ func TestMessagesEndpoints(t *testing.T) {
 
 func TestJobsEndpoints(t *testing.T) {
 	s := newSeededCore(t)
-	// A user may queue sync / fetch / group / analyze, not the rebuilds.
-	for _, kind := range []string{"reindex", "reclassify"} {
+	// Only administrators queue jobs (the user role is read-only).
+	for _, kind := range []string{"reindex", "reclassify", "fetch", "group", "analyze", "sync"} {
 		rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind, "mailbox_id": s.mb.ID}, s.user)
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("%s as user: %d", kind, rec.Code)
 		}
 	}
 	for _, kind := range []string{"fetch", "group", "analyze"} {
-		rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind, "mailbox_id": s.mb.ID}, s.user)
+		rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": kind, "mailbox_id": s.mb.ID}, s.admin)
 		if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"kind":"`+kind+`"`) {
-			t.Errorf("%s as user: %d %s", kind, rec.Code, rec.Body.String())
+			t.Errorf("%s as admin: %d %s", kind, rec.Code, rec.Body.String())
 		}
 	}
-	rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "analyze", "target": "*"}, s.user)
+	rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "analyze", "target": "*"}, s.admin)
 	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"mailbox_id":null`) {
-		t.Errorf("all-mailbox analyze as user: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("all-mailbox analyze: %d %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": s.mb.ID}, s.user)
+	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": s.mb.ID}, s.admin)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("sync as user: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("sync: %d %s", rec.Code, rec.Body.String())
 	}
 	var env struct {
 		Job     JobDTO `json:"job"`
 		Created bool   `json:"created"`
 	}
 	decode(t, rec.Body.Bytes(), &env)
-	if !env.Created || env.Job.Status != "queued" || env.Job.MailboxAddress != s.mb.Address || env.Job.RequestedBy != "web:bob" {
+	if !env.Created || env.Job.Status != "queued" || env.Job.MailboxAddress != s.mb.Address || env.Job.RequestedBy != "web:admin" {
 		t.Errorf("job %+v created %v", env.Job, env.Created)
 	}
 	rec = do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": s.mb.ID}, s.admin)

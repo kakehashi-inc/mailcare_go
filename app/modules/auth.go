@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,10 +28,14 @@ const dummyPasswordHash = "$2a$12$hU6M9KWBs4epQ45MC43i2.C7ThAbeorfWt51.wt5qKZoPk
 var ErrInvalidCredentials = errors.New("invalid credentials")
 
 var (
-	usernameRe   = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
-	identifierRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-	nonSlugRe    = regexp.MustCompile(`[^a-z0-9]+`)
+	usernameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+	// emailRe accepts a plausible address: one local part, one "@", a dotted
+	// domain with at least one dot, no whitespace and no angle brackets.
+	emailRe = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+/=?^_` + "`" + `{|}~.-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$`)
 )
+
+// MaxEmailLength bounds a mail address (RFC 5321 path limit).
+const MaxEmailLength = 254
 
 // --- Users ---
 
@@ -69,40 +75,245 @@ func HashPassword(password string) (string, error) {
 	return string(h), nil
 }
 
-// CreateUser validates the input, hashes the password and inserts the user.
-// An empty display name falls back to the username.
+// NormalizeEmail trims and lower-cases a notification address and checks
+// that it is empty (no address) or plausible: one local part, one "@" and a
+// dotted domain, at most MaxEmailLength characters.
+func NormalizeEmail(email string) (string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return "", nil
+	}
+	if len(email) > MaxEmailLength {
+		return "", fmt.Errorf("email must be %d characters or fewer", MaxEmailLength)
+	}
+	if !emailRe.MatchString(email) {
+		return "", fmt.Errorf("invalid email address %q", email)
+	}
+	return email, nil
+}
+
+// MaxTimezoneLength bounds an IANA zone name (users.timezone).
+const MaxTimezoneLength = 64
+
+// NormalizeTimezone trims a display timezone and checks that it is an IANA
+// zone name the runtime can load (e.g. "Asia/Tokyo", "UTC"). Empty means
+// the default. "Local" is rejected: it names the server's zone, not one of
+// the user's.
+func NormalizeTimezone(tz string) (string, error) {
+	tz = strings.TrimSpace(tz)
+	if tz == "" {
+		return models.DefaultTimezone, nil
+	}
+	if len(tz) > MaxTimezoneLength || tz == "Local" {
+		return "", fmt.Errorf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz)
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return "", fmt.Errorf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz)
+	}
+	return tz, nil
+}
+
+// UserLocation returns the display location of a user (the default zone
+// when the stored name cannot be loaded).
+func UserLocation(u *models.User) *time.Location {
+	if loc, err := time.LoadLocation(u.Timezone); err == nil && u.Timezone != "" {
+		return loc
+	}
+	loc, err := time.LoadLocation(models.DefaultTimezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// ServerTimezone returns the name of the server's local zone, in which the
+// check times and the notify time are interpreted: the zone name of
+// time.Local when known, else the TZ environment variable, else the
+// /etc/localtime link target, else the current abbreviation and offset.
+func ServerTimezone() string {
+	name := time.Local.String()
+	if name != "" && name != "Local" {
+		return name
+	}
+	if tz := strings.TrimSpace(os.Getenv("TZ")); tz != "" {
+		return strings.TrimPrefix(tz, ":")
+	}
+	if link, err := os.Readlink("/etc/localtime"); err == nil {
+		if i := strings.Index(link, "zoneinfo/"); i >= 0 {
+			return link[i+len("zoneinfo/"):]
+		}
+	}
+	return time.Now().Format("MST -07:00")
+}
+
+// Languages and themes a user may choose (users.language / users.theme).
+var (
+	KnownLanguages = []string{"ja", "en"}
+	KnownThemes    = []string{"auto", "light", "dark"}
+)
+
+// NormalizeLanguage trims a UI language and checks it is one of
+// KnownLanguages. Empty means the default.
+func NormalizeLanguage(lang string) (string, error) {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if lang == "" {
+		return models.DefaultLanguage, nil
+	}
+	if !slices.Contains(KnownLanguages, lang) {
+		return "", fmt.Errorf("invalid language %q (use %s)", lang, strings.Join(KnownLanguages, " or "))
+	}
+	return lang, nil
+}
+
+// NormalizeTheme trims a UI theme and checks it is one of KnownThemes.
+// Empty means the default.
+func NormalizeTheme(theme string) (string, error) {
+	theme = strings.ToLower(strings.TrimSpace(theme))
+	if theme == "" {
+		return models.DefaultTheme, nil
+	}
+	if !slices.Contains(KnownThemes, theme) {
+		return "", fmt.Errorf("invalid theme %q (use %s)", theme, strings.Join(KnownThemes, ", "))
+	}
+	return theme, nil
+}
+
+// NewUser is the input of CreateUserFrom. Empty preferences mean the
+// defaults; an empty display name falls back to the username.
+type NewUser struct {
+	Username    string
+	DisplayName string
+	Email       string
+	Language    string
+	Timezone    string
+	Theme       string
+	Password    string
+	Role        string
+}
+
+// CreateUser validates the input, hashes the password and inserts the user
+// with the default preferences and no notification address.
 func CreateUser(db *sql.DB, username, displayName, password, role string) (*models.User, error) {
-	username = strings.TrimSpace(username)
+	return CreateUserFrom(db, NewUser{Username: username, DisplayName: displayName, Password: password, Role: role})
+}
+
+// CreateUserWithEmail is CreateUser with an optional notification address.
+func CreateUserWithEmail(db *sql.DB, username, displayName, email, password, role string) (*models.User, error) {
+	return CreateUserFrom(db, NewUser{Username: username, DisplayName: displayName, Email: email, Password: password, Role: role})
+}
+
+// CreateUserFrom validates every field of in, hashes the password and
+// inserts the user.
+func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
+	username := strings.TrimSpace(in.Username)
 	if err := ValidateUsername(username); err != nil {
 		return nil, err
 	}
+	role := in.Role
 	if role == "" {
 		role = RoleUser
 	}
 	if err := ValidateRole(role); err != nil {
 		return nil, err
 	}
-	if err := ValidatePassword(password); err != nil {
+	if err := ValidatePassword(in.Password); err != nil {
 		return nil, err
 	}
-	displayName = strings.TrimSpace(displayName)
+	displayName := strings.TrimSpace(in.DisplayName)
 	if displayName == "" {
 		displayName = username
+	}
+	if len(displayName) > 128 {
+		return nil, errors.New("display name must be 128 characters or fewer")
+	}
+	email, err := NormalizeEmail(in.Email)
+	if err != nil {
+		return nil, err
+	}
+	language, err := NormalizeLanguage(in.Language)
+	if err != nil {
+		return nil, err
+	}
+	timezone, err := NormalizeTimezone(in.Timezone)
+	if err != nil {
+		return nil, err
+	}
+	theme, err := NormalizeTheme(in.Theme)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := models.GetUserByUsername(db, username); err == nil {
 		return nil, fmt.Errorf("user %q already exists", username)
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
-	hash, err := HashPassword(password)
+	hash, err := HashPassword(in.Password)
 	if err != nil {
 		return nil, err
 	}
-	u := &models.User{Username: username, DisplayName: displayName, PasswordHash: hash, Role: role}
+	u := &models.User{Username: username, DisplayName: displayName, Email: email, Language: language, Timezone: timezone,
+		Theme: theme, PasswordHash: hash, Role: role}
 	if err := models.InsertUser(db, u); err != nil {
 		return nil, err
 	}
 	return u, nil
+}
+
+// ProfileInput carries the profile fields a user (or an administrator on
+// their behalf) may change; nil fields are left unchanged. An empty Email
+// clears the address; an empty preference restores its default.
+type ProfileInput struct {
+	DisplayName *string
+	Email       *string
+	Language    *string
+	Timezone    *string
+	Theme       *string
+}
+
+// ApplyProfile validates the given fields against the current user and
+// returns the resulting profile values (display name, email, language,
+// timezone, theme) without storing them.
+func ApplyProfile(u *models.User, in ProfileInput) (displayName, email, language, timezone, theme string, err error) {
+	displayName, email, language, timezone, theme = u.DisplayName, u.Email, u.Language, u.Timezone, u.Theme
+	if in.DisplayName != nil {
+		displayName = strings.TrimSpace(*in.DisplayName)
+		if displayName == "" {
+			displayName = u.Username
+		}
+		if len(displayName) > 128 {
+			return "", "", "", "", "", errors.New("display name must be 128 characters or fewer")
+		}
+	}
+	if in.Email != nil {
+		if email, err = NormalizeEmail(*in.Email); err != nil {
+			return "", "", "", "", "", err
+		}
+	}
+	if in.Language != nil {
+		if language, err = NormalizeLanguage(*in.Language); err != nil {
+			return "", "", "", "", "", err
+		}
+	}
+	if in.Timezone != nil {
+		if timezone, err = NormalizeTimezone(*in.Timezone); err != nil {
+			return "", "", "", "", "", err
+		}
+	}
+	if in.Theme != nil {
+		if theme, err = NormalizeTheme(*in.Theme); err != nil {
+			return "", "", "", "", "", err
+		}
+	}
+	return displayName, email, language, timezone, theme, nil
+}
+
+// UpdateProfile validates and stores the profile fields of a user.
+func UpdateProfile(db *sql.DB, u *models.User, in ProfileInput) error {
+	displayName, email, language, timezone, theme, err := ApplyProfile(u, in)
+	if err != nil {
+		return err
+	}
+	return models.UpdateUserProfile(db, u.ID, displayName, email, language, timezone, theme)
 }
 
 // VerifyPassword reports whether password matches the user's hash.
@@ -139,181 +350,4 @@ func AuthenticateUser(db *sql.DB, username, password string) (*models.User, erro
 		return nil, ErrInvalidCredentials
 	}
 	return u, nil
-}
-
-// AuthenticateToken checks a login token value and returns its owner and the
-// token row. Unknown or expired tokens yield ErrInvalidCredentials.
-func AuthenticateToken(db *sql.DB, value string) (*models.User, *models.Token, error) {
-	tok, err := ValidateLoginToken(db, value)
-	if err != nil {
-		return nil, nil, err
-	}
-	u, err := models.GetUserByID(db, tok.UserID)
-	if err == sql.ErrNoRows {
-		return nil, nil, ErrInvalidCredentials
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	return u, tok, nil
-}
-
-// --- Login tokens ---
-
-// ValidateIdentifier checks a token identifier against the allowed character set.
-func ValidateIdentifier(id string) error {
-	if id == "" {
-		return errors.New("identifier must not be empty")
-	}
-	if len(id) > 64 {
-		return errors.New("identifier must be 64 characters or fewer")
-	}
-	if !identifierRe.MatchString(id) {
-		return errors.New("identifier may only contain [A-Za-z0-9_-]")
-	}
-	return nil
-}
-
-// slugify produces a base identifier from a display name.
-func slugify(name string) string {
-	s := strings.ToLower(strings.TrimSpace(name))
-	s = nonSlugRe.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-	if len(s) > 48 {
-		s = s[:48]
-	}
-	return s
-}
-
-// GenerateUniqueIdentifier returns an identifier derived from name that does
-// not collide with an existing token.
-func GenerateUniqueIdentifier(db *sql.DB, name string) (string, error) {
-	base := slugify(name)
-	if base == "" {
-		r, err := RandomHex(6)
-		if err != nil {
-			return "", err
-		}
-		base = "token-" + r
-	}
-	candidate := base
-	for i := 2; ; i++ {
-		_, err := models.GetTokenByIdentifier(db, candidate)
-		if err == sql.ErrNoRows {
-			return candidate, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		candidate = fmt.Sprintf("%s-%d", base, i)
-		if i > 1000 {
-			return "", errors.New("could not allocate a unique identifier")
-		}
-	}
-}
-
-// GenerateTokenValue returns a new login token value (TokenPrefix + random hex).
-func GenerateTokenValue() (string, error) {
-	r, err := RandomHex(TokenRandomBytes)
-	if err != nil {
-		return "", err
-	}
-	return TokenPrefix + r, nil
-}
-
-// ParseExpiry parses an expiry argument. It accepts a Go duration (e.g. "720h")
-// interpreted as time-from-now, or a timestamp (RFC 3339, "2006-01-02 15:04:05"
-// or "2006-01-02", the latter two in local time). An empty string means no
-// expiry (an invalid NullTime).
-func ParseExpiry(s string) (sql.NullTime, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return sql.NullTime{}, nil
-	}
-	if d, err := time.ParseDuration(s); err == nil {
-		if d <= 0 {
-			return sql.NullTime{}, fmt.Errorf("invalid expiry %q (the duration must be positive)", s)
-		}
-		return sql.NullTime{Time: time.Now().Add(d).UTC(), Valid: true}, nil
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return sql.NullTime{Time: t.UTC(), Valid: true}, nil
-	}
-	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
-			return sql.NullTime{Time: t.UTC(), Valid: true}, nil
-		}
-	}
-	return sql.NullTime{}, fmt.Errorf("invalid expiry %q (use a duration like 720h or an RFC3339 timestamp)", s)
-}
-
-// CreateLoginToken issues a login token for a user. The identifier is derived
-// from name when empty. The returned Token carries the plain value, which is
-// shown to the caller once.
-func CreateLoginToken(db *sql.DB, userID int64, name, identifier string, expiresAt sql.NullTime) (*models.Token, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, errors.New("name is required")
-	}
-	if len(name) > 128 {
-		return nil, errors.New("name must be 128 characters or fewer")
-	}
-	if _, err := models.GetUserByID(db, userID); err == sql.ErrNoRows {
-		return nil, errors.New("user not found")
-	} else if err != nil {
-		return nil, err
-	}
-	if identifier == "" {
-		var err error
-		identifier, err = GenerateUniqueIdentifier(db, name)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		if err := ValidateIdentifier(identifier); err != nil {
-			return nil, err
-		}
-		if _, err := models.GetTokenByIdentifier(db, identifier); err == nil {
-			return nil, fmt.Errorf("identifier %q already exists", identifier)
-		} else if err != sql.ErrNoRows {
-			return nil, err
-		}
-	}
-	value, err := GenerateTokenValue()
-	if err != nil {
-		return nil, err
-	}
-	tok := &models.Token{UserID: userID, Identifier: identifier, Name: name, Token: value, ExpiresAt: expiresAt}
-	if err := models.InsertToken(db, tok); err != nil {
-		return nil, err
-	}
-	return tok, nil
-}
-
-// ValidateLoginToken looks up a token value and rejects unknown or expired
-// tokens with ErrInvalidCredentials.
-func ValidateLoginToken(db *sql.DB, value string) (*models.Token, error) {
-	value = strings.TrimSpace(value)
-	if value == "" || !strings.HasPrefix(value, TokenPrefix) {
-		return nil, ErrInvalidCredentials
-	}
-	t, err := models.GetTokenByValue(db, value)
-	if err == sql.ErrNoRows {
-		return nil, ErrInvalidCredentials
-	}
-	if err != nil {
-		return nil, err
-	}
-	if t.IsExpired() {
-		return nil, ErrInvalidCredentials
-	}
-	return t, nil
-}
-
-// DeleteLoginToken removes a token by identifier (sql.ErrNoRows when absent).
-func DeleteLoginToken(db *sql.DB, identifier string) error {
-	if _, err := models.GetTokenByIdentifier(db, identifier); err != nil {
-		return err
-	}
-	return models.DeleteToken(db, identifier)
 }

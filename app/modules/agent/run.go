@@ -187,7 +187,7 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 	return report, nil
 }
 
-// copyTemplates copies agent-templates/<provider>/** from templates into dir.
+// copyTemplates copies templates/agent/<provider>/** from templates into dir.
 // A nil FS or a missing provider directory is not an error.
 func copyTemplates(templates fs.FS, provider, dir string) error {
 	if templates == nil {

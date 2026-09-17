@@ -13,10 +13,11 @@ import { MailDetailPage } from './pages/MailDetailPage';
 import { MailsIndexPage } from './pages/MailsIndexPage';
 import { MailsListPage } from './pages/MailsListPage';
 import { NotFoundPage } from './pages/NotFoundPage';
-import { SettingsAccountPage } from './pages/SettingsAccountPage';
 import { SettingsGeneralPage } from './pages/SettingsGeneralPage';
 import { SettingsMailboxesPage } from './pages/SettingsMailboxesPage';
 import { SettingsMenuPage } from './pages/SettingsMenuPage';
+import { SettingsNotificationsPage } from './pages/SettingsNotificationsPage';
+import { SettingsProfilePage } from './pages/SettingsProfilePage';
 import { SettingsTokensPage } from './pages/SettingsTokensPage';
 import { SettingsUsersPage } from './pages/SettingsUsersPage';
 import { SetupPage } from './pages/SetupPage';
@@ -60,12 +61,27 @@ export default function App() {
                         <Route path='/mails/:mailboxId' element={<MailsListPage />} />
                         <Route path='/mails/:mailboxId/:messageKey' element={<MailDetailPage />} />
                         <Route path='/tools' element={<ToolsPage />} />
-                        <Route path='/settings' element={<SettingsMenuPage />} />
+                        <Route
+                            path='/settings'
+                            element={
+                                <RequireAdmin>
+                                    <SettingsMenuPage />
+                                </RequireAdmin>
+                            }
+                        />
                         <Route
                             path='/settings/general'
                             element={
                                 <RequireAdmin>
                                     <SettingsGeneralPage />
+                                </RequireAdmin>
+                            }
+                        />
+                        <Route
+                            path='/settings/notifications'
+                            element={
+                                <RequireAdmin>
+                                    <SettingsNotificationsPage />
                                 </RequireAdmin>
                             }
                         />
@@ -101,8 +117,16 @@ export default function App() {
                                 </RequireAdmin>
                             }
                         />
-                        <Route path='/settings/tokens' element={<SettingsTokensPage />} />
-                        <Route path='/settings/account' element={<SettingsAccountPage />} />
+                        <Route
+                            path='/settings/tokens'
+                            element={
+                                <RequireAdmin>
+                                    <SettingsTokensPage />
+                                </RequireAdmin>
+                            }
+                        />
+                        <Route path='/settings/profile' element={<SettingsProfilePage />} />
+                        <Route path='/settings/account' element={<Navigate to='/settings/profile' replace />} />
                         <Route path='/index.html' element={<Navigate to='/' replace />} />
                         <Route path='*' element={<NotFoundPage />} />
                     </Route>

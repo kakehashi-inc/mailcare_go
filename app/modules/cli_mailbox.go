@@ -24,8 +24,7 @@ func mailboxRow(mb *models.Mailbox) map[string]interface{} {
 		"id": mb.ID, "address": mb.Address, "display_name": mb.DisplayName, "imap_host": mb.ImapHost,
 		"imap_port": mb.ImapPort, "imap_security": mb.ImapSecurity, "imap_username": mb.ImapUsername,
 		"folder": mb.Folder, "enabled": mb.Enabled, "initial_days": mb.InitialDays, "recent_days": mb.RecentDays,
-		"last_checked_at": rfc3339OrNull(mb.LastCheckedAt), "last_check_status": mb.LastCheckStatus,
-		"last_check_error": mb.LastCheckError,
+		"last_fetched_at": rfc3339OrNull(mb.LastFetchedAt), "last_fetch_error": mb.LastFetchError,
 	}
 }
 
@@ -39,13 +38,9 @@ func printMailbox(mb *models.Mailbox) {
 	fmt.Printf("enabled:       %v\n", mb.Enabled)
 	fmt.Printf("initial days:  %d\n", mb.InitialDays)
 	fmt.Printf("recent days:   %d\n", mb.RecentDays)
-	fmt.Printf("last check:    %s", formatNullTime(mb.LastCheckedAt))
-	if mb.LastCheckStatus != "" {
-		fmt.Printf(" (%s)", mb.LastCheckStatus)
-	}
-	fmt.Println()
-	if mb.LastCheckError != "" {
-		fmt.Printf("last error:    %s\n", mb.LastCheckError)
+	fmt.Printf("last fetch:    %s (%s)\n", formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
+	if mb.LastFetchError != "" {
+		fmt.Printf("last error:    %s\n", mb.LastFetchError)
 	}
 }
 
@@ -131,12 +126,23 @@ func (c *MailboxListCmd) Run() error {
 		fmt.Printf("No mailboxes. Register one with: %s mailbox add --address <address> --host <imap host> --username <user>\n", AppName)
 		return nil
 	}
-	fmt.Printf("%-5s %-32s %-28s %-8s %-20s %s\n", "ID", "ADDRESS", "IMAP", "ENABLED", "LAST CHECK", "STATUS")
+	fmt.Printf("%-5s %-32s %-28s %-8s %-20s %s\n", "ID", "ADDRESS", "IMAP", "ENABLED", "LAST FETCH", "STATUS")
 	for _, mb := range mailboxes {
 		imap := fmt.Sprintf("%s:%d", mb.ImapHost, mb.ImapPort)
-		fmt.Printf("%-5d %-32s %-28s %-8v %-20s %s\n", mb.ID, mb.Address, clip(imap, 28), mb.Enabled, formatNullTime(mb.LastCheckedAt), mb.LastCheckStatus)
+		fmt.Printf("%-5d %-32s %-28s %-8v %-20s %s\n", mb.ID, mb.Address, clip(imap, 28), mb.Enabled, formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
 	}
 	return nil
+}
+
+// fetchStatus derives never / ok / error from the last fetch of a mailbox.
+func fetchStatus(mb *models.Mailbox) string {
+	switch {
+	case !mb.LastFetchedAt.Valid:
+		return "never"
+	case mb.LastFetchError != "":
+		return "error"
+	}
+	return "ok"
 }
 
 // MailboxShowCmd shows one mailbox.

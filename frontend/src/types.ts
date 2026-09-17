@@ -6,14 +6,22 @@ export type GroupState = 'open' | 'resolved' | 'ignored';
 export type Responsible = 'sender' | 'recipient' | 'domain' | 'unknown';
 export type Severity = 'high' | 'medium' | 'low' | '';
 export type ImapSecurity = 'ssl' | 'starttls' | 'none';
-export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify';
-/** All job kinds, in the order the tools page lists them. */
-export const JOB_KINDS: readonly JobKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify'];
+export type SmtpSecurity = 'ssl' | 'starttls' | 'none';
+export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify' | 'notify';
+/** Job kinds that the tools page offers (notify is started from the notification settings). */
+export type ToolKind = Exclude<JobKind, 'notify'>;
+/** Tool job kinds, in the order the tools page lists them. */
+export const JOB_KINDS: readonly ToolKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify'];
+/** Every job kind the server can report, for labelling job rows. */
+export const ALL_JOB_KINDS: readonly JobKind[] = [...JOB_KINDS, 'notify'];
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled';
-export type CheckStatus = '' | 'ok' | 'error' | 'running';
+/** Fetch status of a mailbox, derived on the client from last_fetched_at / last_fetch_error. */
+export type CheckStatus = '' | 'ok' | 'error';
 export type ReportStatus = '' | 'running' | 'completed' | 'error';
 /** Which groups a list request returns: actionable (default), excluded (recipient-side problems) or both. */
 export type GroupScope = 'actionable' | 'excluded' | 'all';
+/** Body part used for bounce detection ('' = neither part had content). */
+export type BodySource = 'text' | 'html' | '';
 
 /**
  * Bounce categories assigned by the grouping phase (design document 5.4).
@@ -52,6 +60,14 @@ export interface UserDTO {
     id: number;
     username: string;
     display_name: string;
+    /** Notification mail address; empty when the user has none (then never a recipient). */
+    email: string;
+    /** UI language ('ja' | 'en'); applied after login. */
+    language: string;
+    /** IANA zone every timestamp is displayed in for this user (default Asia/Tokyo). */
+    timezone: string;
+    /** Color theme: auto (browser preference), light or dark. */
+    theme: string;
     role: Role;
     created_at: string;
     last_login_at: string | null;
@@ -63,15 +79,15 @@ export interface Me {
     version: string;
 }
 
+/** A login token reserved for the future API; tokens belong to no user. */
 export interface TokenDTO {
     id: number;
-    user_id: number;
-    username: string;
     identifier: string;
     name: string;
+    /** The token the server creates itself when none exists. */
+    is_default: boolean;
     expires_at: string | null;
     created_at: string;
-    last_used_at: string | null;
 }
 
 export interface MailboxStats {
@@ -97,9 +113,9 @@ export interface MailboxDTO {
     enabled: boolean;
     initial_days: number;
     recent_days: number;
-    last_checked_at: string | null;
-    last_check_status: CheckStatus;
-    last_check_error: string;
+    /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
+    last_fetched_at: string | null;
+    last_fetch_error: string;
     created_at: string;
     updated_at: string;
     stats?: MailboxStats;
@@ -122,8 +138,7 @@ export interface MailboxInput {
 
 export interface GroupDTO {
     group_key: string;
-    /** Technical title "<category>: <unit_value> @ <authority>"; the UI builds a localized headline instead. */
-    title: string;
+    /** The UI builds the headline from category, unit_value and authority (utils/category.ts). */
     category: BounceCategory | string;
     /** What the administrator acts on: an IP, a sender address, a domain, ... */
     unit_value: string;
@@ -131,10 +146,8 @@ export interface GroupDTO {
     authority: string;
     /** False for recipient-side problems, which are never analyzed. */
     actionable: boolean;
-    bounce_kind: string;
     recipient_domain: string;
     status_code: string;
-    smtp_code: string;
     diagnostic_template: string;
     responsible: Responsible | string;
     message_count: number;
@@ -182,11 +195,15 @@ export interface MessageDTO {
     from_address: string;
     from_name: string;
     to_address: string;
+    to_name: string;
     date: string | null;
     received_at: string | null;
     size: number;
+    /** True when the text part has real content. */
     has_text: boolean;
     has_html: boolean;
+    /** Which body the bounce detection read: text, html, or none. */
+    body_source: BodySource;
     is_bounce: boolean;
     bounce_kind: string;
     classify_reason: string;
@@ -281,6 +298,8 @@ export interface SettingsDTO {
     web_listen: string;
     web_port: number;
     data_dir: string;
+    /** IANA zone the scheduler interprets check_times and notify_time in. */
+    server_timezone: string;
 }
 
 export interface SettingsInput {
@@ -288,6 +307,57 @@ export interface SettingsInput {
     agent_provider?: string;
     agent_enabled?: boolean;
     workers?: number;
+}
+
+/** A user as listed in the notification recipient picker (every user, with or without an address). */
+export interface NotificationRecipient {
+    id: number;
+    username: string;
+    display_name: string;
+    email: string;
+}
+
+/** GET /api/v1/settings/notifications */
+export interface NotificationSettingsDTO {
+    smtp_host: string;
+    smtp_port: number;
+    smtp_security: SmtpSecurity;
+    smtp_username: string;
+    /** The password itself is never returned; only whether one is stored. */
+    smtp_password_set: boolean;
+    smtp_from: string;
+    public_base_url: string;
+    /** public_base_url, or the server's own address when it is empty. */
+    effective_base_url: string;
+    notify_enabled: boolean;
+    /** HH:MM, server local time. */
+    notify_time: string;
+    /** 1 = every day ... 7 = every 7 days. */
+    notify_interval_days: number;
+    notify_user_ids: number[];
+    last_sent_at: string | null;
+    next_send_at: string | null;
+    recipients: NotificationRecipient[];
+}
+
+/** PUT /api/v1/settings/notifications: only the fields present are changed; an empty smtp_password keeps the stored one. */
+export interface NotificationSettingsInput {
+    smtp_host?: string;
+    smtp_port?: number;
+    smtp_security?: SmtpSecurity;
+    smtp_username?: string;
+    smtp_password?: string;
+    smtp_from?: string;
+    public_base_url?: string;
+    notify_enabled?: boolean;
+    notify_time?: string;
+    notify_interval_days?: number;
+    notify_user_ids?: number[];
+}
+
+/** POST /api/v1/notifications/test: "to" defaults to the caller's own address on the server. */
+export interface NotificationTestInput {
+    to?: string;
 }
 
 /** GET /api/v1/mailboxes/{id}/groups */
@@ -326,43 +396,65 @@ export interface MessageDetailResponse {
     headers: Record<string, unknown>;
 }
 
-export interface LoginPasswordInput {
+/** POST /web/login: remember asks for a long-lived session (the server decides the cookie lifetime). */
+export interface LoginInput {
     username: string;
     password: string;
+    remember: boolean;
 }
-
-export interface LoginTokenInput {
-    token: string;
-}
-
-export type LoginInput = LoginPasswordInput | LoginTokenInput;
 
 export interface LoginResponse {
     ok: boolean;
     user: UserDTO;
 }
 
+/** POST /web/setup: the first administrator, with the same optional preferences as a user. */
 export interface SetupInput {
     username: string;
     display_name: string;
+    email?: string;
+    language?: string;
+    timezone?: string;
+    theme?: string;
     password: string;
 }
 
 export interface UserInput {
     username: string;
     display_name: string;
+    /** Notification mail address; empty for none. */
+    email?: string;
+    language?: string;
+    /** IANA zone; the server defaults to Asia/Tokyo when omitted. */
+    timezone?: string;
+    theme?: string;
     password: string;
     role: Role;
 }
 
 export interface UserUpdateInput {
-    display_name: string;
-    role: Role;
+    display_name?: string;
+    /** Empty string clears the address. */
+    email?: string;
+    language?: string;
+    timezone?: string;
+    theme?: string;
+    role?: Role;
+}
+
+/** PUT /api/v1/me/profile: only the fields present change; an empty email clears it. */
+export interface ProfileInput {
+    display_name?: string;
+    email?: string;
+    language?: string;
+    timezone?: string;
+    theme?: string;
 }
 
 export interface TokenInput {
-    user_id?: number;
     name: string;
+    /** Chosen identifier; the server generates one when omitted. */
+    identifier?: string;
     /** RFC 3339 timestamp; omitted for a token that never expires. */
     expires?: string;
 }

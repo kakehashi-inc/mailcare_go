@@ -27,31 +27,33 @@ type UserDTO struct {
 	ID          int64   `json:"id"`
 	Username    string  `json:"username"`
 	DisplayName string  `json:"display_name"`
+	Email       string  `json:"email"`
+	Language    string  `json:"language"` // ja | en
+	Timezone    string  `json:"timezone"` // IANA name used to display times to this user
+	Theme       string  `json:"theme"`    // auto | light | dark
 	Role        string  `json:"role"`
 	CreatedAt   string  `json:"created_at"`
 	LastLoginAt *string `json:"last_login_at"`
 }
 
 func toUserDTO(u *models.User) UserDTO {
-	return UserDTO{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Role: u.Role,
+	return UserDTO{ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Email: u.Email, Language: u.Language, Timezone: u.Timezone, Theme: u.Theme, Role: u.Role,
 		CreatedAt: timeString(u.CreatedAt), LastLoginAt: nullTimeString(u.LastLoginAt)}
 }
 
-// TokenDTO is a login token without its secret value.
+// TokenDTO is an API token without its secret value.
 type TokenDTO struct {
 	ID         int64   `json:"id"`
-	UserID     int64   `json:"user_id"`
-	Username   string  `json:"username"`
 	Identifier string  `json:"identifier"`
 	Name       string  `json:"name"`
+	IsDefault  bool    `json:"is_default"`
 	ExpiresAt  *string `json:"expires_at"`
 	CreatedAt  string  `json:"created_at"`
-	LastUsedAt *string `json:"last_used_at"`
 }
 
-func toTokenDTO(t *models.Token, username string) TokenDTO {
-	return TokenDTO{ID: t.ID, UserID: t.UserID, Username: username, Identifier: t.Identifier, Name: t.Name,
-		ExpiresAt: nullTimeString(t.ExpiresAt), CreatedAt: timeString(t.CreatedAt), LastUsedAt: nullTimeString(t.LastUsedAt)}
+func toTokenDTO(t *models.Token) TokenDTO {
+	return TokenDTO{ID: t.ID, Identifier: t.Identifier, Name: t.Name, IsDefault: t.IsDefault,
+		ExpiresAt: nullTimeString(t.ExpiresAt), CreatedAt: timeString(t.CreatedAt)}
 }
 
 // MailboxStatsDTO summarizes the index of a mailbox. Groups counts the
@@ -68,47 +70,43 @@ type MailboxStatsDTO struct {
 
 // MailboxDTO is a mailbox without its password.
 type MailboxDTO struct {
-	ID              int64            `json:"id"`
-	Address         string           `json:"address"`
-	DisplayName     string           `json:"display_name"`
-	ImapHost        string           `json:"imap_host"`
-	ImapPort        int              `json:"imap_port"`
-	ImapSecurity    string           `json:"imap_security"`
-	ImapUsername    string           `json:"imap_username"`
-	Folder          string           `json:"folder"`
-	Enabled         bool             `json:"enabled"`
-	InitialDays     int              `json:"initial_days"`
-	RecentDays      int              `json:"recent_days"`
-	LastCheckedAt   *string          `json:"last_checked_at"`
-	LastCheckStatus string           `json:"last_check_status"`
-	LastCheckError  string           `json:"last_check_error"`
-	CreatedAt       string           `json:"created_at"`
-	UpdatedAt       string           `json:"updated_at"`
-	Stats           *MailboxStatsDTO `json:"stats,omitempty"`
+	ID             int64            `json:"id"`
+	Address        string           `json:"address"`
+	DisplayName    string           `json:"display_name"`
+	ImapHost       string           `json:"imap_host"`
+	ImapPort       int              `json:"imap_port"`
+	ImapSecurity   string           `json:"imap_security"`
+	ImapUsername   string           `json:"imap_username"`
+	Folder         string           `json:"folder"`
+	Enabled        bool             `json:"enabled"`
+	InitialDays    int              `json:"initial_days"`
+	RecentDays     int              `json:"recent_days"`
+	LastFetchedAt  *string          `json:"last_fetched_at"`
+	LastFetchError string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
+	CreatedAt      string           `json:"created_at"`
+	UpdatedAt      string           `json:"updated_at"`
+	Stats          *MailboxStatsDTO `json:"stats,omitempty"`
 }
 
 func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 	return MailboxDTO{
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost, ImapPort: mb.ImapPort,
 		ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername, Folder: mb.Folder, Enabled: mb.Enabled,
-		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, LastCheckedAt: nullTimeString(mb.LastCheckedAt),
-		LastCheckStatus: mb.LastCheckStatus, LastCheckError: mb.LastCheckError,
-		CreatedAt: timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
+		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, LastFetchedAt: nullTimeString(mb.LastFetchedAt),
+		LastFetchError: mb.LastFetchError,
+		CreatedAt:      timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
 	}
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.
 type GroupDTO struct {
 	GroupKey           string  `json:"group_key"`
-	Title              string  `json:"title"`
 	Category           string  `json:"category"`
 	UnitValue          string  `json:"unit_value"`
 	Authority          string  `json:"authority"`
 	Actionable         bool    `json:"actionable"`
-	BounceKind         string  `json:"bounce_kind"`
 	RecipientDomain    string  `json:"recipient_domain"`
 	StatusCode         string  `json:"status_code"`
-	SMTPCode           string  `json:"smtp_code"`
 	DiagnosticTemplate string  `json:"diagnostic_template"`
 	Responsible        string  `json:"responsible"`
 	MessageCount       int     `json:"message_count"`
@@ -128,9 +126,9 @@ type GroupDTO struct {
 // be nil); latest is the newest report of any status (may be nil).
 func toGroupDTO(g *models.BounceGroup, completed, latest *models.AgentReport) GroupDTO {
 	dto := GroupDTO{
-		GroupKey: g.GroupKey, Title: g.Title, Category: g.Category, UnitValue: g.UnitValue, Authority: g.Authority,
-		Actionable: g.Actionable, BounceKind: g.BounceKind, RecipientDomain: g.RecipientDomain,
-		StatusCode: g.StatusCode, SMTPCode: g.SMTPCode, DiagnosticTemplate: g.DiagnosticTemplate,
+		GroupKey: g.GroupKey, Category: g.Category, UnitValue: g.UnitValue, Authority: g.Authority,
+		Actionable: g.Actionable, RecipientDomain: g.RecipientDomain,
+		StatusCode: g.StatusCode, DiagnosticTemplate: g.DiagnosticTemplate,
 		Responsible: g.Responsible, MessageCount: g.MessageCount, RecipientCount: g.RecipientCount,
 		RemoteIPCount: g.RemoteIPCount, FirstSeen: nullTimeString(g.FirstSeen), LastSeen: nullTimeString(g.LastSeen),
 		State: g.State, StateUpdatedAt: nullTimeString(g.StateUpdatedAt), NeedsAnalysis: g.NeedsAnalysis,
@@ -180,36 +178,42 @@ func toReportDTO(r *models.AgentReport) ReportDTO {
 	}
 }
 
-// MessageDTO is an indexed message.
+// MessageDTO is an indexed message (the system design document (Documents)
+// 9.3). Date is never null; BodySource names the body used for detection
+// ("text", "html" or "").
 type MessageDTO struct {
 	ID             int64   `json:"id"`
 	MessageKey     string  `json:"message_key"`
-	UID            uint32  `json:"uid"`
 	Folder         string  `json:"folder"`
+	UIDValidity    uint32  `json:"uidvalidity"`
+	UID            uint32  `json:"uid"`
 	MessageID      string  `json:"message_id"`
 	Subject        string  `json:"subject"`
 	FromAddress    string  `json:"from_address"`
 	FromName       string  `json:"from_name"`
 	ToAddress      string  `json:"to_address"`
-	Date           *string `json:"date"`
+	ToName         string  `json:"to_name"`
+	Date           string  `json:"date"`
 	ReceivedAt     *string `json:"received_at"`
 	Size           int64   `json:"size"`
 	HasText        bool    `json:"has_text"`
 	HasHTML        bool    `json:"has_html"`
+	BodySource     string  `json:"body_source"`
 	IsBounce       bool    `json:"is_bounce"`
 	BounceKind     string  `json:"bounce_kind"`
 	ClassifyReason string  `json:"classify_reason"`
+	Classified     bool    `json:"classified"`
 	GroupKey       string  `json:"group_key"`
 	FetchedAt      string  `json:"fetched_at"`
 }
 
 func toMessageDTO(m *models.Message) MessageDTO {
 	return MessageDTO{
-		ID: m.ID, MessageKey: m.MessageKey, UID: m.UID, Folder: m.Folder, MessageID: m.MessageID, Subject: m.Subject,
-		FromAddress: m.FromAddress, FromName: m.FromName, ToAddress: m.ToAddress, Date: nullTimeString(m.Date),
-		ReceivedAt: nullTimeString(m.ReceivedAt), Size: m.Size, HasText: m.HasText, HasHTML: m.HasHTML,
-		IsBounce: m.IsBounce, BounceKind: m.BounceKind, ClassifyReason: m.ClassifyReason, GroupKey: m.GroupKey,
-		FetchedAt: timeString(m.FetchedAt),
+		ID: m.ID, MessageKey: m.MessageKey, Folder: m.Folder, UIDValidity: m.UIDValidity, UID: m.UID, MessageID: m.MessageID,
+		Subject: m.Subject, FromAddress: m.FromAddress, FromName: m.FromName, ToAddress: m.ToAddress, ToName: m.ToName,
+		Date: timeString(m.Date), ReceivedAt: nullTimeString(m.ReceivedAt), Size: m.Size, HasText: m.HasText, HasHTML: m.HasHTML,
+		BodySource: m.BodySource, IsBounce: m.IsBounce, BounceKind: m.BounceKind, ClassifyReason: m.ClassifyReason,
+		Classified: m.Classified, GroupKey: m.GroupKey, FetchedAt: timeString(m.FetchedAt),
 	}
 }
 

@@ -10,6 +10,10 @@ type User struct {
 	ID           int64        `json:"id"`
 	Username     string       `json:"username"`
 	DisplayName  string       `json:"display_name"`
+	Email        string       `json:"email"`    // optional notification address ("" = none)
+	Language     string       `json:"language"` // UI language: ja | en (default ja; no browser detection)
+	Timezone     string       `json:"timezone"` // IANA zone used to display times to this user (default Asia/Tokyo)
+	Theme        string       `json:"theme"`    // UI theme: auto | light | dark (default auto)
 	PasswordHash string       `json:"-"`
 	Role         string       `json:"role"`
 	CreatedAt    time.Time    `json:"created_at"`
@@ -17,15 +21,40 @@ type User struct {
 	LastLoginAt  sql.NullTime `json:"-"`
 }
 
-const userColumns = `id, username, display_name, password_hash, role, created_at, updated_at, last_login_at`
+const userColumns = `id, username, display_name, email, language, timezone, theme, password_hash, role, created_at,
+	updated_at, last_login_at`
+
+// Defaults of the user preferences.
+const (
+	DefaultLanguage = "ja"
+	DefaultTimezone = "Asia/Tokyo"
+	DefaultTheme    = "auto"
+)
+
+// applyPreferenceDefaults fills empty preference fields with the defaults.
+func (u *User) applyPreferenceDefaults() {
+	if u.Language == "" {
+		u.Language = DefaultLanguage
+	}
+	if u.Timezone == "" {
+		u.Timezone = DefaultTimezone
+	}
+	if u.Theme == "" {
+		u.Theme = DefaultTheme
+	}
+}
 
 // InsertUser creates a user row and fills in its ID.
 func InsertUser(db *sql.DB, u *User) error {
 	now := time.Now().UTC()
+	u.DisplayName = truncateRunes(u.DisplayName, 128)
+	u.Email = truncateRunes(u.Email, 254)
+	u.applyPreferenceDefaults()
 	res, err := db.Exec(
-		`INSERT INTO users (username, display_name, password_hash, role, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		u.Username, u.DisplayName, u.PasswordHash, u.Role, now, now,
+		`INSERT INTO users (username, display_name, email, language, timezone, theme, password_hash, role, created_at,
+		   updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.Username, u.DisplayName, u.Email, u.Language, u.Timezone, u.Theme, u.PasswordHash, u.Role, now, now,
 	)
 	if err != nil {
 		return err
@@ -77,13 +106,53 @@ func CountAdmins(db *sql.DB) (int, error) {
 	return n, err
 }
 
-// UpdateUser updates the display name and role of a user.
-func UpdateUser(db *sql.DB, id int64, displayName, role string) error {
+// UpdateUser updates the display name, preferences and role of a user
+// (administrator edit). Empty preference values fall back to the defaults.
+func UpdateUser(db *sql.DB, id int64, displayName, email, language, timezone, theme, role string) error {
+	p := &User{Language: language, Timezone: timezone, Theme: theme}
+	p.applyPreferenceDefaults()
 	_, err := db.Exec(
-		`UPDATE users SET display_name = ?, role = ?, updated_at = ? WHERE id = ?`,
-		displayName, role, time.Now().UTC(), id,
+		`UPDATE users SET display_name = ?, email = ?, language = ?, timezone = ?, theme = ?, role = ?, updated_at = ?
+		 WHERE id = ?`,
+		truncateRunes(displayName, 128), truncateRunes(email, 254), p.Language, p.Timezone, p.Theme, role,
+		time.Now().UTC(), id,
 	)
 	return err
+}
+
+// UpdateUserProfile updates the fields a user may change about themselves
+// (profile page): display name, notification address, language, timezone and
+// theme. Empty preference values fall back to the defaults.
+func UpdateUserProfile(db *sql.DB, id int64, displayName, email, language, timezone, theme string) error {
+	p := &User{Language: language, Timezone: timezone, Theme: theme}
+	p.applyPreferenceDefaults()
+	_, err := db.Exec(
+		`UPDATE users SET display_name = ?, email = ?, language = ?, timezone = ?, theme = ?, updated_at = ? WHERE id = ?`,
+		truncateRunes(displayName, 128), truncateRunes(email, 254), p.Language, p.Timezone, p.Theme, time.Now().UTC(), id,
+	)
+	return err
+}
+
+// UpdateUserEmail changes only the notification address of a user.
+func UpdateUserEmail(db *sql.DB, id int64, email string) error {
+	_, err := db.Exec(`UPDATE users SET email = ?, updated_at = ? WHERE id = ?`, email, time.Now().UTC(), id)
+	return err
+}
+
+// ListUsersByIDs returns the users with the given ids (missing ids are skipped), ordered by username.
+func ListUsersByIDs(db *sql.DB, ids []int64) ([]*User, error) {
+	var out []*User
+	for _, id := range ids {
+		u, err := GetUserByID(db, id)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, nil
 }
 
 // UpdateUserPassword replaces the password hash of a user.
@@ -109,7 +178,7 @@ func DeleteUser(db *sql.DB, id int64) error {
 
 func scanUser(s rowScanner) (*User, error) {
 	u := &User{}
-	if err := s.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Role,
+	if err := s.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Language, &u.Timezone, &u.Theme, &u.PasswordHash, &u.Role,
 		&u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt); err != nil {
 		return nil, err
 	}

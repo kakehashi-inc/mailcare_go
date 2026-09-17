@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { LanguageSwitch } from '../components/LanguageSwitch';
 import { Icon } from '../components/ui/Icon';
 
 /** Centered card layout shared by the login and setup pages. */
@@ -16,9 +15,6 @@ export function AuthShell({
     const { t } = useTranslation();
     return (
         <div className='flex min-h-screen flex-col bg-canvas'>
-            <div className='flex items-center justify-end px-4 py-2'>
-                <LanguageSwitch />
-            </div>
             <main id='main' className='flex flex-1 items-start justify-center px-4 pb-12 pt-4 sm:items-center'>
                 <div className='w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8'>
                     <div className='flex items-center gap-2'>

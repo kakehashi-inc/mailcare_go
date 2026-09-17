@@ -1,0 +1,15 @@
+# Japanese labels of the bounce group categories (key<TAB>label).
+# Lines starting with # are ignored. An unlisted category is shown by its key.
+ip_blocked	送信 IP のブロック
+rate_limited	送信レート制限
+sender_blocked	送信元アドレスの拒否
+auth_failure	送信ドメイン認証の失敗
+content_rejected	内容による拒否
+message_too_large	サイズ超過
+server_config	送信サーバーの設定不備
+unknown_failure	原因不明の失敗
+user_unknown	宛先アドレスが存在しない
+mailbox_full	宛先の容量超過
+mailbox_disabled	宛先アドレスの停止
+domain_not_found	宛先ドメインが見つからない
+delivery_delay	配信の遅延

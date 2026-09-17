@@ -1,0 +1,40 @@
+{{/*
+  MailCare notification mail (Japanese, templates/mail).
+
+  "subject" and "body" are rendered with the Notification value built in
+  app/modules/notify.go. The category labels are in categories_ja.txt.
+
+  Available fields:
+    .Date            YYYY-MM-DD of the day the mail is built
+    .Total           number of groups in the mail
+    .BaseURL         the public URL of MailCare (link base)
+    .Mailboxes       one entry per mail address that has groups:
+      .Address .DisplayName .Groups
+    each group:
+      .CategoryLabel .Category .UnitValue .Authority
+      .MessageCount .RecipientCount .FirstSeen .LastSeen (local time)
+      .Summary .URL
+*/ -}}
+{{define "subject" -}}
+[MailCare] 対応が必要なアラート {{.Total}} 件 ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+MailCare からのお知らせです。
+メール管理者の対応が必要なバウンスのグループが {{.Total}} 件あります（{{.Date}} 時点）。
+各グループの詳細と推奨する対応は、末尾の URL から確認できます。
+{{range .Mailboxes}}
+==================================================
+メールアドレス: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}}（{{.DisplayName}}）{{end}}
+==================================================
+{{range .Groups}}
+■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
+   対象メール: {{.MessageCount}} 件 / 宛先: {{.RecipientCount}} 件
+   期間: {{.FirstSeen}} 〜 {{.LastSeen}}
+   要約: {{if .Summary}}{{.Summary}}{{else}}（分析報告の要約はありません）{{end}}
+   URL: {{.URL}}
+{{end}}{{end}}
+--------------------------------------------------
+このメールは MailCare が自動送信しています。
+通知の設定は {{.BaseURL}}/settings/notifications から変更できます。
+{{- end}}

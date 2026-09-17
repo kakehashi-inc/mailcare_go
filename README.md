@@ -31,9 +31,14 @@ has to act on.
 - **Scheduled checks** - all addresses are synced at the configured daily times (default 06:00, 12:00 and
   18:00). The first fetch of an address looks back 90 days, later fetches 30 days, and only mails not fetched
   yet are taken.
+- **Mail notifications** - with SMTP configured, the selected recipient users (each user may register an
+  optional email address) get one mail listing every analyzed actionable group: its summary, the number of
+  affected mails and the URL that opens the alert. The notification time and interval (daily to every 7 days)
+  are configurable.
 - **Web and CLI** - everything can be done from the Web UI (port 9790). The command line covers starting and
-  stopping the service, user and login-token management, mail address registration, sync / fetch / group /
-  analyze runs, reindexing and group listings (reading mail bodies is Web only).
+  stopping the service, user and token management, mail address registration, sync / fetch / group /
+  analyze runs, reindexing and group listings (reading mail bodies is Web only). Tokens are reserved for a
+  future API.
 - One binary for Windows, macOS and Linux.
 
 ### 1.1 Quick start
@@ -64,11 +69,12 @@ Web navigation:
 
 | Menu | Content |
 | --- | --- |
-| Dashboard (click the brand) | Actionable open groups and last fetch per address, recent groups, running jobs, next check time |
+| Dashboard (click the brand) | Actionable open groups and last fetch per address, recent groups, running jobs, next check time (non-admin users are read-only) |
 | Alerts | Mail address -> bounce group (actionable / excluded switch, with the agent report) -> original mails -> mail detail |
 | Mail | Raw mail viewer per address (text / HTML / original download) |
 | Tools | Sync all addresses, fetch only, group only, analyze only, rebuild the index, re-run detection, job history |
-| Settings | Check times, workers and agent, mail addresses, users, login tokens, account |
+| Settings (administrators only) | Check times, workers and agent, notifications (SMTP, recipients, time, interval), mail addresses, users, tokens (reserved for the API) |
+| User name (top right) | Profile (display name, notification address, language, time zone, theme, password) and logout |
 
 See [Documents/システム設計書.md](Documents/システム設計書.md) for the design,
 [Documents/テーブル定義.md](Documents/テーブル定義.md) for the tables and
@@ -81,6 +87,28 @@ See [Documents/システム設計書.md](Documents/システム設計書.md) for
   the secret key that encrypts IMAP passwords and signs Web sessions: back it up and keep it at mode 0600.
 
 ## 2. Developer reference
+
+### Finding the IP address inside WSL for debugging
+
+```bash
+hostname -I | awk '{print $1}'
+```
+
+### Generating the icons
+
+```bash
+convert frontend/public/icons/app-icon-org.png -define icon:auto-resize=256,128,96,64,48,32,24,16 frontend/public/favicon.ico
+
+convert frontend/public/icons/app-icon-org.png -resize 72x72   frontend/public/icons/icon-72x72.png
+convert frontend/public/icons/app-icon-org.png -resize 96x96   frontend/public/icons/icon-96x96.png
+convert frontend/public/icons/app-icon-org.png -resize 128x128 frontend/public/icons/icon-128x128.png
+convert frontend/public/icons/app-icon-org.png -resize 144x144 frontend/public/icons/icon-144x144.png
+convert frontend/public/icons/app-icon-org.png -resize 152x152 frontend/public/icons/icon-152x152.png
+convert frontend/public/icons/app-icon-org.png -resize 192x192 frontend/public/icons/icon-192x192.png
+convert frontend/public/icons/app-icon-org.png -resize 384x384 frontend/public/icons/icon-384x384.png
+convert frontend/public/icons/app-icon-org.png -resize 512x512 frontend/public/icons/icon-512x512.png
+convert frontend/public/icons/app-icon-org.png -resize 180x180 frontend/public/icons/apple-touch-icon.png
+```
 
 ### Go commands
 

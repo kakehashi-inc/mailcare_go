@@ -1,14 +1,13 @@
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
-import { createJob, getDashboard, syncMailbox } from '../api/client';
+import { getDashboard } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { GroupRow } from '../components/domain/GroupRow';
 import { JobList } from '../components/domain/JobList';
-import { CheckStatusBadge } from '../components/domain/StatusBadges';
+import { CheckStatusBadge, fetchStatus } from '../components/domain/StatusBadges';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
-import { Button, LinkButton } from '../components/ui/Button';
+import { LinkButton } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { DateTime } from '../components/ui/DateTime';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -16,7 +15,6 @@ import { ErrorState } from '../components/ui/ErrorState';
 import { Icon } from '../components/ui/Icon';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
-import { useToast } from '../components/ui/Toast';
 import { DASHBOARD_REFRESH_MS, JOB_POLL_INTERVAL_MS } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -32,35 +30,17 @@ export function DashboardPage() {
     const { t } = useTranslation();
     useDocumentTitle(t('nav.dashboard'));
     const { isAdmin } = useAuth();
-    const toast = useToast();
     const { data, error, loading, reload } = useAsync(getDashboard, []);
-    const [syncing, setSyncing] = useState<number | 'all' | null>(null);
 
     const hasActive = (data?.active_jobs.length ?? 0) > 0;
     // A mailbox is busy while a job that touches its mails (for it or for all mailboxes) is queued or running.
     const syncActive = (mb: MailboxDTO) =>
-        mb.last_check_status === 'running' ||
         (data?.active_jobs ?? []).some(
             j =>
                 (MAILBOX_JOBS as readonly string[]).includes(j.kind) &&
                 (j.mailbox_id === null || j.mailbox_id === mb.id)
         );
     usePolling(reload, !loading, hasActive ? JOB_POLL_INTERVAL_MS : DASHBOARD_REFRESH_MS);
-
-    async function runSync(mb: MailboxDTO | null) {
-        setSyncing(mb ? mb.id : 'all');
-        try {
-            // "All" is one expansion job; the server queues a sync per enabled address.
-            const result = mb ? await syncMailbox(mb.id) : await createJob({ kind: 'sync', mailbox_id: null });
-            if (!result.created) toast.info(t('jobs.alreadyActive'));
-            else toast.success(mb ? t('dashboard.syncQueued', { address: mb.address }) : t('dashboard.syncAllQueued'));
-            await reload();
-        } catch (err) {
-            toast.error(errorMessage(err, t));
-        } finally {
-            setSyncing(null);
-        }
-    }
 
     if (loading) return <LoadingBlock />;
     if (error || !data) {
@@ -98,21 +78,7 @@ export function DashboardPage() {
 
     return (
         <PageContainer wide>
-            <PageHeader
-                title={t('nav.dashboard')}
-                description={t('dashboard.description')}
-                actions={
-                    <Button
-                        variant='primary'
-                        icon='sync'
-                        loading={syncing === 'all'}
-                        disabled={data.mailboxes.length === 0 || syncing !== null}
-                        onClick={() => void runSync(null)}
-                    >
-                        {t('dashboard.syncAll')}
-                    </Button>
-                }
-            />
+            <PageHeader title={t('nav.dashboard')} description={t('dashboard.description')} />
 
             {!data.agent.enabled && (
                 <Alert tone='info' className='mb-4' title={t('dashboard.agentDisabledTitle')}>
@@ -190,7 +156,7 @@ export function DashboardPage() {
                                                         {t('checkStatus.running')}
                                                     </Badge>
                                                 ) : (
-                                                    <CheckStatusBadge status={mb.last_check_status} />
+                                                    <CheckStatusBadge status={fetchStatus(mb)} />
                                                 )}
                                             </div>
                                             <dl className='grid grid-cols-2 gap-2 text-sm'>
@@ -233,32 +199,22 @@ export function DashboardPage() {
                                                     <dt className='text-muted'>{t('mailbox.lastChecked')}</dt>
                                                     <dd className='text-ink'>
                                                         <DateTime
-                                                            value={mb.last_checked_at}
+                                                            value={mb.last_fetched_at}
                                                             relative
                                                             empty={t('checkStatus.never')}
                                                         />
                                                     </dd>
                                                 </div>
                                             </dl>
-                                            {mb.last_check_status === 'error' && mb.last_check_error && (
+                                            {mb.last_fetch_error && (
                                                 <p className='break-words text-sm text-danger' role='alert'>
-                                                    {mb.last_check_error}
+                                                    {mb.last_fetch_error}
                                                 </p>
                                             )}
                                             {!mb.enabled && (
                                                 <p className='text-sm text-muted'>{t('mailbox.disabledNote')}</p>
                                             )}
                                             <div className='mt-auto flex flex-wrap gap-2'>
-                                                <Button
-                                                    size='sm'
-                                                    variant='primary'
-                                                    icon='sync'
-                                                    loading={syncing === mb.id}
-                                                    disabled={syncing !== null || syncActive(mb)}
-                                                    onClick={() => void runSync(mb)}
-                                                >
-                                                    {t('dashboard.syncNow')}
-                                                </Button>
                                                 <LinkButton size='sm' to={`/alerts/${mb.id}`} icon='notifications'>
                                                     {t('nav.alerts')}
                                                 </LinkButton>

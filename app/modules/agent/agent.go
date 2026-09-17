@@ -7,15 +7,15 @@
 // implementation living in its own provider_<name>.go file and registered at
 // init time. Nothing else branches on a provider name. Adding a provider means
 // adding provider_<name>.go and, when it needs a workspace skeleton,
-// agent-templates/<name>/ (embedded from package main). See
-// agent-templates/README.md for the step-by-step recipe.
+// templates/agent/<name>/ (embedded from package main). See
+// templates/agent/README.md for the step-by-step recipe.
 //
 // Workspace layout inside agentRoot (data/agent):
 //
 //	<address>/<group_key>/PROMPT.md   the prompt fed to the CLI
 //	<address>/<group_key>/RESULT.log  verdict + full CLI transcript of the last run
 //	<address>/<group_key>/REPORT.md   the extracted report (Markdown)
-//	<address>/<group_key>/AGENTS.md   copied from agent-templates/<provider>/ (if present)
+//	<address>/<group_key>/AGENTS.md   copied from templates/agent/<provider>/ (if present)
 //
 // This package must not import app/modules (app/modules imports this package),
 // so the handful of values it shares with app/modules/constants.go are declared
@@ -55,7 +55,7 @@ const (
 	MaxSummaryRunes = 200
 	// TemplatesDirName is the top-level directory inside AnalyzeInput.TemplatesFS
 	// that holds one sub-directory per provider.
-	TemplatesDirName = "agent-templates"
+	TemplatesDirName = "templates/agent"
 )
 
 // Responsible party values accepted in META (same literals as app/modules).
@@ -97,7 +97,7 @@ type ProviderStatus struct {
 type AnalyzeInput struct {
 	MailsRoot   string  // data/mails
 	AgentRoot   string  // data/agent
-	TemplatesFS fs.FS   // root contains "agent-templates/<provider>/**" (may be nil)
+	TemplatesFS fs.FS   // root contains "templates/agent/<provider>/**" (may be nil)
 	Address     string  // the mailbox address
 	Index       *sql.DB // the opened per-mailbox index
 	GroupKey    string

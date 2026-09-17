@@ -28,9 +28,9 @@ func openIndexForCLI(ctx context.Context, mb *models.Mailbox) (*sql.DB, error) {
 // groupRow renders a group for JSON output.
 func groupRow(g *models.BounceGroup, report *models.AgentReport) map[string]interface{} {
 	row := map[string]interface{}{
-		"group_key": g.GroupKey, "title": g.Title, "category": g.Category, "unit_value": g.UnitValue,
-		"authority": g.Authority, "actionable": g.Actionable, "bounce_kind": g.BounceKind, "recipient_domain": g.RecipientDomain,
-		"status_code": g.StatusCode, "smtp_code": g.SMTPCode, "diagnostic_template": g.DiagnosticTemplate,
+		"group_key": g.GroupKey, "label": g.Label(), "category": g.Category, "unit_value": g.UnitValue,
+		"authority": g.Authority, "actionable": g.Actionable, "recipient_domain": g.RecipientDomain,
+		"status_code": g.StatusCode, "diagnostic_template": g.DiagnosticTemplate,
 		"responsible": g.Responsible, "message_count": g.MessageCount, "recipient_count": g.RecipientCount,
 		"remote_ip_count": g.RemoteIPCount, "first_seen": rfc3339OrNull(g.FirstSeen), "last_seen": rfc3339OrNull(g.LastSeen),
 		"state": g.State, "state_updated_at": rfc3339OrNull(g.StateUpdatedAt), "needs_analysis": g.NeedsAnalysis,
@@ -132,7 +132,7 @@ func (c *GroupsCmd) Run() error {
 			severity = r.Severity
 		}
 		fmt.Printf("%-16s %-8s %-17s %-9s %-5d %-20s %-8s %s\n", g.GroupKey, g.State, clip(g.Category, 17), g.Responsible,
-			g.MessageCount, formatNullTime(g.LastSeen), severity, clip(g.Title, 60))
+			g.MessageCount, formatNullTime(g.LastSeen), severity, clip(g.Label(), 60))
 	}
 	return nil
 }
@@ -187,15 +187,14 @@ func showGroup(address, key string, asJSON bool) error {
 		return nil
 	}
 	fmt.Printf("key:           %s\n", g.GroupKey)
-	fmt.Printf("title:         %s\n", g.Title)
+	fmt.Printf("label:         %s\n", g.Label())
 	fmt.Printf("state:         %s\n", g.State)
 	fmt.Printf("category:      %s\n", g.Category)
 	fmt.Printf("unit:          %s\n", g.UnitValue)
 	fmt.Printf("authority:     %s\n", g.Authority)
 	fmt.Printf("actionable:    %v\n", g.Actionable)
-	fmt.Printf("kind:          %s\n", g.BounceKind)
 	fmt.Printf("domain:        %s\n", g.RecipientDomain)
-	fmt.Printf("status code:   %s (smtp %s)\n", g.StatusCode, g.SMTPCode)
+	fmt.Printf("status code:   %s\n", g.StatusCode)
 	fmt.Printf("responsible:   %s\n", g.Responsible)
 	fmt.Printf("messages:      %d (recipients %d, remote IPs %d)\n", g.MessageCount, g.RecipientCount, g.RemoteIPCount)
 	fmt.Printf("first seen:    %s\n", formatNullTime(g.FirstSeen))

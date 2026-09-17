@@ -15,9 +15,6 @@ import (
 // maxTemplateLen caps the diagnostic template (in runes).
 const maxTemplateLen = 300
 
-// templateTitleLen is how much of the template goes into a group title.
-const templateTitleLen = 80
-
 // Placeholders and the protected tokens of DiagnosticTemplate. The SMTP reply
 // code and the extended status code are swapped for private-use sentinels
 // before the generic number replacement and restored afterwards.
@@ -124,26 +121,6 @@ func GroupKey(category, unitValue, authority string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// GroupTitle renders "<category>: <unit_value>" plus " @ <authority>" when
-// there is one. A long authority (the unknown_failure template) is cut.
-func GroupTitle(category, unitValue, authority string) string {
-	category, unitValue, authority = groupKeyPart(category), groupKeyPart(unitValue), groupKeyPart(authority)
-	title := category
-	if unitValue != "" {
-		title += ": " + unitValue
-	}
-	if authority != "" {
-		if utf8.RuneCountInString(authority) > templateTitleLen {
-			authority = strings.TrimSpace(string([]rune(authority)[:templateTitleLen])) + "..."
-		}
-		title += " @ " + authority
-	}
-	if title == "" {
-		return "(no diagnostic)"
-	}
-	return title
-}
-
 // groupForBounce categorizes a bounce and builds the group row it belongs to.
 // The bounce's Responsible is set from the category so that the bounce row
 // and its group always agree. Non-bounces and auto-replies do not belong to
@@ -161,15 +138,12 @@ func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 	b.Responsible = c.Responsible
 	return &models.BounceGroup{
 		GroupKey:           GroupKey(c.Category, c.UnitValue, c.Authority),
-		Title:              GroupTitle(c.Category, c.UnitValue, c.Authority),
 		Category:           c.Category,
 		UnitValue:          groupKeyPart(c.UnitValue),
 		Authority:          groupKeyPart(c.Authority),
 		Actionable:         c.Actionable,
-		BounceKind:         kind,
 		RecipientDomain:    b.RecipientDomain,
 		StatusCode:         b.StatusCode,
-		SMTPCode:           b.SMTPCode,
 		DiagnosticTemplate: b.DiagnosticTemplate,
 		Responsible:        c.Responsible,
 	}

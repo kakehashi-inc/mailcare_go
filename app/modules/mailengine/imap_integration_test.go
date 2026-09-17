@@ -185,7 +185,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 			t.Errorf("progress lacks %q:\n%s", want, joined)
 		}
 	}
-	mb.LastUIDValidity = int64(res.UIDValidity)
+	firstValidity := res.UIDValidity
 	assertIndexState(t, root, mb.Address, len(recent), 0, len(recent), 0, "run 1 fetch")
 
 	// Grouping processes the fetched rows; only the actionable Spamhaus
@@ -277,6 +277,9 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 				t.Errorf("missing %s for %s: %v", ext, m.MessageKey, err)
 			}
 		}
+		if !m.HasText || m.BodySource != "text" {
+			t.Errorf("%s: has_text=%v body_source=%q, want a text body", m.MessageKey, m.HasText, m.BodySource)
+		}
 	}
 
 	// Run 4: the folder is re-created, which changes UIDVALIDITY. The same
@@ -295,7 +298,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run 4: %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if int64(res.UIDValidity) == mb.LastUIDValidity {
+	if res.UIDValidity == firstValidity {
 		t.Skip("memserver kept the same UIDVALIDITY after re-creating the folder")
 	}
 	if res.Fetched != 0 || res.Skipped != 2 {
@@ -346,10 +349,21 @@ func assertIndexState(t *testing.T, root, address string, wantMessages, wantBoun
 		if m.UID == 0 || m.UIDValidity == 0 || m.Folder != memFolder || !m.ReceivedAt.Valid {
 			t.Errorf("%s: row lacks IMAP identity: %+v", label, m)
 		}
-		for _, ext := range []string{".eml", ".txt", ".json"} {
+		for _, ext := range []string{".eml", ".json"} {
 			if _, err := os.Stat(filepath.Join(dir, m.MessageKey+ext)); err != nil {
 				t.Errorf("%s: %s%s missing: %v", label, m.MessageKey, ext, err)
 			}
+		}
+		for ext, want := range map[string]bool{".txt": m.HasText, ".html": m.HasHTML} {
+			_, err := os.Stat(filepath.Join(dir, m.MessageKey+ext))
+			if want && err != nil {
+				t.Errorf("%s: %s%s missing: %v", label, m.MessageKey, ext, err)
+			} else if !want && err == nil {
+				t.Errorf("%s: %s%s exists although the part is blank", label, m.MessageKey, ext)
+			}
+		}
+		if (m.BodySource == "text") != m.HasText || (m.BodySource == "html") != (!m.HasText && m.HasHTML) {
+			t.Errorf("%s: body_source %q does not match has_text=%v has_html=%v", label, m.BodySource, m.HasText, m.HasHTML)
 		}
 	}
 }

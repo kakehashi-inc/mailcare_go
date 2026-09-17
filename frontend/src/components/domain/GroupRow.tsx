@@ -45,7 +45,7 @@ export function GroupRow({ group, to, mailboxAddress, showState = false }: Group
                 <div className='mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted'>
                     <span className='inline-flex items-center gap-1'>
                         <Icon name='code' className='text-[16px]' />
-                        {group.status_code || group.smtp_code || '-'}
+                        {group.status_code || '-'}
                     </span>
                     <span className='inline-flex items-center gap-1'>
                         <Icon name='dns' className='text-[16px]' />

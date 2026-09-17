@@ -6,8 +6,10 @@ import "io/fs"
 //
 //   - MigrationsFS: root contains "app/migrations/*.sql" (goose migrations).
 //   - FrontendFS:   root contains "frontend/dist/**" (the built SPA).
-//   - TemplatesFS:  root contains "agent-templates/<provider>/**" (workspace
-//     skeletons copied into the agent workspace of a group).
+//   - TemplatesFS:  root contains "templates/agent/<provider>/**" (workspace
+//     skeletons copied into the agent workspace of a group; the agent
+//     package names that directory) and "templates/mail/*.txt" (the
+//     notification mail templates, see notify.go).
 //
 // They are package-level variables (mirroring the StartServer pattern) so that
 // modules/workers can reach the binary-embedded assets without an import cycle

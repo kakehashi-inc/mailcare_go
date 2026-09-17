@@ -106,8 +106,14 @@ const CHECK_STATUS: Record<CheckStatus, { tone: BadgeTone; icon: string }> = {
     '': { tone: 'neutral', icon: 'remove_circle_outline' },
     ok: { tone: 'success', icon: 'check_circle' },
     error: { tone: 'danger', icon: 'error_outline' },
-    running: { tone: 'info', icon: 'autorenew' },
 };
+
+/** Fetch status of a mailbox: never fetched, the last fetch failed, or ok. */
+export function fetchStatus(mb: { last_fetched_at: string | null; last_fetch_error: string }): CheckStatus {
+    if (mb.last_fetch_error) return 'error';
+    if (!mb.last_fetched_at) return '';
+    return 'ok';
+}
 
 export function CheckStatusBadge({ status }: { status: CheckStatus }) {
     const { t } = useTranslation();

@@ -48,15 +48,12 @@ func samplePromptInput(t *testing.T, mailsRoot string) PromptInput {
 		Address:   addr,
 		Group: &models.BounceGroup{
 			GroupKey:           "abcdef0123456789",
-			Title:              "ip_blocked: 203.0.113.5 @ spamhaus.org",
 			Category:           CategoryIPBlocked,
 			UnitValue:          "203.0.113.5",
 			Authority:          "spamhaus.org",
 			Actionable:         true,
-			BounceKind:         "failed",
 			RecipientDomain:    "example.net",
 			StatusCode:         "5.7.1",
-			SMTPCode:           "554",
 			DiagnosticTemplate: "554 5.7.1 service unavailable; client host [<ip>] blocked using zen.spamhaus.org",
 			Responsible:        ResponsibleSender,
 			MessageCount:       2,
@@ -91,7 +88,7 @@ func TestBuildPromptJapanese(t *testing.T) {
 		"Authority: spamhaus.org - the blacklist provider that lists the IP",
 		"Actionable by the mail administrator: yes",
 		"Title: ip_blocked: 203.0.113.5 @ spamhaus.org",
-		"Bounce kind: failed", "Recipient domain: example.net", "Status code: 5.7.1", "SMTP code: 554",
+		"Recipient domain: example.net", "Status code: 5.7.1",
 		"Diagnostic template: 554 5.7.1 service unavailable; client host [<ip>] blocked using zen.spamhaus.org",
 		"Messages: 2", "Distinct recipients: 35", "Distinct remote IPs: 1",
 		"First seen: 2026-09-01T12:00:00Z", "Last seen: 2026-09-02T12:00:00Z",
@@ -137,7 +134,6 @@ func TestBuildPromptNotActionable(t *testing.T) {
 	in.Group.UnitValue = "alice@example.net"
 	in.Group.Authority = ""
 	in.Group.Actionable = false
-	in.Group.Title = "user_unknown: alice@example.net"
 	p := BuildPrompt(in)
 	for _, want := range []string{
 		"This group is NOT actionable by the mail administrator",

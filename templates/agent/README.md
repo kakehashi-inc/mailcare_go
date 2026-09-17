@@ -1,6 +1,6 @@
-# agent-templates
+# templates/agent
 
-Files under `agent-templates/<provider>/` are copied into the agent workspace
+Files under `templates/agent/<provider>/` are copied into the agent workspace
 (`data/agent/<address>/<group_key>/`) right before the provider CLI runs
 there. They are the workspace skeleton: operating rules the CLI picks up on
 its own (for codex that is `AGENTS.md`), and nothing else. The prompt itself
@@ -13,13 +13,13 @@ here simply runs in an empty workspace.
 ## Layout
 
 ```text
-agent-templates/
+templates/agent/
   README.md            this file (not copied)
   codex/
     AGENTS.md          rules codex reads automatically from its cwd
 ```
 
-Every file and sub-directory below `agent-templates/<provider>/` is copied
+Every file and sub-directory below `templates/agent/<provider>/` is copied
 verbatim (files 0600, directories 0700). Existing files in the workspace are
 overwritten on every run, so keep the templates self-contained.
 
@@ -62,7 +62,7 @@ template directory. Nothing else branches on a provider name.
      (no shell), so it works the same on Windows, macOS and Linux;
      `exec.LookPath` decides availability from `Command()[0]`.
 
-2. Optionally add `agent-templates/<name>/` with the files the CLI reads from
+2. Optionally add `templates/agent/<name>/` with the files the CLI reads from
    its working directory (for example `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`).
    Copy `codex/AGENTS.md` as a starting point: it states the read-only rules,
    the allowed files and the prompt-injection stance.

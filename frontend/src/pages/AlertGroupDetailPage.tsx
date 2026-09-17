@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { analyzeGroup, getGroup, getJob, getMailbox, setGroupState } from '../api/client';
+import { useAuth } from '../auth/AuthProvider';
 import {
     ActionableBadge,
     BounceKindBadge,
@@ -81,6 +82,16 @@ function StatChips({ title, icon, values }: { title: string; icon: string; value
     );
 }
 
+/** The newest failed report when it is more recent than the completed report on display. */
+function newestFailedAfter(reports: ReportDTO[], shown: ReportDTO | null): ReportDTO | null {
+    const time = (r: ReportDTO) => Date.parse(r.finished_at ?? r.created_at) || 0;
+    const failed = reports.filter(r => r.status === 'error' && (!shown || r.id !== shown.id));
+    if (failed.length === 0) return null;
+    const newest = failed.reduce((a, b) => (time(b) > time(a) ? b : a));
+    if (shown && time(newest) <= time(shown)) return null;
+    return newest;
+}
+
 function ReportView({ report }: { report: ReportDTO }) {
     const { t } = useTranslation();
     return (
@@ -120,6 +131,7 @@ export function AlertGroupDetailPage() {
     const id = Number(mailboxId);
     const navigate = useNavigate();
     const toast = useToast();
+    const { isAdmin } = useAuth();
     const mailbox = useAsync(() => getMailbox(id), [id]);
     const detail = useAsync(() => getGroup(id, groupKey), [id, groupKey]);
     const [job, setJob] = useState<JobDTO | null>(null);
@@ -199,6 +211,8 @@ export function AlertGroupDetailPage() {
 
     const { stats, report, reports, messages } = detail.data;
     const history = reports.filter(r => !report || r.id !== report.id);
+    // A re-analysis that failed after the shown report was completed: keep the report, but say so.
+    const latestFailed = newestFailedAfter(reports, report);
     const description = categoryDescription(group.category, t);
 
     const messageColumns: Column<MessageDTO>[] = [
@@ -232,21 +246,23 @@ export function AlertGroupDetailPage() {
                     { label: t('group.detail') },
                 ]}
                 actions={
-                    <div className='flex flex-wrap gap-2' role='group' aria-label={t('group.changeState')}>
-                        {STATES.filter(s => s !== group.state).map(s => (
-                            <Button
-                                key={s}
-                                size='sm'
-                                variant={s === 'resolved' ? 'primary' : 'secondary'}
-                                icon={s === 'open' ? 'undo' : s === 'resolved' ? 'check_circle' : 'visibility_off'}
-                                loading={changing === s}
-                                disabled={changing !== null}
-                                onClick={() => void changeState(s)}
-                            >
-                                {t(`group.markAs.${s}`)}
-                            </Button>
-                        ))}
-                    </div>
+                    isAdmin && (
+                        <div className='flex flex-wrap gap-2' role='group' aria-label={t('group.changeState')}>
+                            {STATES.filter(s => s !== group.state).map(s => (
+                                <Button
+                                    key={s}
+                                    size='sm'
+                                    variant={s === 'resolved' ? 'primary' : 'secondary'}
+                                    icon={s === 'open' ? 'undo' : s === 'resolved' ? 'check_circle' : 'visibility_off'}
+                                    loading={changing === s}
+                                    disabled={changing !== null}
+                                    onClick={() => void changeState(s)}
+                                >
+                                    {t(`group.markAs.${s}`)}
+                                </Button>
+                            ))}
+                        </div>
+                    )
                 }
             />
 
@@ -260,7 +276,6 @@ export function AlertGroupDetailPage() {
                             <GroupStateBadge state={group.state} />
                             {group.actionable && <SeverityBadge severity={group.report_severity} />}
                             <ResponsibleBadge responsible={group.responsible} />
-                            <BounceKindBadge kind={group.bounce_kind} isBounce />
                             {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
                                 <Badge tone='warning' icon='pending_actions'>
                                     {t('group.needsAnalysis')}
@@ -300,7 +315,7 @@ export function AlertGroupDetailPage() {
                                 { label: t('group.recipientDomain'), value: group.recipient_domain || '-' },
                                 {
                                     label: t('group.statusCode'),
-                                    value: `${group.status_code || '-'} / ${group.smtp_code || '-'}`,
+                                    value: group.status_code || '-',
                                 },
                                 { label: t('group.messageCount'), value: group.message_count },
                                 { label: t('group.recipientCount'), value: group.recipient_count },
@@ -318,11 +333,6 @@ export function AlertGroupDetailPage() {
                                     wide: true,
                                 },
                                 {
-                                    label: t('group.technicalTitle'),
-                                    value: <code className='break-words font-mono text-sm'>{group.title}</code>,
-                                    wide: true,
-                                },
-                                {
                                     label: t('group.key'),
                                     value: <code className='font-mono text-sm'>{group.group_key}</code>,
                                     wide: true,
@@ -335,7 +345,7 @@ export function AlertGroupDetailPage() {
                         <CardHeader
                             title={t('report.title')}
                             actions={
-                                group.actionable ? (
+                                group.actionable && isAdmin ? (
                                     <Button
                                         size='sm'
                                         variant='primary'
@@ -349,6 +359,14 @@ export function AlertGroupDetailPage() {
                                 ) : undefined
                             }
                         />
+                        {latestFailed && !reportRunning && (
+                            <Alert tone='warning' className='mb-4'>
+                                {t('report.latestFailed', {
+                                    message: latestFailed.error_message || t('report.failed'),
+                                    time: formatDateTime(latestFailed.finished_at ?? latestFailed.created_at),
+                                })}
+                            </Alert>
+                        )}
                         {!group.actionable && (
                             <Alert tone='info' className='mb-4' title={t('report.excludedTitle')}>
                                 {t('report.excluded')}
@@ -365,7 +383,11 @@ export function AlertGroupDetailPage() {
                         {report ? (
                             <ReportView report={report} />
                         ) : group.actionable ? (
-                            <EmptyState icon='psychology' title={t('report.none')} description={t('report.noneHint')} />
+                            <EmptyState
+                                icon='psychology'
+                                title={t('report.none')}
+                                description={isAdmin ? t('report.noneHint') : t('report.noneHintMember')}
+                            />
                         ) : null}
                         {history.length > 0 && (
                             <details className='mt-6'>

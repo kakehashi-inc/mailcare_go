@@ -5,28 +5,25 @@ import { ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { Button } from '../components/ui/Button';
 import { InlineError } from '../components/ui/ErrorState';
-import { InputField } from '../components/ui/Field';
-import { TabPanel, Tabs } from '../components/ui/Tabs';
+import { CheckboxField, InputField } from '../components/ui/Field';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { errorMessage } from '../utils/errors';
 import { AuthShell } from './AuthShell';
 
-type Mode = 'password' | 'token';
-
+/** Username + password login. "Keep me signed in" asks the server for a long-lived session. */
 export function LoginPage() {
     const { t } = useTranslation();
     useDocumentTitle(t('login.title'));
     const { login } = useAuth();
     const navigate = useNavigate();
     const [params] = useSearchParams();
-    const [mode, setMode] = useState<Mode>('password');
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
-    const [token, setToken] = useState('');
+    const [remember, setRemember] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const canSubmit = mode === 'password' ? username.trim() !== '' && password !== '' : token.trim() !== '';
+    const canSubmit = username.trim() !== '' && password !== '';
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -34,7 +31,7 @@ export function LoginPage() {
         setSubmitting(true);
         setError(null);
         try {
-            await login(mode === 'password' ? { username: username.trim(), password } : { token: token.trim() });
+            await login({ username: username.trim(), password, remember });
             const next = params.get('next');
             navigate(next && next.startsWith('/') ? next : '/', { replace: true });
         } catch (err) {
@@ -50,52 +47,31 @@ export function LoginPage() {
 
     return (
         <AuthShell title={t('login.title')} description={t('login.description')}>
-            <Tabs<Mode>
-                label={t('login.methodLabel')}
-                value={mode}
-                onChange={m => {
-                    setMode(m);
-                    setError(null);
-                }}
-                tabs={[
-                    { key: 'password', label: t('login.tabPassword'), icon: 'password' },
-                    { key: 'token', label: t('login.tabToken'), icon: 'key' },
-                ]}
-            />
             <form onSubmit={handleSubmit} noValidate>
-                <TabPanel id='password' active={mode === 'password'}>
-                    <div className='space-y-4'>
-                        <InputField
-                            label={t('login.username')}
-                            autoComplete='username'
-                            value={username}
-                            onChange={e => setUsername(e.target.value)}
-                            autoFocus
-                            required
-                        />
-                        <InputField
-                            label={t('login.password')}
-                            type='password'
-                            autoComplete='current-password'
-                            value={password}
-                            onChange={e => setPassword(e.target.value)}
-                            required
-                        />
-                    </div>
-                </TabPanel>
-                <TabPanel id='token' active={mode === 'token'}>
+                <div className='space-y-4'>
                     <InputField
-                        label={t('login.token')}
-                        type='password'
-                        autoComplete='off'
-                        value={token}
-                        onChange={e => setToken(e.target.value)}
-                        placeholder='mlc_...'
-                        hint={t('login.tokenHint')}
+                        label={t('login.username')}
+                        autoComplete='username'
+                        value={username}
+                        onChange={e => setUsername(e.target.value)}
                         autoFocus
                         required
                     />
-                </TabPanel>
+                    <InputField
+                        label={t('login.password')}
+                        type='password'
+                        autoComplete='current-password'
+                        value={password}
+                        onChange={e => setPassword(e.target.value)}
+                        required
+                    />
+                    <CheckboxField
+                        label={t('login.remember')}
+                        hint={t('login.rememberHint')}
+                        checked={remember}
+                        onChange={e => setRemember(e.target.checked)}
+                    />
+                </div>
                 {error && (
                     <div className='mt-4'>
                         <InlineError message={error} />

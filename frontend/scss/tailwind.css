@@ -11,6 +11,16 @@
         color-scheme: light dark;
     }
 
+    /* The signed-in user's theme (users.theme) forces one scheme; without the
+       attribute ("auto") the browser preference decides. */
+    :root[data-theme='light'] {
+        color-scheme: light;
+    }
+
+    :root[data-theme='dark'] {
+        color-scheme: dark;
+    }
+
     html,
     body {
         min-height: 100%;

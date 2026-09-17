@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { createToken, deleteToken, listTokens, listUsers } from '../api/client';
-import { useAuth } from '../auth/AuthProvider';
+import { createToken, deleteToken, listTokens } from '../api/client';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -20,31 +19,34 @@ import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { TokenDTO } from '../types';
 import { errorMessage } from '../utils/errors';
+import { localInputToIso } from '../utils/timezone';
 
 type Expiry = 'never' | '7' | '30' | '90' | '365' | 'custom';
 
 function expiresAt(choice: Expiry, custom: string): string | undefined {
     if (choice === 'never') return undefined;
     if (choice === 'custom') {
-        const d = new Date(custom);
-        return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+        // The picker value is read in the user's display zone, not the browser zone.
+        return localInputToIso(custom) ?? undefined;
     }
     const d = new Date();
     d.setDate(d.getDate() + Number(choice));
     return d.toISOString();
 }
 
+/**
+ * Login tokens reserved for the future API. Tokens belong to no user; the
+ * server keeps a "default" token when none exists. The value is shown once
+ * after creation.
+ */
 export function SettingsTokensPage() {
     const { t } = useTranslation();
     useDocumentTitle(t('nav.settingsTokens'));
-    const { me, isAdmin } = useAuth();
     const toast = useToast();
-    const [filterUser, setFilterUser] = useState('');
-    const users = useAsync(() => (isAdmin ? listUsers() : Promise.resolve([])), [isAdmin]);
-    const tokens = useAsync(() => listTokens(filterUser ? Number(filterUser) : undefined), [filterUser]);
+    const tokens = useAsync(listTokens, []);
     const [showForm, setShowForm] = useState(false);
     const [name, setName] = useState('');
-    const [owner, setOwner] = useState('');
+    const [identifier, setIdentifier] = useState('');
     const [expiry, setExpiry] = useState<Expiry>('never');
     const [custom, setCustom] = useState('');
     const [submitting, setSubmitting] = useState(false);
@@ -53,9 +55,8 @@ export function SettingsTokensPage() {
     const [deleting, setDeleting] = useState<TokenDTO | null>(null);
     const [busy, setBusy] = useState(false);
 
-    const customInvalid =
-        expiry === 'custom' &&
-        (custom === '' || Number.isNaN(new Date(custom).getTime()) || new Date(custom).getTime() <= Date.now());
+    const customIso = expiry === 'custom' ? localInputToIso(custom) : null;
+    const customInvalid = expiry === 'custom' && (customIso === null || new Date(customIso).getTime() <= Date.now());
     const canSubmit = name.trim() !== '' && !customInvalid && !submitting;
 
     async function handleCreate(e: FormEvent) {
@@ -64,14 +65,14 @@ export function SettingsTokensPage() {
         setSubmitting(true);
         setError(null);
         try {
-            const ownerId = isAdmin && owner ? Number(owner) : undefined;
             const result = await createToken({
-                user_id: ownerId,
                 name: name.trim(),
+                identifier: identifier.trim() || undefined,
                 expires: expiresAt(expiry, custom),
             });
             setCreated(result);
             setName('');
+            setIdentifier('');
             setExpiry('never');
             setCustom('');
             setShowForm(false);
@@ -106,20 +107,18 @@ export function SettingsTokensPage() {
             primary: true,
             cell: tk => (
                 <span className='break-all'>
-                    <span className='font-medium text-ink'>{tk.name || t('token.unnamed')}</span>
+                    <span className='inline-flex flex-wrap items-center gap-2'>
+                        <span className='font-medium text-ink'>{tk.name || t('token.unnamed')}</span>
+                        {tk.is_default && (
+                            <Badge tone='accent' icon='star'>
+                                {t('token.isDefault')}
+                            </Badge>
+                        )}
+                    </span>
                     <code className='block font-mono text-sm text-muted'>{tk.identifier}</code>
                 </span>
             ),
         },
-        ...(isAdmin
-            ? [
-                  {
-                      key: 'user',
-                      header: t('token.owner'),
-                      cell: (tk: TokenDTO) => tk.username,
-                  } satisfies Column<TokenDTO>,
-              ]
-            : []),
         {
             key: 'expires',
             header: t('token.expires'),
@@ -137,11 +136,6 @@ export function SettingsTokensPage() {
                     </span>
                 );
             },
-        },
-        {
-            key: 'last_used',
-            header: t('token.lastUsed'),
-            cell: tk => <DateTime value={tk.last_used_at} relative empty={t('token.neverUsed')} />,
         },
         { key: 'created', header: t('common.createdAt'), cell: tk => <DateTime value={tk.created_at} /> },
         {
@@ -176,6 +170,10 @@ export function SettingsTokensPage() {
                 }
             />
 
+            <Alert tone='info' className='mb-6'>
+                {t('token.futureNote')}
+            </Alert>
+
             {created && (
                 <Alert
                     tone='success'
@@ -209,22 +207,13 @@ export function SettingsTokensPage() {
                             autoFocus
                             required
                         />
-                        {isAdmin && (
-                            <SelectField
-                                label={t('token.owner')}
-                                value={owner}
-                                onChange={e => setOwner(e.target.value)}
-                            >
-                                <option value=''>{me ? `${me.user.username} (${t('user.you')})` : '-'}</option>
-                                {(users.data ?? [])
-                                    .filter(u => u.id !== me?.user.id)
-                                    .map(u => (
-                                        <option key={u.id} value={String(u.id)}>
-                                            {u.username}
-                                        </option>
-                                    ))}
-                            </SelectField>
-                        )}
+                        <InputField
+                            label={t('token.identifier')}
+                            autoComplete='off'
+                            value={identifier}
+                            onChange={e => setIdentifier(e.target.value)}
+                            hint={t('token.identifierHint')}
+                        />
                         <SelectField
                             label={t('token.expires')}
                             value={expiry}
@@ -279,23 +268,6 @@ export function SettingsTokensPage() {
                         </div>
                     </form>
                 </Card>
-            )}
-
-            {isAdmin && (
-                <div className='mb-4 max-w-sm'>
-                    <SelectField
-                        label={t('token.filterUser')}
-                        value={filterUser}
-                        onChange={e => setFilterUser(e.target.value)}
-                    >
-                        <option value=''>{t('common.all')}</option>
-                        {(users.data ?? []).map(u => (
-                            <option key={u.id} value={String(u.id)}>
-                                {u.username}
-                            </option>
-                        ))}
-                    </SelectField>
-                </div>
             )}
 
             {tokens.loading ? (

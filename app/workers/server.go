@@ -148,6 +148,18 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 		return fmt.Errorf("failed to create the agent directory: %w", err)
 	}
 	modules.ResetStaleJobs(db, c.mailsRoot)
+	// Ensure a default token exists. Deleting the default never promotes
+	// another token: on the next start an existing "default" token is made
+	// the default, otherwise a new one is created.
+	tok, promoted, err := modules.EnsureDefaultToken(db)
+	switch {
+	case err != nil:
+		return fmt.Errorf("failed to ensure the default token: %w", err)
+	case promoted:
+		log.Printf("Default token set to %q", modules.DefaultTokenIdentifier)
+	case tok != nil:
+		log.Printf("Created default token: %s", tok.Token)
+	}
 
 	c.srv = &http.Server{Handler: c.webHandler(), ReadHeaderTimeout: modules.ReadHeaderTimeout}
 	listeners, err := listenWithLoopback(webListen, webPort)

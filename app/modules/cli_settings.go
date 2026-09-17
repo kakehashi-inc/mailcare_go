@@ -1,7 +1,10 @@
 package modules
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -79,7 +82,7 @@ func (c *ScheduleSetCmd) Run() error {
 // SettingsCmd shows or changes server settings.
 type SettingsCmd struct {
 	Show SettingsShowCmd `cmd:"" help:"Show the settings"`
-	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, cookie_ttl_hours)"`
+	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, cookie_ttl_hours, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, smtp_from, public_base_url, notify_enabled, notify_time, notify_interval_days, notify_user_ids)"`
 }
 
 // SettingsShowCmd prints every effective setting.
@@ -95,6 +98,10 @@ func (c *SettingsShowCmd) Run() error {
 	defer db.Close()
 	dataDir, _ := DataDir()
 	provider := ResolveAgentProvider(db)
+	notify, err := ResolveNotificationSettings(db, nil)
+	if err != nil {
+		return NewExitError(ExitConfig, err.Error())
+	}
 	values := map[string]interface{}{
 		SettingWebListen:      ResolveWebListen(db, ""),
 		SettingWebPort:        ResolveWebPort(db, 0),
@@ -103,10 +110,28 @@ func (c *SettingsShowCmd) Run() error {
 		SettingAgentProvider:  provider,
 		SettingAgentEnabled:   ResolveAgentEnabled(db),
 		SettingCookieTTLHours: ResolveCookieTTLHours(db),
+		SettingSMTPHost:       notify.SMTP.Host,
+		SettingSMTPPort:       notify.SMTP.Port,
+		SettingSMTPSecurity:   notify.SMTP.Security,
+		SettingSMTPUsername:   notify.SMTP.Username,
+		"smtp_password_set":   notify.SMTPPasswordSet,
+		SettingSMTPFrom:       notify.SMTP.From,
+		SettingPublicBaseURL:  notify.PublicBaseURL,
+		"effective_base_url":  EffectiveBaseURL(db, notify),
+		SettingNotifyEnabled:  notify.Enabled,
+		SettingNotifyTime:     notify.Time,
+		SettingNotifyInterval: notify.IntervalDays,
+		SettingNotifyUserIDs:  notify.UserIDs,
+		SettingNotifyLastSent: rfc3339OrNull(notify.LastSentAt),
 	}
 	if c.JSON {
 		values["data_dir"] = dataDir
 		values["providers"] = agent.Providers()
+		if next, ok := NextNotifyAt(time.Now(), notify); ok {
+			values["next_send_at"] = next.UTC().Format(time.RFC3339)
+		} else {
+			values["next_send_at"] = nil
+		}
 		printJSON(values)
 		return nil
 	}
@@ -122,6 +147,28 @@ func (c *SettingsShowCmd) Run() error {
 	fmt.Printf("%-18s %s (%s)\n", SettingAgentProvider+":", provider, available)
 	fmt.Printf("%-18s %v\n", SettingAgentEnabled+":", values[SettingAgentEnabled])
 	fmt.Printf("%-18s %v\n", SettingCookieTTLHours+":", values[SettingCookieTTLHours])
+	fmt.Println()
+	fmt.Printf("%-22s %v\n", SettingSMTPHost+":", notify.SMTP.Host)
+	fmt.Printf("%-22s %v\n", SettingSMTPPort+":", notify.SMTP.Port)
+	fmt.Printf("%-22s %v\n", SettingSMTPSecurity+":", notify.SMTP.Security)
+	fmt.Printf("%-22s %v\n", SettingSMTPUsername+":", notify.SMTP.Username)
+	password := "(not set)"
+	if notify.SMTPPasswordSet {
+		password = "(set)"
+	}
+	fmt.Printf("%-22s %s\n", "smtp_password:", password)
+	fmt.Printf("%-22s %v\n", SettingSMTPFrom+":", notify.SMTP.From)
+	fmt.Printf("%-22s %v (effective: %s)\n", SettingPublicBaseURL+":", notify.PublicBaseURL, EffectiveBaseURL(db, notify))
+	fmt.Printf("%-22s %v\n", SettingNotifyEnabled+":", notify.Enabled)
+	fmt.Printf("%-22s %v\n", SettingNotifyTime+":", notify.Time)
+	fmt.Printf("%-22s %v\n", SettingNotifyInterval+":", notify.IntervalDays)
+	fmt.Printf("%-22s %v\n", SettingNotifyUserIDs+":", FormatNotifyUserIDs(notify.UserIDs))
+	fmt.Printf("%-22s %s\n", "notify_last_sent_at:", formatNullTime(notify.LastSentAt))
+	if next, ok := NextNotifyAt(time.Now(), notify); ok {
+		fmt.Printf("%-22s %s (when the server is running)\n", "next_send_at:", next.Format("2006-01-02 15:04"))
+	} else {
+		fmt.Printf("%-22s none (notifications are disabled)\n", "next_send_at:")
+	}
 	return nil
 }
 
@@ -139,63 +186,174 @@ func (c *SettingsSetCmd) Run() error {
 	defer db.Close()
 	key := strings.ToLower(strings.TrimSpace(c.Key))
 	value := strings.TrimSpace(c.Value)
-	if value == "" {
-		if err := models.DeleteSetting(db, key); err != nil {
-			return NewExitError(ExitConfig, err.Error())
+	shown, err := ApplySetting(db, key, value, loadKeyForCLI)
+	if err != nil {
+		var exitErr *ExitError
+		if errors.As(err, &exitErr) {
+			return err
 		}
+		return NewExitError(ExitConfig, err.Error())
+	}
+	if value == "" {
 		fmt.Printf("%s restored to its default\n", key)
 		return nil
 	}
+	if key == SettingWorkers {
+		fmt.Printf("(a running server applies the new worker count at its next start; use the Web settings to change it live)\n")
+	}
+	fmt.Printf("%s = %s\n", key, shown)
+	return nil
+}
+
+// SettingKeys lists the keys "settings set" accepts.
+func SettingKeys() []string {
+	return []string{
+		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentEnabled,
+		SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity, SettingSMTPUsername, settingSMTPPassword,
+		SettingSMTPFrom, SettingPublicBaseURL, SettingNotifyEnabled, SettingNotifyTime, SettingNotifyInterval, SettingNotifyUserIDs,
+	}
+}
+
+// settingSMTPPassword is the "settings set" key of the SMTP password; the
+// value is encrypted and stored under SettingSMTPPasswordEnc.
+const settingSMTPPassword = "smtp_password"
+
+// ApplySetting validates and stores one setting given as text and returns
+// the value as stored (for display). An empty value restores the default.
+// loadKey supplies the master key when the SMTP password is set (nil when a
+// caller never sets it). Validation failures are ExitErrors with
+// ExitArgument.
+func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error)) (string, error) {
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.TrimSpace(value)
+	if !slices.Contains(SettingKeys(), key) {
+		return "", NewExitErrorf(ExitArgument, "unknown setting %q (known: %s)", key, strings.Join(SettingKeys(), ", "))
+	}
+	if value == "" {
+		stored := key
+		if key == settingSMTPPassword {
+			stored = SettingSMTPPasswordEnc
+		}
+		return "", models.DeleteSetting(db, stored)
+	}
+	argErr := func(err error) (string, error) { return "", NewExitError(ExitArgument, err.Error()) }
 	switch key {
 	case SettingWebListen:
-		err = PersistSetting(db, key, value, value == DefaultWebListenAddr)
+		return value, PersistSetting(db, key, value, value == DefaultWebListenAddr)
 	case SettingWebPort, SettingCookieTTLHours:
 		n, perr := strconv.Atoi(value)
 		if perr != nil || n < 1 || (key == SettingWebPort && n > 65535) {
-			return NewExitErrorf(ExitArgument, "%s must be a positive integer", key)
+			return "", NewExitErrorf(ExitArgument, "%s must be a positive integer", key)
 		}
 		def := DefaultWebPort
 		if key == SettingCookieTTLHours {
 			def = DefaultCookieTTLHours
 		}
-		err = PersistSetting(db, key, strconv.Itoa(n), n == def)
+		return strconv.Itoa(n), PersistSetting(db, key, strconv.Itoa(n), n == def)
 	case SettingWorkers:
 		n, perr := ParseWorkers(value)
 		if perr != nil {
-			return NewExitError(ExitArgument, perr.Error())
+			return argErr(perr)
 		}
-		err = SaveWorkers(db, n)
-		value = strconv.Itoa(n)
-		fmt.Printf("(a running server applies the new worker count at its next start; use the Web settings to change it live)\n")
+		return strconv.Itoa(n), SaveWorkers(db, n)
 	case SettingCheckTimes:
 		times, perr := ParseCheckTimes([]string{value})
 		if perr != nil {
-			return NewExitError(ExitArgument, perr.Error())
+			return argErr(perr)
 		}
-		err = SaveCheckTimes(db, times)
-		value = FormatCheckTimes(times)
+		return FormatCheckTimes(times), SaveCheckTimes(db, times)
 	case SettingAgentProvider:
 		if !agent.IsValidProvider(value) {
 			names := make([]string, 0)
 			for _, p := range agent.Providers() {
 				names = append(names, p.Name)
 			}
-			return NewExitErrorf(ExitArgument, "unknown agent provider %q (registered: %s)", value, strings.Join(names, ", "))
+			return "", NewExitErrorf(ExitArgument, "unknown agent provider %q (registered: %s)", value, strings.Join(names, ", "))
 		}
-		err = SetAgentProvider(db, value)
+		return value, SetAgentProvider(db, value)
 	case SettingAgentEnabled:
 		enabled, perr := ParseBoolSetting(value)
 		if perr != nil {
-			return NewExitError(ExitArgument, perr.Error())
+			return argErr(perr)
 		}
-		err = SetAgentEnabled(db, enabled)
-		value = strconv.FormatBool(enabled)
-	default:
-		return NewExitErrorf(ExitArgument, "unknown setting %q", key)
+		return strconv.FormatBool(enabled), SetAgentEnabled(db, enabled)
 	}
-	if err != nil {
-		return NewExitError(ExitConfig, err.Error())
+	// Notification keys share the validation of the Web settings.
+	in := &NotificationInput{}
+	shown := value
+	var masterKey []byte
+	switch key {
+	case SettingSMTPHost:
+		in.SMTPHost = &value
+	case SettingSMTPPort:
+		n, perr := strconv.Atoi(value)
+		if perr != nil {
+			return "", NewExitErrorf(ExitArgument, "%s must be an integer between 1 and 65535", key)
+		}
+		in.SMTPPort = &n
+	case SettingSMTPSecurity:
+		in.SMTPSecurity = &value
+		shown = strings.ToLower(value)
+	case SettingSMTPUsername:
+		in.SMTPUsername = &value
+	case settingSMTPPassword:
+		if loadKey == nil {
+			return "", errors.New("the master key is required to store the SMTP password")
+		}
+		k, err := loadKey()
+		if err != nil {
+			return "", err
+		}
+		masterKey = k
+		in.SMTPPassword = &value
+		shown = "(encrypted)"
+	case SettingSMTPFrom:
+		in.SMTPFrom = &value
+		shown = strings.ToLower(value)
+	case SettingPublicBaseURL:
+		in.PublicBaseURL = &value
+		shown = strings.TrimRight(value, "/")
+	case SettingNotifyEnabled:
+		enabled, perr := ParseBoolSetting(value)
+		if perr != nil {
+			return argErr(perr)
+		}
+		in.Enabled = &enabled
+		shown = strconv.FormatBool(enabled)
+	case SettingNotifyTime:
+		norm, perr := ValidateNotifyTime(value)
+		if perr != nil {
+			return argErr(perr)
+		}
+		in.Time = &norm
+		shown = norm
+	case SettingNotifyInterval:
+		n, perr := strconv.Atoi(value)
+		if perr != nil {
+			return "", NewExitErrorf(ExitArgument, "%s must be an integer between %d and %d", key, MinNotifyIntervalDays, MaxNotifyIntervalDays)
+		}
+		in.IntervalDays = &n
+	case SettingNotifyUserIDs:
+		var ids []int64
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			id, perr := strconv.ParseInt(part, 10, 64)
+			if perr != nil || id <= 0 {
+				return "", NewExitErrorf(ExitArgument, "%s must be a comma-separated list of user ids", key)
+			}
+			ids = append(ids, id)
+		}
+		in.UserIDs = &ids
 	}
-	fmt.Printf("%s = %s\n", key, value)
-	return nil
+	if err := SaveNotificationSettings(db, masterKey, in); err != nil {
+		return argErr(err)
+	}
+	if key == SettingNotifyUserIDs {
+		ids, _ := ValidateNotifyUserIDs(db, *in.UserIDs)
+		shown = FormatNotifyUserIDs(ids)
+	}
+	return shown, nil
 }

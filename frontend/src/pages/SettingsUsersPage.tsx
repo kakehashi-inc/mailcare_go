@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createUser, deleteUser, listUsers, setUserPassword, updateUser } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { RoleBadge } from '../components/domain/StatusBadges';
+import { UserPreferenceFields } from '../components/domain/UserPreferenceFields';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
@@ -15,11 +16,15 @@ import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { Table, type Column } from '../components/ui/Table';
 import { useToast } from '../components/ui/Toast';
-import { MIN_PASSWORD_LENGTH } from '../constants';
+import { DEFAULT_LANG, MIN_PASSWORD_LENGTH, type Lang } from '../constants';
+import { isLang } from '../i18n/i18n';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import type { Role, UserDTO } from '../types';
+import type { Role, UserDTO, UserUpdateInput } from '../types';
 import { errorMessage } from '../utils/errors';
+import { DEFAULT_THEME, isTheme, type Theme } from '../utils/theme';
+import { DEFAULT_TIME_ZONE } from '../utils/timezone';
+import { isEmailAddress } from '../utils/validate';
 
 type Panel = { mode: 'create' } | { mode: 'edit'; user: UserDTO } | { mode: 'password'; user: UserDTO } | null;
 
@@ -68,6 +73,31 @@ export function SettingsUsersPage() {
             ),
         },
         { key: 'role', header: t('user.role'), cell: u => <RoleBadge role={u.role} /> },
+        {
+            key: 'email',
+            header: t('user.email'),
+            cell: u =>
+                u.email ? (
+                    <span className='break-all'>{u.email}</span>
+                ) : (
+                    <span className='text-muted'>{t('user.emailNone')}</span>
+                ),
+        },
+        {
+            key: 'language',
+            header: t('user.language'),
+            cell: u => (isLang(u.language) ? t(`lang.${u.language}`) : u.language || t(`lang.${DEFAULT_LANG}`)),
+        },
+        {
+            key: 'timezone',
+            header: t('user.timezone'),
+            cell: u => <span className='break-all'>{u.timezone || DEFAULT_TIME_ZONE}</span>,
+        },
+        {
+            key: 'theme',
+            header: t('user.theme'),
+            cell: u => (isTheme(u.theme) ? t(`theme.${u.theme}`) : t(`theme.${DEFAULT_THEME}`)),
+        },
         {
             key: 'last_login',
             header: t('user.lastLogin'),
@@ -139,6 +169,9 @@ export function SettingsUsersPage() {
             {panel && (
                 <div className='mb-6'>
                     <UserForm
+                        // Remount per target so the fields are always prefilled from the row
+                        // (switching from one inline form to another must never keep stale state).
+                        key={`${panel.mode}-${panel.mode === 'create' ? 'new' : panel.user.id}`}
                         panel={panel}
                         adminCount={adminCount}
                         onClose={() => setPanel(null)}
@@ -191,11 +224,36 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
     const editing = panel.mode === 'edit' ? panel.user : null;
     const [username, setUsername] = useState('');
     const [displayName, setDisplayName] = useState(editing?.display_name ?? '');
+    const [email, setEmail] = useState(editing?.email ?? '');
+    const [language, setLanguage] = useState<Lang>(isLang(editing?.language) ? editing.language : DEFAULT_LANG);
+    const [timezone, setTimezone] = useState(editing?.timezone || DEFAULT_TIME_ZONE);
+    const [theme, setTheme] = useState<Theme>(isTheme(editing?.theme) ? editing.theme : DEFAULT_THEME);
     const [role, setRole] = useState<Role>(editing?.role ?? 'user');
     const [password, setPassword] = useState('');
     const [confirm, setConfirm] = useState('');
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    // Escape closes the inline form, like a dialog.
+    useEffect(() => {
+        function onKey(e: KeyboardEvent) {
+            if (e.key === 'Escape') onClose();
+        }
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    }, [onClose]);
+
+    // Edit sends only the fields that differ from the row, so nothing is wiped unintentionally.
+    const changes: UserUpdateInput = {};
+    if (editing) {
+        if (displayName.trim() !== editing.display_name) changes.display_name = displayName.trim();
+        if (email.trim() !== editing.email) changes.email = email.trim();
+        if (language !== (isLang(editing.language) ? editing.language : DEFAULT_LANG)) changes.language = language;
+        if (timezone !== (editing.timezone || DEFAULT_TIME_ZONE)) changes.timezone = timezone;
+        if (theme !== (isTheme(editing.theme) ? editing.theme : DEFAULT_THEME)) changes.theme = theme;
+        if (role !== editing.role) changes.role = role;
+    }
+    const editDirty = Object.keys(changes).length > 0;
 
     const needsPassword = panel.mode === 'create' || panel.mode === 'password';
     const tooShort = password !== '' && password.length < MIN_PASSWORD_LENGTH;
@@ -203,8 +261,14 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
     const passwordOk = !needsPassword || (password.length >= MIN_PASSWORD_LENGTH && confirm === password);
     const demotingLastAdmin =
         panel.mode === 'edit' && panel.user.role === 'admin' && role !== 'admin' && adminCount <= 1;
+    const emailError = email.trim() !== '' && !isEmailAddress(email) ? t('user.emailInvalid') : undefined;
     const canSubmit =
-        (panel.mode !== 'create' || username.trim() !== '') && passwordOk && !demotingLastAdmin && !submitting;
+        (panel.mode !== 'create' || username.trim() !== '') &&
+        (panel.mode !== 'edit' || editDirty) &&
+        passwordOk &&
+        !demotingLastAdmin &&
+        !emailError &&
+        !submitting;
 
     const title =
         panel.mode === 'create'
@@ -220,10 +284,19 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
         setError(null);
         try {
             if (panel.mode === 'create') {
-                await createUser({ username: username.trim(), display_name: displayName.trim(), password, role });
+                await createUser({
+                    username: username.trim(),
+                    display_name: displayName.trim(),
+                    email: email.trim(),
+                    language,
+                    timezone,
+                    theme,
+                    password,
+                    role,
+                });
                 toast.success(t('user.created', { username: username.trim() }));
             } else if (panel.mode === 'edit') {
-                await updateUser(panel.user.id, { display_name: displayName.trim(), role });
+                await updateUser(panel.user.id, changes);
                 toast.success(t('user.updated', { username: panel.user.username }));
             } else {
                 await setUserPassword(panel.user.id, password);
@@ -268,6 +341,24 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
                             onChange={e => setDisplayName(e.target.value)}
                             autoFocus={panel.mode === 'edit'}
                         />
+                        <InputField
+                            label={t('user.email')}
+                            type='email'
+                            autoComplete='off'
+                            inputMode='email'
+                            value={email}
+                            onChange={e => setEmail(e.target.value)}
+                            hint={t('user.emailHint')}
+                            error={emailError}
+                        />
+                        <UserPreferenceFields
+                            language={language}
+                            timezone={timezone}
+                            theme={theme}
+                            onLanguage={setLanguage}
+                            onTimezone={setTimezone}
+                            onTheme={setTheme}
+                        />
                         <SelectField
                             label={t('user.role')}
                             value={role}
@@ -283,7 +374,7 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
                 {needsPassword && (
                     <>
                         <InputField
-                            label={panel.mode === 'password' ? t('account.newPassword') : t('user.password')}
+                            label={panel.mode === 'password' ? t('profile.newPassword') : t('user.password')}
                             type='password'
                             autoComplete='new-password'
                             value={password}

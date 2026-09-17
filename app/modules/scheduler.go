@@ -11,19 +11,21 @@ import (
 )
 
 // Scheduler queues a sync job for every enabled mailbox at each configured
-// check time (HH:MM, local wall clock). It re-reads check_times on every tick so a
-// change in the settings takes effect immediately, and it never fires the
-// same time twice within one minute.
+// check time (HH:MM, local wall clock) and a notify job when the notify time
+// arrives and the notification interval has elapsed (NotifyDue). It re-reads
+// the settings on every tick so a change takes effect immediately, and it
+// never fires the same time twice within one minute.
 type Scheduler struct {
 	db  *sql.DB
 	jm  *JobManager
 	now func() time.Time
 
-	mu        sync.Mutex
-	lastTick  time.Time
-	lastFired map[string]string // HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	mu          sync.Mutex
+	lastTick    time.Time
+	lastFired   map[string]string // HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
+	notifyFired string            // "YYYY-MM-DD HH:MM" of the last notify firing
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // NewScheduler creates a scheduler that submits jobs through jm.
@@ -71,29 +73,44 @@ func (s *Scheduler) Stop() {
 	s.wg.Wait()
 }
 
-// Tick evaluates the check times once: every configured time that arrived
-// since the previous tick queues one sync job (mailbox NULL: expanded into
-// one child per enabled mailbox by the job manager).
+// Tick evaluates the check times and the notify time once: every configured
+// check time that arrived since the previous tick queues one sync job
+// (mailbox NULL: expanded into one child per enabled mailbox by the job
+// manager), and a due notify time queues one notify job.
 func (s *Scheduler) Tick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	due := dueCheckTimes(s.lastTick, now, ResolveCheckTimes(s.db), s.lastFired)
+	last := s.lastTick
 	s.lastTick = now
-	if len(due) == 0 {
+	if due := dueCheckTimes(last, now, ResolveCheckTimes(s.db), s.lastFired); len(due) > 0 {
+		for _, key := range due {
+			s.lastFired[key.time] = key.minute
+		}
+		s.enqueue(JobKindSync)
+	}
+	settings, err := ResolveNotificationSettings(s.db, nil)
+	if err != nil {
+		log.Printf("scheduler: failed to read the notification settings: %v", err)
 		return
 	}
-	for _, key := range due {
-		s.lastFired[key.time] = key.minute
+	if key, due := NotifyDue(last, now, settings, s.notifyFired); due {
+		s.notifyFired = key
+		s.enqueue(JobKindNotify)
 	}
-	job, created, err := s.jm.Enqueue(JobKindSync, 0, "", RequestedByScheduler)
+}
+
+// enqueue queues one job of a kind without a mailbox on behalf of the
+// scheduler and logs the outcome.
+func (s *Scheduler) enqueue(kind string) {
+	job, created, err := s.jm.Enqueue(kind, 0, "", RequestedByScheduler)
 	switch {
 	case err != nil:
-		log.Printf("scheduler: failed to queue the sync job: %v", err)
+		log.Printf("scheduler: failed to queue the %s job: %v", kind, err)
 	case created:
-		log.Printf("scheduler: queued sync job #%d", job.ID)
+		log.Printf("scheduler: queued %s job #%d", kind, job.ID)
 	default:
-		log.Printf("scheduler: sync job #%d is already %s", job.ID, job.Status)
+		log.Printf("scheduler: %s job #%d is already %s", kind, job.ID, job.Status)
 	}
 }
 

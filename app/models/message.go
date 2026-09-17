@@ -9,52 +9,76 @@ import (
 // Message is a row of the per-mailbox messages table: one fetched mail. The
 // raw content lives next to the index as <message_key>.eml (original),
 // <message_key>.txt (text body), <message_key>.html (HTML body, when any) and
-// <message_key>.json (parsed headers).
+// <message_key>.json (parsed headers). The bounce details of a bounce message
+// are stored in the detail_info JSON column (see bounce.go), which also keeps the
+// name of the detection rule that matched (ClassifyReason).
 type Message struct {
-	ID             int64        `json:"id"`
-	MessageKey     string       `json:"message_key"`
-	UID            uint32       `json:"uid"`
-	UIDValidity    uint32       `json:"uidvalidity"`
-	Folder         string       `json:"folder"`
-	MessageID      string       `json:"message_id"`
-	Subject        string       `json:"subject"`
-	FromAddress    string       `json:"from_address"`
-	FromName       string       `json:"from_name"`
-	ToAddress      string       `json:"to_address"`
-	Date           sql.NullTime `json:"-"`
-	ReceivedAt     sql.NullTime `json:"-"`
-	Size           int64        `json:"size"`
-	HasText        bool         `json:"has_text"`
-	HasHTML        bool         `json:"has_html"`
-	IsBounce       bool         `json:"is_bounce"`
-	BounceKind     string       `json:"bounce_kind"`
-	ClassifyReason string       `json:"classify_reason"`
-	GroupKey       string       `json:"group_key"`
-	Classified     bool         `json:"classified"` // false until the grouping phase processed the message
-	FetchedAt      time.Time    `json:"fetched_at"`
+	ID          int64        `json:"id"`
+	MessageKey  string       `json:"message_key"`
+	Folder      string       `json:"folder"`
+	UIDValidity uint32       `json:"uidvalidity"`
+	UID         uint32       `json:"uid"`
+	MessageID   string       `json:"message_id"`
+	Subject     string       `json:"subject"`
+	FromAddress string       `json:"from_address"`
+	FromName    string       `json:"from_name"`
+	ToAddress   string       `json:"to_address"`
+	ToName      string       `json:"to_name"`
+	Date        time.Time    `json:"date"` // header Date, else INTERNALDATE, else fetch time (never zero)
+	ReceivedAt  sql.NullTime `json:"-"`    // IMAP INTERNALDATE
+	Size        int64        `json:"size"`
+	HasText     bool         `json:"has_text"`    // the text/plain part carries a non-blank body
+	HasHTML     bool         `json:"has_html"`    // the text/html part carries a non-blank body
+	BodySource  string       `json:"body_source"` // the body used for detection: "text" | "html" | "" (none)
+	IsBounce    bool         `json:"is_bounce"`
+	BounceKind  string       `json:"bounce_kind"` // failed | delayed | auto_reply | other | ""
+	Classified  bool         `json:"classified"`  // false until the grouping phase processed the message
+	GroupKey    string       `json:"group_key"`
+	FetchedAt   time.Time    `json:"fetched_at"`
+
+	// ClassifyReason is the name of the detection rule that matched. It is
+	// stored inside the detail_info JSON column ("rule") and loaded with the row.
+	ClassifyReason string `json:"classify_reason"`
 }
 
-const messageColumns = `id, message_key, uid, uidvalidity, folder, message_id, subject, from_address, from_name,
-	to_address, date, received_at, size, has_text, has_html, is_bounce, bounce_kind, classify_reason, group_key,
-	classified, fetched_at`
+const messageColumns = `id, message_key, folder, uidvalidity, uid, message_id, subject, from_address, from_name,
+	to_address, to_name, date, received_at, size, has_text, has_html, body_source, is_bounce, bounce_kind, classified,
+	group_key, json_extract(detail_info, '$.rule'), fetched_at`
 
-// InsertMessage adds a message row and fills in its ID.
+// InsertMessage adds a message row and fills in its ID. Text values are
+// truncated to the column bounds and times normalized to UTC.
 func InsertMessage(db *sql.DB, m *Message) error {
 	if m.FetchedAt.IsZero() {
-		m.FetchedAt = time.Now().UTC()
+		m.FetchedAt = time.Now()
 	}
-	// Store every timestamp in UTC so the textual DATETIME values sort and
-	// compare correctly (MIN/MAX and ORDER BY work on the stored text).
-	m.FetchedAt = m.FetchedAt.UTC()
-	m.Date, m.ReceivedAt = utcNullTime(m.Date), utcNullTime(m.ReceivedAt)
+	m.FetchedAt = m.FetchedAt.UTC().Round(0)
+	if m.Date.IsZero() {
+		m.Date = m.FetchedAt
+	}
+	m.Date = m.Date.UTC().Round(0)
+	m.ReceivedAt = utcNullTime(m.ReceivedAt)
+	m.Folder = truncateRunes(m.Folder, 255)
+	if m.Folder == "" {
+		m.Folder = "INBOX"
+	}
+	m.MessageID = truncateRunes(m.MessageID, 998)
+	m.Subject = truncateRunes(m.Subject, 2000)
+	m.FromAddress = truncateRunes(m.FromAddress, 320)
+	m.FromName = truncateRunes(m.FromName, 500)
+	m.ToAddress = truncateRunes(m.ToAddress, 320)
+	m.ToName = truncateRunes(m.ToName, 500)
+	details := "{}"
+	if m.ClassifyReason != "" {
+		details = marshalJSON(map[string]string{"rule": truncateRunes(m.ClassifyReason, 64)})
+	}
 	res, err := db.Exec(
-		`INSERT INTO messages (message_key, uid, uidvalidity, folder, message_id, subject, from_address, from_name,
-		   to_address, date, received_at, size, has_text, has_html, is_bounce, bounce_kind, classify_reason, group_key,
-		   classified, fetched_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.MessageKey, m.UID, m.UIDValidity, m.Folder, m.MessageID, m.Subject, m.FromAddress, m.FromName,
-		m.ToAddress, m.Date, m.ReceivedAt, m.Size, boolToInt(m.HasText), boolToInt(m.HasHTML),
-		boolToInt(m.IsBounce), m.BounceKind, m.ClassifyReason, m.GroupKey, boolToInt(m.Classified), m.FetchedAt,
+		`INSERT INTO messages (message_key, folder, uidvalidity, uid, message_id, subject, from_address, from_name,
+		   to_address, to_name, date, received_at, size, has_text, has_html, body_source, is_bounce, bounce_kind,
+		   classified, group_key, detail_info, fetched_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.MessageKey, m.Folder, m.UIDValidity, m.UID, m.MessageID, m.Subject, m.FromAddress, m.FromName,
+		m.ToAddress, m.ToName, m.Date, m.ReceivedAt, m.Size, boolToInt(m.HasText), boolToInt(m.HasHTML), m.BodySource,
+		boolToInt(m.IsBounce), m.BounceKind, boolToInt(m.Classified), m.GroupKey, details, m.FetchedAt,
 	)
 	if err != nil {
 		return err
@@ -64,32 +88,23 @@ func InsertMessage(db *sql.DB, m *Message) error {
 }
 
 // UpdateMessageClassification stores the bounce-detection outcome of a message
-// and marks it as classified.
+// and marks it as classified. The rule name goes into the bounce JSON; a
+// non-bounce keeps only that rule name there (details are cleared).
 func UpdateMessageClassification(db *sql.DB, id int64, isBounce bool, bounceKind, reason, groupKey string) error {
-	_, err := db.Exec(
-		`UPDATE messages SET is_bounce = ?, bounce_kind = ?, classify_reason = ?, group_key = ?, classified = 1 WHERE id = ?`,
-		boolToInt(isBounce), bounceKind, reason, groupKey, id,
-	)
+	reason = truncateRunes(reason, 64)
+	q := `UPDATE messages SET is_bounce = ?, bounce_kind = ?, classified = 1, group_key = ?, detail_info = json_set(detail_info, '$.rule', ?)`
+	args := []any{boolToInt(isBounce), bounceKind, groupKey, reason}
+	if !isBounce {
+		q = `UPDATE messages SET is_bounce = ?, bounce_kind = ?, classified = 1, group_key = ?, detail_info = json_object('rule', ?)`
+	}
+	_, err := db.Exec(q+` WHERE id = ?`, append(args, id)...)
 	return err
 }
 
 // ListUnclassifiedMessages returns the messages the grouping phase has not
 // processed yet, oldest first.
 func ListUnclassifiedMessages(db *sql.DB) ([]*Message, error) {
-	rows, err := db.Query(`SELECT ` + messageColumns + ` FROM messages WHERE classified = 0 ORDER BY date ASC, id ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Message
-	for rows.Next() {
-		m, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
+	return queryMessages(db, `SELECT `+messageColumns+` FROM messages WHERE classified = 0 ORDER BY date ASC, id ASC`)
 }
 
 // CountUnclassifiedMessages returns how many messages still await grouping.
@@ -107,8 +122,19 @@ func GetMessageByKey(db *sql.DB, key string) (*Message, error) {
 // MessageExists reports whether a message with the given IMAP identity is indexed.
 func MessageExists(db *sql.DB, uidValidity, uid uint32, folder string) (bool, error) {
 	var n int
-	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE uidvalidity = ? AND uid = ? AND folder = ?`,
-		uidValidity, uid, folder).Scan(&n)
+	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE folder = ? AND uidvalidity = ? AND uid = ?`,
+		folder, uidValidity, uid).Scan(&n)
+	return n > 0, err
+}
+
+// MessageIDExists reports whether a message with the given Message-ID header is
+// indexed (used to skip duplicates after a UIDVALIDITY change).
+func MessageIDExists(db *sql.DB, messageID string) (bool, error) {
+	if messageID == "" {
+		return false, nil
+	}
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE message_id = ?`, messageID).Scan(&n)
 	return n > 0, err
 }
 
@@ -116,7 +142,7 @@ func MessageExists(db *sql.DB, uidValidity, uid uint32, folder string) (bool, er
 // and folder (0 when none).
 func MaxUIDForValidity(db *sql.DB, uidValidity uint32, folder string) (uint32, error) {
 	var uid sql.NullInt64
-	err := db.QueryRow(`SELECT MAX(uid) FROM messages WHERE uidvalidity = ? AND folder = ?`, uidValidity, folder).Scan(&uid)
+	err := db.QueryRow(`SELECT MAX(uid) FROM messages WHERE folder = ? AND uidvalidity = ?`, folder, uidValidity).Scan(&uid)
 	if err != nil {
 		return 0, err
 	}
@@ -146,26 +172,24 @@ func ListMessages(db *sql.DB, f MessageFilter) ([]*Message, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	q := `SELECT ` + messageColumns + ` FROM messages` + where + ` ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`
-	rows, err := db.Query(q, append(args, limit, f.Offset)...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	var out []*Message
-	for rows.Next() {
-		m, err := scanMessage(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, m)
-	}
-	return out, total, rows.Err()
+	out, err := queryMessages(db, `SELECT `+messageColumns+` FROM messages`+where+
+		` ORDER BY date DESC, id DESC LIMIT ? OFFSET ?`, append(args, limit, f.Offset)...)
+	return out, total, err
 }
 
 // ListAllMessages returns every message oldest first (used by reclassify).
 func ListAllMessages(db *sql.DB) ([]*Message, error) {
-	rows, err := db.Query(`SELECT ` + messageColumns + ` FROM messages ORDER BY date ASC, id ASC`)
+	return queryMessages(db, `SELECT `+messageColumns+` FROM messages ORDER BY date ASC, id ASC`)
+}
+
+// CountMessages returns the total and bounce message counts.
+func CountMessages(db *sql.DB) (total, bounces int, err error) {
+	err = db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(is_bounce), 0) FROM messages`).Scan(&total, &bounces)
+	return
+}
+
+func queryMessages(db *sql.DB, query string, args ...any) ([]*Message, error) {
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -179,12 +203,6 @@ func ListAllMessages(db *sql.DB) ([]*Message, error) {
 		out = append(out, m)
 	}
 	return out, rows.Err()
-}
-
-// CountMessages returns the total and bounce message counts.
-func CountMessages(db *sql.DB) (total, bounces int, err error) {
-	err = db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(is_bounce), 0) FROM messages`).Scan(&total, &bounces)
-	return
 }
 
 func messageWhere(f MessageFilter) (string, []any) {
@@ -211,23 +229,13 @@ func messageWhere(f MessageFilter) (string, []any) {
 func scanMessage(s rowScanner) (*Message, error) {
 	m := &Message{}
 	var hasText, hasHTML, isBounce, classified int
-	if err := s.Scan(&m.ID, &m.MessageKey, &m.UID, &m.UIDValidity, &m.Folder, &m.MessageID, &m.Subject,
-		&m.FromAddress, &m.FromName, &m.ToAddress, &m.Date, &m.ReceivedAt, &m.Size, &hasText, &hasHTML, &isBounce,
-		&m.BounceKind, &m.ClassifyReason, &m.GroupKey, &classified, &m.FetchedAt); err != nil {
+	var rule sql.NullString
+	if err := s.Scan(&m.ID, &m.MessageKey, &m.Folder, &m.UIDValidity, &m.UID, &m.MessageID, &m.Subject,
+		&m.FromAddress, &m.FromName, &m.ToAddress, &m.ToName, &m.Date, &m.ReceivedAt, &m.Size, &hasText, &hasHTML,
+		&m.BodySource, &isBounce, &m.BounceKind, &classified, &m.GroupKey, &rule, &m.FetchedAt); err != nil {
 		return nil, err
 	}
 	m.HasText, m.HasHTML, m.IsBounce, m.Classified = hasText != 0, hasHTML != 0, isBounce != 0, classified != 0
+	m.ClassifyReason = rule.String
 	return m, nil
-}
-
-// MessageIDExists reports whether a message with the given Message-ID header
-// is already indexed (used to skip a message seen again after the folder's
-// UIDVALIDITY changed, which gives it a new key).
-func MessageIDExists(db *sql.DB, messageID string) (bool, error) {
-	if messageID == "" {
-		return false, nil
-	}
-	var n int
-	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE message_id = ?`, messageID).Scan(&n)
-	return n > 0, err
 }

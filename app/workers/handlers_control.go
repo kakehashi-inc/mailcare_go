@@ -20,6 +20,7 @@ func (c *core) handleControlShutdown(w http.ResponseWriter, r *http.Request) {
 
 func (c *core) handleControlStatus(w http.ResponseWriter, r *http.Request) {
 	users, _ := models.CountUsers(c.db)
+	tokens, _ := models.CountTokens(c.db)
 	mailboxes, _ := models.ListMailboxes(c.db)
 	active, _ := models.ListActiveJobs(c.db)
 	next := ""
@@ -29,7 +30,7 @@ func (c *core) handleControlStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, modules.ServerStatus{
 		Status: "running", Name: modules.AppName, Version: modules.AppVersion,
 		WebListen: fmt.Sprintf("%s:%d", c.webListen, c.webPort), Uptime: formatDuration(time.Since(c.startTime)),
-		Users: users, Mailboxes: len(mailboxes), ActiveJobs: len(active), NextCheckAt: next,
+		Users: users, Tokens: tokens, Mailboxes: len(mailboxes), ActiveJobs: len(active), NextCheckAt: next,
 	})
 }
 

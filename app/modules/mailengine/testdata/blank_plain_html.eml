@@ -1,0 +1,31 @@
+Return-Path: <>
+From: Mail Delivery System <MAILER-DAEMON@relay.example.net>
+To: newsletter@example.jp
+Date: Wed, 10 Sep 2025 08:30:00 +0900
+Subject: Mail delivery failed: returning message to sender
+Message-ID: <blank-plain-0011@relay.example.net>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="=_blank_plain_0011"
+
+--=_blank_plain_0011
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+
+
+   
+
+--=_blank_plain_0011
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><body>
+<div>This message was created automatically by mail delivery software.</div>
+<div>A message that you sent could not be delivered to one or more of its recipients.</div>
+<p>The following address(es) failed:</p>
+<p>&nbsp;&nbsp;momo@customer.example.com<br>
+&nbsp;&nbsp;&nbsp;&nbsp;SMTP error from remote mail server after RCPT TO:&lt;momo@customer.example.com&gt;:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;host mx.customer.example.com [198.51.100.25]: 550 5.1.1 &lt;momo@customer.example.com&gt;: Recipient address rejected: User unknown</p>
+</body></html>
+
+--=_blank_plain_0011--

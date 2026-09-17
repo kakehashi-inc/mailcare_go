@@ -2,6 +2,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { useLocation, useNavigate } from 'react-router-dom';
 import * as apiClient from '../api/client';
 import type { LoginInput, Me, SetupInput } from '../types';
+import { applyLanguage } from '../i18n/i18n';
+import { applyTheme } from '../utils/theme';
+import { setDisplayTimeZone } from '../utils/timezone';
 
 export interface AuthState {
     /** The signed-in user and the server version, or null when signed out. */
@@ -79,6 +82,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setNeedsSetup(false);
         setMe(await apiClient.getMe());
     }, []);
+
+    // Language, theme and time zone follow the signed-in user; signed out they
+    // are the defaults (ja, auto, Asia/Tokyo). The setup page may change the
+    // language and theme before a user exists; me is null then, so this does
+    // not fight it.
+    useEffect(() => {
+        setDisplayTimeZone(me?.user.timezone);
+        applyTheme(me?.user.theme);
+        void applyLanguage(me?.user.language);
+    }, [me]);
 
     const logout = useCallback(async () => {
         try {

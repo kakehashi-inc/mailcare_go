@@ -125,12 +125,16 @@ func (c *core) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		bounce = b
 	}
+	// The .txt file is returned only when the message has a text body; a
+	// blank or missing text part answers an empty string.
 	text := ""
-	if data, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "txt"); err == nil {
-		text = string(data)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		writeInternalError(w, "failed to read the message text", err)
-		return
+	if m.HasText {
+		if data, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "txt"); err == nil {
+			text = string(data)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			writeInternalError(w, "failed to read the message text", err)
+			return
+		}
 	}
 	headers := map[string]any{}
 	if data, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "json"); err == nil {

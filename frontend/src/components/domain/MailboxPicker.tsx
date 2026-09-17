@@ -5,7 +5,7 @@ import type { MailboxDTO } from '../../types';
 import { LinkButton } from '../ui/Button';
 import { EmptyState } from '../ui/EmptyState';
 import { Icon } from '../ui/Icon';
-import { CheckStatusBadge } from './StatusBadges';
+import { CheckStatusBadge, fetchStatus } from './StatusBadges';
 import { DateTime } from '../ui/DateTime';
 
 interface MailboxPickerProps {
@@ -61,7 +61,7 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                                 <Icon name='chevron_right' className='shrink-0 text-muted' />
                             </div>
                             <div className='flex flex-wrap items-center gap-2'>
-                                <CheckStatusBadge status={mb.last_check_status} />
+                                <CheckStatusBadge status={fetchStatus(mb)} />
                                 {!mb.enabled && <span className='text-sm text-muted'>{t('common.disabled')}</span>}
                             </div>
                             <div className='mt-auto flex items-end justify-between gap-3'>
@@ -78,7 +78,7 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                                 <p className='text-right text-sm text-muted'>
                                     {t('mailbox.lastChecked')}
                                     <br />
-                                    <DateTime value={mb.last_checked_at} relative empty={t('checkStatus.never')} />
+                                    <DateTime value={mb.last_fetched_at} relative empty={t('checkStatus.never')} />
                                 </p>
                             </div>
                         </Link>

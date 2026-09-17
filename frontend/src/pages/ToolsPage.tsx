@@ -5,7 +5,6 @@ import { useAuth } from '../auth/AuthProvider';
 import { JobList } from '../components/domain/JobList';
 import { MailboxSelect } from '../components/domain/MailboxSelect';
 import { Alert } from '../components/ui/Alert';
-import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
@@ -20,21 +19,22 @@ import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
 import { usePolling } from '../hooks/usePolling';
-import { JOB_KINDS, type JobDTO, type JobKind } from '../types';
+import { JOB_KINDS, type JobDTO, type ToolKind } from '../types';
 import { errorMessage } from '../utils/errors';
 
 type AnalyzeScope = 'needs' | 'all';
 
-const TOOL_META: Record<JobKind, { icon: string; adminOnly: boolean; danger: boolean }> = {
-    sync: { icon: 'sync', adminOnly: false, danger: false },
-    fetch: { icon: 'move_to_inbox', adminOnly: false, danger: false },
-    group: { icon: 'category', adminOnly: false, danger: false },
-    analyze: { icon: 'psychology', adminOnly: false, danger: false },
-    reindex: { icon: 'refresh', adminOnly: true, danger: true },
-    reclassify: { icon: 'rule', adminOnly: true, danger: false },
+// Every tool is run by administrators only; members see the cards and the job history.
+const TOOL_META: Record<ToolKind, { icon: string; danger: boolean }> = {
+    sync: { icon: 'sync', danger: false },
+    fetch: { icon: 'move_to_inbox', danger: false },
+    group: { icon: 'category', danger: false },
+    analyze: { icon: 'psychology', danger: false },
+    reindex: { icon: 'refresh', danger: true },
+    reclassify: { icon: 'rule', danger: false },
 };
 
-function emptyTargets(): Record<JobKind, string> {
+function emptyTargets(): Record<ToolKind, string> {
     return { sync: '', fetch: '', group: '', analyze: '', reindex: '', reclassify: '' };
 }
 
@@ -46,23 +46,23 @@ export function ToolsPage() {
     const { mailboxes } = useMailboxes();
     const jobs = useAsync(() => listJobs(JOB_LIST_LIMIT), []);
     // Selected mailbox per tool ("" = all addresses).
-    const [targets, setTargets] = useState<Record<JobKind, string>>(emptyTargets);
+    const [targets, setTargets] = useState<Record<ToolKind, string>>(emptyTargets);
     const [scope, setScope] = useState<AnalyzeScope>('needs');
-    const [pending, setPending] = useState<JobKind | null>(null);
+    const [pending, setPending] = useState<ToolKind | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [canceling, setCanceling] = useState<number | null>(null);
 
     const hasActive = (jobs.data ?? []).some(j => j.status === 'queued' || j.status === 'running');
     usePolling(jobs.reload, !jobs.loading, hasActive ? JOB_POLL_INTERVAL_MS : JOB_POLL_INTERVAL_MS * 5);
 
-    const toolTitle = (kind: JobKind) => t(`tools.${kind}.title`);
-    const canRun = (kind: JobKind) => (isAdmin || !TOOL_META[kind].adminOnly) && mailboxes.length > 0;
-    const targetLabel = (kind: JobKind) => {
+    const toolTitle = (kind: ToolKind) => t(`tools.${kind}.title`);
+    const canRun = () => isAdmin && mailboxes.length > 0;
+    const targetLabel = (kind: ToolKind) => {
         const v = targets[kind];
         return v ? (mailboxes.find(mb => String(mb.id) === v)?.address ?? v) : t('mailbox.all');
     };
 
-    async function run(kind: JobKind) {
+    async function run(kind: ToolKind) {
         setSubmitting(true);
         try {
             const mailboxId = targets[kind] ? Number(targets[kind]) : null;
@@ -106,7 +106,6 @@ export function ToolsPage() {
             <ul className='grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3'>
                 {JOB_KINDS.map(kind => {
                     const meta = TOOL_META[kind];
-                    const locked = meta.adminOnly && !isAdmin;
                     const warning = t(`tools.${kind}.warning`);
                     return (
                         <li key={kind}>
@@ -115,11 +114,6 @@ export function ToolsPage() {
                                     <Icon name={meta.icon} className='mt-0.5 text-[28px] text-accent' />
                                     <div className='min-w-0 flex-1'>
                                         <h2 className='text-lg font-semibold text-ink'>{toolTitle(kind)}</h2>
-                                        {meta.adminOnly && (
-                                            <Badge tone='accent' icon='admin_panel_settings' className='mt-1'>
-                                                {t('tools.adminOnlyBadge')}
-                                            </Badge>
-                                        )}
                                     </div>
                                 </div>
                                 <p className='text-sm text-muted'>{t(`tools.${kind}.description`)}</p>
@@ -129,47 +123,46 @@ export function ToolsPage() {
                                         {warning}
                                     </p>
                                 )}
-                                <div className='mt-auto flex flex-col gap-3'>
-                                    <MailboxSelect
-                                        mailboxes={mailboxes}
-                                        value={targets[kind]}
-                                        onChange={v => setTargets(prev => ({ ...prev, [kind]: v }))}
-                                        allowAll
-                                        label={t('tools.target')}
-                                        disabled={locked}
-                                    />
-                                    {kind === 'analyze' && (
-                                        <SelectField
-                                            label={t('tools.analyzeScope')}
-                                            value={scope}
-                                            onChange={e => setScope(e.target.value as AnalyzeScope)}
-                                            disabled={locked}
+                                {isAdmin ? (
+                                    <div className='mt-auto flex flex-col gap-3'>
+                                        <MailboxSelect
+                                            mailboxes={mailboxes}
+                                            value={targets[kind]}
+                                            onChange={v => setTargets(prev => ({ ...prev, [kind]: v }))}
+                                            allowAll
+                                            label={t('tools.target')}
+                                        />
+                                        {kind === 'analyze' && (
+                                            <SelectField
+                                                label={t('tools.analyzeScope')}
+                                                value={scope}
+                                                onChange={e => setScope(e.target.value as AnalyzeScope)}
+                                            >
+                                                <option value='needs'>{t('tools.scopeNeeds')}</option>
+                                                <option value='all'>{t('tools.scopeAll')}</option>
+                                            </SelectField>
+                                        )}
+                                        <Button
+                                            variant='primary'
+                                            icon='play_arrow'
+                                            disabled={!canRun()}
+                                            onClick={() => setPending(kind)}
+                                            aria-label={t('tools.runAria', { tool: toolTitle(kind) })}
                                         >
-                                            <option value='needs'>{t('tools.scopeNeeds')}</option>
-                                            <option value='all'>{t('tools.scopeAll')}</option>
-                                        </SelectField>
-                                    )}
-                                    <Button
-                                        variant='primary'
-                                        icon='play_arrow'
-                                        disabled={!canRun(kind)}
-                                        onClick={() => setPending(kind)}
-                                        aria-label={t('tools.runAria', { tool: toolTitle(kind) })}
-                                        aria-describedby={locked ? 'tools-admin-only' : undefined}
-                                    >
-                                        {t('tools.run')}
-                                    </Button>
-                                </div>
+                                            {t('tools.run')}
+                                        </Button>
+                                    </div>
+                                ) : (
+                                    <p className='mt-auto inline-flex items-center gap-1 text-sm text-muted'>
+                                        <Icon name='lock' className='text-[18px]' />
+                                        {t('tools.readOnly')}
+                                    </p>
+                                )}
                             </Card>
                         </li>
                     );
                 })}
             </ul>
-            {!isAdmin && (
-                <p id='tools-admin-only' className='sr-only'>
-                    {t('tools.adminOnly')}
-                </p>
-            )}
 
             <section className='mt-8'>
                 <CardHeader

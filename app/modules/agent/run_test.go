@@ -36,9 +36,9 @@ func newTestIndex(t *testing.T) (db *sql.DB, mailsRoot, agentRoot, address strin
 		t.Fatal(err)
 	}
 	if err := models.UpsertGroup(db, &models.BounceGroup{
-		GroupKey: testGroupKey, Title: "user_unknown: user2@example.net", Category: CategoryUserUnknown,
-		UnitValue: "user2@example.net", Authority: "", Actionable: false, BounceKind: "failed",
-		RecipientDomain: "example.net", StatusCode: "5.1.1", SMTPCode: "550",
+		GroupKey: testGroupKey, Category: CategoryUserUnknown,
+		UnitValue: "user2@example.net", Authority: "", Actionable: false,
+		RecipientDomain: "example.net", StatusCode: "5.1.1",
 		DiagnosticTemplate: "550 5.1.1 <addr>: user unknown", Responsible: ResponsibleUnknown,
 	}); err != nil {
 		t.Fatal(err)
@@ -51,8 +51,8 @@ func newTestIndex(t *testing.T) (db *sql.DB, mailsRoot, agentRoot, address strin
 		}
 		m := &models.Message{
 			MessageKey: key, UID: uint32(i + 1), UIDValidity: 1, Folder: "INBOX", Subject: "Undelivered Mail",
-			FromAddress: "mailer-daemon@example.com", Date: sql.NullTime{Time: time.Date(2026, 9, 1+i, 12, 0, 0, 0, time.UTC), Valid: true},
-			HasText: true, IsBounce: true, BounceKind: "failed", GroupKey: testGroupKey,
+			FromAddress: "mailer-daemon@example.com", Date: time.Date(2026, 9, 1+i, 12, 0, 0, 0, time.UTC),
+			IsBounce: true, BounceKind: "failed", GroupKey: testGroupKey,
 		}
 		if err := models.InsertMessage(db, m); err != nil {
 			t.Fatal(err)
@@ -64,11 +64,9 @@ func newTestIndex(t *testing.T) (db *sql.DB, mailsRoot, agentRoot, address strin
 			t.Fatal(err)
 		}
 	}
-	// Counters are set directly: RefreshGroupCounters is exercised by the mail
-	// engine, not by this package.
-	if _, err := db.Exec(`UPDATE groups SET message_count = 2, recipient_count = 2, remote_ip_count = 1,
-		first_seen = ?, last_seen = ? WHERE group_key = ?`,
-		time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC), testGroupKey); err != nil {
+	// Counters (message count, recipients, IPs, first/last seen) are derived
+	// from the inserted messages the same way the mail engine does it.
+	if err := models.RefreshGroupCounters(db, testGroupKey); err != nil {
 		t.Fatal(err)
 	}
 	return db, mailsRoot, agentRoot, address
@@ -82,10 +80,10 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	db, mailsRoot, agentRoot, address := newTestIndex(t)
 	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), cannedSuccess)})
 	templates := fstest.MapFS{
-		"agent-templates/fake/AGENTS.md":       {Data: []byte("# rules\n")},
-		"agent-templates/fake/sub/notes.txt":   {Data: []byte("nested\n")},
-		"agent-templates/other/AGENTS.md":      {Data: []byte("not for us\n")},
-		"agent-templates/fake-unrelated/x.txt": {Data: []byte("prefix collision\n")},
+		"templates/agent/fake/AGENTS.md":       {Data: []byte("# rules\n")},
+		"templates/agent/fake/sub/notes.txt":   {Data: []byte("nested\n")},
+		"templates/agent/other/AGENTS.md":      {Data: []byte("not for us\n")},
+		"templates/agent/fake-unrelated/x.txt": {Data: []byte("prefix collision\n")},
 	}
 	var lines []string
 	rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
@@ -355,9 +353,9 @@ func TestAnalyzeGroupPromptEchoThenAnswer(t *testing.T) {
 	// not trigger the rate-limit markers.
 	db, mailsRoot, agentRoot, address := newTestIndex(t)
 	if err := models.UpsertGroup(db, &models.BounceGroup{
-		GroupKey: testGroupKey, Title: "rate_limited: 203.0.113.5 @ example.net", Category: CategoryRateLimited,
-		UnitValue: "203.0.113.5", Authority: "example.net", Actionable: true, BounceKind: "delayed",
-		RecipientDomain: "example.net", StatusCode: "4.7.0", SMTPCode: "421",
+		GroupKey: testGroupKey, Category: CategoryRateLimited,
+		UnitValue: "203.0.113.5", Authority: "example.net", Actionable: true,
+		RecipientDomain: "example.net", StatusCode: "4.7.0",
 		DiagnosticTemplate: "421 4.7.0 too many requests; rate limit exceeded, try again later", Responsible: ResponsibleSender,
 	}); err != nil {
 		t.Fatal(err)

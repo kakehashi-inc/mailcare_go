@@ -109,7 +109,10 @@ export function SettingsGeneralPage() {
 
             <div className='flex flex-col gap-6'>
                 <Card>
-                    <CardHeader title={t('settings.checkTimes')} description={t('settings.checkTimesHint')} />
+                    <CardHeader
+                        title={t('settings.checkTimes')}
+                        description={`${t('settings.checkTimesHint')} ${t('settings.serverTimeZone', { zone: settings.data.server_timezone || '-' })}`}
+                    />
                     {times.length === 0 ? (
                         <p className='text-sm text-muted'>{t('settings.noCheckTimes')}</p>
                     ) : (

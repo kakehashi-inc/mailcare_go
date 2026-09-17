@@ -20,6 +20,10 @@ import type {
     Me,
     MessageDetailResponse,
     MessageListResponse,
+    NotificationSettingsDTO,
+    NotificationSettingsInput,
+    NotificationTestInput,
+    ProfileInput,
     SettingsDTO,
     SettingsInput,
     SetupInput,
@@ -169,6 +173,12 @@ export function changeMyPassword(current_password: string, new_password: string)
     return request<void>(api('/me/password'), json('PUT', { current_password, new_password }));
 }
 
+/** Changes the caller's own profile fields (display name, email, language, time zone, theme); returns the updated user. */
+export async function updateMyProfile(input: ProfileInput): Promise<UserDTO> {
+    const r = await request<UserResponse>(api('/me/profile'), json('PUT', input));
+    return r.user;
+}
+
 // --- Dashboard ---
 
 export function getDashboard(): Promise<DashboardDTO> {
@@ -305,6 +315,28 @@ export function updateSettings(input: SettingsInput): Promise<SettingsDTO> {
     return request<SettingsDTO>(api('/settings'), json('PUT', input));
 }
 
+// --- Notifications (admin) ---
+
+export function getNotificationSettings(): Promise<NotificationSettingsDTO> {
+    return request<NotificationSettingsDTO>(api('/settings/notifications'));
+}
+
+/** Changes only the fields present in the input and returns the full settings. */
+export function updateNotificationSettings(input: NotificationSettingsInput): Promise<NotificationSettingsDTO> {
+    return request<NotificationSettingsDTO>(api('/settings/notifications'), json('PUT', input));
+}
+
+/** Sends a short SMTP check mail; without "to" the server uses the caller's own address. */
+export function sendTestNotification(to?: string): Promise<{ ok: boolean }> {
+    const input: NotificationTestInput = to ? { to } : {};
+    return request<{ ok: boolean }>(api('/notifications/test'), json('POST', input));
+}
+
+/** Queues a notification job that sends the regular digest right away (when the send conditions are met). */
+export function sendNotificationNow(): Promise<JobSubmitResult> {
+    return request<JobSubmitResult>(api('/notifications/send'), json('POST'));
+}
+
 // --- Users ---
 
 export async function listUsers(): Promise<UserDTO[]> {
@@ -332,8 +364,8 @@ export function deleteUser(id: number): Promise<void> {
 
 // --- Tokens ---
 
-export async function listTokens(userId?: number): Promise<TokenDTO[]> {
-    const r = await request<{ tokens: TokenDTO[] }>(api(`/tokens${query({ user_id: userId })}`));
+export async function listTokens(): Promise<TokenDTO[]> {
+    const r = await request<{ tokens: TokenDTO[] }>(api('/tokens'));
     return r.tokens ?? [];
 }
 

@@ -74,15 +74,17 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 		FromAddress: pm.FromAddress,
 		FromName:    pm.FromName,
 		ToAddress:   pm.To,
+		ToName:      pm.ToName,
 		// A missing or unparsable Date header falls back to INTERNALDATE and
 		// then to the fetch time (the same order as the message key), so the
 		// row always sorts and groups.last_seen is never NULL. The .json keeps
 		// the parsed value empty and the raw header in Headers.
-		Date:       models.NullTime(keyDate(pm.Date, src.ReceivedAt, pm.Source.FetchedAt)),
+		Date:       keyDate(pm.Date, src.ReceivedAt, pm.Source.FetchedAt),
 		ReceivedAt: models.NullTime(src.ReceivedAt),
 		Size:       pm.Source.Size,
 		HasText:    pm.HasText,
 		HasHTML:    pm.HasHTML,
+		BodySource: pm.BodySource,
 		FetchedAt:  pm.Source.FetchedAt,
 	}
 	if err := models.InsertMessage(db, msg); err != nil {
@@ -91,19 +93,15 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 	return msg, pm, nil
 }
 
-// writeDerivedFiles writes <key>.txt, <key>.html (only when present, removed
-// otherwise) and <key>.json.
+// writeDerivedFiles writes <key>.txt (only when the text part has content),
+// <key>.html (only when the HTML part has content) and <key>.json. A stale
+// body file of a part that turned out blank is removed.
 func writeDerivedFiles(dir, key string, pm *ParsedMessage) error {
-	if err := writeFileAtomic(filepath.Join(dir, key+".txt"), []byte(pm.TextBody), 0o600); err != nil {
-		return fmt.Errorf("write txt: %w", err)
+	if err := writeBodyFile(filepath.Join(dir, key+".txt"), pm.TextBody, pm.HasText); err != nil {
+		return err
 	}
-	htmlPath := filepath.Join(dir, key+".html")
-	if pm.HTMLBody != "" {
-		if err := writeFileAtomic(htmlPath, []byte(pm.HTMLBody), 0o600); err != nil {
-			return fmt.Errorf("write html: %w", err)
-		}
-	} else if err := os.Remove(htmlPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale html: %w", err)
+	if err := writeBodyFile(filepath.Join(dir, key+".html"), pm.HTMLBody, pm.HasHTML); err != nil {
+		return err
 	}
 	data, err := json.MarshalIndent(pm, "", "  ")
 	if err != nil {
@@ -111,6 +109,21 @@ func writeDerivedFiles(dir, key string, pm *ParsedMessage) error {
 	}
 	if err := writeFileAtomic(filepath.Join(dir, key+".json"), data, 0o600); err != nil {
 		return fmt.Errorf("write json: %w", err)
+	}
+	return nil
+}
+
+// writeBodyFile writes a body file when present is true and removes it
+// otherwise.
+func writeBodyFile(path, body string, present bool) error {
+	if present {
+		if err := writeFileAtomic(path, []byte(body), 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", filepath.Ext(path), err)
+		}
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale %s: %w", filepath.Ext(path), err)
 	}
 	return nil
 }
@@ -135,7 +148,7 @@ func loadParsedMessage(dir, key string) (*ParsedMessage, error) {
 	if b, err := os.ReadFile(filepath.Join(dir, key+".html")); err == nil {
 		pm.HTMLBody = string(b)
 	}
-	pm.HasText, pm.HasHTML = pm.TextBody != "", pm.HTMLBody != ""
+	pm.finishBodies()
 	return pm, nil
 }
 

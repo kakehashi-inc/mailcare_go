@@ -3,6 +3,7 @@ package mailengine
 import (
 	"bytes"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	netmail "net/mail"
@@ -27,6 +28,7 @@ type ParsedMessage struct {
 	FromAddress   string    `json:"from_address"`
 	FromName      string    `json:"from_name"`
 	To            string    `json:"to"`
+	ToName        string    `json:"to_name"` // display name of the first To address
 	Date          time.Time `json:"date,omitzero"`
 	ReturnPath    string    `json:"return_path"`
 	AutoSubmitted string    `json:"auto_submitted"`
@@ -36,8 +38,13 @@ type ParsedMessage struct {
 	// joined with a newline) for display.
 	Headers map[string]string `json:"headers"`
 
-	HasText bool `json:"has_text"`
-	HasHTML bool `json:"has_html"`
+	// HasText / HasHTML tell whether the text/plain and text/html parts carry
+	// a non-blank body (for HTML: after stripping the tags). BodySource names
+	// the body the classifier and the extractor use ("text" when HasText,
+	// else "html" when HasHTML, else ""). Design 5.2.
+	HasText    bool   `json:"has_text"`
+	HasHTML    bool   `json:"has_html"`
+	BodySource string `json:"body_source"`
 
 	DeliveryStatus  *DeliveryStatus  `json:"delivery_status,omitempty"`
 	OriginalMessage *OriginalMessage `json:"original_message,omitempty"`
@@ -51,8 +58,15 @@ type ParsedMessage struct {
 	TextBody string `json:"-"`
 	HTMLBody string `json:"-"`
 
-	parts int // leaf parts seen by walk (not serialized)
+	parts    int    // leaf parts seen by walk (not serialized)
+	htmlText string // HTMLBody rendered as text (computed by finishBodies, not serialized)
 }
+
+// Body sources (ParsedMessage.BodySource / messages.body_source).
+const (
+	bodySourceText = "text"
+	bodySourceHTML = "html"
+)
 
 // Source records where the message came from so that Reindex can rebuild the
 // index rows without talking to the IMAP server again.
@@ -102,7 +116,14 @@ const (
 // ParseMessage parses a raw RFC 5322 message. It never panics and never
 // returns a nil message: on a broken message the returned ParsedMessage holds
 // whatever headers could be read and ParseError describes the failure.
-func ParseMessage(raw []byte) (pm *ParsedMessage) {
+func ParseMessage(raw []byte) *ParsedMessage {
+	pm := parseMessage(raw)
+	pm.finishBodies()
+	return pm
+}
+
+// parseMessage is ParseMessage without the final body bookkeeping.
+func parseMessage(raw []byte) (pm *ParsedMessage) {
 	pm = &ParsedMessage{Headers: map[string]string{}}
 	defer func() {
 		if r := recover(); r != nil {
@@ -135,9 +156,31 @@ func ParseMessage(raw []byte) (pm *ParsedMessage) {
 		}
 		pm.fillFallbackBody(raw)
 	}
-	pm.HasText = pm.TextBody != ""
-	pm.HasHTML = pm.HTMLBody != ""
 	return pm
+}
+
+// finishBodies applies the body selection rule of design 5.2: a part counts
+// only when it has non-blank content (HTML after stripping the tags), the
+// plain text wins over HTML, and BodySource records the choice. Blank parts
+// are dropped so that the .txt / .html files are written only for real
+// content.
+func (pm *ParsedMessage) finishBodies() {
+	if strings.TrimSpace(pm.TextBody) == "" {
+		pm.TextBody = ""
+	}
+	pm.htmlText = htmlToText(pm.HTMLBody)
+	if pm.htmlText == "" {
+		pm.HTMLBody = ""
+	}
+	pm.HasText, pm.HasHTML = pm.TextBody != "", pm.HTMLBody != ""
+	switch {
+	case pm.HasText:
+		pm.BodySource = bodySourceText
+	case pm.HasHTML:
+		pm.BodySource = bodySourceHTML
+	default:
+		pm.BodySource = ""
+	}
 }
 
 // readTopHeaders fills the header fields from the root entity.
@@ -146,7 +189,7 @@ func (pm *ParsedMessage) readTopHeaders(h message.Header) {
 	pm.MessageID = headerMessageID(mh)
 	pm.Subject = headerText(mh, "Subject")
 	pm.FromAddress, pm.FromName = headerAddress(mh, "From")
-	pm.To = headerAddressList(mh, "To")
+	pm.To, pm.ToName = headerAddressList(mh, "To")
 	if t, err := mh.Date(); err == nil {
 		pm.Date = t.UTC()
 	} else if raw := h.Get("Date"); raw != "" {
@@ -402,21 +445,30 @@ func headerAddress(h mail.Header, key string) (address, name string) {
 	return looseAddress(raw)
 }
 
-// headerAddressList returns all addresses of an address header joined by ", ".
-func headerAddressList(h mail.Header, key string) string {
+// headerAddressList returns the bare addresses of an address header joined
+// by ", " (display names stripped) and the display name of the first one.
+// A malformed header that yields no address is returned as is.
+func headerAddressList(h mail.Header, key string) (addresses, firstName string) {
 	if list, err := h.AddressList(key); err == nil && len(list) > 0 {
 		parts := make([]string, 0, len(list))
 		for _, a := range list {
-			parts = append(parts, formatAddress(a.Address, a.Name))
+			if addr := strings.TrimSpace(a.Address); addr != "" {
+				parts = append(parts, addr)
+			}
 		}
-		return strings.Join(parts, ", ")
+		return strings.Join(parts, ", "), strings.TrimSpace(list[0].Name)
 	}
-	raw := decodeWordsLoose(h.Get(key))
+	return looseAddressList(decodeWordsLoose(h.Get(key)))
+}
+
+// looseAddressList is headerAddressList for a raw (already decoded) header
+// value that the strict parser rejected.
+func looseAddressList(raw string) (addresses, firstName string) {
 	addr, name := looseAddress(raw)
-	if addr == "" && name == "" {
-		return strings.TrimSpace(raw)
+	if addr == "" {
+		return strings.TrimSpace(raw), name
 	}
-	return formatAddress(addr, name)
+	return addr, name
 }
 
 var (
@@ -565,7 +617,7 @@ func (pm *ParsedMessage) fillFallbackHeaders(raw []byte) {
 		pm.FromAddress, pm.FromName = looseAddress(get("from"))
 	}
 	if pm.To == "" {
-		pm.To = get("to")
+		pm.To, pm.ToName = looseAddressList(get("to"))
 	}
 	if pm.Date.IsZero() {
 		if t, err := parseLooseDate(fields["date"]); err == nil {
@@ -603,7 +655,6 @@ func (pm *ParsedMessage) fillFallbackBody(raw []byte) {
 		return
 	}
 	pm.TextBody = normalizeText(bytes.TrimLeft(body[:min(len(body), maxBodyBytes)], "\r\n"))
-	pm.HasText = pm.TextBody != ""
 }
 
 // splitHeaderBlock separates the header block from the body at the first
@@ -630,37 +681,60 @@ func canonicalHeaderKey(k string) string {
 	return strings.Join(parts, "-")
 }
 
-// htmlToText produces a rough text rendering of an HTML body for the
-// classifier when a message has no text/plain part. It is not saved.
-func htmlToText(html string) string {
-	s := htmlScriptStyleRe.ReplaceAllString(html, " ")
+// htmlToText renders an HTML body as plain text for the classifier and the
+// extractor when a message has no usable text/plain part (design 5.2):
+// comments, script, style and head are dropped, block-level tags become
+// line breaks, table cells a space, every other tag disappears, character
+// references (&nbsp; &amp; &lt; &#39; ...) are decoded and whitespace is
+// collapsed. Blank lines are kept as paragraph breaks so that the body
+// extraction rules see the same shape as a text part. "" when nothing but
+// markup is left.
+func htmlToText(markup string) string {
+	if strings.TrimSpace(markup) == "" {
+		return ""
+	}
+	s := htmlDropRe.ReplaceAllString(markup, " ")
 	s = htmlBlockRe.ReplaceAllString(s, "\n")
+	s = htmlCellRe.ReplaceAllString(s, " ")
 	s = htmlTagRe.ReplaceAllString(s, " ")
-	s = strings.NewReplacer("&nbsp;", " ", "&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'", "&apos;", "'").Replace(s)
-	var lines []string
+	s = html.UnescapeString(s)
+	s = strings.ReplaceAll(s, "\u00a0", " ")
+	var out []string
+	blank := false
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(multiSpaceRe.ReplaceAllString(line, " "))
-		if line != "" {
-			lines = append(lines, line)
+		if line == "" {
+			blank = len(out) > 0
+			continue
 		}
+		if blank {
+			out = append(out, "")
+			blank = false
+		}
+		out = append(out, line)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(out, "\n")
 }
 
 var (
-	htmlScriptStyleRe = regexp.MustCompile(`(?is)<(script|style|head)[^>]*>.*?</(script|style|head)>`)
-	htmlBlockRe       = regexp.MustCompile(`(?i)<\s*(br|/p|/div|/tr|/li|/h[1-6]|/table|/pre)\s*/?\s*>`)
-	htmlTagRe         = regexp.MustCompile(`(?s)<[^>]*>`)
+	htmlDropRe  = regexp.MustCompile(`(?is)<!--.*?-->|<(script|style|head|title)\b[^>]*>.*?</(script|style|head|title)\s*>`)
+	htmlBlockRe = regexp.MustCompile(`(?i)<\s*/?\s*(br|p|div|tr|li|ul|ol|h[1-6]|table|pre|blockquote|hr|section|article|header|footer|dt|dd)\b[^>]*>`)
+	htmlCellRe  = regexp.MustCompile(`(?i)<\s*/?\s*(td|th)\b[^>]*>`)
+	htmlTagRe   = regexp.MustCompile(`(?s)<[^>]*>`)
 )
 
-// bodyForClassification returns the text the classifier and the extractor
-// look at: the text body, else a text rendering of the HTML body.
+// bodyForClassification returns the effective body the classifier and the
+// extractor look at (BodySource: the text body, else the HTML rendered as
+// text, else "").
 func (pm *ParsedMessage) bodyForClassification() string {
-	if pm.TextBody != "" {
+	switch pm.BodySource {
+	case bodySourceText:
 		return pm.TextBody
-	}
-	if pm.HTMLBody != "" {
-		return htmlToText(pm.HTMLBody)
+	case bodySourceHTML:
+		if pm.htmlText == "" {
+			pm.htmlText = htmlToText(pm.HTMLBody)
+		}
+		return pm.htmlText
 	}
 	return ""
 }

@@ -200,8 +200,8 @@ func TestRunJobSyncRecordsConnectionError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.LastCheckStatus != "error" || fresh.LastCheckError == "" || !fresh.LastCheckedAt.Valid {
-		t.Errorf("mailbox row not updated: status %q error %q checked %v", fresh.LastCheckStatus, fresh.LastCheckError, fresh.LastCheckedAt.Valid)
+	if fresh.LastFetchError == "" || !fresh.LastFetchedAt.Valid {
+		t.Errorf("mailbox row not updated: error %q fetched %v", fresh.LastFetchError, fresh.LastFetchedAt.Valid)
 	}
 	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "[down@example.test] error:") {
 		t.Errorf("progress lacks the error line:\n%s", joined)
@@ -649,7 +649,8 @@ func TestResetStaleJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := models.UpsertGroup(idx, &models.BounceGroup{GroupKey: "0123456789abcdef", Title: "g"}); err != nil {
+	if err := models.UpsertGroup(idx, &models.BounceGroup{GroupKey: "0123456789abcdef", Category: CategoryIPBlocked,
+		UnitValue: "203.0.113.5", Responsible: ResponsibleSender, State: GroupStateOpen}); err != nil {
 		t.Fatal(err)
 	}
 	rep := &models.AgentReport{GroupKey: "0123456789abcdef", Provider: "codex"}

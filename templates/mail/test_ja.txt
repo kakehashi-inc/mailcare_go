@@ -1,0 +1,16 @@
+{{/*
+  SMTP test mail (Japanese). Fields: .Date (local date and time), .Host, .Port,
+  .Security, .From.
+*/ -}}
+{{define "subject" -}}
+[MailCare] テスト送信 ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+MailCare の SMTP 設定のテスト送信です。
+このメールが届いていれば、通知メールを送る準備ができています。
+
+送信サーバー: {{.Host}}:{{.Port}} ({{.Security}})
+送信元: {{.From}}
+送信日時: {{.Date}}
+{{- end}}

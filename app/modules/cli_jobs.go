@@ -11,7 +11,7 @@ import (
 	"mailcare/app/models"
 )
 
-// --- job-running commands (sync / fetch / group / reindex / reclassify / analyze / jobs) ---
+// --- job-running commands (sync / fetch / group / reindex / reclassify / analyze / notify / jobs) ---
 
 // jobSpec is one job to run or submit.
 type jobSpec struct {
@@ -325,6 +325,52 @@ func (c *AnalyzeCmd) Run() error {
 		spec.mailboxID, spec.address = mb.ID, mb.Address
 	}
 	return runJobs(db, []jobSpec{spec}, true)
+}
+
+// NotifyCmd sends the notification mail now, or a test mail that only
+// proves the SMTP settings. Like the other job commands it goes through the
+// running server when there is one.
+type NotifyCmd struct {
+	Test bool   `help:"Send a short SMTP test mail instead of the notification"`
+	To   string `help:"Recipient of the test mail (default: every notification recipient that has an address)" placeholder:"ADDRESS"`
+}
+
+func (c *NotifyCmd) Run() error {
+	if c.To != "" && !c.Test {
+		return NewExitError(ExitArgument, "--to requires --test")
+	}
+	db, err := openDBForCLI()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if !c.Test {
+		return runJobs(db, []jobSpec{{kind: JobKindNotify}}, true)
+	}
+	var addresses []string
+	if c.To != "" {
+		address, err := NormalizeEmail(c.To)
+		if err != nil || address == "" {
+			return NewExitErrorf(ExitArgument, "invalid --to address %q", c.To)
+		}
+		addresses = []string{address}
+	} else {
+		settings, err := ResolveNotificationSettings(db, nil)
+		if err != nil {
+			return NewExitError(ExitConfig, err.Error())
+		}
+		if _, addresses, err = NotificationRecipients(db, settings); err != nil {
+			return NewExitError(ExitGeneral, err.Error())
+		}
+		if len(addresses) == 0 {
+			return NewExitError(ExitArgument, "no notification recipient has an email address; pass --to ADDRESS")
+		}
+	}
+	specs := make([]jobSpec, 0, len(addresses))
+	for _, a := range addresses {
+		specs = append(specs, jobSpec{kind: JobKindNotify, target: NotifyTestTarget(a)})
+	}
+	return runJobs(db, specs, true)
 }
 
 // JobsCmd lists the job history.

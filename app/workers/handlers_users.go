@@ -55,13 +55,18 @@ func (c *core) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username    string `json:"username"`
 		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+		Language    string `json:"language"`
+		Timezone    string `json:"timezone"`
+		Theme       string `json:"theme"`
 		Password    string `json:"password"`
 		Role        string `json:"role"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	u, err := modules.CreateUser(c.db, body.Username, body.DisplayName, body.Password, body.Role)
+	u, err := modules.CreateUserFrom(c.db, modules.NewUser{Username: body.Username, DisplayName: body.DisplayName, Email: body.Email,
+		Language: body.Language, Timezone: body.Timezone, Theme: body.Theme, Password: body.Password, Role: body.Role})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -75,10 +80,25 @@ func (c *core) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		DisplayName string `json:"display_name"`
-		Role        string `json:"role"`
+		DisplayName *string `json:"display_name"`
+		Email       *string `json:"email"`
+		Language    *string `json:"language"`
+		Timezone    *string `json:"timezone"`
+		Theme       *string `json:"theme"`
+		Role        string  `json:"role"`
 	}
 	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if body.DisplayName != nil && *body.DisplayName == "" {
+		// An empty display name keeps the current one (the profile falls
+		// back to the username only on creation).
+		body.DisplayName = nil
+	}
+	displayName, email, language, timezone, theme, err := modules.ApplyProfile(u, modules.ProfileInput{
+		DisplayName: body.DisplayName, Email: body.Email, Language: body.Language, Timezone: body.Timezone, Theme: body.Theme})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.Role == "" {
@@ -86,13 +106,6 @@ func (c *core) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := modules.ValidateRole(body.Role); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if body.DisplayName == "" {
-		body.DisplayName = u.DisplayName
-	}
-	if len(body.DisplayName) > 128 {
-		writeError(w, http.StatusBadRequest, "display_name must be 128 characters or fewer")
 		return
 	}
 	if body.Role != modules.RoleAdmin {
@@ -106,7 +119,7 @@ func (c *core) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := models.UpdateUser(c.db, u.ID, body.DisplayName, body.Role); err != nil {
+	if err := models.UpdateUser(c.db, u.ID, displayName, email, language, timezone, theme, body.Role); err != nil {
 		writeInternalError(w, "failed to update user", err)
 		return
 	}
@@ -129,13 +142,14 @@ func (c *core) handleSetUserPassword(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
+	remember := c.sessionRemember(r)
 	if err := modules.ChangePassword(c.db, u.ID, body.NewPassword); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if u.ID == userFrom(r).ID {
 		if fresh, err := models.GetUserByID(c.db, u.ID); err == nil {
-			c.setSessionCookie(w, fresh)
+			c.setSessionCookie(w, fresh, remember)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

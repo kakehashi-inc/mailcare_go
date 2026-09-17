@@ -128,7 +128,7 @@ func TestDiagnosticTemplate(t *testing.T) {
 	}
 }
 
-func TestGroupKeyAndTitle(t *testing.T) {
+func TestGroupKey(t *testing.T) {
 	key := GroupKey(categoryIPBlocked, "203.0.113.5", "spamhaus.org")
 	if len(key) != 16 {
 		t.Errorf("group key must be 16 hex digits: %q", key)
@@ -145,17 +145,6 @@ func TestGroupKeyAndTitle(t *testing.T) {
 	}
 	if GroupKey(categoryUserUnknown, "a@x.example", "") == GroupKey(categoryMailboxFull, "a@x.example", "") {
 		t.Error("a different category must give a different key")
-	}
-	cases := []struct{ category, unit, authority, want string }{
-		{categoryIPBlocked, "203.0.113.5", "spamhaus.org", "ip_blocked: 203.0.113.5 @ spamhaus.org"},
-		{categoryUserUnknown, "Taro@Customer.example.com", "", "user_unknown: taro@customer.example.com"},
-		{categoryUnknownFailure, "x.example", "550 " + strings.Repeat("w", 100), "unknown_failure: x.example @ " + strings.TrimSpace(("550 " + strings.Repeat("w", 100))[:templateTitleLen]) + "..."},
-		{"", "", "", "(no diagnostic)"},
-	}
-	for _, c := range cases {
-		if got := GroupTitle(c.category, c.unit, c.authority); got != c.want {
-			t.Errorf("GroupTitle(%q, %q, %q) = %q, want %q", c.category, c.unit, c.authority, got, c.want)
-		}
 	}
 }
 
@@ -179,6 +168,8 @@ type sample struct {
 	responsble string
 	diagHas    string
 	hasHTML    bool
+	noText     bool   // the text/plain part is missing or blank (has_text = false)
+	bodySource string // "" in the table means "text" unless noText, then "html" when hasHTML
 	category   string // expected group category ("" = not grouped)
 	unit       string
 	authority  string
@@ -266,6 +257,33 @@ var samples = []sample{
 		category: categoryIPBlocked, unit: "203.0.113.5", authority: "spamhaus.org", actionable: true,
 	},
 	{
+		// HTML-only Exchange NDR without a delivery-status part: detection
+		// and extraction work from the HTML rendered as text.
+		file: "exchange_html_only.eml", isBounce: true, kind: bounceKindFailed, reason: "daemon_sender",
+		subject: "Undeliverable: Service maintenance notice", fromAddr: "postmaster@corp.example.co.jp",
+		recipient: "kuro.suzuki@corp.example.co.jp", domain: "corp.example.co.jp", status: "5.1.1", smtp: "550",
+		responsble: responsibleRecipient, diagHas: "RESOLVER.ADR.RecipNotFound", hasHTML: true, noText: true,
+		category: categoryUserUnknown, unit: "kuro.suzuki@corp.example.co.jp",
+	},
+	{
+		// A blank text/plain part next to an HTML bounce: the HTML is used.
+		file: "blank_plain_html.eml", isBounce: true, kind: bounceKindFailed, reason: "daemon_sender",
+		subject: "Mail delivery failed: returning message to sender", fromAddr: "MAILER-DAEMON@relay.example.net",
+		recipient: "momo@customer.example.com", domain: "customer.example.com", status: "5.1.1", smtp: "550",
+		remoteIP: "198.51.100.25", remoteMTA: "mx.customer.example.com",
+		responsble: responsibleRecipient, diagHas: "User unknown", hasHTML: true, noText: true,
+		category: categoryUserUnknown, unit: "momo@customer.example.com",
+	},
+	{
+		// A blank HTML part next to a text bounce: the text is used, has_html is false.
+		file: "plain_blank_html.eml", isBounce: true, kind: bounceKindFailed, reason: "daemon_sender",
+		subject: "Undelivered Mail Returned to Sender", fromAddr: "MAILER-DAEMON@mx1.example.jp",
+		recipient: "yuki@customer.example.com", domain: "customer.example.com", status: "5.1.1", smtp: "550",
+		remoteIP: "198.51.100.25", remoteMTA: "mx.customer.example.com",
+		responsble: responsibleRecipient, diagHas: "User unknown in virtual mailbox table",
+		category: categoryUserUnknown, unit: "yuki@customer.example.com",
+	},
+	{
 		file: "autoreply.eml", isBounce: true, kind: bounceKindAutoReply, reason: "auto_reply",
 		subject: "自動返信: Re: 9月のお知らせ", fromAddr: "nanako@partner.example.com",
 	},
@@ -305,8 +323,21 @@ func TestParseClassifyExtractSamples(t *testing.T) {
 			if pm.FromAddress != s.fromAddr {
 				t.Errorf("from = %q, want %q", pm.FromAddress, s.fromAddr)
 			}
-			if pm.HasHTML != s.hasHTML {
-				t.Errorf("has_html = %v, want %v", pm.HasHTML, s.hasHTML)
+			wantSource := s.bodySource
+			if wantSource == "" {
+				switch {
+				case !s.noText:
+					wantSource = bodySourceText
+				case s.hasHTML:
+					wantSource = bodySourceHTML
+				}
+			}
+			if pm.HasHTML != s.hasHTML || pm.HasText == s.noText || pm.BodySource != wantSource {
+				t.Errorf("has_text = %v, has_html = %v, body_source = %q; want %v / %v / %q",
+					pm.HasText, pm.HasHTML, pm.BodySource, !s.noText, s.hasHTML, wantSource)
+			}
+			if (pm.TextBody != "") != pm.HasText || (pm.HTMLBody != "") != pm.HasHTML {
+				t.Errorf("bodies kept for blank parts: text=%q html=%q", pm.TextBody, pm.HTMLBody)
 			}
 			cls := Classify(pm)
 			if cls.IsBounce != s.isBounce || cls.Kind != s.kind || cls.Reason != s.reason {
@@ -375,8 +406,8 @@ func TestNoSyntheticSMTPCode(t *testing.T) {
 	g := groupForBounce(bounceKindDelayed, b)
 	other := *b
 	other.SMTPCode = "421"
-	if g2 := groupForBounce(bounceKindDelayed, &other); g2.GroupKey != g.GroupKey || g2.Title != g.Title {
-		t.Errorf("group key/title depend on the SMTP code: %s/%s vs %s/%s", g.GroupKey, g.Title, g2.GroupKey, g2.Title)
+	if g2 := groupForBounce(bounceKindDelayed, &other); g2.GroupKey != g.GroupKey || g2.Label() != g.Label() {
+		t.Errorf("group key/label depend on the SMTP code: %s/%s vs %s/%s", g.GroupKey, g.Label(), g2.GroupKey, g2.Label())
 	}
 }
 
@@ -417,6 +448,24 @@ func TestParsedMessageDetails(t *testing.T) {
 	}
 	if pm.Headers["Message-Id"] == "" && pm.Headers["Message-ID"] == "" {
 		t.Errorf("headers map lacks Message-Id: %v", pm.Headers)
+	}
+
+	// The To display name is kept for messages.to_name (MIME and fallback parser).
+	// to_address keeps the bare addresses only; the display name goes to to_name.
+	named := ParseMessage([]byte("From: Sender Name <a@example.com>\r\nTo: Newsletter Desk <newsletter@example.jp>, ops@example.jp\r\nSubject: x\r\n\r\nbody\r\n"))
+	if named.ToName != "Newsletter Desk" || named.To != "newsletter@example.jp, ops@example.jp" {
+		t.Errorf("to = %q / to_name = %q", named.To, named.ToName)
+	}
+	if named.FromAddress != "a@example.com" || named.FromName != "Sender Name" {
+		t.Errorf("from = %q / from_name = %q", named.FromAddress, named.FromName)
+	}
+	// The same through the fallback header parser (broken MIME).
+	broken := ParseMessage([]byte("From: Sender Name <a@example.com>\nTo: Newsletter Desk <newsletter@example.jp>\nSubject: x\nContent-Type: multipart/mixed; boundary=\n\n--\n"))
+	if broken.To != "newsletter@example.jp" || broken.ToName != "Newsletter Desk" || broken.FromAddress != "a@example.com" || broken.FromName != "Sender Name" {
+		t.Errorf("fallback: to = %q / to_name = %q / from = %q / from_name = %q", broken.To, broken.ToName, broken.FromAddress, broken.FromName)
+	}
+	if pm.ToName != "" {
+		t.Errorf("to_name = %q, want empty for a bare address", pm.ToName)
 	}
 
 	// The malformed sample must still yield headers, a body and no panic.
@@ -519,12 +568,47 @@ func countRows(t *testing.T, db *sql.DB, table string) int {
 	return n
 }
 
+func mustListAllMessages(t *testing.T, db *sql.DB) []*models.Message {
+	t.Helper()
+	msgs, err := models.ListAllMessages(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return msgs
+}
+
+// countBounceDetails counts the messages that carry bounce details (the
+// JSON-backed bounce of the message row), read through the models API.
+func countBounceDetails(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	n := 0
+	for _, m := range mustListAllMessages(t, db) {
+		if b, err := models.GetBounceByMessageID(db, m.ID); err == nil {
+			if b.OriginalRecipient == "" && b.Diagnostic == "" && b.StatusCode == "" {
+				t.Errorf("bounce details of %s are empty: %+v", m.MessageKey, b)
+			}
+			n++
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			t.Fatal(err)
+		}
+	}
+	return n
+}
+
 func TestStoreAndReindexRoundTrip(t *testing.T) {
 	root, address := buildMailbox(t)
 	dir := MailboxDir(root, address)
 
 	entries, _ := os.ReadDir(dir)
-	var emls, jsons, htmls int
+	var emls, jsons, htmls, txts, wantHTML, wantTxt int
+	for _, s := range samples {
+		if s.hasHTML {
+			wantHTML++
+		}
+		if !s.noText {
+			wantTxt++
+		}
+	}
 	for _, e := range entries {
 		switch filepath.Ext(e.Name()) {
 		case ".eml":
@@ -533,13 +617,16 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 			jsons++
 		case ".html":
 			htmls++
+		case ".txt":
+			txts++
 		}
 		if strings.HasSuffix(e.Name(), ".tmp") {
 			t.Errorf("temporary file left behind: %s", e.Name())
 		}
 	}
-	if emls != len(samples) || jsons != len(samples) || htmls != 3 {
-		t.Fatalf("files: %d eml, %d json, %d html", emls, jsons, htmls)
+	if emls != len(samples) || jsons != len(samples) || htmls != wantHTML || txts != wantTxt {
+		t.Fatalf("files: %d eml, %d json, %d html, %d txt; want %d / %d / %d / %d", emls, jsons, htmls, txts,
+			len(samples), len(samples), wantHTML, wantTxt)
 	}
 
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
@@ -560,8 +647,8 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 		t.Fatalf("index has %d messages / %d bounces, want %d / %d", total, bounces, len(samples), wantBounces)
 	}
 	groupsBefore := countRows(t, db, "groups")
-	bouncesBefore := countRows(t, db, "bounces")
-	if groupsBefore == 0 || bouncesBefore != wantBounces-1 { // the auto-reply has no bounces row
+	bouncesBefore := countBounceDetails(t, db)
+	if groupsBefore == 0 || bouncesBefore != wantBounces-1 { // the auto-reply has no bounce details
 		t.Fatalf("groups=%d bounces=%d before reindex", groupsBefore, bouncesBefore)
 	}
 	var withGroup int
@@ -571,36 +658,50 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 	if withGroup != wantBounces-1 {
 		t.Errorf("%d messages carry a group key, want %d", withGroup, wantBounces-1)
 	}
-	var autoGroup string
-	if err := db.QueryRow(`SELECT group_key FROM messages WHERE bounce_kind = 'auto_reply'`).Scan(&autoGroup); err != nil || autoGroup != "" {
-		t.Errorf("auto reply group key = %q (err %v), want empty", autoGroup, err)
+	autoReplies := 0
+	for _, m := range mustListAllMessages(t, db) {
+		if m.BounceKind == bounceKindAutoReply {
+			autoReplies++
+			if m.GroupKey != "" {
+				t.Errorf("auto reply %s has group key %q, want empty", m.MessageKey, m.GroupKey)
+			}
+		}
 	}
-	var cnt, recipients int
-	var first, last sql.NullTime
-	if err := db.QueryRow(`SELECT message_count, recipient_count, first_seen, last_seen FROM groups ORDER BY message_count DESC LIMIT 1`).
-		Scan(&cnt, &recipients, &first, &last); err != nil {
+	if autoReplies != 1 {
+		t.Errorf("%d auto replies indexed, want 1", autoReplies)
+	}
+	spamGroup, err := models.GetGroup(db, GroupKey(categoryIPBlocked, "203.0.113.5", "spamhaus.org"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if cnt == 0 || recipients == 0 || !first.Valid || !last.Valid {
-		t.Errorf("group counters not refreshed: count=%d recipients=%d first=%v last=%v", cnt, recipients, first, last)
+	if spamGroup.MessageCount != 2 || spamGroup.RecipientCount != 2 || spamGroup.RemoteIPCount != 2 ||
+		!spamGroup.FirstSeen.Valid || !spamGroup.LastSeen.Valid || spamGroup.FirstSeen.Time.After(spamGroup.LastSeen.Time) ||
+		spamGroup.Label() != "ip_blocked: 203.0.113.5 @ spamhaus.org" || spamGroup.StatusCode != "5.7.1" || spamGroup.DiagnosticTemplate == "" {
+		t.Errorf("group counters / details not refreshed: %+v", spamGroup)
 	}
 	// The two Spamhaus listings of the same IP (different recipient domains)
 	// form one actionable group; the two 5.1.1 notices to customer.example.com
 	// (different recipients) form two recipient-side groups.
-	var spamhausGroups, unknownGroups int
-	if err := db.QueryRow(`SELECT COUNT(DISTINCT group_key) FROM messages m JOIN bounces b ON b.message_id = m.id
-		WHERE b.status_code = '5.7.1' AND b.diagnostic LIKE '%spamhaus%'`).Scan(&spamhausGroups); err != nil {
-		t.Fatal(err)
+	spamhausGroups, unknownGroups := map[string]bool{}, map[string]bool{}
+	for _, m := range mustListAllMessages(t, db) {
+		b, err := models.GetBounceByMessageID(db, m.ID)
+		if err != nil {
+			continue
+		}
+		if b.StatusCode == "5.7.1" && strings.Contains(b.Diagnostic, "spamhaus") {
+			spamhausGroups[m.GroupKey] = true
+		}
+		if b.RecipientDomain == "customer.example.com" && b.StatusCode == "5.1.1" {
+			unknownGroups[m.GroupKey] = true
+		}
 	}
-	if spamhausGroups != 1 {
-		t.Errorf("spamhaus notices spread over %d groups, want 1", spamhausGroups)
+	if len(spamhausGroups) != 1 {
+		t.Errorf("spamhaus notices spread over %d groups, want 1", len(spamhausGroups))
 	}
-	if err := db.QueryRow(`SELECT COUNT(DISTINCT group_key) FROM messages m JOIN bounces b ON b.message_id = m.id
-		WHERE b.recipient_domain = 'customer.example.com' AND b.status_code = '5.1.1'`).Scan(&unknownGroups); err != nil {
-		t.Fatal(err)
-	}
-	if unknownGroups != 2 {
-		t.Errorf("user_unknown notices to customer.example.com in %d groups, want 2 (one per recipient)", unknownGroups)
+	// taro.yamada (postfix), saburo (qmail), momo (blank plain + HTML) and
+	// yuki (plain + blank HTML): one group per recipient address.
+	if len(unknownGroups) != 4 {
+		t.Errorf("user_unknown notices to customer.example.com in %d groups, want 4 (one per recipient)", len(unknownGroups))
 	}
 	var unclassified int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE classified = 0`).Scan(&unclassified); err != nil {
@@ -647,14 +748,19 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 			t.Errorf("message %s changed by reindex:\n before %+v\n after  %+v", key, before, after)
 		}
 	}
-	if countRows(t, db, "bounces") != bouncesBefore || countRows(t, db, "groups") != groupsBefore {
-		t.Errorf("bounces/groups differ after reindex: %d/%d", countRows(t, db, "bounces"), countRows(t, db, "groups"))
+	if countBounceDetails(t, db) != bouncesBefore || countRows(t, db, "groups") != groupsBefore {
+		t.Errorf("bounces/groups differ after reindex: %d/%d", countBounceDetails(t, db), countRows(t, db, "groups"))
 	}
-	for key := range rowsBefore {
+	for key, row := range rowsBefore {
 		txt, err := ReadMessageFile(root, address, key, "txt")
-		if err != nil {
+		switch {
+		case !row.HasText:
+			if !os.IsNotExist(err) {
+				t.Errorf("%s has no text part but a .txt file (err %v)", key, err)
+			}
+		case err != nil:
 			t.Errorf("read txt %s: %v", key, err)
-		} else if string(txt) == "stale" {
+		case string(txt) == "stale":
 			t.Errorf("reindex did not regenerate %s.txt", key)
 		}
 	}
@@ -692,6 +798,7 @@ type messageRow struct {
 	UID, UIDValidity                                                    uint32
 	Folder, MessageID, Subject, From, FromName, To, Kind, Reason, Group string
 	IsBounce, HasText, HasHTML                                          bool
+	ToName, BodySource                                                  string
 	Date                                                                string
 }
 
@@ -703,14 +810,14 @@ func snapshotMessages(t *testing.T, db *sql.DB) map[string]messageRow {
 	}
 	out := map[string]messageRow{}
 	for _, m := range msgs {
-		date := ""
-		if m.Date.Valid {
-			date = m.Date.Time.UTC().Format(time.RFC3339)
+		if m.Date.IsZero() {
+			t.Errorf("message %s has a zero date", m.MessageKey)
 		}
 		out[m.MessageKey] = messageRow{
 			UID: m.UID, UIDValidity: m.UIDValidity, Folder: m.Folder, MessageID: m.MessageID, Subject: m.Subject,
 			From: m.FromAddress, FromName: m.FromName, To: m.ToAddress, Kind: m.BounceKind, Reason: m.ClassifyReason,
-			Group: m.GroupKey, IsBounce: m.IsBounce, HasText: m.HasText, HasHTML: m.HasHTML, Date: date,
+			Group: m.GroupKey, IsBounce: m.IsBounce, HasText: m.HasText, HasHTML: m.HasHTML, BodySource: m.BodySource,
+			Date: m.Date.UTC().Format(time.RFC3339), ToName: m.ToName,
 		}
 	}
 	return out
@@ -903,8 +1010,14 @@ func TestOpenIndexRebuildsOutdatedSchema(t *testing.T) {
 	if total != len(samples) {
 		t.Errorf("rebuilt index holds %d messages, want %d", total, len(samples))
 	}
-	if len(lines) == 0 || !strings.Contains(strings.Join(lines, "\n"), "outdated") {
+	joined := strings.Join(lines, "\n")
+	if len(lines) == 0 || !strings.Contains(joined, "outdated") {
 		t.Errorf("no rebuild progress reported: %v", lines)
+	}
+	// The old index cannot be read through the models, so nothing is
+	// carried over and the reason is reported.
+	if !strings.Contains(joined, "not carried over") || !strings.Contains(joined, "outdated schema") {
+		t.Errorf("carry-over skip not reported:\n%s", joined)
 	}
 }
 
@@ -1022,7 +1135,7 @@ func TestDateFallbackWhenHeaderMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !msg.Date.Valid || !msg.Date.Time.Equal(received) {
+	if !msg.Date.Equal(received) {
 		t.Errorf("date = %v, want INTERNALDATE %v", msg.Date, received)
 	}
 	if !pm.Date.IsZero() {
@@ -1044,7 +1157,7 @@ func TestDateFallbackWhenHeaderMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !msg.Date.Valid || !msg.Date.Time.Equal(fetched) {
+	if !msg.Date.Equal(fetched) {
 		t.Errorf("date = %v, want fetch time %v (no INTERNALDATE)", msg.Date, fetched)
 	}
 	if pm.Headers["Date"] != "yesterday-ish" {
@@ -1362,7 +1475,7 @@ func TestGroupIdentityByUnit(t *testing.T) {
 	if sa.GroupKey != sb.GroupKey {
 		t.Errorf("spamhaus listings of one IP form two groups:\n%+v\n%+v", sa, sb)
 	}
-	if !sa.Actionable || sa.UnitValue != "203.0.113.5" || sa.Authority != "spamhaus.org" || sa.Title != "ip_blocked: 203.0.113.5 @ spamhaus.org" {
+	if !sa.Actionable || sa.UnitValue != "203.0.113.5" || sa.Authority != "spamhaus.org" || sa.Label() != "ip_blocked: 203.0.113.5 @ spamhaus.org" {
 		t.Errorf("spamhaus group = %+v", sa)
 	}
 	if bc := groupForBounce(bounceKindFailed, find("barracuda listing").bounce()); bc.GroupKey == sa.GroupKey {
@@ -1437,8 +1550,8 @@ func TestGroupIncremental(t *testing.T) {
 	if _, bounces, _ := models.CountMessages(db); bounces != 0 {
 		t.Errorf("fetch phase marked %d bounces", bounces)
 	}
-	if countRows(t, db, "groups") != 0 || countRows(t, db, "bounces") != 0 {
-		t.Error("fetch phase created groups or bounces")
+	if countRows(t, db, "groups") != 0 || countBounceDetails(t, db) != 0 {
+		t.Error("fetch phase created groups or bounce details")
 	}
 	db.Close()
 
@@ -1512,5 +1625,86 @@ func TestGroupIncremental(t *testing.T) {
 	}
 	if actionable.Open != 2 {
 		t.Errorf("actionable open groups = %d, want 2 (spamhaus, content)", actionable.Open)
+	}
+}
+
+func TestHTMLToText(t *testing.T) {
+	in := `<html><head><title>x</title><style>p { color: red; }</style></head><body>
+<!-- comment with 550 5.0.0 -->
+<script>var a = "550 5.0.0";</script>
+<p>Your message to <b>goro@gmail.com</b> couldn&#39;t be delivered.</p>
+<div>Remote&nbsp;Server returned &#39;550 5.1.1 not found&#39;</div><br>
+<table><tr><td>a</td><td>b &amp; c &lt;d&gt;</td></tr></table>
+<p>   </p>
+<p>last</p></body></html>`
+	got := htmlToText(in)
+	want := "Your message to goro@gmail.com couldn't be delivered.\n\nRemote Server returned '550 5.1.1 not found'\n\na b & c <d>\n\nlast"
+	if got != want {
+		t.Errorf("htmlToText =\n%q\nwant\n%q", got, want)
+	}
+	for _, blank := range []string{"", "   ", "<html><body></body></html>", "<html><head><style>p{}</style></head><body>\n\n</body></html>", "<p>&nbsp;</p>"} {
+		if got := htmlToText(blank); got != "" {
+			t.Errorf("htmlToText(%q) = %q, want empty", blank, got)
+		}
+	}
+}
+
+// TestBodySelectionLayouts covers the five body layouts of design 5.2 with
+// inline messages: plain only, HTML only, plain + HTML, blank plain + HTML,
+// plain + blank HTML.
+func TestBodySelectionLayouts(t *testing.T) {
+	const b = "=_layout"
+	part := func(ct, body string) string {
+		return "--" + b + "\r\nContent-Type: " + ct + "\r\n\r\n" + body + "\r\n"
+	}
+	multi := func(parts ...string) []byte {
+		return []byte("From: a@example.com\r\nTo: b@example.com\r\nSubject: layout\r\nMIME-Version: 1.0\r\n" +
+			"Content-Type: multipart/alternative; boundary=\"" + b + "\"\r\n\r\n" + strings.Join(parts, "") + "--" + b + "--\r\n")
+	}
+	cases := []struct {
+		name                    string
+		raw                     []byte
+		hasText, hasHTML        bool
+		source, effectiveHas    string
+		wantText, wantHTMLEmpty bool
+	}{
+		{"plain only", []byte("From: a@example.com\r\nSubject: p\r\n\r\nplain body 550 5.1.1\r\n"), true, false, bodySourceText, "plain body", true, true},
+		{"html only", []byte("From: a@example.com\r\nSubject: h\r\nContent-Type: text/html\r\n\r\n<p>html <b>body</b></p>\r\n"), false, true, bodySourceHTML, "html body", false, false},
+		{"plain and html", multi(part("text/plain", "plain wins"), part("text/html", "<p>html loses</p>")), true, true, bodySourceText, "plain wins", true, false},
+		{"blank plain and html", multi(part("text/plain", "  \r\n\t\r\n"), part("text/html", "<div>html used</div>")), false, true, bodySourceHTML, "html used", false, false},
+		{"plain and blank html", multi(part("text/plain", "text used"), part("text/html", "<html><body> &nbsp; </body></html>")), true, false, bodySourceText, "text used", true, true},
+		{"nothing", multi(part("text/plain", "\r\n"), part("text/html", "<p></p>")), false, false, "", "", false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pm := ParseMessage(c.raw)
+			if pm.HasText != c.hasText || pm.HasHTML != c.hasHTML || pm.BodySource != c.source {
+				t.Errorf("has_text=%v has_html=%v body_source=%q, want %v / %v / %q", pm.HasText, pm.HasHTML, pm.BodySource, c.hasText, c.hasHTML, c.source)
+			}
+			if body := pm.bodyForClassification(); !strings.Contains(body, c.effectiveHas) || (c.effectiveHas == "" && body != "") {
+				t.Errorf("effective body %q does not contain %q", body, c.effectiveHas)
+			}
+			if (pm.TextBody != "") != c.wantText || (pm.HTMLBody == "") != c.wantHTMLEmpty {
+				t.Errorf("text=%q html=%q kept for blank parts", pm.TextBody, pm.HTMLBody)
+			}
+			// The flags survive the .json / .txt / .html round trip.
+			dir := t.TempDir()
+			if err := writeDerivedFiles(dir, "k", pm); err != nil {
+				t.Fatal(err)
+			}
+			back, err := loadParsedMessage(dir, "k")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if back.HasText != pm.HasText || back.HasHTML != pm.HasHTML || back.BodySource != pm.BodySource || back.bodyForClassification() != pm.bodyForClassification() {
+				t.Errorf("round trip changed the body selection: %+v vs %+v", back, pm)
+			}
+			for ext, want := range map[string]bool{"k.txt": pm.HasText, "k.html": pm.HasHTML} {
+				_, err := os.Stat(filepath.Join(dir, ext))
+				if (err == nil) != want {
+					t.Errorf("%s exists=%v, want %v", ext, err == nil, want)
+				}
+			}
+		})
 	}
 }

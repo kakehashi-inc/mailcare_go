@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { JOB_KINDS, type JobDTO, type JobKind } from '../../types';
+import { ALL_JOB_KINDS, type JobDTO, type JobKind } from '../../types';
 import { formatDuration } from '../../utils/format';
 import { IconButton } from '../ui/Button';
 import { DateTime } from '../ui/DateTime';
@@ -10,7 +10,7 @@ import { JobStatusBadge } from './StatusBadges';
 
 /** Label of a job kind; kinds this build does not know (e.g. old "check" jobs) are shown as "Other (kind)". */
 export function jobKindLabel(kind: string, t: TFunction): string {
-    return (JOB_KINDS as readonly string[]).includes(kind)
+    return (ALL_JOB_KINDS as readonly string[]).includes(kind)
         ? t(`jobKind.${kind as JobKind}`)
         : t('jobKind.other', { kind });
 }
