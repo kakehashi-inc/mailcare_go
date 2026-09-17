@@ -280,7 +280,7 @@ export function SettingsTokensPage() {
                     rows={tokens.data}
                     rowKey={tk => tk.identifier}
                     caption={t('nav.settingsTokens')}
-                    emptyState={<EmptyState icon='key' title={t('token.empty')} description={t('token.emptyHint')} />}
+                    emptyState={<EmptyState title={t('token.empty')} description={t('token.emptyHint')} />}
                 />
             )}
 

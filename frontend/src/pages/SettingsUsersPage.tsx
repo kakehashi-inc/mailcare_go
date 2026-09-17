@@ -61,16 +61,25 @@ export function SettingsUsersPage() {
             header: t('user.username'),
             primary: true,
             cell: u => (
-                <span className='break-all'>
+                <span className='inline-flex flex-wrap items-center gap-2 break-all'>
                     <span className='font-medium text-ink'>{u.username}</span>
-                    {u.display_name && <span className='block text-sm text-muted'>{u.display_name}</span>}
                     {me?.user.id === u.id && (
-                        <Badge tone='info' icon='person_pin' className='mt-1'>
+                        <Badge tone='info' icon='person_pin'>
                             {t('user.you')}
                         </Badge>
                     )}
                 </span>
             ),
+        },
+        {
+            key: 'display_name',
+            header: t('user.displayName'),
+            cell: u =>
+                u.display_name ? (
+                    <span className='break-words'>{u.display_name}</span>
+                ) : (
+                    <span className='text-muted'>-</span>
+                ),
         },
         { key: 'role', header: t('user.role'), cell: u => <RoleBadge role={u.role} /> },
         {
@@ -82,21 +91,6 @@ export function SettingsUsersPage() {
                 ) : (
                     <span className='text-muted'>{t('user.emailNone')}</span>
                 ),
-        },
-        {
-            key: 'language',
-            header: t('user.language'),
-            cell: u => (isLang(u.language) ? t(`lang.${u.language}`) : u.language || t(`lang.${DEFAULT_LANG}`)),
-        },
-        {
-            key: 'timezone',
-            header: t('user.timezone'),
-            cell: u => <span className='break-all'>{u.timezone || DEFAULT_TIME_ZONE}</span>,
-        },
-        {
-            key: 'theme',
-            header: t('user.theme'),
-            cell: u => (isTheme(u.theme) ? t(`theme.${u.theme}`) : t(`theme.${DEFAULT_THEME}`)),
         },
         {
             key: 'last_login',
@@ -193,7 +187,7 @@ export function SettingsUsersPage() {
                     rows={users.data}
                     rowKey={u => u.id}
                     caption={t('nav.settingsUsers')}
-                    emptyState={<EmptyState icon='group' title={t('user.empty')} />}
+                    emptyState={<EmptyState title={t('user.empty')} />}
                 />
             )}
 

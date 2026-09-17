@@ -206,7 +206,7 @@ export function MailDetailPage() {
                                     {text}
                                 </pre>
                             ) : (
-                                <EmptyState icon='notes' title={t('mail.noText')} />
+                                <EmptyState title={t('mail.noText')} />
                             )}
                         </TabPanel>
                         <TabPanel id='html' active={activeTab === 'html'}>
@@ -224,12 +224,12 @@ export function MailDetailPage() {
                                     />
                                 </>
                             ) : (
-                                <EmptyState icon='code' title={t('mail.noHtml')} />
+                                <EmptyState title={t('mail.noHtml')} />
                             )}
                         </TabPanel>
                         <TabPanel id='headers' active={activeTab === 'headers'}>
                             {headerEntries.length === 0 ? (
-                                <EmptyState icon='list' title={t('mail.noHeaders')} />
+                                <EmptyState title={t('mail.noHeaders')} />
                             ) : (
                                 <dl className='divide-y divide-line'>
                                     {headerEntries.map(([name, value]) => (
@@ -317,7 +317,6 @@ export function MailDetailPage() {
                             />
                         ) : (
                             <EmptyState
-                                icon='report_off'
                                 title={t('bounce.none')}
                                 description={message.is_bounce ? undefined : t('bounce.notBounce')}
                             />

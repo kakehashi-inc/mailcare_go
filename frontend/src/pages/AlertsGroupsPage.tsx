@@ -215,7 +215,6 @@ export function AlertsGroupsPage() {
                             <ErrorState message={errorMessage(groups.error, t)} onRetry={() => void groups.reload()} />
                         ) : rows.length === 0 ? (
                             <EmptyState
-                                icon={s === 'open' ? 'task_alt' : 'inbox'}
                                 title={t(`alerts.empty.${s}`)}
                                 description={
                                     filtered

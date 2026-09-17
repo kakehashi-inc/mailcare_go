@@ -80,23 +80,16 @@ export function DashboardPage() {
         <PageContainer wide>
             <PageHeader title={t('nav.dashboard')} description={t('dashboard.description')} />
 
-            {!data.agent.enabled && (
+            {/* Agent notices are for administrators, who can act on them; members only see the badge state. */}
+            {isAdmin && !data.agent.enabled && (
                 <Alert tone='info' className='mb-4' title={t('dashboard.agentDisabledTitle')}>
-                    {t('dashboard.agentDisabled')}
-                    {isAdmin && (
-                        <>
-                            {' '}
-                            <Link
-                                to='/settings/general'
-                                className='font-medium text-accent underline underline-offset-2'
-                            >
-                                {t('nav.settingsGeneral')}
-                            </Link>
-                        </>
-                    )}
+                    {t('dashboard.agentDisabled')}{' '}
+                    <Link to='/settings/general' className='font-medium text-accent underline underline-offset-2'>
+                        {t('nav.settingsGeneral')}
+                    </Link>
                 </Alert>
             )}
-            {data.agent.enabled && !data.agent.available && (
+            {isAdmin && data.agent.enabled && !data.agent.available && (
                 <Alert tone='warning' className='mb-4' title={t('dashboard.agentUnavailableTitle')}>
                     {t('dashboard.agentUnavailable', { provider: data.agent.provider })}
                 </Alert>
@@ -123,9 +116,7 @@ export function DashboardPage() {
                         <CardHeader title={t('dashboard.mailboxes')} />
                         {data.mailboxes.length === 0 ? (
                             <EmptyState
-                                icon='mail_outline'
                                 title={t('mailbox.emptyTitle')}
-                                description={isAdmin ? t('mailbox.emptyAdminHint') : t('mailbox.emptyUserHint')}
                                 action={
                                     isAdmin ? (
                                         <LinkButton to='/settings/mailboxes/new' variant='primary' icon='add'>
@@ -232,7 +223,7 @@ export function DashboardPage() {
                     <section>
                         <CardHeader title={t('dashboard.recentGroups')} description={t('dashboard.recentGroupsHint')} />
                         {data.recent_groups.length === 0 ? (
-                            <EmptyState icon='task_alt' title={t('dashboard.noRecentGroups')} />
+                            <EmptyState title={t('dashboard.noRecentGroups')} />
                         ) : (
                             <ul className='flex flex-col gap-3'>
                                 {data.recent_groups.map(g => (
@@ -287,19 +278,27 @@ export function DashboardPage() {
                             </div>
                             <div>
                                 <dt className='text-sm text-muted'>{t('dashboard.agent')}</dt>
-                                <dd className='flex items-center gap-1 text-ink'>
+                                <dd
+                                    className='inline-flex items-center gap-1 text-ink'
+                                    title={data.agent.enabled ? t('common.enabled') : t('common.disabled')}
+                                >
                                     <Icon
                                         name={
-                                            data.agent.enabled && data.agent.available
-                                                ? 'check_circle'
-                                                : 'remove_circle_outline'
+                                            !data.agent.enabled
+                                                ? 'remove_circle_outline'
+                                                : data.agent.available
+                                                  ? 'check_circle'
+                                                  : 'warning'
                                         }
-                                        className={`text-[18px] ${data.agent.enabled && data.agent.available ? 'text-success' : 'text-muted'}`}
+                                        className={`text-[18px] ${
+                                            !data.agent.enabled
+                                                ? 'text-muted'
+                                                : data.agent.available
+                                                  ? 'text-success'
+                                                  : 'text-warning'
+                                        }`}
                                     />
                                     {data.agent.provider || '-'}
-                                    <span className='text-sm text-muted'>
-                                        ({data.agent.enabled ? t('common.enabled') : t('common.disabled')})
-                                    </span>
                                 </dd>
                             </div>
                         </dl>

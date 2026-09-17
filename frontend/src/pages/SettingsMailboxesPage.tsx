@@ -166,9 +166,7 @@ export function SettingsMailboxesPage() {
                     rowAriaLabel={mb => t('mailbox.editAria', { address: mb.address })}
                     emptyState={
                         <EmptyState
-                            icon='mail_outline'
                             title={t('mailbox.emptyTitle')}
-                            description={t('mailbox.emptyAdminHint')}
                             action={
                                 <LinkButton to='/settings/mailboxes/new' variant='primary' icon='add'>
                                     {t('mailbox.add')}

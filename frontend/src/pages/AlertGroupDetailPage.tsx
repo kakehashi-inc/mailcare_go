@@ -384,7 +384,6 @@ export function AlertGroupDetailPage() {
                             <ReportView report={report} />
                         ) : group.actionable ? (
                             <EmptyState
-                                icon='psychology'
                                 title={t('report.none')}
                                 description={isAdmin ? t('report.noneHint') : t('report.noneHintMember')}
                             />

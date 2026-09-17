@@ -24,9 +24,7 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
     if (mailboxes.length === 0) {
         return (
             <EmptyState
-                icon='mail_outline'
                 title={t('mailbox.emptyTitle')}
-                description={isAdmin ? t('mailbox.emptyAdminHint') : t('mailbox.emptyUserHint')}
                 action={
                     isAdmin ? (
                         <LinkButton to='/settings/mailboxes/new' variant='primary' icon='add'>

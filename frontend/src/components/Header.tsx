@@ -22,10 +22,10 @@ const MENU_ITEM_CLASS =
     'flex min-h-tap w-full items-center gap-2 px-4 text-left text-base hover:bg-well focus:bg-well focus:outline-none';
 
 /**
- * Site header: brand + version, primary navigation with an admin-only
- * settings dropdown, language switch and a user menu (profile, logout) opened
- * from the user name. Below the lg breakpoint the navigation folds into a
- * hamburger drawer that also carries the user menu entries.
+ * Site header: brand + version, primary navigation (settings is a plain
+ * admin-only link to the menu page) and a user menu (profile, logout) opened
+ * from the user name on every width. Below the lg breakpoint the navigation
+ * folds into a hamburger drawer.
  */
 export function Header() {
     const { t } = useTranslation();
@@ -34,17 +34,13 @@ export function Header() {
     const location = useLocation();
     const wide = useMediaQuery(`(min-width: ${BREAKPOINT_LG}px)`);
     const [drawerOpen, setDrawerOpen] = useState(false);
-    const [settingsOpen, setSettingsOpen] = useState(false);
     const [userOpen, setUserOpen] = useState(false);
-    const settingsRef = useRef<HTMLDivElement>(null);
     const userRef = useRef<HTMLDivElement>(null);
-    useClickOutside(settingsRef, settingsOpen, () => setSettingsOpen(false));
     useClickOutside(userRef, userOpen, () => setUserOpen(false));
 
     // Close the drawer and the menus on navigation.
     useEffect(() => {
         setDrawerOpen(false);
-        setSettingsOpen(false);
         setUserOpen(false);
     }, [location.pathname]);
 
@@ -68,14 +64,7 @@ export function Header() {
         { to: '/mails', label: t('nav.mails'), icon: 'mail' },
         { to: '/tools', label: t('nav.tools'), icon: 'build' },
     ];
-    // The whole settings menu is for administrators (direct URLs show the "admins only" screen).
-    const settingsEntries: NavEntry[] = [
-        { to: '/settings/general', label: t('nav.settingsGeneral'), icon: 'tune' },
-        { to: '/settings/notifications', label: t('nav.settingsNotifications'), icon: 'mark_email_unread' },
-        { to: '/settings/mailboxes', label: t('nav.settingsMailboxes'), icon: 'alternate_email' },
-        { to: '/settings/users', label: t('nav.settingsUsers'), icon: 'group' },
-        { to: '/settings/tokens', label: t('nav.settingsTokens'), icon: 'key' },
-    ];
+    // Settings is a plain link to the menu page (administrators only; direct URLs show the "admins only" screen).
     const settingsActive = location.pathname.startsWith('/settings') && location.pathname !== '/settings/profile';
     const userName = me ? me.user.display_name || me.user.username : '';
 
@@ -103,12 +92,12 @@ export function Header() {
                             <Icon name={drawerOpen ? 'close' : 'menu'} className='text-[26px]' />
                         </button>
                     )}
-                    {/* The brand and the version share a baseline inside a box that is itself centered in the bar. */}
+                    {/* The brand and the version are vertically centered with each other and with the bar. */}
                     <Link
                         to='/'
-                        className='flex min-h-tap items-center rounded px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                        className='flex min-h-tap shrink-0 items-center rounded px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
                     >
-                        <span className='flex items-baseline gap-2 text-lg font-bold leading-none text-ink'>
+                        <span className='flex items-center gap-2 text-lg font-bold leading-none text-ink'>
                             {t('app.title')}
                             {me && <span className='text-xs font-normal text-muted'>{formatVersion(me.version)}</span>}
                         </span>
@@ -127,69 +116,29 @@ export function Header() {
                                 </NavLink>
                             ))}
                             {isAdmin && (
-                                <div className='relative flex items-center' ref={settingsRef}>
-                                    <NavLink
-                                        to='/settings'
-                                        end
-                                        className={`${NAV_CLASS} rounded-r-none pr-2 ${settingsActive ? NAV_ACTIVE : ''}`}
-                                    >
-                                        <Icon name='settings' className='text-[20px]' />
-                                        {t('nav.settings')}
-                                    </NavLink>
-                                    <button
-                                        type='button'
-                                        aria-label={t('header.settingsMenu')}
-                                        aria-haspopup='menu'
-                                        aria-expanded={settingsOpen}
-                                        onClick={() => setSettingsOpen(v => !v)}
-                                        className={`inline-flex min-h-tap items-center rounded-r-md px-1 text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                                            settingsActive ? NAV_ACTIVE : ''
-                                        }`}
-                                    >
-                                        <Icon
-                                            name={settingsOpen ? 'expand_less' : 'expand_more'}
-                                            className='text-[22px]'
-                                        />
-                                    </button>
-                                    {settingsOpen && (
-                                        <div
-                                            role='menu'
-                                            className='absolute left-0 top-full z-20 mt-1 min-w-56 overflow-hidden rounded-md border border-line bg-surface py-1 shadow-xl'
-                                        >
-                                            {settingsEntries.map(entry => (
-                                                <NavLink
-                                                    key={entry.to}
-                                                    to={entry.to}
-                                                    role='menuitem'
-                                                    onClick={() => setSettingsOpen(false)}
-                                                    className={({ isActive }) =>
-                                                        `${MENU_ITEM_CLASS} ${isActive ? 'text-accent' : 'text-ink'}`
-                                                    }
-                                                >
-                                                    <Icon name={entry.icon} className='text-[20px]' />
-                                                    {entry.label}
-                                                </NavLink>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
+                                <NavLink to='/settings' className={`${NAV_CLASS} ${settingsActive ? NAV_ACTIVE : ''}`}>
+                                    <Icon name='settings' className='text-[20px]' />
+                                    {t('nav.settings')}
+                                </NavLink>
                             )}
                         </nav>
                     )}
 
-                    <div className='ml-auto flex items-center gap-1'>
-                        {wide && me && (
-                            <div className='relative' ref={userRef}>
+                    {/* The user menu stays at the right on every width; long names are cut with an ellipsis
+                        (about 40% of the bar on phones) and the title carries the full name. */}
+                    <div className='ml-auto flex min-w-0 items-center gap-1'>
+                        {me && (
+                            <div className='relative min-w-0' ref={userRef}>
                                 <button
                                     type='button'
                                     aria-label={t('header.userMenu', { name: userName })}
                                     aria-haspopup='menu'
                                     aria-expanded={userOpen}
-                                    title={me.user.username}
+                                    title={userName}
                                     onClick={() => setUserOpen(v => !v)}
-                                    className='inline-flex min-h-tap items-center gap-1.5 rounded-md px-2 text-sm text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                                    className='inline-flex min-h-tap max-w-full items-center rounded-md px-2 text-sm text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
                                 >
-                                    <span className='max-w-40 truncate'>{userName}</span>
+                                    <span className='block max-w-[9rem] truncate sm:max-w-[14rem]'>{userName}</span>
                                 </button>
                                 {userOpen && (
                                     <div
@@ -264,65 +213,14 @@ export function Header() {
                                 <li>
                                     <NavLink
                                         to='/settings'
-                                        end
-                                        className={({ isActive }) =>
-                                            `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`
-                                        }
+                                        className={`${NAV_CLASS} w-full ${settingsActive ? NAV_ACTIVE : ''}`}
                                     >
                                         <Icon name='settings' className='text-[20px]' />
                                         {t('nav.settings')}
                                     </NavLink>
-                                    <ul className='ml-6 mt-1 flex flex-col gap-1 border-l border-line pl-2'>
-                                        {settingsEntries.map(entry => (
-                                            <li key={entry.to}>
-                                                <NavLink
-                                                    to={entry.to}
-                                                    className={({ isActive }) =>
-                                                        `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`
-                                                    }
-                                                >
-                                                    <Icon name={entry.icon} className='text-[20px]' />
-                                                    {entry.label}
-                                                </NavLink>
-                                            </li>
-                                        ))}
-                                    </ul>
                                 </li>
                             )}
                         </ul>
-                        {me && (
-                            <div className='mt-3 border-t border-line pt-3'>
-                                <p
-                                    className='inline-flex min-h-tap items-center gap-1.5 px-3 text-sm text-muted'
-                                    title={me.user.username}
-                                >
-                                    <span className='max-w-60 truncate'>{userName}</span>
-                                </p>
-                                <ul className='ml-6 mt-1 flex flex-col gap-1 border-l border-line pl-2'>
-                                    <li>
-                                        <NavLink
-                                            to='/settings/profile'
-                                            className={({ isActive }) =>
-                                                `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`
-                                            }
-                                        >
-                                            <Icon name='manage_accounts' className='text-[20px]' />
-                                            {t('nav.settingsProfile')}
-                                        </NavLink>
-                                    </li>
-                                    <li>
-                                        <button
-                                            type='button'
-                                            onClick={() => void handleLogout()}
-                                            className={`${NAV_CLASS} w-full`}
-                                        >
-                                            <Icon name='logout' className='text-[20px]' />
-                                            {t('header.logout')}
-                                        </button>
-                                    </li>
-                                </ul>
-                            </div>
-                        )}
                     </nav>
                 </div>
             )}

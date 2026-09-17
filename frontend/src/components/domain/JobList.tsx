@@ -26,7 +26,7 @@ interface JobListProps {
 export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProps) {
     const { t } = useTranslation();
     if (jobs.length === 0) {
-        return <EmptyState icon='work_outline' title={emptyTitle ?? t('jobs.empty')} />;
+        return <EmptyState title={emptyTitle ?? t('jobs.empty')} />;
     }
     return (
         <ul className='flex flex-col gap-2'>

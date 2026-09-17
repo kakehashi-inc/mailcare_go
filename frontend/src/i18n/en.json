@@ -7,7 +7,6 @@
         "openMenu": "Open menu",
         "closeMenu": "Close menu",
         "mainNav": "Main navigation",
-        "settingsMenu": "Open settings menu",
         "userMenu": "Menu for {{name}}",
         "skipToContent": "Skip to content"
     },
@@ -208,9 +207,7 @@
         "all": "All mailboxes",
         "add": "Add mailbox",
         "edit": "Edit mailbox",
-        "emptyTitle": "No mailboxes registered",
-        "emptyAdminHint": "Register a mailbox to monitor under Settings > Mailboxes.",
-        "emptyUserHint": "No mail address is registered yet. Ask an administrator to add one.",
+        "emptyTitle": "No mail address is registered yet.",
         "openAria": "Open {{address}}",
         "editAria": "Edit {{address}}",
         "openGroups": "Open groups",
@@ -413,7 +410,7 @@
     "tools": {
         "description": "Run fetch, grouping and analysis separately or together, rebuild the index, or redo the classification.",
         "adminOnlyTitle": "Only administrators can run tools",
-        "adminOnly": "Members can view the job history. Ask an administrator when a run is needed.",
+        "adminOnly": "Members can view the job history.",
         "readOnly": "Only administrators can run this",
         "target": "Target mailbox",
         "targetAll": "All",
