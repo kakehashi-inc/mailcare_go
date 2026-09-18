@@ -281,9 +281,9 @@ export function getMessage(mailboxId: number, key: string): Promise<MessageDetai
     return request<MessageDetailResponse>(api(`/mailboxes/${mailboxId}/messages/${encodeURIComponent(key)}`));
 }
 
-/** URL of the sanitized HTML body, for a sandboxed iframe. */
-export function messageHtmlUrl(mailboxId: number, key: string): string {
-    return api(`/mailboxes/${mailboxId}/messages/${encodeURIComponent(key)}/html`);
+/** URL of the n-th sanitized HTML section (1..html_count), for a sandboxed iframe. */
+export function messageHtmlUrl(mailboxId: number, key: string, n: number): string {
+    return api(`/mailboxes/${mailboxId}/messages/${encodeURIComponent(key)}/html/${n}`);
 }
 
 /** URL of the raw .eml download. */

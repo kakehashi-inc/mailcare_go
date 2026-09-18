@@ -130,6 +130,27 @@ func ReadMessageFile(mailsRoot, address, messageKey, ext string) ([]byte, error)
 	return os.ReadFile(path)
 }
 
+// ReadBodySection reads the n-th body section (n >= 1) of one kind of a
+// message: <key>-<n>.<ext> with ext "txt" or "html". A missing file yields
+// os.ErrNotExist, an invalid key ErrInvalidMessageKey, an invalid extension
+// or n an error.
+func ReadBodySection(mailsRoot, address, key, ext string, n int) (string, error) {
+	if !ValidMessageKey(key) {
+		return "", ErrInvalidMessageKey
+	}
+	if !validSectionExt(ext) {
+		return "", fmt.Errorf("mailengine: %q is not a body section extension", ext)
+	}
+	if n < 1 {
+		return "", fmt.Errorf("mailengine: section number %d is not positive", n)
+	}
+	data, err := os.ReadFile(SectionFilePath(MailboxDir(mailsRoot, address), key, ext, n))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // ReadBodySections reads the body sections of one kind of a message in
 // order: <key>-1.<ext>, <key>-2.<ext>, ... up to count files (ext "txt" with
 // messages.text_count, "html" with messages.html_count). A section file that

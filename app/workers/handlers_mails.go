@@ -8,7 +8,6 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"github.com/microcosm-cc/bluemonday"
 
@@ -163,31 +162,34 @@ func (c *core) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleMessageHTML serves the sanitized HTML body for a sandboxed iframe.
-// Every HTML section of the message (<key>-1.html, <key>-2.html, ...) is
-// served, separated by a horizontal rule, and sanitized as one document. A
-// message without HTML sections, or whose section files are all missing,
-// answers 404.
+// handleMessageHTML serves one sanitized HTML section (<key>-{n}.html) for
+// a sandboxed iframe. n counts from 1 up to messages.html_count; a number
+// outside that range, or a section file that is missing, answers 404.
 func (c *core) handleMessageHTML(w http.ResponseWriter, r *http.Request) {
 	mb, idx, m, ok := c.messageFromPath(w, r)
 	if !ok {
 		return
 	}
 	idx.Close()
-	if m.HTMLCount == 0 {
-		writeError(w, http.StatusNotFound, "this message has no HTML part")
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 1 {
+		writeError(w, http.StatusBadRequest, "invalid section number")
 		return
 	}
-	sections, err := mailengine.ReadBodySections(c.mailsRoot, mb.Address, m.MessageKey, "html", m.HTMLCount)
+	if n > m.HTMLCount {
+		writeError(w, http.StatusNotFound, "this message has no such HTML part")
+		return
+	}
+	section, err := mailengine.ReadBodySection(c.mailsRoot, mb.Address, m.MessageKey, "html", n)
+	if errors.Is(err, os.ErrNotExist) {
+		writeError(w, http.StatusNotFound, "this message has no such HTML part")
+		return
+	}
 	if err != nil {
 		writeInternalError(w, "failed to read the message HTML", err)
 		return
 	}
-	if len(sections) == 0 {
-		writeError(w, http.StatusNotFound, "this message has no HTML part")
-		return
-	}
-	safe := htmlPolicy.SanitizeBytes([]byte(strings.Join(sections, "\n<hr>\n")))
+	safe := htmlPolicy.SanitizeBytes([]byte(section))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", htmlCSP)
 	w.Header().Set("X-Content-Type-Options", "nosniff")

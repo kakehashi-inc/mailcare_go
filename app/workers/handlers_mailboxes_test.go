@@ -84,8 +84,8 @@ func TestMessageEndpointsAfterAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx.Close()
-	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/1"), nil, s.user)
 	if rec.Code != http.StatusNotFound {
-		t.Errorf("html with missing section files: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("html with missing section file: %d %s", rec.Code, rec.Body.String())
 	}
 }

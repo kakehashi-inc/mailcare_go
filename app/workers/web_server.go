@@ -63,7 +63,7 @@ func (c *core) webHandler() http.Handler {
 	// Messages.
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages", c.handleListMessages)
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages/{key}", c.handleGetMessage)
-	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages/{key}/html", c.handleMessageHTML)
+	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages/{key}/html/{n}", c.handleMessageHTML)
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages/{key}/raw", c.handleMessageRaw)
 
 	// Jobs.
@@ -225,13 +225,13 @@ func setSecurityHeaders(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "no-referrer")
 }
 
-// isMessageHTMLPath matches GET /api/v1/mailboxes/{id}/messages/{key}/html.
+// isMessageHTMLPath matches GET /api/v1/mailboxes/{id}/messages/{key}/html/{n}.
 func isMessageHTMLPath(p string) bool {
-	if !strings.HasPrefix(p, "/api/v1/mailboxes/") || !strings.HasSuffix(p, "/html") {
+	if !strings.HasPrefix(p, "/api/v1/mailboxes/") {
 		return false
 	}
 	parts := strings.Split(strings.TrimPrefix(p, "/api/v1/mailboxes/"), "/")
-	return len(parts) == 4 && parts[1] == "messages"
+	return len(parts) == 5 && parts[1] == "messages" && parts[3] == "html"
 }
 
 // webMiddleware sets the defensive response headers, refuses cross-site and

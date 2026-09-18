@@ -170,7 +170,7 @@ func TestSecurityHeaders(t *testing.T) {
 		{http.MethodPost, "/api/v1/jobs", s.user, "DENY"},
 		{http.MethodGet, "/control/status", nil, "DENY"},
 		{http.MethodGet, s.path("/messages/" + s.keys[0] + "/raw"), s.user, "DENY"},
-		{http.MethodGet, s.path("/messages/" + s.keys[0] + "/html"), s.user, "SAMEORIGIN"},
+		{http.MethodGet, s.path("/messages/" + s.keys[0] + "/html/1"), s.user, "SAMEORIGIN"},
 	} {
 		rec := do(t, s.h, tc.method, tc.path, nil, tc.cookie)
 		h := rec.Header()
@@ -179,7 +179,7 @@ func TestSecurityHeaders(t *testing.T) {
 		}
 	}
 	// The message HTML keeps its own policy headers next to the common ones.
-	rec := do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html"), nil, s.user)
+	rec := do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/1"), nil, s.user)
 	if rec.Code == http.StatusOK && rec.Header().Get("Content-Security-Policy") != htmlCSP {
 		t.Errorf("message HTML lost its CSP: %v", rec.Header())
 	}

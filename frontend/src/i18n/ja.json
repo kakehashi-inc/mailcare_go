@@ -371,11 +371,10 @@
         "tabText": "テキスト",
         "tabHtml": "HTML",
         "tabHeaders": "ヘッダー",
-        "textSection": "本文 {{index}}",
-        "noText": "テキスト本文はありません",
+        "tabTextN": "テキスト {{index}}",
+        "tabHtmlN": "HTML {{index}}",
         "noBody": "本文はありません",
         "noBodyHint": "テキスト本文も HTML 本文も空です。ヘッダーの確認と原文のダウンロードはできます。",
-        "noHtml": "HTML 本文はありません",
         "noHeaders": "ヘッダー情報はありません",
         "htmlSandboxNote": "HTML はサニタイズ済みで、スクリプトや外部画像は無効化された状態で表示しています。"
     },

@@ -385,12 +385,18 @@ func TestMessagesEndpoints(t *testing.T) {
 	}
 
 	// HTML: none of the samples has an HTML part.
-	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/1"), nil, s.user)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("html absent: %d", rec.Code)
 	}
-	// With two HTML sections present (and counted by the index) they are
-	// joined, sanitized and served with the CSP.
+	for _, n := range []string{"0", "-1", "x"} {
+		rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/"+n), nil, s.user)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("html section %q: %d", n, rec.Code)
+		}
+	}
+	// With two HTML sections present (and counted by the index) each one is
+	// served on its own, sanitized and with the CSP.
 	dir := mailengine.MailboxDir(s.mailsRoot, s.mb.Address)
 	for i, html := range []string{`<p onclick="x()">hi</p><script>alert(1)</script><a href="javascript:1">l</a>`, `<p>second</p>`} {
 		if err := os.WriteFile(mailengine.SectionFilePath(dir, s.keys[0], "html", i+1), []byte(html), 0o600); err != nil {
@@ -405,14 +411,23 @@ func TestMessagesEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx.Close()
-	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/1"), nil, s.user)
 	if rec.Code != http.StatusOK || rec.Header().Get("Content-Security-Policy") != htmlCSP ||
 		!strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
 		t.Errorf("html: %d %v", rec.Code, rec.Header())
 	}
 	if body := rec.Body.String(); strings.Contains(body, "script") || strings.Contains(body, "onclick") || strings.Contains(body, "javascript:") ||
-		!strings.Contains(body, "<p>hi</p>") || !strings.Contains(body, "<hr>") || !strings.Contains(body, "<p>second</p>") {
-		t.Errorf("html not sanitized or sections not joined: %s", body)
+		!strings.Contains(body, "<p>hi</p>") || strings.Contains(body, "second") {
+		t.Errorf("html section 1 not sanitized or not served alone: %s", body)
+	}
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/2"), nil, s.user)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<p>second</p>") || strings.Contains(rec.Body.String(), "hi") {
+		t.Errorf("html section 2: %d %s", rec.Code, rec.Body.String())
+	}
+	// A number past html_count is not a section.
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/3"), nil, s.user)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("html section past the count: %d", rec.Code)
 	}
 	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]), nil, s.user)
 	if !strings.Contains(rec.Body.String(), `"html_count":2`) {

@@ -371,11 +371,10 @@
         "tabText": "Text",
         "tabHtml": "HTML",
         "tabHeaders": "Headers",
-        "textSection": "Text section {{index}}",
-        "noText": "No text body",
+        "tabTextN": "Text {{index}}",
+        "tabHtmlN": "HTML {{index}}",
         "noBody": "This mail has no body",
         "noBodyHint": "Both the text and the HTML part are empty. The headers and the raw download are still available.",
-        "noHtml": "No HTML body",
         "noHeaders": "No header information",
         "htmlSandboxNote": "The HTML is sanitized and shown with scripts and remote images disabled."
     },

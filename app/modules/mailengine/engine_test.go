@@ -124,6 +124,22 @@ func TestPathsAndKeyValidation(t *testing.T) {
 	if _, err := ReadBodySections(root, "a@x.y", key, "eml", 1); err == nil {
 		t.Error("ReadBodySections accepted extension eml")
 	}
+	// ReadBodySection reads one numbered file and reports a missing one.
+	if got, err := ReadBodySection(root, "a@x.y", key, "txt", 3); err != nil || got != "third" {
+		t.Errorf("ReadBodySection(3) = %q (err %v)", got, err)
+	}
+	if _, err := ReadBodySection(root, "a@x.y", key, "txt", 2); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ReadBodySection of a missing file err = %v, want ErrNotExist", err)
+	}
+	if _, err := ReadBodySection(root, "a@x.y", key, "txt", 0); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ReadBodySection(0) err = %v, want an argument error", err)
+	}
+	if _, err := ReadBodySection(root, "a@x.y", "../etc/passwd", "txt", 1); err != ErrInvalidMessageKey {
+		t.Errorf("ReadBodySection invalid key err = %v", err)
+	}
+	if _, err := ReadBodySection(root, "a@x.y", key, "eml", 1); err == nil {
+		t.Error("ReadBodySection accepted extension eml")
+	}
 }
 
 func TestMessageKeyDeterministic(t *testing.T) {

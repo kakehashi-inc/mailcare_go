@@ -19,7 +19,8 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { errorMessage } from '../utils/errors';
 import { formatBytes } from '../utils/format';
 
-type BodyTab = 'text' | 'html' | 'headers';
+/** Tab keys: the headers, then one tab per text section and per HTML section (text-1, html-2, ...). */
+type BodyTab = 'headers' | `text-${number}` | `html-${number}`;
 
 /** Renders one value of the parsed-message JSON: scalars inline, arrays as lines, objects as a nested list. */
 function HeaderValue({ value }: { value: unknown }) {
@@ -69,7 +70,11 @@ export function MailDetailPage() {
     const id = Number(mailboxId);
     const mailbox = useAsync(() => getMailbox(id), [id]);
     const detail = useAsync(() => getMessage(id, messageKey), [id, messageKey]);
-    const [tab, setTab] = useState<BodyTab>('text');
+    // The chosen tab is remembered per message so that moving to another
+    // mail starts from its default tab again.
+    const [chosen, setChosen] = useState<{ key: string; tab: BodyTab } | null>(null);
+    const tab = chosen?.key === messageKey ? chosen.tab : null;
+    const setTab = (next: BodyTab) => setChosen({ key: messageKey, tab: next });
     useDocumentTitle(detail.data?.message.subject || t('mail.detail'));
 
     if (detail.loading) return <LoadingBlock />;
@@ -85,15 +90,29 @@ export function MailDetailPage() {
     const headerEntries = Object.entries(headers ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '');
     // Text sections arrive in MIME order; blank ones are dropped so the numbering only counts visible text.
     const sections = (text_sections ?? []).filter(s => s.trim() !== '');
-    // Only body parts with content get a tab; the headers tab is always there.
+    // HTML sections are fetched per tab from the server (<key>-1.html, ..., html_count files).
+    const htmlNumbers = Array.from({ length: Math.max(0, message.html_count) }, (_, i) => i + 1);
     const hasText = sections.length > 0;
-    const hasHtml = message.html_count > 0;
+    const hasHtml = htmlNumbers.length > 0;
+    // Headers first, then one tab per section with content. A lone section
+    // keeps the plain label; several of a kind are numbered in MIME order.
     const bodyTabs: { key: BodyTab; label: string; icon: string }[] = [
-        ...(hasText ? [{ key: 'text' as const, label: t('mail.tabText'), icon: 'notes' }] : []),
-        ...(hasHtml ? [{ key: 'html' as const, label: t('mail.tabHtml'), icon: 'code' }] : []),
         { key: 'headers', label: t('mail.tabHeaders'), icon: 'list' },
+        ...sections.map((_, i) => ({
+            key: `text-${i + 1}` as const,
+            label: sections.length === 1 ? t('mail.tabText') : t('mail.tabTextN', { index: i + 1 }),
+            icon: 'notes',
+        })),
+        ...htmlNumbers.map(n => ({
+            key: `html-${n}` as const,
+            label: htmlNumbers.length === 1 ? t('mail.tabHtml') : t('mail.tabHtmlN', { index: n }),
+            icon: 'code',
+        })),
     ];
-    const activeTab = bodyTabs.some(b => b.key === tab) ? tab : bodyTabs[0].key;
+    // The body is what a reader opens a mail for, so the first section is
+    // selected by default and the headers only when there is no body.
+    const defaultTab: BodyTab = hasText ? 'text-1' : hasHtml ? 'html-1' : 'headers';
+    const activeTab = tab !== null && bodyTabs.some(b => b.key === tab) ? tab : defaultTab;
     const bodySourceKey = message.body_source === 'text' ? 'text' : message.body_source === 'html' ? 'html' : 'none';
 
     return (
@@ -205,42 +224,6 @@ export function MailDetailPage() {
                             </Alert>
                         )}
                         <Tabs<BodyTab> label={t('mail.bodyTabs')} value={activeTab} onChange={setTab} tabs={bodyTabs} />
-                        <TabPanel id='text' active={activeTab === 'text'}>
-                            {sections.length === 0 ? (
-                                <EmptyState title={t('mail.noText')} />
-                            ) : sections.length === 1 ? (
-                                <pre className={TEXT_BODY}>{sections[0]}</pre>
-                            ) : (
-                                <div className='flex flex-col gap-4'>
-                                    {sections.map((section, i) => (
-                                        <section key={i}>
-                                            <h3 className='mb-1 text-sm font-medium text-muted'>
-                                                {t('mail.textSection', { index: i + 1 })}
-                                            </h3>
-                                            <pre className={TEXT_BODY}>{section}</pre>
-                                        </section>
-                                    ))}
-                                </div>
-                            )}
-                        </TabPanel>
-                        <TabPanel id='html' active={activeTab === 'html'}>
-                            {hasHtml ? (
-                                <>
-                                    <Alert tone='info' className='mb-3'>
-                                        {t('mail.htmlSandboxNote')}
-                                    </Alert>
-                                    <iframe
-                                        src={messageHtmlUrl(id, messageKey)}
-                                        sandbox=''
-                                        referrerPolicy='no-referrer'
-                                        title={t('mail.tabHtml')}
-                                        className='h-[70vh] w-full rounded-md border border-line bg-white'
-                                    />
-                                </>
-                            ) : (
-                                <EmptyState title={t('mail.noHtml')} />
-                            )}
-                        </TabPanel>
                         <TabPanel id='headers' active={activeTab === 'headers'}>
                             {headerEntries.length === 0 ? (
                                 <EmptyState title={t('mail.noHeaders')} />
@@ -262,6 +245,27 @@ export function MailDetailPage() {
                                 </dl>
                             )}
                         </TabPanel>
+                        {sections.map((section, i) => (
+                            <TabPanel key={`text-${i + 1}`} id={`text-${i + 1}`} active={activeTab === `text-${i + 1}`}>
+                                <pre className={TEXT_BODY}>{section}</pre>
+                            </TabPanel>
+                        ))}
+                        {htmlNumbers.map(n => (
+                            <TabPanel key={`html-${n}`} id={`html-${n}`} active={activeTab === `html-${n}`}>
+                                <Alert tone='info' className='mb-3'>
+                                    {t('mail.htmlSandboxNote')}
+                                </Alert>
+                                <iframe
+                                    src={messageHtmlUrl(id, messageKey, n)}
+                                    sandbox=''
+                                    referrerPolicy='no-referrer'
+                                    title={
+                                        htmlNumbers.length === 1 ? t('mail.tabHtml') : t('mail.tabHtmlN', { index: n })
+                                    }
+                                    className='h-[70vh] w-full rounded-md border border-line bg-white'
+                                />
+                            </TabPanel>
+                        ))}
                     </Card>
                 </div>
 
