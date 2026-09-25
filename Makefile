@@ -38,6 +38,12 @@ frontend:
 
 build: frontend windows linux darwin
 
+# Format the Go sources (gofmt via go fmt) and the frontend sources (Prettier).
+format:
+	go fmt ./...
+	@test -d $(FRONTEND_DIR)/node_modules || (cd $(FRONTEND_DIR) && yarn install)
+	cd $(FRONTEND_DIR) && yarn format
+
 # Static checks for both halves. Requires a frontend build once (the Go embed
 # pattern needs frontend/dist to exist) and staticcheck on PATH:
 #   go install honnef.co/go/tools/cmd/staticcheck@latest
