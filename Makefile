@@ -32,7 +32,7 @@ else
     endef
 endif
 
-.PHONY: all build windows linux darwin clean prepare frontend pack format
+.PHONY: all build windows linux darwin clean prepare frontend pack format lint test
 
 all: build
 

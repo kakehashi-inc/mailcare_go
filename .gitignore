@@ -33,6 +33,7 @@ setting*.yaml
 !*.example.yaml
 tmp/
 bin/
+release/
 *.exe
 __debug_bin*
 
