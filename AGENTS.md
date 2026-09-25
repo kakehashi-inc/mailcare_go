@@ -57,7 +57,7 @@ CRITICAL: You MUST read [README.md](README.md) (English) or [README-ja.md](READM
 - Reusable components must be implemented as separate files in the `modules` directory.
 - Temporary scripts (e.g., investigation scripts) must be placed in the `scripts` directory.
 - When creating or modifying models, update `Documents/テーブル定義.md`. Table definitions must be expressed as a table per database table, showing column names, types, and relations within the table.
-- When system behavior changes, update `Documents/システム設計書.md`.
-- When making notable changes, update `CHANGELOG.md` following the [Keep a Changelog](https://keepachangelog.com/) format. Entries must be written in English. `CHANGELOG.md` is for end users: describe each change concisely from the user's perspective (what they can now do or what visibly changes), not the implementation. Do NOT include internal details such as file paths, IPC channel/function names, internal data structures, or code-level mechanics. Record those developer-facing details in `Documents/システム設計書.md` instead.
+- When system behavior changes, update `Documents/システム仕様.md`.
+- When making notable changes, update `CHANGELOG.md` following the [Keep a Changelog](https://keepachangelog.com/) format. Entries must be written in English. `CHANGELOG.md` is for end users: describe each change concisely from the user's perspective (what they can now do or what visibly changes), not the implementation. Do NOT include internal details such as file paths, IPC channel/function names, internal data structures, or code-level mechanics. Record those developer-facing details in `Documents/システム仕様.md` instead.
 </development_rules>
 </project_details>
