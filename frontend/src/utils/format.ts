@@ -22,6 +22,23 @@ export function formatDateTime(iso: string | null | undefined): string {
     }).format(d);
 }
 
+/** "09-17 14:05:09" (MM-dd HH:mm:ss) in the user's display zone, or "" for invalid input. */
+export function formatLogTime(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: currentTimeZone(),
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+    }).formatToParts(d);
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(p => p.type === type)?.value ?? '';
+    return `${part('month')}-${part('day')} ${part('hour')}:${part('minute')}:${part('second')}`;
+}
+
 /** Date only, in the user's display zone. */
 export function formatDate(iso: string | null | undefined): string {
     if (!iso) return '';

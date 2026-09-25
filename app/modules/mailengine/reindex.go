@@ -241,25 +241,22 @@ type rawListing struct {
 	keys []string
 }
 
-// listRawFiles scans the mailbox directory for .eml files named after a
-// message key; other files are ignored. A missing directory yields an empty
-// listing.
+// listRawFiles scans the year / month directories of the mailbox directory
+// for .eml files named after a message key; other files, and raw files in a
+// directory other than the one their key names (MessageDir), are ignored.
+// A missing directory yields an empty listing.
 func listRawFiles(dir string) (*rawListing, error) {
 	listing := &rawListing{}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return listing, nil
+	err := walkMailboxFiles(dir, func(sub string, e os.DirEntry) {
+		if !strings.HasSuffix(e.Name(), ".eml") {
+			return
 		}
-		return nil, fmt.Errorf("read %s: %w", dir, err)
-	}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".eml") {
-			continue
-		}
-		if key := keyFromFileName(e.Name()); key != "" {
+		if key := keyFromFileName(e.Name()); key != "" && MessageDir(dir, key) == sub {
 			listing.keys = append(listing.keys, key)
 		}
+	})
+	if err != nil {
+		return nil, err
 	}
 	sort.Strings(listing.keys)
 	return listing, nil
@@ -297,7 +294,7 @@ func sourceForKey(dir, key string, carried *models.MessageSource) Source {
 		uid = 1
 	}
 	var received time.Time
-	if info, err := os.Stat(filepath.Join(dir, key+".eml")); err == nil {
+	if info, err := os.Stat(rawFilePath(dir, key)); err == nil {
 		received = info.ModTime().UTC()
 	}
 	return Source{MessageKey: key, Folder: defaultFolder, UIDValidity: 0, UID: uid, ReceivedAt: received}

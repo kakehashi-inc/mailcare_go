@@ -513,9 +513,6 @@ func TestMailboxesRequireAdminForWrites(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"created":false`) {
 		t.Errorf("duplicate sync suppressed: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	if rec := do(t, h, http.MethodPost, "/api/v1/mailboxes/"+itoa(mb.ID)+"/check", nil, user); rec.Code != http.StatusNotFound {
-		t.Errorf("the old check route should be gone: status %d", rec.Code)
-	}
 	rec = do(t, h, http.MethodDelete, "/api/v1/mailboxes/"+itoa(mb.ID)+"?keep_data=1", nil, admin)
 	if rec.Code != http.StatusOK {
 		t.Errorf("delete mailbox: status %d, body %s", rec.Code, rec.Body.String())

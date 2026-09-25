@@ -24,7 +24,7 @@ type Job struct {
 	StartedAt   sql.NullTime  `json:"-"`
 	FinishedAt  sql.NullTime  `json:"-"`
 
-	Progress     string `json:"progress"`      // progress lines (the newest 200, newline separated)
+	Progress     string `json:"progress"`      // progress lines (the newest 100, newline separated, each "<RFC 3339 UTC>\t<msg>")
 	Result       string `json:"result"`        // one-line result of a finished job
 	ErrorMessage string `json:"error_message"` // why the job failed ("" otherwise)
 }

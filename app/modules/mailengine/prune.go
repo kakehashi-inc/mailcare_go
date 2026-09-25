@@ -103,13 +103,23 @@ func removeMessageFiles(dir string, m models.ExpiredMessage) error {
 	for n := 1; n <= m.HTMLCount; n++ {
 		paths = append(paths, SectionFilePath(dir, m.MessageKey, "html", n))
 	}
-	paths = append(paths, filepath.Join(dir, m.MessageKey+".eml"))
+	paths = append(paths, rawFilePath(dir, m.MessageKey))
 	for _, p := range paths {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s: %w", filepath.Base(p), err)
 		}
 	}
+	removeEmptyMonthDir(MessageDir(dir, m.MessageKey))
 	return nil
+}
+
+// removeEmptyMonthDir removes a month directory, then its year directory,
+// once they are empty; os.Remove refuses a directory that still holds
+// files, which is fine.
+func removeEmptyMonthDir(month string) {
+	if os.Remove(month) == nil {
+		_ = os.Remove(filepath.Dir(month))
+	}
 }
 
 // recountGroups refreshes the counters of the groups that lost messages
@@ -141,43 +151,45 @@ func recountGroups(db *sql.DB, keys []string) (int, error) {
 // never holds a temporary file that long.
 const StaleTempFileAge = 24 * time.Hour
 
-// tempFileRe matches the temporary files writeFileAtomic creates in the
-// mailbox directory: a leading dot, the target name, a random part and the
+// tempFileRe matches the temporary files writeFileAtomic creates next to
+// their target: a leading dot, the target name, a random part and the
 // .tmp suffix.
 var tempFileRe = regexp.MustCompile(`^\..+\.[^.]+\.tmp$`)
 
 // RemoveStaleTempFiles deletes the leftovers of interrupted atomic writes
-// in the raw files directory of the address: the temporary files
+// in the year / month directories of the address: the temporary files
 // (.<name>.<random>.tmp) whose modification time is older than
-// StaleTempFileAge. It is part of the daily cleanup job (design 5.6 / 7.1),
-// reports one progress line when something was removed and returns how
-// many files went. A missing directory is not an error; files that cannot
-// be removed are reported joined and tried again next time.
+// StaleTempFileAge. Month and year directories left empty go with them. It
+// is part of the daily cleanup job (design 5.6 / 7.1), reports one progress
+// line when something was removed and returns how many files went. A
+// missing directory is not an error; files that cannot be removed are
+// reported joined and tried again next time.
 func RemoveStaleTempFiles(mailsRoot, address string, progress Progress) (int, error) {
 	dir := MailboxDir(mailsRoot, address)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("read %s: %w", dir, err)
-	}
 	cutoff := time.Now().Add(-StaleTempFileAge)
 	removed := 0
+	touched := map[string]bool{}
 	var errs []error
-	for _, e := range entries {
-		if e.IsDir() || !tempFileRe.MatchString(e.Name()) {
-			continue
+	err := walkMailboxFiles(dir, func(sub string, e os.DirEntry) {
+		if !tempFileRe.MatchString(e.Name()) {
+			return
 		}
 		info, err := e.Info()
 		if err != nil || !info.ModTime().Before(cutoff) {
-			continue
+			return
 		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(filepath.Join(sub, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("remove %s: %w", e.Name(), err))
-			continue
+			return
 		}
+		touched[sub] = true
 		removed++
+	})
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for sub := range touched {
+		removeEmptyMonthDir(sub)
 	}
 	if removed > 0 {
 		report(progress, fmt.Sprintf("removed %d stale temporary file(s)", removed))

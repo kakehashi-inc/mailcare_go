@@ -395,7 +395,7 @@ func TestFetchNotBeforeBoundsWindow(t *testing.T) {
 
 // assertIndexState checks the number of index rows (total, detected bounces,
 // rows still awaiting grouping, groups) and that every row has its .eml and
-// exactly the section files its counts announce (and no parsed sidecar).
+// exactly the section files its counts announce.
 func assertIndexState(t *testing.T, root, address string, wantMessages, wantBounces, wantUnclassified, wantGroups int, label string) {
 	t.Helper()
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))

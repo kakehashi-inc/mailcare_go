@@ -56,7 +56,11 @@ func seedMailbox(t *testing.T, db *sql.DB, key []byte, address string, samples [
 		if !mailengine.ValidMessageKey(msgKey) {
 			t.Fatalf("invalid message key %s", msgKey)
 		}
-		if err := os.WriteFile(filepath.Join(dir, msgKey+".eml"), raw, 0o600); err != nil {
+		path := mailengine.MessageFilePath(mailsRoot, mb.Address, msgKey, "eml")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -212,7 +216,7 @@ func TestRunJobSyncRecordsConnectionError(t *testing.T) {
 	if fresh.LastFetchError == "" || !fresh.LastFetchedAt.Valid {
 		t.Errorf("mailbox row not updated: error %q fetched %v", fresh.LastFetchError, fresh.LastFetchedAt.Valid)
 	}
-	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "[down@example.test] error:") {
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "\nerror:") {
 		t.Errorf("progress lacks the error line:\n%s", joined)
 	}
 	// A fetch job records the error the same way.
@@ -743,8 +747,7 @@ func makeAgentRun(t *testing.T, agentRoot, address, group, run string, age time.
 // TestCleanupJobAppliesRetentions: a cleanup job removes the mails of the
 // mailbox older than mail_keep_days (the emptied groups with their reports)
 // and the agent run directories older than agent_keep_days, leaves the
-// other mailbox alone, and reports the counts in its result line. Fetch and
-// reindex jobs no longer touch either retention.
+// other mailbox alone, and reports the counts in its result line.
 func TestCleanupJobAppliesRetentions(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
@@ -793,7 +796,7 @@ func TestCleanupJobAppliesRetentions(t *testing.T) {
 	oldJob, recentJob := finishedJob(t, db, jm, mb, 40*24*time.Hour), finishedJob(t, db, jm, mb, time.Hour)
 	// The leftover of an interrupted write, older than a day: removed and
 	// reported, but not part of the result counts.
-	staleTemp := filepath.Join(mailengine.MailboxDir(mailsRoot, mb.Address), ".20250901-000000_aaaaaaaaaaaa.eml.123.tmp")
+	staleTemp := filepath.Join(mailengine.MessageDir(mailengine.MailboxDir(mailsRoot, mb.Address), "20250901-000000_aaaaaaaaaaaa"), ".20250901-000000_aaaaaaaaaaaa.eml.123.tmp")
 	if err := os.WriteFile(staleTemp, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -812,12 +815,12 @@ func TestCleanupJobAppliesRetentions(t *testing.T) {
 	}
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{
-		"[ops@example.test] cleaning up (mail retention 30 days, agent workspace retention 2 days, job history 30 days)",
-		"[ops@example.test] removed 3 message(s) older than 30 days, 2 group(s) left empty and removed",
-		"[ops@example.test] removed 1 stale temporary file(s)",
-		"[ops@example.test] removed 2 expired agent workspace(s)",
-		"[ops@example.test] removed 1 finished job(s) older than 30 days",
-		"[ops@example.test] " + result,
+		"cleaning up (mail retention 30 days, agent workspace retention 2 days, job history 30 days)",
+		"removed 3 message(s) older than 30 days, 2 group(s) left empty and removed",
+		"removed 1 stale temporary file(s)",
+		"removed 2 expired agent workspace(s)",
+		"removed 1 finished job(s) older than 30 days",
+		result,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("progress lacks %q:\n%s", want, joined)
@@ -919,7 +922,12 @@ func TestCleanupJobReportsFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	expired := makeAgentRun(t, jm.agentRoot, mb.Address, "0123456789abcdef", "1", 40*24*time.Hour)
-	dir := mailengine.MailboxDir(mailsRoot, mb.Address)
+	// The files live in the year / month directory of the message.
+	months, err := filepath.Glob(filepath.Join(mailengine.MailboxDir(mailsRoot, mb.Address), "*", "*"))
+	if err != nil || len(months) != 1 {
+		t.Fatalf("month directories: %v, %v", months, err)
+	}
+	dir := months[0]
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -1019,6 +1027,14 @@ func TestNewProgressLines(t *testing.T) {
 	}
 	if got := newProgressLines("x", ""); got != nil {
 		t.Errorf("empty: %v", got)
+	}
+}
+
+func TestFormatProgressLine(t *testing.T) {
+	at := time.Date(2026, 9, 25, 6, 7, 8, 0, time.UTC)
+	want := at.Local().Format(progressEchoLayout) + " fetched 3"
+	if got := FormatProgressLine(stampProgressLine(at, "fetched 3")); got != want {
+		t.Errorf("stamped: %q, want %q", got, want)
 	}
 }
 

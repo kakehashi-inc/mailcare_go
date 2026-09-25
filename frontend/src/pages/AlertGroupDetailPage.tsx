@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 import { analyzeGroup, getGroup, getJob, getMailbox, setGroupState } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
+import { JobProgressLog } from '../components/domain/JobProgressLog';
 import {
     ActionableBadge,
     BounceKindBadge,
@@ -374,10 +375,14 @@ export function AlertGroupDetailPage() {
                         )}
                         {reportRunning && (
                             <Alert tone='info' className='mb-4'>
-                                <span className='inline-flex items-center gap-2'>
-                                    <Icon name='autorenew' className='animate-spin text-[18px]' />
-                                    {job?.progress || t('report.runningHint')}
-                                </span>
+                                <div className='flex items-start gap-2'>
+                                    <Icon name='autorenew' className='mt-0.5 animate-spin text-[18px]' />
+                                    {job?.progress ? (
+                                        <JobProgressLog text={job.progress} />
+                                    ) : (
+                                        <span className='min-w-0 flex-1'>{t('report.runningHint')}</span>
+                                    )}
+                                </div>
                             </Alert>
                         )}
                         {report ? (

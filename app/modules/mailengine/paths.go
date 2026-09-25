@@ -89,14 +89,35 @@ func ValidMessageKey(key string) bool {
 	return messageKeyPattern.MatchString(key)
 }
 
+// MessageDir returns the directory that holds the files of one message
+// inside the mailbox directory dir (design 3.2): <dir>/<YYYY>/<MM>, the year
+// and month of the message date taken from the key (UTC). Splitting by month
+// keeps every directory small; a single directory with every message slows
+// file access down considerably on Windows. An invalid key yields "".
+func MessageDir(dir, key string) string {
+	if !ValidMessageKey(key) {
+		return ""
+	}
+	return filepath.Join(dir, key[0:4], key[4:6])
+}
+
+// rawFilePath returns the path of the raw file (<key>.eml) of a message
+// inside the mailbox directory dir, or "" for an invalid key.
+func rawFilePath(dir, key string) string {
+	if !ValidMessageKey(key) {
+		return ""
+	}
+	return filepath.Join(MessageDir(dir, key), key+".eml")
+}
+
 // MessageFilePath returns the path of the raw file (<key>.eml) of a message;
 // the body sections are addressed with SectionFilePath. An invalid key or an
 // extension other than "eml" yields "" (ReadMessageFile reports the error).
 func MessageFilePath(mailsRoot, address, messageKey, ext string) string {
-	if !ValidMessageKey(messageKey) || ext != "eml" {
+	if ext != "eml" {
 		return ""
 	}
-	return filepath.Join(MailboxDir(mailsRoot, address), messageKey+"."+ext)
+	return rawFilePath(MailboxDir(mailsRoot, address), messageKey)
 }
 
 // validSectionExt reports whether ext names a body section kind.
@@ -106,13 +127,14 @@ func validSectionExt(ext string) bool {
 
 // SectionFilePath returns the path of the n-th body section file of a
 // message inside the mailbox directory dir (design 3.2): sections are
-// numbered from 1, <key>-<n>.<ext>, whatever their count. ext is "txt" or
-// "html". An invalid key, extension or n < 1 yields "".
+// numbered from 1, <key>-<n>.<ext>, whatever their count, and live next to
+// the raw file in MessageDir. ext is "txt" or "html". An invalid key,
+// extension or n < 1 yields "".
 func SectionFilePath(dir, key, ext string, n int) string {
 	if !ValidMessageKey(key) || !validSectionExt(ext) || n < 1 {
 		return ""
 	}
-	return filepath.Join(dir, sectionFileName(key, ext, n))
+	return filepath.Join(MessageDir(dir, key), sectionFileName(key, ext, n))
 }
 
 // sectionFileName is the file name of the n-th section (n >= 1) of one kind.

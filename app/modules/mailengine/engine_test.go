@@ -58,7 +58,8 @@ func TestPathsAndKeyValidation(t *testing.T) {
 		t.Fatalf("MailboxIndexPath = %q", got)
 	}
 	key := MessageKey(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), "INBOX", 1, 2)
-	if got := MessageFilePath(root, "a@x.y", key, "eml"); got != filepath.Join(root, "a@x.y", key+".eml") {
+	// Files live in the year / month directory of the key.
+	if got := MessageFilePath(root, "a@x.y", key, "eml"); got != filepath.Join(root, "a@x.y", "2026", "09", key+".eml") {
 		t.Fatalf("MessageFilePath = %q", got)
 	}
 	for _, bad := range []string{"", "../etc/passwd", "20260901-120000_abcdef012345/x", "20260901-120000_ABCDEF012345",
@@ -81,10 +82,10 @@ func TestPathsAndKeyValidation(t *testing.T) {
 
 	// Section files are numbered from 1 whatever their count: -1, -2, ...
 	dir := MailboxDir(root, "a@x.y")
-	if got := SectionFilePath(dir, key, "txt", 1); got != filepath.Join(dir, key+"-1.txt") {
+	if got := SectionFilePath(dir, key, "txt", 1); got != filepath.Join(dir, "2026", "09", key+"-1.txt") {
 		t.Errorf("SectionFilePath(1) = %q", got)
 	}
-	if got := SectionFilePath(dir, key, "html", 2); got != filepath.Join(dir, key+"-2.html") {
+	if got := SectionFilePath(dir, key, "html", 2); got != filepath.Join(dir, "2026", "09", key+"-2.html") {
 		t.Errorf("SectionFilePath(2) = %q", got)
 	}
 	for _, bad := range []struct {
@@ -672,30 +673,31 @@ func countBounceDetails(t *testing.T, db *sql.DB) int {
 
 // assertSectionFiles checks that the mailbox directory holds exactly the
 // section files the index rows announce (text_count / html_count, numbered
-// without gaps), the .eml of every row, and nothing else derived (no parsed
-// sidecar, no temporary file).
+// without gaps), the .eml of every row, and nothing else (no temporary
+// file).
 func assertSectionFiles(t *testing.T, root, address string, msgs []*models.Message, label string) {
 	t.Helper()
 	dir := MailboxDir(root, address)
 	want := map[string]bool{}
 	for _, m := range msgs {
-		want[m.MessageKey+".eml"] = true
+		sub := MessageDir(dir, m.MessageKey)
+		want[filepath.Join(sub, m.MessageKey+".eml")] = true
 		for n := 1; n <= m.TextCount; n++ {
-			want[sectionFileName(m.MessageKey, "txt", n)] = true
+			want[filepath.Join(sub, sectionFileName(m.MessageKey, "txt", n))] = true
 		}
 		for n := 1; n <= m.HTMLCount; n++ {
-			want[sectionFileName(m.MessageKey, "html", n)] = true
+			want[filepath.Join(sub, sectionFileName(m.MessageKey, "html", n))] = true
 		}
 	}
-	entries, err := os.ReadDir(dir)
+	err := walkMailboxFiles(dir, func(sub string, e os.DirEntry) {
+		path := filepath.Join(sub, e.Name())
+		if !want[path] {
+			t.Errorf("%s: unexpected file %s (stale sections, temporary files and files outside their year/month directory must not exist)", label, path)
+		}
+		delete(want, path)
+	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if !want[e.Name()] {
-			t.Errorf("%s: unexpected file %s (json sidecars, stale sections and temporary files must not exist)", label, e.Name())
-		}
-		delete(want, e.Name())
 	}
 	for name := range want {
 		t.Errorf("%s: file %s missing", label, name)
@@ -1312,16 +1314,17 @@ func TestReindexWithoutSourcesAndCancel(t *testing.T) {
 	var keys []string
 	for i, name := range []string{"postfix_dsn.eml", "exim_bounce.eml", "normal.eml"} {
 		key := MessageKey(time.Date(2025, 9, 1+i, 0, 0, 0, 0, time.UTC), "INBOX", 1, uint32(i+1))
-		if err := os.WriteFile(filepath.Join(dir, key+".eml"), readSample(t, name), 0o600); err != nil {
+		if err := writeFileAtomic(rawFilePath(dir, key), readSample(t, name), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		keys = append(keys, key)
 	}
 	// Files that are not message keys are ignored.
-	if err := os.WriteFile(filepath.Join(dir, "README.eml"), []byte("x"), 0o600); err != nil {
+	month := MessageDir(dir, keys[0])
+	if err := os.WriteFile(filepath.Join(month, "README.eml"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("keep me"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(month, "notes.txt"), []byte("keep me"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var lines []string
@@ -1333,7 +1336,7 @@ func TestReindexWithoutSourcesAndCancel(t *testing.T) {
 		t.Errorf("reindex = %+v", res)
 	}
 	for _, name := range []string{"README.eml", "notes.txt"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		if _, err := os.Stat(filepath.Join(month, name)); err != nil {
 			t.Errorf("unrelated file %s removed: %v", name, err)
 		}
 	}
@@ -2109,8 +2112,12 @@ func TestWriteBodySections(t *testing.T) {
 	if err := writeBodySections(dir, "../escape", one); err != ErrInvalidMessageKey {
 		t.Errorf("invalid key err = %v, want ErrInvalidMessageKey", err)
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 4 {
-		t.Errorf("directory holds %d files, want 4 (two sections, one text, one html)", len(entries))
+	files := 0
+	if err := walkMailboxFiles(dir, func(string, os.DirEntry) { files++ }); err != nil {
+		t.Fatal(err)
+	}
+	if files != 4 {
+		t.Errorf("directory holds %d files, want 4 (two sections, one text, one html)", files)
 	}
 }
 

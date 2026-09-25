@@ -29,7 +29,7 @@ func seedRawWithIdentity(t *testing.T, root, address, key string, raw []byte, id
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, key+".eml"), raw, 0o600); err != nil {
+	if err := writeFileAtomic(rawFilePath(dir, key), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if identity == nil {
@@ -180,7 +180,8 @@ func TestRetryFileOp(t *testing.T) {
 func TestRemoveStaleTempFiles(t *testing.T) {
 	root := t.TempDir()
 	address := "newsletter@example.jp"
-	dir := MailboxDir(root, address)
+	// Temporary files are created next to their target, in the month directory.
+	dir := MessageDir(MailboxDir(root, address), "20260901-120000_aaaaaaaaaaaa")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

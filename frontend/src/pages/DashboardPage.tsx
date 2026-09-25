@@ -36,9 +36,7 @@ export function DashboardPage() {
     // A mailbox is busy while a job that touches its mails (for it or for all mailboxes) is queued or running.
     const syncActive = (mb: MailboxDTO) =>
         (data?.active_jobs ?? []).some(
-            j =>
-                (MAILBOX_JOBS as readonly string[]).includes(j.kind) &&
-                (j.mailbox_id === null || j.mailbox_id === mb.id)
+            j => MAILBOX_JOBS.includes(j.kind) && (j.mailbox_id === null || j.mailbox_id === mb.id)
         );
     usePolling(reload, !loading, hasActive ? JOB_POLL_INTERVAL_MS : DASHBOARD_REFRESH_MS);
 

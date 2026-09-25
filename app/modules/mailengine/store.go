@@ -63,7 +63,10 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 	}
 
 	if opts.writeEML {
-		if err := writeFileAtomic(filepath.Join(dir, key+".eml"), raw, 0o600); err != nil {
+		if !ValidMessageKey(key) {
+			return nil, pm, ErrInvalidMessageKey
+		}
+		if err := writeFileAtomic(rawFilePath(dir, key), raw, 0o600); err != nil {
 			return nil, pm, fmt.Errorf("write eml: %w", err)
 		}
 	}
@@ -121,7 +124,11 @@ func writeBodySections(dir, key string, pm *ParsedMessage) error {
 
 // readRawMessage reads the .eml of a message from the mailbox directory.
 func readRawMessage(dir, key string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(dir, key+".eml"))
+	path := rawFilePath(dir, key)
+	if path == "" {
+		return nil, ErrInvalidMessageKey
+	}
+	return os.ReadFile(path)
 }
 
 // keyDate picks the timestamp of a message key: the Date header, else the

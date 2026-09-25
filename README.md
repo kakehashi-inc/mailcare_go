@@ -11,7 +11,7 @@ problem that the mail server administrator, the domain administrator or the owne
 has to act on.
 
 - **Every mail is kept** - each received mail, whether it is a bounce or not, is stored under
-  `data/mails/<address>/` as the original (`.eml`) and its decoded body sections (text as `<key>-1.txt`,
+  `data/mails/<address>/<year>/<month>/` (split by the date of the mail) as the original (`.eml`) and its decoded body sections (text as `<key>-1.txt`,
   `<key>-2.txt`, ..., HTML as `<key>-1.html`, `<key>-2.html`, ...: one file per part with content, in MIME
   order). The headers and other metadata live only in the index, a separate SQLite file per address
   (`data/mails/<address>.sqlite`), so detection can be re-run from the raw files whenever the rules change.

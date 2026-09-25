@@ -50,7 +50,11 @@ func newSeededCore(t *testing.T) *seededCore {
 			t.Fatalf("read sample: %v", err)
 		}
 		key := mailengine.MessageKey(time.Date(2025, 9, 1+i, 0, 0, 0, 0, time.UTC), "INBOX", 1, uint32(i+1))
-		if err := os.WriteFile(filepath.Join(dir, key+".eml"), raw, 0o600); err != nil {
+		path := mailengine.MessageFilePath(c.mailsRoot, mb.Address, key, "eml")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		keys = append(keys, key)
@@ -333,9 +337,6 @@ func TestMessagesEndpoints(t *testing.T) {
 	if detail.Message.Rule == "" || !detail.Message.IsBounce || detail.Message.GroupKey == "" {
 		t.Errorf("detection outcome: %+v", detail.Message)
 	}
-	if body := rec.Body.String(); strings.Contains(body, `"has_text"`) || strings.Contains(body, `"classify_reason"`) || strings.Contains(body, `"text":`) {
-		t.Errorf("old fields still in the response: %s", body)
-	}
 	// The responsible party comes from the group of the bounce.
 	idx, err := s.openIndex(httptest.NewRequest(http.MethodGet, "/", nil), s.mb)
 	if err != nil {
@@ -492,7 +493,7 @@ func TestJobsEndpoints(t *testing.T) {
 	if dup.Created || dup.Job.ID != env.Job.ID {
 		t.Errorf("duplicate: %+v created %v", dup.Job, dup.Created)
 	}
-	for _, bad := range []map[string]any{{"kind": "bogus"}, {"kind": "check"}, {"kind": "analyze", "target": "0123456789abcdef"},
+	for _, bad := range []map[string]any{{"kind": "bogus"}, {"kind": "analyze", "target": "0123456789abcdef"},
 		{"kind": "sync", "mailbox_id": 999}, {"kind": "sync", "mailbox_id": -1}} {
 		if rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", bad, s.admin); rec.Code != http.StatusBadRequest {
 			t.Errorf("%v: %d, want 400", bad, rec.Code)

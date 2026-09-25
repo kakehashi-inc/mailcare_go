@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -247,7 +248,8 @@ func TestPruneMailboxKeepsRowWhenFileRemovalFails(t *testing.T) {
 	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	dir := MailboxDir(root, address)
+	// Both messages share one month directory (see MessageDir).
+	dir := MessageDir(MailboxDir(root, address), keys["normal.eml"])
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +282,10 @@ func TestPruneMailboxKeepsRowWhenFileRemovalFails(t *testing.T) {
 		if _, err := os.Stat(MessageFilePath(root, address, key, "eml")); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("raw file of %s still exists (%v)", key, err)
 		}
+	}
+	// The emptied month and year directories go with the last message.
+	if _, err := os.Stat(filepath.Dir(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("empty year directory kept (%v)", err)
 	}
 	if got := mustListAllMessages(t, db); len(got) != 0 || countRows(t, db, "groups") != 0 {
 		t.Errorf("rows left after the retry: %d messages, %d groups", len(got), countRows(t, db, "groups"))

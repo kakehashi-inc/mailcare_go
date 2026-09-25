@@ -145,8 +145,7 @@
         "reindex": "再索引",
         "reclassify": "再判定",
         "cleanup": "クリーンアップ",
-        "notify": "通知メール送信",
-        "other": "その他 ({{kind}})"
+        "notify": "通知メール送信"
     },
     "checkStatus": {
         "never": "未同期",

@@ -20,17 +20,18 @@
 //
 // File layout inside mailsRoot (data/mails):
 //
-//	<address>/<message_key>.eml     the original message (RFC 5322, untouched)
-//	<address>/<message_key>-1.txt   the first text/plain section with content (UTF-8)
-//	<address>/<message_key>-2.txt   the second one, then -3, -4, ... in MIME order
-//	<address>/<message_key>-1.html  the text/html sections, numbered the same way
-//	<address>.sqlite                the index database (headers, section counts,
-//	                                detection outcome, bounce details, groups, reports)
+//	<address>/<YYYY>/<MM>/<message_key>.eml     the original message (RFC 5322, untouched)
+//	<address>/<YYYY>/<MM>/<message_key>-1.txt   the first text/plain section with content (UTF-8)
+//	<address>/<YYYY>/<MM>/<message_key>-2.txt   the second one, then -3, -4, ... in MIME order
+//	<address>/<YYYY>/<MM>/<message_key>-1.html  the text/html sections, numbered the same way
+//	<address>.sqlite                            the index database (headers, section counts,
+//	                                            detection outcome, bounce details, groups, reports)
 //
-// Only sections with content get a file (messages.text_count / html_count
-// say how many exist); there is no parsed sidecar, the .eml is parsed again
-// whenever the engine needs more than the index row holds. <address> is the
-// mail address made safe for every OS (SanitizeAddress).
+// <YYYY>/<MM> is the year and month of the message key (MessageDir). Only
+// sections with content get a file (messages.text_count / html_count say
+// how many exist); the .eml is parsed again whenever the engine needs more
+// than the index row holds. <address> is the mail address made safe for
+// every OS (SanitizeAddress).
 //
 // Files of the package:
 //

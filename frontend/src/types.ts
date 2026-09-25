@@ -12,8 +12,6 @@ export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'recl
 export type ToolKind = Exclude<JobKind, 'notify'>;
 /** Tool job kinds, in the order the tools page lists them. */
 export const JOB_KINDS: readonly ToolKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify', 'cleanup'];
-/** Every job kind the server can report, for labelling job rows. */
-export const ALL_JOB_KINDS: readonly JobKind[] = [...JOB_KINDS, 'notify'];
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled';
 /** Fetch status of a mailbox, derived on the client from last_fetched_at / last_fetch_error. */
 export type CheckStatus = '' | 'ok' | 'error';
@@ -239,7 +237,7 @@ export interface BounceDTO {
 
 export interface JobDTO {
     id: number;
-    kind: JobKind | string;
+    kind: JobKind;
     mailbox_id: number | null;
     mailbox_address: string;
     /** True when the job's mailbox was deleted since (mailbox_id is null then, like an expansion job's). */

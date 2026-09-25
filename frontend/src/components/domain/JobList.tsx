@@ -1,19 +1,12 @@
-import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { ALL_JOB_KINDS, type JobDTO, type JobKind } from '../../types';
+import type { JobDTO } from '../../types';
 import { formatDuration } from '../../utils/format';
 import { IconButton } from '../ui/Button';
 import { DateTime } from '../ui/DateTime';
 import { EmptyState } from '../ui/EmptyState';
 import { Icon } from '../ui/Icon';
+import { JobProgressLog } from './JobProgressLog';
 import { JobStatusBadge } from './StatusBadges';
-
-/** Label of a job kind; kinds this build does not know (e.g. old "check" jobs) are shown as "Other (kind)". */
-export function jobKindLabel(kind: string, t: TFunction): string {
-    return (ALL_JOB_KINDS as readonly string[]).includes(kind)
-        ? t(`jobKind.${kind as JobKind}`)
-        : t('jobKind.other', { kind });
-}
 
 interface JobListProps {
     jobs: JobDTO[];
@@ -43,7 +36,7 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                         <div className='flex flex-wrap items-start justify-between gap-2'>
                             <div className='min-w-0 flex-1'>
                                 <div className='flex flex-wrap items-center gap-2'>
-                                    <span className='font-medium text-ink'>{jobKindLabel(job.kind, t)}</span>
+                                    <span className='font-medium text-ink'>{t(`jobKind.${job.kind}`)}</span>
                                     <JobStatusBadge status={job.status} />
                                     <span className='text-sm text-muted'>#{job.id}</span>
                                 </div>
@@ -70,9 +63,11 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                         {active && (
                             <div className='mt-2 flex items-start gap-2 text-sm text-ink' aria-live='polite'>
                                 <Icon name='autorenew' className='mt-0.5 animate-spin text-[18px] text-info' />
-                                <span className='max-h-40 min-w-0 flex-1 overflow-y-auto whitespace-pre-line break-words font-mono text-sm'>
-                                    {job.progress || t('jobs.waiting')}
-                                </span>
+                                {job.progress ? (
+                                    <JobProgressLog text={job.progress} />
+                                ) : (
+                                    <span className='min-w-0 flex-1'>{t('jobs.waiting')}</span>
+                                )}
                             </div>
                         )}
                         {job.status === 'done' && (job.result || job.started_at) && (

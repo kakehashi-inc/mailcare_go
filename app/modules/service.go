@@ -226,7 +226,7 @@ func WaitForJob(ctx context.Context, port int, id int64, echo func(string)) (*Jo
 		}
 		if echo != nil {
 			for _, line := range newProgressLines(printed, job.Progress) {
-				echo(line)
+				echo(FormatProgressLine(line))
 			}
 		}
 		printed = job.Progress

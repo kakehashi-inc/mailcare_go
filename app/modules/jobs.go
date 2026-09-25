@@ -32,7 +32,13 @@ const (
 	// progressFlushInterval throttles progress writes to the jobs table.
 	progressFlushInterval = 500 * time.Millisecond
 	// progressMaxLines bounds the progress text kept per job (newest lines).
-	progressMaxLines = 200
+	progressMaxLines = 100
+	// progressTimeSep separates the UTC timestamp (RFC 3339) that starts each
+	// stored progress line from the message.
+	progressTimeSep = "\t"
+	// progressEchoLayout is the local time format of progress lines printed
+	// by the CLI (the Web screen formats them in the user's time zone).
+	progressEchoLayout = "01-02 15:04:05"
 	// jobRetention is how long finished jobs are kept (the daily cleanup job
 	// removes older ones).
 	jobRetention = 30 * 24 * time.Hour
@@ -475,7 +481,8 @@ func ResetStaleJobs(db *sql.DB, mailsRoot string) {
 
 // progressWriter collects progress lines and writes them to the jobs table at
 // most once per progressFlushInterval, forwarding each line to an optional
-// echo callback (the CLI prints them).
+// echo callback (the CLI prints them). Each stored line starts with the time
+// it was added (see stampProgressLine).
 type progressWriter struct {
 	db    *sql.DB
 	jobID int64
@@ -499,15 +506,16 @@ func (p *progressWriter) Add(msg string) {
 	if msg == "" {
 		return
 	}
+	line := stampProgressLine(time.Now(), msg)
 	if p.echo != nil {
-		p.echo(msg)
+		p.echo(FormatProgressLine(line))
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
 		return
 	}
-	p.lines = append(p.lines, msg)
+	p.lines = append(p.lines, line)
 	if len(p.lines) > progressMaxLines {
 		p.lines = p.lines[len(p.lines)-progressMaxLines:]
 	}
@@ -554,6 +562,19 @@ func (p *progressWriter) Text() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return strings.Join(p.lines, "\n")
+}
+
+// stampProgressLine prefixes a progress message with its UTC time.
+func stampProgressLine(t time.Time, msg string) string {
+	return t.UTC().Format(time.RFC3339) + progressTimeSep + msg
+}
+
+// FormatProgressLine renders a stored progress line as "MM-dd HH:mm:ss msg"
+// in local time.
+func FormatProgressLine(line string) string {
+	stamp, msg, _ := strings.Cut(line, progressTimeSep)
+	t, _ := time.Parse(time.RFC3339, stamp)
+	return t.Local().Format(progressEchoLayout) + " " + msg
 }
 
 // execute runs one claimed job to completion and records the outcome.
@@ -605,22 +626,23 @@ func (m *JobManager) RunJob(ctx context.Context, job *models.Job, progress func(
 	if err != nil {
 		return "", err
 	}
-	report := func(msg string) { progress("[" + mb.Address + "] " + msg) }
+	// A job runs for exactly one mailbox, which its row already names, so the
+	// progress lines do not repeat the address.
 	switch job.Kind {
 	case JobKindSync:
-		return m.runSync(ctx, job, mb, report)
+		return m.runSync(ctx, job, mb, progress)
 	case JobKindFetch:
-		return m.runFetch(ctx, mb, report)
+		return m.runFetch(ctx, mb, progress)
 	case JobKindGroup:
-		return m.runGroup(ctx, job, mb, false, report)
+		return m.runGroup(ctx, job, mb, false, progress)
 	case JobKindReclassify:
-		return m.runGroup(ctx, job, mb, true, report)
+		return m.runGroup(ctx, job, mb, true, progress)
 	case JobKindReindex:
-		return m.runReindex(ctx, job, mb, report)
+		return m.runReindex(ctx, job, mb, progress)
 	case JobKindAnalyze:
-		return m.runAnalyze(ctx, job, mb, report)
+		return m.runAnalyze(ctx, job, mb, progress)
 	case JobKindCleanup:
-		return m.runCleanup(ctx, mb, report)
+		return m.runCleanup(ctx, mb, progress)
 	}
 	return "", fmt.Errorf("%w %q", ErrJobKind, job.Kind)
 }

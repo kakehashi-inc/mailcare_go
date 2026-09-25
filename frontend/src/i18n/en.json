@@ -145,8 +145,7 @@
         "reindex": "Reindex",
         "reclassify": "Reclassify",
         "cleanup": "Cleanup",
-        "notify": "Notification mail",
-        "other": "Other ({{kind}})"
+        "notify": "Notification mail"
     },
     "checkStatus": {
         "never": "Never synced",

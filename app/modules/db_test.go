@@ -17,8 +17,8 @@ func TestOpenDBRestrictsFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A world-readable database left behind (e.g. by an older version or a
-	// permissive umask) is fixed on open; the side files follow.
+	// A world-readable database left behind (e.g. by a permissive umask) is
+	// fixed on open; the side files follow.
 	for _, name := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
 		if _, err := os.Stat(name); err != nil {
 			continue
