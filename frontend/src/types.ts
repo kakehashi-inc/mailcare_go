@@ -166,6 +166,8 @@ export interface GroupDTO {
     /** Confidence of the latest completed report; null when none was given. */
     report_confidence: Confidence | null;
     report_status: ReportStatus;
+    /** The latest analysis failed for good (not a usage limit or a cancellation): not analyzed again until a new pattern arrives. */
+    report_unanalyzable: boolean;
 }
 
 /** A group row on the dashboard, which spans mailboxes. */
@@ -192,6 +194,8 @@ export interface ReportDTO {
     reasoning_effort: string | null;
     tokens_used: number | null;
     command_count: number | null;
+    /** A failed run that settled its group (not a usage limit or a cancellation). */
+    unanalyzable: boolean;
     started_at: string | null;
     finished_at: string | null;
     created_at: string;

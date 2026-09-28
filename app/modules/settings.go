@@ -182,6 +182,26 @@ func SetAgentReasoningEffort(db *sql.DB, level string) error {
 	return PersistSetting(db, SettingAgentReasoningEffort, level, level == "")
 }
 
+// ResolveAgentLimitedUntil returns when the agent's usage limit is lifted
+// (ok false when no limit with a known end is recorded).
+func ResolveAgentLimitedUntil(db *sql.DB) (time.Time, bool) {
+	v := strings.TrimSpace(models.GetSetting(db, SettingAgentLimitedUntil))
+	if v == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// SetAgentLimitedUntil records the end of the agent's usage limit; the zero
+// time removes the record.
+func SetAgentLimitedUntil(db *sql.DB, until time.Time) error {
+	return PersistSetting(db, SettingAgentLimitedUntil, until.UTC().Format(time.RFC3339), until.IsZero())
+}
+
 // SaveAgentSettings changes any of the agent provider, model and reasoning
 // level at once (nil = unchanged): the resulting combination is checked
 // first (CheckAgentSettings) and nothing is saved when it is refused. A

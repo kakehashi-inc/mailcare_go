@@ -11,6 +11,7 @@ import {
     GroupStateBadge,
     NeedsReviewBadge,
     ReportStatusBadge,
+    UnanalyzableBadge,
     ResponsibleBadge,
     SeverityBadge,
 } from '../components/domain/StatusBadges';
@@ -39,6 +40,8 @@ import { errorMessage } from '../utils/errors';
 import { formatDateTime } from '../utils/format';
 
 const STATES: GroupState[] = ['open', 'resolved', 'ignored'];
+// Start of the error message of a run refused by the agent's usage limit (agent.IsUsageLimitMessage).
+const USAGE_LIMIT_PREFIX = 'usage limit reached';
 
 function StatChips({ title, icon, values }: { title: string; icon: string; values: string[] }) {
     const { t } = useTranslation();
@@ -312,6 +315,7 @@ export function AlertGroupDetailPage() {
                             {group.actionable && <SeverityBadge severity={group.report_severity} />}
                             {group.report_confidence === 'low' && <NeedsReviewBadge />}
                             <ResponsibleBadge responsible={group.responsible} />
+                            {group.report_unanalyzable && group.report_status !== 'running' && <UnanalyzableBadge />}
                             {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
                                 <Badge tone='warning' icon='pending_actions'>
                                     {t('group.needsAnalysis')}
@@ -400,11 +404,18 @@ export function AlertGroupDetailPage() {
                             }
                         />
                         {latestFailed && !reportRunning && (
-                            <Alert tone='warning' className='mb-4'>
-                                {t('report.latestFailed', {
-                                    message: latestFailed.error_message || t('report.failed'),
-                                    time: formatDateTime(latestFailed.finished_at ?? latestFailed.created_at),
-                                })}
+                            <Alert tone={latestFailed.unanalyzable ? 'danger' : 'warning'} className='mb-4'>
+                                {t(
+                                    latestFailed.unanalyzable
+                                        ? 'report.latestFailedUnanalyzable'
+                                        : latestFailed.error_message.startsWith(USAGE_LIMIT_PREFIX)
+                                          ? 'report.latestFailedLimit'
+                                          : 'report.latestFailed',
+                                    {
+                                        message: latestFailed.error_message || t('report.failed'),
+                                        time: formatDateTime(latestFailed.finished_at ?? latestFailed.created_at),
+                                    }
+                                )}
                             </Alert>
                         )}
                         {!group.actionable && (

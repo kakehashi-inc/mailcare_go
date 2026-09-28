@@ -2794,9 +2794,9 @@ func TestAnalysisFlagFollowsPatterns(t *testing.T) {
 		t.Errorf("GroupHasUncoveredPattern = %v, %v; want false", uncovered, err)
 	}
 
-	// A newer report that covers none of the patterns: the next regrouping
+	// A newer report that covers only another pattern: the next regrouping
 	// flags the group.
-	cover(nil)
+	cover([]string{"another-pattern"})
 	db.Close()
 	res, err = GroupMailbox(context.Background(), root, address, true, nil)
 	if err != nil {

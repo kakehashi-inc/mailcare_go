@@ -5,7 +5,7 @@ import { groupHeadline } from '../../utils/category';
 import { Badge } from '../ui/Badge';
 import { DateTime } from '../ui/DateTime';
 import { Icon } from '../ui/Icon';
-import { CategoryBadge, GroupStateBadge, ResponsibleBadge, SeverityBadge } from './StatusBadges';
+import { CategoryBadge, GroupStateBadge, ResponsibleBadge, SeverityBadge, UnanalyzableBadge } from './StatusBadges';
 
 interface GroupRowProps {
     group: GroupDTO;
@@ -35,6 +35,7 @@ export function GroupRow({ group, to, mailboxAddress, showState = false }: Group
                             {t('group.needsAnalysis')}
                         </Badge>
                     )}
+                    {group.report_unanalyzable && group.report_status !== 'running' && <UnanalyzableBadge />}
                     {group.report_status === 'running' && (
                         <Badge tone='info' icon='autorenew'>
                             {t('reportStatus.running')}

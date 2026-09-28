@@ -1315,3 +1315,71 @@ func TestJobsOfDeletedMailboxAreLabeled(t *testing.T) {
 		t.Errorf("JSON labels:\n%s", out)
 	}
 }
+
+func TestAnalyzeDuringUsageLimit(t *testing.T) {
+	db := newTestDB(t)
+	jm, key := newTestJobManager(t, db)
+	if err := SetAgentEnabled(db, false); err != nil {
+		t.Fatal(err)
+	}
+	mb, mailsRoot := seedMailbox(t, db, key, "ops@example.test", testSamples)
+	if _, err := jm.RunJob(context.Background(), mailboxJob(JobKindReindex, mb, ""), nil); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := mailengine.OpenIndex(context.Background(), mailsRoot, mb.Address, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	// Every group actionable, only the first one waiting for analysis.
+	groups, err := models.ListGroups(idx, models.GroupFilter{})
+	if err != nil || len(groups) == 0 {
+		t.Fatalf("groups: %v (%d)", err, len(groups))
+	}
+	if _, err := idx.Exec(`UPDATE groups SET actionable = 1, needs_analysis = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.SetGroupNeedsAnalysis(idx, groups[0].GroupKey, true); err != nil {
+		t.Fatal(err)
+	}
+	until := time.Now().Add(time.Hour)
+	if err := SetAgentLimitedUntil(db, until); err != nil {
+		t.Fatal(err)
+	}
+
+	// The scheduled analysis (target "") records the skip without failing
+	// and launches nothing.
+	result, err := jm.RunJob(context.Background(), mailboxJob(JobKindAnalyze, mb, ""), nil)
+	if err != nil || !strings.HasPrefix(result, "skipped: the agent's usage limit lasts until ") {
+		t.Errorf("scheduled analysis during the limit: %q, %v", result, err)
+	}
+	if reports, _ := models.ListAgentReports(idx, groups[0].GroupKey); len(reports) != 0 {
+		t.Errorf("an analysis was started during the limit: %d report(s)", len(reports))
+	}
+	// An explicit analysis of every group fails with the reason and leaves
+	// every actionable group flagged for the analysis after the limit.
+	if _, err := jm.RunJob(context.Background(), mailboxJob(JobKindAnalyze, mb, analyzeAllTarget), nil); err == nil ||
+		!strings.Contains(err.Error(), "usage limit lasts until") {
+		t.Errorf("explicit analysis during the limit: %v", err)
+	}
+	waiting, err := models.ListGroupsNeedingAnalysis(idx)
+	if err != nil || len(waiting) != len(groups) {
+		t.Errorf("flagged groups after the skip: %d (err %v), want %d", len(waiting), err, len(groups))
+	}
+
+	// Once the limit is over (with the margin), the scheduler removes the
+	// record; it queues the analysis only while the automatic analysis is on
+	// and the CLI is there (off here).
+	s := NewScheduler(db, jm)
+	s.queueAnalysisAfterLimit(until.Add(AgentLimitResumeMargin - time.Minute))
+	if _, limited := ResolveAgentLimitedUntil(db); !limited {
+		t.Error("the record went before the margin passed")
+	}
+	s.queueAnalysisAfterLimit(until.Add(AgentLimitResumeMargin))
+	if _, limited := ResolveAgentLimitedUntil(db); limited {
+		t.Error("the record stayed after the limit and the margin")
+	}
+	if jobs, _ := models.ListJobs(db, 50); slices.ContainsFunc(jobs, func(j *models.Job) bool { return j.Kind == JobKindAnalyze && j.Status == "queued" }) {
+		t.Error("an analysis was queued with the automatic analysis switched off")
+	}
+}

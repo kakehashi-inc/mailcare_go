@@ -32,10 +32,13 @@ import (
 // cancellation, a usage/rate limit ("usage limit reached (retry after ...)"),
 // a missing REPORT block or an unusable report (template placeholders, too
 // short, or secret-like content: see ValidateOutput) fail the run and the
-// reason is stored on the report. A failed run writes no REPORT.md, leaves the
-// previous completed report row (and the directory of that run) untouched
-// and, for an actionable group, sets needs_analysis so the next sync retries
-// the group; its RESULT.log keeps the full transcript. A completed report
+// reason is stored on the report. A failed run writes no REPORT.md and
+// leaves the previous completed report row (and the directory of that run)
+// untouched; its RESULT.log keeps the full transcript. A failure by a usage
+// limit or a cancellation leaves needs_analysis alone (the group keeps
+// waiting); any other failure settles the group like a success does
+// (the patterns are recorded, the flag cleared): it is analyzed again only
+// when a bounce of a new pattern arrives. A completed report
 // records the patterns it covered; the group stays flagged only when a
 // bounce of another pattern arrived meanwhile.
 func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (*models.AgentReport, error) {
@@ -69,22 +72,52 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		return nil, fmt.Errorf("agent: record report: %w", err)
 	}
 
-	// Every failure of an actionable group re-flags it so the next sync
-	// retries it, even when this run was triggered explicitly for a group
-	// whose flag was 0. A recipient-side group is never analyzed
-	// automatically, so its flag stays cleared.
+	// settle ends the waiting of the group: it records the patterns the
+	// run dealt with and sets needs_analysis to whether a bounce of another
+	// pattern arrived meanwhile (always false for a recipient-side group).
+	settle := func(patterns []string) {
+		if err := models.InsertAgentReportPatterns(in.Index, report.ID, patterns); err != nil {
+			progress("warning: could not record the patterns: " + err.Error())
+		}
+		needs := false
+		if group.Actionable {
+			var err error
+			if needs, err = models.GroupHasUncoveredPattern(in.Index, group.GroupKey); err != nil {
+				progress("warning: could not check the covered patterns: " + err.Error())
+				needs = false
+			}
+		}
+		if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, needs); err != nil {
+			progress("warning: could not update needs_analysis: " + err.Error())
+		}
+	}
+
+	// A usage limit or a cancellation says nothing about the group: it keeps
+	// waiting and a later run tries again. Any other failure means the group
+	// cannot be analyzed as it is: the run settles it (like a success, but
+	// without a report), so it is not analyzed again until a bounce of a
+	// new pattern arrives.
 	fail := func(reason error) (*models.AgentReport, error) {
+		if ctx.Err() != nil && !strings.HasPrefix(reason.Error(), canceledPrefix) {
+			// Stopped by the caller, whatever went wrong on the way.
+			reason = fmt.Errorf("%s: %v", canceledPrefix, reason)
+		}
 		progress("analysis failed: " + reason.Error())
 		report.Status = "error"
 		report.ErrorMessage = reason.Error()
 		if err := models.FailAgentReport(in.Index, report.ID, reason.Error()); err != nil {
 			return report, fmt.Errorf("agent: record failure: %w", err)
 		}
-		if group.Actionable {
-			if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, true); err != nil {
-				progress("warning: could not set needs_analysis: " + err.Error())
-			}
+		if !FailureSettles(reason.Error()) {
+			return report, nil
 		}
+		patterns, err := models.ListGroupPatternKeys(in.Index, group.GroupKey)
+		if err != nil {
+			progress("warning: could not list the patterns: " + err.Error())
+			return report, nil
+		}
+		progress("the group is not analyzed again until a bounce of a new pattern arrives")
+		settle(patterns)
 		return report, nil
 	}
 
@@ -191,7 +224,7 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		case errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
 			failure = fmt.Errorf("%s timed out after %s", provider.Label(), Timeout)
 		case ctx.Err() != nil:
-			failure = fmt.Errorf("analysis canceled: %v", ctx.Err())
+			failure = fmt.Errorf("%s: %v", canceledPrefix, ctx.Err())
 		case limit.Limited:
 			failure = errors.New(limit.ErrorMessage())
 		case !parsed.ReportParsed:
@@ -218,27 +251,13 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		parsed.Meta.Severity, parsed.Meta.Confidence, parsed.Report); err != nil {
 		return report, fmt.Errorf("agent: record report: %w", err)
 	}
-	if err := models.InsertAgentReportPatterns(in.Index, report.ID, ev.PatternKeys()); err != nil {
-		progress("warning: could not record the covered patterns: " + err.Error())
-	}
+	settle(ev.PatternKeys())
 	report.Status = "completed"
 	report.Summary = parsed.Meta.Summary
 	report.Responsible = parsed.Meta.Responsible
 	report.Severity = parsed.Meta.Severity
 	report.Confidence = parsed.Meta.Confidence
 	report.ReportMarkdown = parsed.Report
-	// A bounce of a new pattern that arrived while the agent ran is not
-	// covered by this report, so the flag stays set for it.
-	needs := false
-	if group.Actionable {
-		if needs, err = models.GroupHasUncoveredPattern(in.Index, group.GroupKey); err != nil {
-			progress("warning: could not check the covered patterns: " + err.Error())
-			needs = false
-		}
-	}
-	if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, needs); err != nil {
-		progress("warning: could not update needs_analysis: " + err.Error())
-	}
 	// The machine-derived responsible party is replaced only by a definite
 	// answer. "unknown" (or a missing META) keeps the rule-based value on the
 	// group; the report row still records what the agent said.

@@ -478,7 +478,9 @@ func ResetStaleJobs(db *sql.DB, mailsRoot string) {
 			log.Printf("index of %s could not be opened: %v", mb.Address, err)
 			continue
 		}
-		if err := models.ResetRunningAgentReports(idx, reason); err != nil {
+		// An analysis cut off by the restart was canceled, not unanalyzable:
+		// its group keeps waiting (needs_analysis is left as it is).
+		if err := models.ResetRunningAgentReports(idx, agent.CanceledMessage(reason)); err != nil {
 			log.Printf("failed to reset running agent reports of %s: %v", mb.Address, err)
 		}
 		idx.Close()
@@ -1041,9 +1043,6 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 	if !agent.IsValidProvider(provider) {
 		return "", fmt.Errorf("agent provider %q is not registered", provider)
 	}
-	if !agent.ProviderAvailable(provider) {
-		return "", fmt.Errorf("agent provider %q is not available on this machine", provider)
-	}
 	idx, err := mailengine.OpenIndex(ctx, m.mailsRoot, mb.Address, mailengine.Progress(progress))
 	if err != nil {
 		return "", fmt.Errorf("failed to open the index of %s: %w", mb.Address, err)
@@ -1073,6 +1072,38 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 	if len(groups) == 0 {
 		return "no group needs analysis", nil
 	}
+	// An explicit request ("*" or one group) marks its actionable groups as
+	// waiting first; like the flags the grouping sets, they are cleared only
+	// by a successful analysis, so whatever this run does not finish is
+	// picked up by the next scheduled one.
+	if job.Target != "" {
+		for _, g := range groups {
+			if !g.Actionable {
+				continue
+			}
+			if err := models.SetGroupNeedsAnalysis(idx, g.GroupKey, true); err != nil {
+				return "", fmt.Errorf("flag %s for analysis: %w", g.GroupKey, err)
+			}
+		}
+	}
+	// While the agent's usage limit is known to last, the CLI is not
+	// launched (the groups keep waiting; the scheduler queues their analysis
+	// after the limit). The scheduled analysis (target "") just records the
+	// skip; one asked for explicitly fails so that the caller sees why
+	// nothing happened.
+	if until, limited := ResolveAgentLimitedUntil(m.db); limited && time.Now().Before(until) {
+		line := fmt.Sprintf("skipped: the agent's usage limit lasts until %s", until.In(time.Local).Format("2006-01-02 15:04"))
+		progress(line)
+		if job.Target == "" {
+			return line, nil
+		}
+		return "", errors.New(line)
+	}
+	// The CLI is looked for only now: a known usage limit skips even where
+	// the CLI is missing.
+	if !agent.ProviderAvailable(provider) {
+		return "", fmt.Errorf("agent provider %q is not available on this machine", provider)
+	}
 	model := ResolveAgentModel(m.db)
 	reasoning := ResolveAgentReasoningEffort(m.db)
 	progress(fmt.Sprintf("analyzing %d group(s) with %s", len(groups), provider))
@@ -1098,11 +1129,14 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 			failures = append(failures, fmt.Sprintf("%s: %s", g.GroupKey, report.ErrorMessage))
 			progress(fmt.Sprintf("%s: agent failed: %s", g.GroupKey, report.ErrorMessage))
 			if agent.IsUsageLimitMessage(report.ErrorMessage) {
-				if left := len(groups) - i - 1; left > 0 {
-					skipped := fmt.Sprintf("stopped: %d group(s) not analyzed because of the usage limit", left)
+				if left := groups[i+1:]; len(left) > 0 {
+					// The groups not started keep waiting (flagged) for
+					// the next scheduled analysis.
+					skipped := fmt.Sprintf("stopped: %d group(s) not analyzed because of the usage limit", len(left))
 					progress(skipped)
 					failures = append(failures, skipped)
 				}
+				m.recordUsageLimit(report.ErrorMessage, progress)
 				return fmt.Sprintf("analyzed %d, failed %d", done, failed), errors.New(strings.Join(failures, "; "))
 			}
 		default:
@@ -1115,6 +1149,25 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 		return result, errors.New(strings.Join(failures, "; "))
 	}
 	return result, nil
+}
+
+// recordUsageLimit records when the agent's usage limit is lifted, when the
+// CLI named the time (SettingAgentLimitedUntil): until then no analysis
+// launches the CLI, and the scheduler queues the analysis of the waiting
+// groups AgentLimitResumeMargin after it. Without a time nothing is
+// recorded and the next scheduled check tries the analysis again.
+func (m *JobManager) recordUsageLimit(errMsg string, progress func(string)) {
+	until, ok := agent.ParseRetryTime(agent.UsageLimitRetryAfter(errMsg), time.Now())
+	if !ok {
+		progress("the usage limit names no end; the next scheduled check tries the analysis again")
+		return
+	}
+	if err := SetAgentLimitedUntil(m.db, until); err != nil {
+		progress(fmt.Sprintf("warning: could not record the end of the usage limit: %v", err))
+		return
+	}
+	progress(fmt.Sprintf("usage limit until %s; the waiting groups are analyzed from %s",
+		until.In(time.Local).Format("2006-01-02 15:04"), until.Add(AgentLimitResumeMargin).In(time.Local).Format("2006-01-02 15:04")))
 }
 
 // runNotify sends the notification mail (target "") or a test mail (target

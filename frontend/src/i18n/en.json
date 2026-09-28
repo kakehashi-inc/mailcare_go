@@ -125,9 +125,9 @@
         "unknown": "Severity: not analyzed"
     },
     "responsible": {
-        "sender": "Sending server admin",
-        "recipient": "Recipient address admin",
-        "domain": "Recipient domain admin",
+        "sender": "Sending-side mail administrator",
+        "recipient": "Recipient address owner",
+        "domain": "Recipient domain administrator",
         "unknown": "Unknown"
     },
     "jobStatus": {
@@ -356,7 +356,10 @@
         "excludedTitle": "This group is not analyzed automatically",
         "excluded": "Recipient-side problems (missing addresses, full mailboxes, ...) cannot be fixed by the sender, so they are not analyzed automatically.",
         "excludedMoveHint": "Marking it resolved or ignored moves it to the actionable list.",
-        "excludedReturnHint": "Reopening it moves it back to the excluded list."
+        "excludedReturnHint": "Reopening it moves it back to the excluded list.",
+        "unanalyzable": "Not analyzable",
+        "latestFailedUnanalyzable": "The analysis failed: {{message}} ({{time}}). This group is not analyzed automatically until a notice of a new pattern arrives.",
+        "latestFailedLimit": "The analysis was refused by the agent's usage limit ({{time}}). The group keeps waiting and is analyzed next time."
     },
     "mails": {
         "kindTabs": "Mail kind",

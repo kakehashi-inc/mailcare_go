@@ -63,19 +63,19 @@ func TestBuildPromptJapanese(t *testing.T) {
 		"## 原因の分析", "## 影響範囲", "## 推奨する対応", "## 対応すべき担当",
 		"Write the REPORT in Japanese",
 		"READ-ONLY", "UNTRUSTED DATA", "No network access",
-		"This group is ACTIONABLE by the mail administrator.",
+		"This group is ACTIONABLE by the sending-side mail administrator.",
 		"delisting steps for the named blacklist",
 		"Category: ip_blocked - " + CategoryGlossary[CategoryIPBlocked].Description,
 		"Action unit (unit_value): 203.0.113.5 - the sending IP address that is blocked",
 		"Authority: spamhaus.org - the blacklist provider that lists the IP",
-		"Actionable by the mail administrator: yes",
+		"Actionable by the sending-side mail administrator: yes",
 		"Title: ip_blocked: 203.0.113.5 @ spamhaus.org",
 		"Recipient domain: example.net", "Status code: 5.7.1",
 		"Diagnostic template: 554 5.7.1 service unavailable; client host [<ip>] blocked using zen.spamhaus.org",
 		"Messages: 2", "Distinct recipients: 35", "Distinct remote IPs: 1",
 		"First seen: 2026-09-01T12:00:00Z", "Last seen: 2026-09-02T12:00:00Z",
 		"Responsible (machine guess): sender",
-		"1. <concrete action the mail administrator takes for the action unit>",
+		"1. <concrete action the sending-side mail administrator takes for the action unit>",
 		"Recipients (35): user00@example.net", "user29@example.net, ... (5 more)",
 		"Remote IPs (1): 192.0.2.10", "Remote MTAs (1): mx.example.net",
 		"Messages: 2 in 1 patterns.",
@@ -122,8 +122,8 @@ func TestBuildPromptJapanese(t *testing.T) {
 	// The summary leads with the category, unit, authority and actionability
 	// before the descriptive columns.
 	if !(idx("Mailbox: ") < idx("Category: ") && idx("Category: ") < idx("Action unit (unit_value): ") &&
-		idx("Action unit (unit_value): ") < idx("Authority: ") && idx("Authority: ") < idx("Actionable by the mail administrator: ") &&
-		idx("Actionable by the mail administrator: ") < idx("Title: ")) {
+		idx("Action unit (unit_value): ") < idx("Authority: ") && idx("Authority: ") < idx("Actionable by the sending-side mail administrator: ") &&
+		idx("Actionable by the sending-side mail administrator: ") < idx("Title: ")) {
 		t.Error("group summary must lead with category, unit, authority and actionability")
 	}
 }
@@ -136,13 +136,13 @@ func TestBuildPromptNotActionable(t *testing.T) {
 	in.Group.Actionable = false
 	p := BuildPrompt(in)
 	for _, want := range []string{
-		"This group is NOT actionable by the mail administrator",
-		"what to tell the recipient-side owner",
+		"This group is NOT actionable by the sending-side mail administrator",
+		"what to tell the recipient address owner or the recipient domain administrator",
 		CategoryGlossary[CategoryUserUnknown].Guidance,
 		"Category: user_unknown - " + CategoryGlossary[CategoryUserUnknown].Description,
 		"Action unit (unit_value): alice@example.net - the recipient address that does not exist",
-		"Actionable by the mail administrator: no (recipient-side problem)",
-		"1. <short note on what to tell the recipient-side owner>",
+		"Actionable by the sending-side mail administrator: no (recipient-side problem)",
+		"1. <short note on what to tell the recipient address owner or the recipient domain administrator>",
 		ReportBegin, ReportEnd, MetaBegin, MetaEnd,
 		"## 原因の分析", "## 影響範囲", "## 推奨する対応", "## 対応すべき担当",
 	} {
@@ -166,8 +166,8 @@ func TestBuildPromptUnknownCategory(t *testing.T) {
 	p := BuildPrompt(in)
 	for _, want := range []string{
 		"Category: (not classified) - " + unknownCategory.Description,
-		"Actionable by the mail administrator: yes",
-		"This group is ACTIONABLE by the mail administrator",
+		"Actionable by the sending-side mail administrator: yes",
+		"This group is ACTIONABLE by the sending-side mail administrator",
 		unknownCategory.Guidance,
 	} {
 		if !strings.Contains(p, want) {
@@ -329,5 +329,55 @@ func TestBuildPromptUpdate(t *testing.T) {
 	in.Previous = nil
 	if strings.Contains(BuildPrompt(in), "UPDATE") {
 		t.Error("an update needs the previous report")
+	}
+}
+
+func TestBuildPromptParties(t *testing.T) {
+	in := samplePromptInput(t)
+	p := BuildPrompt(in)
+	// The Japanese names come from templates/agent/party_names_ja.txt.
+	names := loadLines(in.TemplatesFS, PartyNamesFileJa, partyCount)
+	if len(names) != partyCount {
+		t.Fatalf("the repository template must supply %d party names, got %v", partyCount, names)
+	}
+	for i, name := range names {
+		if !strings.Contains(p, "- "+name+": "+partyRoles[i]+"\n") {
+			t.Errorf("PARTIES lacks %q", name)
+		}
+	}
+	for _, want := range []string{"=== PARTIES (name them only like this) ===", "use exactly the Japanese name given here",
+		"Never write in the first or second person", "<who should act, named as in PARTIES, and why>"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+	idx := func(s string) int { return strings.Index(p, s) }
+	if !(idx("=== HOW TO USE THE EVIDENCE ===") < idx("=== PARTIES") && idx("=== PARTIES") < idx("=== OUTPUT")) {
+		t.Error("PARTIES goes between the evidence rules and the output format")
+	}
+	// No first person in the instructions themselves (only inside the ban).
+	withoutBan := strings.Replace(p, p[idx("Never write in the first or second person"):], "", 1)
+	for _, word := range []string{" our ", "Our ", " we ", " us "} {
+		if strings.Contains(withoutBan, word) {
+			t.Errorf("the prompt still speaks in the first person (%q)", word)
+		}
+	}
+	for name, info := range CategoryGlossary {
+		for _, text := range []string{info.Description, info.Unit, info.Authority, info.Guidance} {
+			if strings.Contains(" "+strings.ToLower(text)+" ", " our ") {
+				t.Errorf("%s: glossary text in the first person: %q", name, text)
+			}
+		}
+	}
+	// English reports use the built-in names; a missing template falls back
+	// to them as well.
+	in.Language = "en"
+	if !strings.Contains(BuildPrompt(in), "- the sending-side mail administrator: ") {
+		t.Error("english party names missing")
+	}
+	in.Language = "ja"
+	in.TemplatesFS = fstest.MapFS{"templates/agent/party_names_ja.txt": {Data: []byte("a\nb\n")}}
+	if !strings.Contains(BuildPrompt(in), "- the recipient domain administrator: ") {
+		t.Error("an incomplete party name template must fall back to the English names")
 	}
 }

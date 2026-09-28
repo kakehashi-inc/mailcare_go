@@ -125,9 +125,9 @@
         "unknown": "重大度: 未分析"
     },
     "responsible": {
-        "sender": "送信側サーバー管理者",
-        "recipient": "宛先アドレス管理者",
-        "domain": "宛先ドメイン管理者",
+        "sender": "送信側のメール管理者",
+        "recipient": "宛先アドレスの所有者",
+        "domain": "宛先ドメインの管理者",
         "unknown": "担当不明"
     },
     "jobStatus": {
@@ -155,9 +155,9 @@
     },
     "reportStatus": {
         "none": "報告なし",
-        "running": "分析中",
-        "completed": "分析済",
-        "error": "分析エラー"
+        "running": "解析中",
+        "completed": "解析済",
+        "error": "解析エラー"
     },
     "bounceKind": {
         "none": "通常メール",
@@ -355,7 +355,10 @@
         "excludedTitle": "このグループは自動では解析しません",
         "excluded": "宛先側の問題（存在しないアドレス、容量超過など）は送信側で対応できないため、自動の解析の対象外です。",
         "excludedMoveHint": "「対応済にする」または「無視する」を選ぶと、対応対象の一覧に移ります。",
-        "excludedReturnHint": "「未対応に戻す」を選ぶと、対象外の一覧に戻ります。"
+        "excludedReturnHint": "「未対応に戻す」を選ぶと、対象外の一覧に戻ります。",
+        "unanalyzable": "解析不能",
+        "latestFailedUnanalyzable": "解析できませんでした: {{message}}（{{time}}）。新しいパターンの通知が届くまで、このグループは自動では解析しません。",
+        "latestFailedLimit": "エージェントの利用上限のため解析できませんでした（{{time}}）。解析待ちのまま、次回に解析します。"
     },
     "mails": {
         "kindTabs": "メールの種類",

@@ -42,6 +42,16 @@ export function SeverityBadge({ severity }: { severity: string }) {
     );
 }
 
+/** Shown when the latest analysis failed for good: not analyzed again until a new pattern arrives. */
+export function UnanalyzableBadge() {
+    const { t } = useTranslation();
+    return (
+        <Badge tone='danger' icon='error_outline'>
+            {t('report.unanalyzable')}
+        </Badge>
+    );
+}
+
 /** Shown when the agent could not establish the cause from the notices (confidence "low"). */
 export function NeedsReviewBadge() {
     const { t } = useTranslation();

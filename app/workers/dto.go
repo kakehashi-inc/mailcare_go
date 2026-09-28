@@ -6,6 +6,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
+	"mailcare/app/modules/agent"
 )
 
 // Response DTOs (see the system design document (Documents) section 9.3). Times are
@@ -159,6 +160,10 @@ type GroupDTO struct {
 	ReportSeverity     string  `json:"report_severity"`
 	ReportConfidence   *string `json:"report_confidence"`
 	ReportStatus       string  `json:"report_status"`
+	// ReportUnanalyzable is true when the latest analysis failed for good
+	// (not by a usage limit or a cancellation): the group is not analyzed
+	// again until a bounce of a new pattern arrives.
+	ReportUnanalyzable bool `json:"report_unanalyzable"`
 }
 
 // toGroupDTO converts a group. completed is the newest completed report (may
@@ -179,6 +184,7 @@ func toGroupDTO(g *models.BounceGroup, completed, latest *models.AgentReport) Gr
 	}
 	if latest != nil {
 		dto.ReportStatus = latest.Status
+		dto.ReportUnanalyzable = latest.Status == "error" && agent.FailureSettles(latest.ErrorMessage)
 	} else if completed != nil {
 		dto.ReportStatus = completed.Status
 	}
@@ -211,9 +217,13 @@ type ReportDTO struct {
 	ReasoningEffort *string `json:"reasoning_effort"`
 	TokensUsed      *int64  `json:"tokens_used"`
 	CommandCount    *int64  `json:"command_count"`
-	StartedAt       *string `json:"started_at"`
-	FinishedAt      *string `json:"finished_at"`
-	CreatedAt       string  `json:"created_at"`
+	// Unanalyzable is true for a failed run that settled its group (see
+	// GroupDTO.ReportUnanalyzable); false for a usage limit or a
+	// cancellation, and for every other status.
+	Unanalyzable bool    `json:"unanalyzable"`
+	StartedAt    *string `json:"started_at"`
+	FinishedAt   *string `json:"finished_at"`
+	CreatedAt    string  `json:"created_at"`
 }
 
 func toReportDTO(r *models.AgentReport) ReportDTO {
@@ -223,7 +233,8 @@ func toReportDTO(r *models.AgentReport) ReportDTO {
 		ReportMarkdown: r.ReportMarkdown, ErrorMessage: r.ErrorMessage, MessageCount: r.MessageCount,
 		Model: stringOrNil(r.Model), ReasoningEffort: stringOrNil(r.ReasoningEffort),
 		TokensUsed: nullInt(r.TokensUsed), CommandCount: nullInt(r.CommandCount),
-		StartedAt: nullTimeString(r.StartedAt), FinishedAt: nullTimeString(r.FinishedAt),
+		Unanalyzable: r.Status == "error" && agent.FailureSettles(r.ErrorMessage),
+		StartedAt:    nullTimeString(r.StartedAt), FinishedAt: nullTimeString(r.FinishedAt),
 		CreatedAt: timeString(r.CreatedAt),
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/agent"
 )
 
 // Scheduler queues a sync job for every enabled mailbox at each configured
@@ -18,7 +19,8 @@ import (
 // cleanup job (every mailbox) on the first tick of each local day
 // (CleanupDue; the date is recorded in the cleanup_last_run_date setting so
 // a restart does not repeat it and a day the server was down is caught up
-// at start). It re-reads the settings on every tick so a change takes
+// at start), and the analysis of the waiting groups once the agent's usage
+// limit is over (queueAnalysisAfterLimit). It re-reads the settings on every tick so a change takes
 // effect immediately, and it never fires the same time twice within one
 // minute.
 type Scheduler struct {
@@ -109,6 +111,27 @@ func (s *Scheduler) Tick() {
 	if key, due := NotifyDue(last, now, settings, s.notifyFired); due {
 		s.notifyFired = key
 		s.enqueue(JobKindNotify)
+	}
+	s.queueAnalysisAfterLimit(now)
+}
+
+// queueAnalysisAfterLimit queues the analysis of the groups waiting for it
+// (analyze, mailbox NULL: one child per mailbox) once the recorded end of the
+// agent's usage limit is AgentLimitResumeMargin behind, and removes the
+// record. With the automatic analysis switched off, or the CLI missing,
+// only the record goes. The caller holds s.mu.
+func (s *Scheduler) queueAnalysisAfterLimit(now time.Time) {
+	until, limited := ResolveAgentLimitedUntil(s.db)
+	if !limited || now.Before(until.Add(AgentLimitResumeMargin)) {
+		return
+	}
+	if ResolveAgentEnabled(s.db) && agent.ProviderAvailable(ResolveAgentProvider(s.db)) {
+		if !s.enqueue(JobKindAnalyze) {
+			return // try again on the next tick
+		}
+	}
+	if err := SetAgentLimitedUntil(s.db, time.Time{}); err != nil {
+		log.Printf("scheduler: failed to clear the usage limit record: %v", err)
 	}
 }
 

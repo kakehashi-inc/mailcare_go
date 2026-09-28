@@ -284,6 +284,12 @@ const (
 	// SettingCleanupLastRunDate is the local date (YYYY-MM-DD) on which the
 	// scheduler last queued the daily cleanup job (internal; see scheduler.go).
 	SettingCleanupLastRunDate = "cleanup_last_run_date"
+	// SettingAgentLimitedUntil is when the agent CLI's usage limit is lifted
+	// (RFC 3339, internal): set when an analysis is refused by the limit and
+	// the CLI named the time; until then no analysis launches the CLI, and
+	// AgentLimitResumeMargin after it the scheduler queues the analysis of
+	// the groups waiting for it (see scheduler.go).
+	SettingAgentLimitedUntil = "agent_limited_until"
 )
 
 // --- Notification defaults ---
@@ -318,6 +324,10 @@ const (
 	JobPollInterval = 2 * time.Second
 	// SchedulerTick is how often the scheduler re-evaluates the check times.
 	SchedulerTick = 30 * time.Second
+	// AgentLimitResumeMargin is how long after the announced end of the
+	// agent's usage limit the scheduler waits before it queues the analysis
+	// of the waiting groups (the CLI's clock and the limit's own may differ).
+	AgentLimitResumeMargin = 10 * time.Minute
 	// CLIJobPollInterval is how often the CLI polls a job it submitted to a
 	// running server.
 	CLIJobPollInterval = time.Second

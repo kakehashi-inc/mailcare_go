@@ -8,7 +8,7 @@
 // init time. Nothing else branches on a provider name. Adding a provider means
 // adding provider_<name>.go and, when it needs a workspace skeleton,
 // templates/agent/<name>/ (embedded from package main). See
-// templates/agent/README.md for the step-by-step recipe.
+// the provider guide in the Documents directory for the step-by-step recipe.
 //
 // Workspace layout inside agentRoot (data/agent): every analysis run gets
 // its own directory named after its agent_reports row, so the prompt and the

@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 const codexUsageLimit = "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 7:22 PM.\n"
 
@@ -71,5 +74,57 @@ func TestIsUsageLimitMessage(t *testing.T) {
 	}
 	if IsUsageLimitMessage("Codex produced no report") || IsUsageLimitMessage("") {
 		t.Error("other failures are not usage limits")
+	}
+}
+
+func TestParseRetryTime(t *testing.T) {
+	loc := time.FixedZone("JST", 9*3600)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, loc)
+	cases := []struct {
+		text string
+		want time.Time
+		ok   bool
+	}{
+		{"3:35 PM", time.Date(2026, 9, 28, 15, 35, 0, 0, loc), true},
+		{"3:35 PM.", time.Date(2026, 9, 28, 15, 35, 0, 0, loc), true},
+		{"7:22 am", time.Date(2026, 9, 29, 7, 22, 0, 0, loc), true}, // already past today: tomorrow
+		{"19:22", time.Date(2026, 9, 28, 19, 22, 0, 0, loc), true},
+		{"11 PM", time.Date(2026, 9, 28, 23, 0, 0, 0, loc), true},
+		{"Sep 30th, 2026 7:22 PM", time.Date(2026, 9, 30, 19, 22, 0, 0, loc), true},
+		{"Oct 1 8:05 AM", time.Date(2026, 10, 1, 8, 5, 0, 0, loc), true},
+		{"3 hours", now.Add(3 * time.Hour), true},
+		{"1 hour 30 minutes", now.Add(90 * time.Minute), true},
+		{"15 minutes", now.Add(15 * time.Minute), true},
+		{"", time.Time{}, false},
+		{"later", time.Time{}, false},
+		{"3 hours or so", time.Time{}, false},
+	}
+	for _, c := range cases {
+		got, ok := ParseRetryTime(c.text, now)
+		if ok != c.ok || (ok && !got.Equal(c.want)) {
+			t.Errorf("ParseRetryTime(%q) = %v, %v; want %v, %v", c.text, got, ok, c.want, c.ok)
+		}
+	}
+	if got := UsageLimitRetryAfter("usage limit reached (retry after 3:35 PM)"); got != "3:35 PM" {
+		t.Errorf("UsageLimitRetryAfter = %q", got)
+	}
+	if got := UsageLimitRetryAfter("usage limit reached"); got != "" {
+		t.Errorf("UsageLimitRetryAfter without time = %q", got)
+	}
+}
+
+func TestFailureSettles(t *testing.T) {
+	for msg, want := range map[string]bool{
+		"usage limit reached (retry after 3:35 PM)":        false,
+		"usage limit reached":                              false,
+		"analysis canceled: context canceled":              false,
+		CanceledMessage("interrupted by a server restart"): false,
+		"Codex produced no report":                         true,
+		"Codex timed out after 30m0s":                      true,
+		"Codex could not run: exec: not found":             true,
+	} {
+		if got := FailureSettles(msg); got != want {
+			t.Errorf("FailureSettles(%q) = %v, want %v", msg, got, want)
+		}
 	}
 }

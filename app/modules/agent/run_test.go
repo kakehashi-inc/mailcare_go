@@ -177,7 +177,7 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Category: unknown_failure - ", "Action unit (unit_value): example.net - ",
-		"Actionable by the mail administrator: yes",
+		"Actionable by the sending-side mail administrator: yes",
 		"Messages: 2 in 1 patterns.", "[S1] pattern P1, message 20260902-120000_bbbbbbbbbbbb",
 		"| Remote server said: 550 5.7.1 Message rejected by policy",
 	} {
@@ -355,8 +355,8 @@ func TestAnalyzeGroupNoReportBlock(t *testing.T) {
 		t.Fatalf("failure not recorded: %+v %v", stored, err)
 	}
 	g, _ := models.GetGroup(db, testGroupKey)
-	if !g.NeedsAnalysis {
-		t.Error("needs_analysis must be set after a failure even when it was clear before the run")
+	if g.NeedsAnalysis {
+		t.Error("a failure must not touch needs_analysis (it was clear before the run)")
 	}
 	work := RunDir(agentRoot, address, testGroupKey, rep.ID)
 	result, _ := os.ReadFile(filepath.Join(work, ResultFileName))
@@ -417,8 +417,8 @@ func TestAnalyzeGroupRejectsUnusableReport(t *testing.T) {
 				t.Fatalf("the previous good report must remain the latest completed one: %+v %v", completed, err)
 			}
 			g, _ := models.GetGroup(db, testGroupKey)
-			if !g.NeedsAnalysis {
-				t.Error("needs_analysis must be set again after an unusable report")
+			if g.NeedsAnalysis {
+				t.Error("an unusable report must not touch needs_analysis (the good run cleared it)")
 			}
 			// Each run has its own directory: the good run keeps its REPORT.md,
 			// the failed run has none.
@@ -478,7 +478,7 @@ func analyzeGoodThenFailure(t *testing.T, argv []string) (db *sql.DB, goodWork, 
 	if err != nil || good.Status != "completed" {
 		t.Fatalf("first run: %+v %v", good, err)
 	}
-	// The good run cleared the flag; the failing run must set it again.
+	// The good run cleared the flag; the failing run must leave it alone.
 	if g, _ := models.GetGroup(db, testGroupKey); g.NeedsAnalysis {
 		t.Fatal("precondition: needs_analysis must be clear after the good run")
 	}
@@ -492,8 +492,8 @@ func analyzeGoodThenFailure(t *testing.T, argv []string) (db *sql.DB, goodWork, 
 
 // assertPreviousReportKept checks that a failed run left the previous good
 // report as the latest completed one, the REPORT.md of the good run
-// untouched (and none in its own directory) and the group still flagged for
-// analysis.
+// untouched (and none in its own directory) and needs_analysis as the good
+// run left it (a failure does not touch it).
 func assertPreviousReportKept(t *testing.T, db *sql.DB, goodWork, failedWork string, good, failed *models.AgentReport) {
 	t.Helper()
 	if failed.Status != "error" {
@@ -508,8 +508,8 @@ func assertPreviousReportKept(t *testing.T, db *sql.DB, goodWork, failedWork str
 		t.Fatalf("the previous good report must remain the latest completed one: %+v %v", completed, err)
 	}
 	g, _ := models.GetGroup(db, testGroupKey)
-	if !g.NeedsAnalysis {
-		t.Error("needs_analysis must be set by a failure so the next sync retries the group")
+	if g.NeedsAnalysis {
+		t.Error("a failure must not touch needs_analysis (the good run cleared it)")
 	}
 	report, _ := os.ReadFile(filepath.Join(goodWork, ReportFileName))
 	if strings.TrimSpace(string(report)) != sampleReport {
@@ -606,8 +606,8 @@ func TestAnalyzeGroupLaunchFailureAndUnknownProvider(t *testing.T) {
 	if rep.Status != "error" || !strings.Contains(rep.ErrorMessage, "could not run") {
 		t.Fatalf("expected a launch failure, got %+v", rep)
 	}
-	if g, _ := models.GetGroup(db, testGroupKey); !g.NeedsAnalysis {
-		t.Error("a launch failure must set needs_analysis for the next sync")
+	if g, _ := models.GetGroup(db, testGroupKey); g.NeedsAnalysis {
+		t.Error("a launch failure must not touch needs_analysis")
 	}
 	if err := models.SetGroupNeedsAnalysis(db, testGroupKey, false); err != nil {
 		t.Fatal(err)
@@ -622,8 +622,8 @@ func TestAnalyzeGroupLaunchFailureAndUnknownProvider(t *testing.T) {
 	if rep.Status != "error" || !strings.Contains(rep.ErrorMessage, "unknown agent provider") {
 		t.Fatalf("expected an unknown-provider failure, got %+v", rep)
 	}
-	if g, _ := models.GetGroup(db, testGroupKey); !g.NeedsAnalysis {
-		t.Error("an unknown-provider failure must set needs_analysis for the next sync")
+	if g, _ := models.GetGroup(db, testGroupKey); g.NeedsAnalysis {
+		t.Error("an unknown-provider failure must not touch needs_analysis")
 	}
 
 	if _, err := AnalyzeGroup(context.Background(), AnalyzeInput{AgentRoot: agentRoot, Index: db, GroupKey: "missing", Provider: "ghost"}, nil); err == nil {
@@ -699,9 +699,54 @@ func TestAnalyzeGroupCanceled(t *testing.T) {
 		t.Fatalf("expected a cancellation failure, got %+v", rep)
 	}
 	if g, _ := models.GetGroup(db, testGroupKey); !g.NeedsAnalysis {
-		t.Error("a cancellation must leave needs_analysis set")
+		t.Error("a cancellation must leave the waiting group waiting")
 	}
 	if time.Since(start) > 15*time.Second {
 		t.Fatal("cancellation did not stop the run promptly")
+	}
+}
+
+func TestAnalyzeGroupFailureSettlesTheGroup(t *testing.T) {
+	db, mailsRoot, agentRoot, address := newTestIndex(t)
+	in := AnalyzeInput{MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake"}
+	flagged := func() bool {
+		t.Helper()
+		g, err := models.GetGroup(db, testGroupKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.NeedsAnalysis
+	}
+	if err := models.SetGroupNeedsAnalysis(db, testGroupKey, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// A usage limit says nothing about the group: it keeps waiting.
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), codexUsageLimit)})
+	if rep, err := AnalyzeGroup(context.Background(), in, nil); err != nil || rep.Status != "error" {
+		t.Fatalf("limited run: %+v %v", rep, err)
+	}
+	if !flagged() {
+		t.Error("a usage limit must leave the group waiting")
+	}
+
+	// Any other failure settles the group: the flag goes and the patterns
+	// are recorded, so the same pattern does not bring it back.
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "I refuse to answer.\n")})
+	rep, err := AnalyzeGroup(context.Background(), in, nil)
+	if err != nil || rep.Status != "error" || !strings.Contains(rep.ErrorMessage, "produced no report") {
+		t.Fatalf("failed run: %+v %v", rep, err)
+	}
+	if flagged() {
+		t.Error("an analysis that failed for good must clear the flag")
+	}
+	if covered, _ := models.ListAgentReportPatterns(db, rep.ID); !slices.Equal(covered, []string{"pa"}) {
+		t.Errorf("the failed run must record the patterns it dealt with, got %v", covered)
+	}
+	if ok, err := models.PatternCovered(db, testGroupKey, "pa"); err != nil || !ok {
+		t.Errorf("pattern pa must count as settled: %v %v", ok, err)
+	}
+	if ok, _ := models.PatternCovered(db, testGroupKey, "pb"); ok {
+		t.Error("a new pattern must not count as settled")
 	}
 }

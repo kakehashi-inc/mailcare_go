@@ -5,11 +5,13 @@ import (
 )
 
 // agent_report_patterns: the bounce patterns (bounces.pattern_key) of the
-// group a completed agent report was written from. A group is flagged for
-// analysis again only when one of its bounces has a pattern that its latest
-// completed report does not list (PatternCovered / GroupHasUncoveredPattern);
-// more notices of a pattern the report already covered only update the
-// counters. Rows are deleted with their report (cascade).
+// group an analysis settled: a completed report, or a run that failed for
+// good (the group is unanalyzable as it is; a usage limit or a cancellation
+// settles nothing). A group is flagged for analysis again only when one of
+// its bounces has a pattern that the latest settling report does not list
+// (PatternCovered / GroupHasUncoveredPattern); more notices of a pattern
+// already settled only update the counters. Rows are deleted with their
+// report (cascade).
 
 // InsertAgentReportPatterns records the pattern keys a report covered.
 func InsertAgentReportPatterns(db Execer, reportID int64, patternKeys []string) error {
@@ -60,26 +62,28 @@ func ListAllAgentReportPatterns(db *sql.DB) (map[int64][]string, error) {
 	return out, rows.Err()
 }
 
-// latestCompletedReportID is the subquery that names the latest completed
-// report of the group given as its parameter.
-const latestCompletedReportID = `(SELECT MAX(id) FROM agent_reports WHERE group_key = ? AND status = 'completed')`
+// latestSettlingReportID is the subquery that names the latest report of the
+// group given as its parameter that settled the group (it recorded
+// patterns: a completed report or a run that failed for good).
+const latestSettlingReportID = `(SELECT MAX(r.id) FROM agent_reports r WHERE r.group_key = ?
+	AND EXISTS (SELECT 1 FROM agent_report_patterns s WHERE s.report_id = r.id))`
 
-// PatternCovered reports whether the latest completed report of a group
-// covered the pattern (false when the group has no completed report).
+// PatternCovered reports whether the latest settling report of a group
+// covered the pattern (false when no analysis settled the group yet).
 func PatternCovered(db Execer, groupKey, patternKey string) (bool, error) {
 	var covered bool
 	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM agent_report_patterns
-		WHERE pattern_key = ? AND report_id = `+latestCompletedReportID+`)`, patternKey, groupKey).Scan(&covered)
+		WHERE pattern_key = ? AND report_id = `+latestSettlingReportID+`)`, patternKey, groupKey).Scan(&covered)
 	return covered, err
 }
 
 // GroupHasUncoveredPattern reports whether a bounce of the group has a
-// pattern that the latest completed report of the group did not cover (true
-// for a group with bounces but no completed report).
+// pattern that the latest settling report of the group did not cover (true
+// for a group with bounces that no analysis settled yet).
 func GroupHasUncoveredPattern(db Execer, groupKey string) (bool, error) {
 	var uncovered bool
 	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM bounces b WHERE b.group_key = ? AND NOT EXISTS (
-		SELECT 1 FROM agent_report_patterns p WHERE p.pattern_key = b.pattern_key AND p.report_id = `+latestCompletedReportID+`))`,
+		SELECT 1 FROM agent_report_patterns p WHERE p.pattern_key = b.pattern_key AND p.report_id = `+latestSettlingReportID+`))`,
 		groupKey, groupKey).Scan(&uncovered)
 	return uncovered, err
 }
