@@ -58,15 +58,14 @@ func toTokenDTO(t *models.Token) TokenDTO {
 }
 
 // MailboxStatsDTO summarizes the index of a mailbox. Groups counts the
-// actionable groups only; ExcludedGroups is the number of recipient-side
-// groups kept out of Alerts; Unclassified is the number of messages the
-// grouping phase has not processed yet.
+// groups of the actionable Alerts list only (excluded groups are not
+// counted); Unclassified is the number of messages the grouping phase has
+// not processed yet.
 type MailboxStatsDTO struct {
-	Messages       int                `json:"messages"`
-	Bounces        int                `json:"bounces"`
-	Unclassified   int                `json:"unclassified"`
-	Groups         models.GroupCounts `json:"groups"`
-	ExcludedGroups int                `json:"excluded_groups"`
+	Messages     int                `json:"messages"`
+	Bounces      int                `json:"bounces"`
+	Unclassified int                `json:"unclassified"`
+	Groups       models.GroupCounts `json:"groups"`
 }
 
 // MailboxDTO is a mailbox without its password. The connection settings

@@ -171,19 +171,6 @@ export function DashboardPage() {
                                                         </dd>
                                                     </div>
                                                 )}
-                                                {(mb.stats?.excluded_groups ?? 0) > 0 && (
-                                                    <div>
-                                                        <dt className='text-muted'>{t('mailbox.excludedGroups')}</dt>
-                                                        <dd className='text-ink'>
-                                                            <Link
-                                                                to={`/alerts/${mb.id}?scope=excluded`}
-                                                                className='inline-flex min-h-tap items-center rounded text-xl font-bold hover:text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
-                                                            >
-                                                                {formatNumber(mb.stats?.excluded_groups ?? 0)}
-                                                            </Link>
-                                                        </dd>
-                                                    </div>
-                                                )}
                                                 <div className='col-span-2'>
                                                     <dt className='text-muted'>{t('mailbox.lastChecked')}</dt>
                                                     <dd className='text-ink'>

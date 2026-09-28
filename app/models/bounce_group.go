@@ -154,12 +154,35 @@ func GetGroup(db Execer, groupKey string) (*BounceGroup, error) {
 	return scanGroup(db.QueryRow(`SELECT `+groupColumns+` FROM groups WHERE group_key = ?`, groupKey))
 }
 
+// Group list scopes of Alerts. A recipient-side group (actionable = 0) is
+// "excluded" only while it is open: once someone marks it resolved or
+// ignored (it was handled after all) it is listed with the actionable groups,
+// and reopening it sends it back to the excluded list. Excluded groups have
+// no state of their own for the user and are not counted.
+const (
+	GroupScopeAll        = ""
+	GroupScopeActionable = "actionable"
+	GroupScopeExcluded   = "excluded"
+)
+
+// groupScopeCondition returns the WHERE condition of a scope ("" for all).
+func groupScopeCondition(scope string) string {
+	switch scope {
+	case GroupScopeActionable:
+		return `(actionable = 1 OR state <> 'open')`
+	case GroupScopeExcluded:
+		return `(actionable = 0 AND state = 'open')`
+	}
+	return ""
+}
+
 // GroupFilter narrows ListGroups.
 type GroupFilter struct {
 	State       string // "" = all
 	Responsible string // "" = all
 	Category    string // "" = all
-	Actionable  *bool  // nil = all; true = actionable only; false = excluded (recipient-side) only
+	Actionable  *bool  // nil = all; true / false = the actionable column only (analysis, notification)
+	Scope       string // GroupScope*: the Alerts list the group belongs to (see groupScopeCondition)
 	Query       string // matched against unit, authority, recipient domain and template (LIKE)
 }
 
@@ -182,6 +205,9 @@ func ListGroups(db *sql.DB, f GroupFilter) ([]*BounceGroup, error) {
 	if f.Actionable != nil {
 		conds = append(conds, `actionable = ?`)
 		args = append(args, boolToInt(*f.Actionable))
+	}
+	if c := groupScopeCondition(f.Scope); c != "" {
+		conds = append(conds, c)
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		like := likeContains(q)
@@ -212,17 +238,15 @@ type GroupCounts struct {
 	Ignored  int `json:"ignored"`
 }
 
-// CountGroups returns the number of groups per state. actionable nil counts
-// every group; true/false counts only actionable or only excluded groups.
-func CountGroups(db *sql.DB, actionable *bool) (GroupCounts, error) {
+// CountGroups returns the number of groups per state within a scope
+// (GroupScopeAll counts every group).
+func CountGroups(db *sql.DB, scope string) (GroupCounts, error) {
 	var c GroupCounts
 	where := ""
-	var args []any
-	if actionable != nil {
-		where = ` WHERE actionable = ?`
-		args = append(args, boolToInt(*actionable))
+	if cond := groupScopeCondition(scope); cond != "" {
+		where = ` WHERE ` + cond
 	}
-	rows, err := db.Query(`SELECT state, COUNT(*) FROM groups`+where+` GROUP BY state`, args...)
+	rows, err := db.Query(`SELECT state, COUNT(*) FROM groups` + where + ` GROUP BY state`)
 	if err != nil {
 		return c, err
 	}

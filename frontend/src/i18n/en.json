@@ -214,7 +214,6 @@
         "openGroups": "Open groups",
         "bounces": "Bounces",
         "unclassified": "Awaiting grouping",
-        "excludedGroups": "Excluded groups",
         "messages": "Fetched mails",
         "lastChecked": "Last synced",
         "disabledNote": "This mailbox is disabled and is skipped by scheduled syncs.",
@@ -279,7 +278,7 @@
             "ignored": "No ignored groups"
         },
         "emptyFiltered": "Try changing the filters.",
-        "emptyExcluded": "Excluded groups appear here."
+        "emptyExcluded": "No excluded groups"
     },
     "group": {
         "detail": "Group detail",
@@ -340,7 +339,9 @@
         "sampled": "Sampled messages: {{count}}",
         "history": "Previous reports ({{count}})",
         "excludedTitle": "This group is not analyzed",
-        "excluded": "Recipient-side problems (missing addresses, full mailboxes, ...) cannot be fixed by the sender, so the agent does not analyze them."
+        "excluded": "Recipient-side problems (missing addresses, full mailboxes, ...) cannot be fixed by the sender, so the agent does not analyze them.",
+        "excludedMoveHint": "Marking it resolved or ignored moves it to the actionable list.",
+        "excludedReturnHint": "Reopening it moves it back to the excluded list."
     },
     "mails": {
         "chooseMailbox": "Choose the mailbox whose messages you want to browse.",

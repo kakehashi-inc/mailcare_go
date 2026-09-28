@@ -215,6 +215,9 @@ export function AlertGroupDetailPage() {
     // A re-analysis that failed after the shown report was completed: keep the report, but say so.
     const latestFailed = newestFailedAfter(reports, report);
     const description = categoryDescription(group.category, t);
+    // An open recipient-side group is on the excluded list, which has no states; marking it resolved or
+    // ignored moves it to the actionable list, and reopening it sends it back.
+    const excludedOpen = !group.actionable && group.state === 'open';
 
     const messageColumns: Column<MessageDTO>[] = [
         {
@@ -243,7 +246,10 @@ export function AlertGroupDetailPage() {
                 title={headline}
                 crumbs={[
                     { label: t('nav.alerts'), to: '/alerts' },
-                    { label: mailbox.data?.address ?? '...', to: `/alerts/${id}` },
+                    {
+                        label: mailbox.data?.address ?? '...',
+                        to: excludedOpen ? `/alerts/${id}?scope=excluded` : `/alerts/${id}`,
+                    },
                     { label: t('group.detail') },
                 ]}
                 actions={
@@ -274,7 +280,7 @@ export function AlertGroupDetailPage() {
                         <div className='mb-4 flex flex-wrap gap-2'>
                             <CategoryBadge category={group.category} />
                             <ActionableBadge actionable={group.actionable} />
-                            <GroupStateBadge state={group.state} />
+                            {!excludedOpen && <GroupStateBadge state={group.state} />}
                             {group.actionable && <SeverityBadge severity={group.report_severity} />}
                             <ResponsibleBadge responsible={group.responsible} />
                             {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
@@ -370,7 +376,10 @@ export function AlertGroupDetailPage() {
                         )}
                         {!group.actionable && (
                             <Alert tone='info' className='mb-4' title={t('report.excludedTitle')}>
-                                {t('report.excluded')}
+                                <p>{t('report.excluded')}</p>
+                                <p className='mt-1'>
+                                    {t(excludedOpen ? 'report.excludedMoveHint' : 'report.excludedReturnHint')}
+                                </p>
                             </Alert>
                         )}
                         {reportRunning && (

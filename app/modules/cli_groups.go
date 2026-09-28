@@ -43,28 +43,27 @@ func groupRow(g *models.BounceGroup, report *models.AgentReport) map[string]inte
 	return row
 }
 
-// Group list scopes: actionable groups (the default), the recipient-side
-// groups excluded from Alerts, or both.
+// Group list scopes: actionable groups (the default), the open
+// recipient-side groups excluded from Alerts, or both (see
+// models.GroupScopeActionable for how a handled excluded group moves).
 const (
 	GroupScopeActionable = "actionable"
 	GroupScopeExcluded   = "excluded"
 	GroupScopeAll        = "all"
 )
 
-// ActionableFilter maps a scope to the ListGroups / CountGroups filter
-// (nil = every group). ok is false for an unknown scope.
-func ActionableFilter(scope string) (actionable *bool, ok bool) {
+// GroupListScope maps a scope to the models.GroupFilter.Scope /
+// CountGroups value. ok is false for an unknown scope.
+func GroupListScope(scope string) (modelScope string, ok bool) {
 	switch scope {
 	case "", GroupScopeActionable:
-		v := true
-		return &v, true
+		return models.GroupScopeActionable, true
 	case GroupScopeExcluded:
-		v := false
-		return &v, true
+		return models.GroupScopeExcluded, true
 	case GroupScopeAll:
-		return nil, true
+		return models.GroupScopeAll, true
 	}
-	return nil, false
+	return "", false
 }
 
 // GroupsCmd groups the bounce group subcommands: "groups ADDRESS [KEY]"
@@ -92,7 +91,7 @@ func (c *GroupsListCmd) Run() error {
 	if strings.TrimSpace(c.Key) != "" {
 		return showGroup(c.Address, c.Key, c.JSON)
 	}
-	actionable, ok := ActionableFilter(c.Scope)
+	scope, ok := GroupListScope(c.Scope)
 	if !ok {
 		return NewExitErrorf(ExitArgument, "unknown scope %q", c.Scope)
 	}
@@ -115,7 +114,7 @@ func (c *GroupsListCmd) Run() error {
 		return err
 	}
 	defer idx.Close()
-	groups, err := models.ListGroups(idx, models.GroupFilter{State: c.State, Category: c.Category, Actionable: actionable})
+	groups, err := models.ListGroups(idx, models.GroupFilter{State: c.State, Category: c.Category, Scope: scope})
 	if err != nil {
 		return NewExitError(ExitGeneral, err.Error())
 	}

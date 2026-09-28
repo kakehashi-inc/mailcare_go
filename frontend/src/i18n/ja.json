@@ -214,7 +214,6 @@
         "openGroups": "未対応グループ",
         "bounces": "バウンス",
         "unclassified": "纏め待ち",
-        "excludedGroups": "対象外グループ",
         "messages": "取得メール",
         "lastChecked": "最終同期",
         "disabledNote": "このメールアドレスは無効化されており、自動同期の対象外です。",
@@ -279,7 +278,7 @@
             "ignored": "無視したグループはありません"
         },
         "emptyFiltered": "絞り込み条件を変えてみてください。",
-        "emptyExcluded": "対象外のグループはここに表示されます。"
+        "emptyExcluded": "対象外のグループはありません"
     },
     "group": {
         "detail": "グループ詳細",
@@ -340,7 +339,9 @@
         "sampled": "参照メール {{count}} 件",
         "history": "過去の報告 ({{count}} 件)",
         "excludedTitle": "このグループは分析しません",
-        "excluded": "宛先側の問題（存在しないアドレス、容量超過など）は送信側で対応できないため、エージェントによる分析は行いません。"
+        "excluded": "宛先側の問題（存在しないアドレス、容量超過など）は送信側で対応できないため、エージェントによる分析は行いません。",
+        "excludedMoveHint": "「対応済にする」または「無視する」を選ぶと、対応対象の一覧に移ります。",
+        "excludedReturnHint": "「未対応に戻す」を選ぶと、対象外の一覧に戻ります。"
     },
     "mails": {
         "chooseMailbox": "メールを閲覧するメールアドレスを選択してください。",

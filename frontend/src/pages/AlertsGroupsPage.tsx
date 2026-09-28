@@ -46,9 +46,11 @@ export function AlertsGroupsPage() {
     const { mailboxes } = useMailboxes();
     const mailbox = useAsync(() => getMailbox(id), [id]);
     useDocumentTitle(mailbox.data ? `${t('nav.alerts')} - ${mailbox.data.address}` : t('nav.alerts'));
+    // Excluded groups have no states: their list is requested without one.
+    const listState = scope === 'excluded' ? '' : state;
     const groups = useAsync(
-        () => listGroups(id, { scope, state, category, responsible, q }),
-        [id, scope, state, category, responsible, q]
+        () => listGroups(id, { scope, state: listState, category, responsible, q }),
+        [id, scope, listState, category, responsible, q]
     );
 
     function update(patch: Record<string, string>) {
@@ -84,8 +86,28 @@ export function AlertsGroupsPage() {
     }, [groups.data, sort]);
 
     const counts = groups.data?.counts;
-    const excludedCount = groups.data?.excluded_count;
     const filtered = Boolean(q || responsible || category);
+
+    function renderList(emptyTitle: string) {
+        if (groups.loading) return <LoadingBlock />;
+        if (groups.error) {
+            return <ErrorState message={errorMessage(groups.error, t)} onRetry={() => void groups.reload()} />;
+        }
+        if (rows.length === 0) {
+            return <EmptyState title={emptyTitle} description={filtered ? t('alerts.emptyFiltered') : undefined} />;
+        }
+        return (
+            <ul className='flex flex-col gap-3' aria-live='polite'>
+                {rows.map(g => (
+                    <GroupRow
+                        key={g.group_key}
+                        group={g}
+                        to={`/alerts/${id}/groups/${encodeURIComponent(g.group_key)}`}
+                    />
+                ))}
+            </ul>
+        );
+    }
 
     return (
         <PageContainer wide>
@@ -161,28 +183,18 @@ export function AlertsGroupsPage() {
                 >
                     {SCOPES.map(s => {
                         const active = scope === s.key;
-                        const count = s.key === 'excluded' ? excludedCount : undefined;
                         return (
                             <button
                                 key={s.key}
                                 type='button'
                                 aria-pressed={active}
-                                onClick={() => update({ scope: s.key === 'actionable' ? '' : s.key })}
+                                onClick={() => update({ scope: s.key === 'actionable' ? '' : s.key, state: '' })}
                                 className={`inline-flex min-h-tap items-center gap-1.5 rounded-md px-3 py-1 text-base font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                                     active ? 'bg-surface text-accent shadow-sm' : 'text-muted hover:text-ink'
                                 }`}
                             >
                                 <Icon name={s.icon} className='text-[18px]' />
                                 {t(s.key === 'actionable' ? 'alerts.scopeActionable' : 'alerts.scopeExcluded')}
-                                {count !== undefined && (
-                                    <span
-                                        className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                            active ? 'bg-accent-soft text-accent' : 'bg-surface text-muted'
-                                        }`}
-                                    >
-                                        {count}
-                                    </span>
-                                )}
                             </button>
                         );
                     })}
@@ -190,54 +202,33 @@ export function AlertsGroupsPage() {
                 {scope === 'excluded' && <p className='mt-2 text-sm text-muted'>{t('alerts.scopeExcludedHint')}</p>}
             </div>
 
-            <div className='mt-4'>
-                <Tabs<GroupState>
-                    label={t('alerts.stateTabs')}
-                    value={state}
-                    onChange={s => update({ state: s })}
-                    tabs={STATES.map(s => ({
-                        key: s,
-                        label: t(`groupState.${s}`),
-                        icon:
-                            s === 'open'
-                                ? 'notifications_active'
-                                : s === 'resolved'
-                                  ? 'check_circle'
-                                  : 'visibility_off',
-                        count: counts ? counts[s] : undefined,
-                    }))}
-                />
-                {STATES.map(s => (
-                    <TabPanel key={s} id={s} active={state === s}>
-                        {groups.loading ? (
-                            <LoadingBlock />
-                        ) : groups.error ? (
-                            <ErrorState message={errorMessage(groups.error, t)} onRetry={() => void groups.reload()} />
-                        ) : rows.length === 0 ? (
-                            <EmptyState
-                                title={t(`alerts.empty.${s}`)}
-                                description={
-                                    filtered
-                                        ? t('alerts.emptyFiltered')
-                                        : scope === 'excluded'
-                                          ? t('alerts.emptyExcluded')
-                                          : undefined
-                                }
-                            />
-                        ) : (
-                            <ul className='flex flex-col gap-3' aria-live='polite'>
-                                {rows.map(g => (
-                                    <GroupRow
-                                        key={g.group_key}
-                                        group={g}
-                                        to={`/alerts/${id}/groups/${encodeURIComponent(g.group_key)}`}
-                                    />
-                                ))}
-                            </ul>
-                        )}
-                    </TabPanel>
-                ))}
-            </div>
+            {scope === 'excluded' ? (
+                <div className='mt-4'>{renderList(t('alerts.emptyExcluded'))}</div>
+            ) : (
+                <div className='mt-4'>
+                    <Tabs<GroupState>
+                        label={t('alerts.stateTabs')}
+                        value={state}
+                        onChange={s => update({ state: s })}
+                        tabs={STATES.map(s => ({
+                            key: s,
+                            label: t(`groupState.${s}`),
+                            icon:
+                                s === 'open'
+                                    ? 'notifications_active'
+                                    : s === 'resolved'
+                                      ? 'check_circle'
+                                      : 'visibility_off',
+                            count: counts ? counts[s] : undefined,
+                        }))}
+                    />
+                    {STATES.map(s => (
+                        <TabPanel key={s} id={s} active={state === s}>
+                            {renderList(t(`alerts.empty.${s}`))}
+                        </TabPanel>
+                    ))}
+                </div>
+            )}
         </PageContainer>
     );
 }

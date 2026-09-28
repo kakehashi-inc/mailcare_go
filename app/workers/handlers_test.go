@@ -83,9 +83,8 @@ func decode(t *testing.T, body []byte, v any) {
 }
 
 type groupsResponse struct {
-	Groups        []GroupDTO         `json:"groups"`
-	Counts        models.GroupCounts `json:"counts"`
-	ExcludedCount int                `json:"excluded_count"`
+	Groups []GroupDTO         `json:"groups"`
+	Counts models.GroupCounts `json:"counts"`
 }
 
 // seededGroupCounts returns how many of the seeded groups are actionable and
@@ -114,8 +113,8 @@ func seededGroupCounts(t *testing.T, s *seededCore) (all groupsResponse, actiona
 func TestGroupsEndpoints(t *testing.T) {
 	s := newSeededCore(t)
 	all, actionable, excluded := seededGroupCounts(t, s)
-	if all.Counts.Open != len(all.Groups) || all.Counts.Resolved != 0 || all.ExcludedCount != excluded {
-		t.Fatalf("scope=all counts %+v excluded %d (want %d)", all.Counts, all.ExcludedCount, excluded)
+	if all.Counts.Open != len(all.Groups) || all.Counts.Resolved != 0 || excluded == 0 {
+		t.Fatalf("scope=all counts %+v, %d excluded groups (want some)", all.Counts, excluded)
 	}
 	for _, g := range all.Groups {
 		// Only actionable groups are flagged for analysis (recipient-side
@@ -134,18 +133,47 @@ func TestGroupsEndpoints(t *testing.T) {
 	}
 	var list groupsResponse
 	decode(t, rec.Body.Bytes(), &list)
-	if len(list.Groups) != actionable || list.Counts.Open != actionable || list.ExcludedCount != excluded {
-		t.Errorf("default scope: %d groups, counts %+v, excluded %d (want %d / %d)", len(list.Groups), list.Counts, list.ExcludedCount, actionable, excluded)
+	if len(list.Groups) != actionable || list.Counts.Open != actionable || strings.Contains(rec.Body.String(), `"excluded_count"`) {
+		t.Errorf("default scope: %d groups, counts %+v (want %d): %s", len(list.Groups), list.Counts, actionable, rec.Body.String())
 	}
 	for _, g := range list.Groups {
 		if !g.Actionable {
 			t.Errorf("excluded group in the default scope: %+v", g)
 		}
 	}
+	// The excluded list has no states to track, so it carries no counts.
+	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=excluded"), nil, s.user)
+	list = groupsResponse{}
+	decode(t, rec.Body.Bytes(), &list)
+	if len(list.Groups) != excluded || strings.Contains(rec.Body.String(), `"counts"`) {
+		t.Errorf("scope=excluded: %d groups (want %d): %s", len(list.Groups), excluded, rec.Body.String())
+	}
+	// A handled excluded group moves to the actionable list; reopening it
+	// sends it back.
+	moved := list.Groups[0].GroupKey
+	for _, st := range []string{"resolved", "ignored"} {
+		if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+moved+"/state"), map[string]string{"state": st}, s.admin); rec.Code != http.StatusOK {
+			t.Fatalf("set excluded group %s: %d %s", st, rec.Code, rec.Body.String())
+		}
+		rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=excluded"), nil, s.user)
+		decode(t, rec.Body.Bytes(), &list)
+		if len(list.Groups) != excluded-1 {
+			t.Errorf("%s: excluded list has %d groups, want %d", st, len(list.Groups), excluded-1)
+		}
+		rec = do(t, s.h, http.MethodGet, s.path("/groups?state="+st), nil, s.user)
+		decode(t, rec.Body.Bytes(), &list)
+		if len(list.Groups) != 1 || list.Groups[0].GroupKey != moved || list.Groups[0].Actionable ||
+			list.Counts.Open != actionable || (st == "resolved" && list.Counts.Resolved != 1) || (st == "ignored" && list.Counts.Ignored != 1) {
+			t.Errorf("%s: actionable list %+v counts %+v", st, list.Groups, list.Counts)
+		}
+	}
+	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+moved+"/state"), map[string]string{"state": "open"}, s.admin); rec.Code != http.StatusOK {
+		t.Fatalf("reopen excluded group: %d %s", rec.Code, rec.Body.String())
+	}
 	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=excluded"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
-	if len(list.Groups) != excluded || list.Counts.Open != excluded {
-		t.Errorf("scope=excluded: %d groups, counts %+v (want %d)", len(list.Groups), list.Counts, excluded)
+	if len(list.Groups) != excluded {
+		t.Errorf("after reopen: excluded list has %d groups, want %d", len(list.Groups), excluded)
 	}
 	// Category filter and validation of scope / category.
 	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all&category="+all.Groups[0].Category), nil, s.user)
@@ -700,7 +728,7 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 
 func TestDashboardAndMailboxStats(t *testing.T) {
 	s := newSeededCore(t)
-	_, actionable, excluded := seededGroupCounts(t, s)
+	_, actionable, _ := seededGroupCounts(t, s)
 	rec := do(t, s.h, http.MethodGet, "/api/v1/dashboard", nil, s.user)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("dashboard: %d %s", rec.Code, rec.Body.String())
@@ -711,8 +739,8 @@ func TestDashboardAndMailboxStats(t *testing.T) {
 		t.Errorf("totals %+v (actionable %d)", d.Totals, actionable)
 	}
 	if len(d.Mailboxes) != 1 || d.Mailboxes[0].Stats == nil || d.Mailboxes[0].Stats.Messages != 3 ||
-		d.Mailboxes[0].Stats.Groups.Open != actionable || d.Mailboxes[0].Stats.ExcludedGroups != excluded {
-		t.Errorf("mailboxes %+v (actionable %d, excluded %d)", d.Mailboxes, actionable, excluded)
+		d.Mailboxes[0].Stats.Groups.Open != actionable {
+		t.Errorf("mailboxes %+v (actionable %d)", d.Mailboxes, actionable)
 	}
 	if len(d.RecentGroups) != actionable {
 		t.Errorf("recent groups %+v (want %d actionable)", d.RecentGroups, actionable)
@@ -760,11 +788,11 @@ func TestDashboardAndMailboxStats(t *testing.T) {
 			continue
 		}
 		st := mb.Stats
-		if st.Messages != 3 || st.Bounces != 2 || st.Unclassified != 0 || st.Groups.Open != actionable || st.ExcludedGroups != excluded {
-			t.Errorf("stats %+v (actionable %d, excluded %d)", st, actionable, excluded)
+		if st.Messages != 3 || st.Bounces != 2 || st.Unclassified != 0 || st.Groups.Open != actionable {
+			t.Errorf("stats %+v (actionable %d)", st, actionable)
 		}
 	}
-	if !strings.Contains(rec.Body.String(), `"unclassified":0`) || !strings.Contains(rec.Body.String(), `"excluded_groups":`) {
+	if !strings.Contains(rec.Body.String(), `"unclassified":0`) || strings.Contains(rec.Body.String(), `"excluded_groups"`) {
 		t.Errorf("stats fields missing: %s", rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodGet, "/api/v1/mailboxes/"+itoa(s.mb.ID), nil, s.user)

@@ -166,7 +166,7 @@ func isGroupedKind(kind string) bool {
 // countAllGroups returns the number of groups in the index regardless of
 // state and actionability.
 func countAllGroups(db *sql.DB) (int, error) {
-	counts, err := models.CountGroups(db, nil)
+	counts, err := models.CountGroups(db, models.GroupScopeAll)
 	if err != nil {
 		return 0, fmt.Errorf("count groups: %w", err)
 	}

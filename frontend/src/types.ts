@@ -93,10 +93,8 @@ export interface MailboxStats {
     bounces: number;
     /** Mails fetched but not grouped yet. */
     unclassified: number;
-    /** Counts of actionable groups only. */
+    /** Counts of the actionable Alerts list only (excluded groups are not counted). */
     groups: { open: number; resolved: number; ignored: number };
-    /** Number of excluded (recipient-side) groups. */
-    excluded_groups: number;
 }
 
 export interface MailboxDTO {
@@ -378,10 +376,8 @@ export interface NotificationTestInput {
 /** GET /api/v1/mailboxes/{id}/groups */
 export interface GroupListResponse {
     groups: GroupDTO[];
-    /** Per-state counts within the requested scope. */
-    counts: { open: number; resolved: number; ignored: number };
-    /** Total number of excluded groups, regardless of scope. */
-    excluded_count: number;
+    /** Per-state counts within the requested scope (absent for the excluded scope, which is not counted). */
+    counts?: { open: number; resolved: number; ignored: number };
 }
 
 /** GET /api/v1/mailboxes/{id}/groups/{key} */

@@ -1977,8 +1977,7 @@ func TestGroupIncremental(t *testing.T) {
 	if n, _ := models.CountUnclassifiedMessages(db); n != 0 {
 		t.Errorf("%d messages left unclassified", n)
 	}
-	only := true
-	actionable, err := models.CountGroups(db, &only)
+	actionable, err := models.CountGroups(db, models.GroupScopeActionable)
 	if err != nil {
 		t.Fatal(err)
 	}

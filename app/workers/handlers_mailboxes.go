@@ -34,16 +34,9 @@ func indexStats(idx *sql.DB, address string) *MailboxStatsDTO {
 	if st.Unclassified, err = models.CountUnclassifiedMessages(idx); err != nil {
 		log.Printf("failed to count unclassified messages of %s: %v", address, err)
 	}
-	actionable := true
-	if st.Groups, err = models.CountGroups(idx, &actionable); err != nil {
+	if st.Groups, err = models.CountGroups(idx, models.GroupScopeActionable); err != nil {
 		log.Printf("failed to count groups of %s: %v", address, err)
 	}
-	excluded := false
-	counts, err := models.CountGroups(idx, &excluded)
-	if err != nil {
-		log.Printf("failed to count excluded groups of %s: %v", address, err)
-	}
-	st.ExcludedGroups = counts.Open + counts.Resolved + counts.Ignored
 	return st
 }
 
