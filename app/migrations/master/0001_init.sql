@@ -1,11 +1,12 @@
 -- +goose Up
 -- Initial schema of the master database (data/mailcare.db).
 --
--- Migrations are embedded into the binary and applied automatically when the
--- database is opened (see app/modules/db.go). Add a new file per change,
--- numbered sequentially (0002_<description>.sql, ...); never edit an applied
--- migration. Wrap each statement in StatementBegin/StatementEnd so goose can
--- run multi-line statements safely.
+-- Migrations are embedded into the binary by package app/migrations and
+-- applied automatically when the database is opened (see app/modules/db.go).
+-- Add a new file per change, numbered sequentially within this directory
+-- (0002_<description>.sql, ...); never edit an applied migration. Wrap each
+-- statement in StatementBegin/StatementEnd so goose can run multi-line
+-- statements safely.
 --
 -- Design rules: no column has a default value (the application writes every
 -- column); text whose length is known is declared VARCHAR(n) and text of
@@ -15,8 +16,8 @@
 -- (mail server connection settings, with a "protocol" key); the name never
 -- ties the column to one protocol.
 --
--- Per-mailbox indexes (data/mails/<address>.sqlite) are NOT managed here: their
--- schema lives in app/models/mailindex.go and is rebuilt from the raw files.
+-- Per-mailbox indexes (data/mails/<address>.sqlite) have their own migrations
+-- in app/migrations/index.
 --
 -- users:     people who log in to the Web UI (optional notification address).
 -- tokens:    access tokens (template table, reserved for the future API).
