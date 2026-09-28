@@ -103,29 +103,30 @@ func (c *SettingsShowCmd) Run() error {
 		return NewExitError(ExitConfig, err.Error())
 	}
 	values := map[string]interface{}{
-		SettingWebListen:      ResolveWebListen(db, ""),
-		SettingWebPort:        ResolveWebPort(db, 0),
-		SettingWorkers:        ResolveWorkers(db),
-		SettingCheckTimes:     ResolveCheckTimes(db),
-		SettingAgentProvider:  provider,
-		SettingAgentModel:     ResolveAgentModel(db),
-		SettingAgentEnabled:   ResolveAgentEnabled(db),
-		SettingAgentKeepDays:  ResolveAgentKeepDays(db),
-		SettingMailKeepDays:   ResolveMailKeepDays(db),
-		SettingCookieTTLHours: ResolveCookieTTLHours(db),
-		SettingSMTPHost:       notify.SMTP.Host,
-		SettingSMTPPort:       notify.SMTP.Port,
-		SettingSMTPSecurity:   notify.SMTP.Security,
-		SettingSMTPUsername:   notify.SMTP.Username,
-		"smtp_password_set":   notify.SMTPPasswordSet,
-		SettingSMTPFrom:       notify.SMTP.From,
-		SettingPublicBaseURL:  notify.PublicBaseURL,
-		"effective_base_url":  EffectiveBaseURL(db, notify),
-		SettingNotifyEnabled:  notify.Enabled,
-		SettingNotifyTime:     notify.Time,
-		SettingNotifyInterval: notify.IntervalDays,
-		SettingNotifyUserIDs:  notify.UserIDs,
-		SettingNotifyLastSent: rfc3339OrNull(notify.LastSentAt),
+		SettingWebListen:            ResolveWebListen(db, ""),
+		SettingWebPort:              ResolveWebPort(db, 0),
+		SettingWorkers:              ResolveWorkers(db),
+		SettingCheckTimes:           ResolveCheckTimes(db),
+		SettingAgentProvider:        provider,
+		SettingAgentModel:           ResolveAgentModel(db),
+		SettingAgentReasoningEffort: ResolveAgentReasoningEffort(db),
+		SettingAgentEnabled:         ResolveAgentEnabled(db),
+		SettingAgentKeepDays:        ResolveAgentKeepDays(db),
+		SettingMailKeepDays:         ResolveMailKeepDays(db),
+		SettingCookieTTLHours:       ResolveCookieTTLHours(db),
+		SettingSMTPHost:             notify.SMTP.Host,
+		SettingSMTPPort:             notify.SMTP.Port,
+		SettingSMTPSecurity:         notify.SMTP.Security,
+		SettingSMTPUsername:         notify.SMTP.Username,
+		"smtp_password_set":         notify.SMTPPasswordSet,
+		SettingSMTPFrom:             notify.SMTP.From,
+		SettingPublicBaseURL:        notify.PublicBaseURL,
+		"effective_base_url":        EffectiveBaseURL(db, notify),
+		SettingNotifyEnabled:        notify.Enabled,
+		SettingNotifyTime:           notify.Time,
+		SettingNotifyInterval:       notify.IntervalDays,
+		SettingNotifyUserIDs:        notify.UserIDs,
+		SettingNotifyLastSent:       rfc3339OrNull(notify.LastSentAt),
 		// The date of the last daily cleanup is recorded by the scheduler
 		// and shown for information only.
 		SettingCleanupLastRunDate: stringOrNull(models.GetSetting(db, SettingCleanupLastRunDate)),
@@ -156,6 +157,11 @@ func (c *SettingsShowCmd) Run() error {
 		model = "(CLI default)"
 	}
 	fmt.Printf("%-18s %s\n", SettingAgentModel+":", model)
+	effort := ResolveAgentReasoningEffort(db)
+	if effort == "" {
+		effort = "(CLI setting)"
+	}
+	fmt.Printf("%-18s %s\n", SettingAgentReasoningEffort+":", effort)
 	fmt.Printf("%-18s %v\n", SettingAgentEnabled+":", values[SettingAgentEnabled])
 	fmt.Printf("%-18s %v\n", SettingAgentKeepDays+":", values[SettingAgentKeepDays])
 	fmt.Printf("%-18s %v\n", SettingMailKeepDays+":", values[SettingMailKeepDays])
@@ -253,7 +259,8 @@ func (c *SettingsSetCmd) Run() error {
 // SettingKeys lists the keys "settings set" accepts.
 func SettingKeys() []string {
 	return []string{
-		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentModel, SettingAgentEnabled,
+		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentModel,
+		SettingAgentReasoningEffort, SettingAgentEnabled,
 		SettingAgentKeepDays, SettingMailKeepDays, SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
 		SettingSMTPUsername,
 		settingSMTPPassword,
@@ -323,10 +330,15 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		}
 		return value, SetAgentProvider(db, value)
 	case SettingAgentModel:
-		if err := agent.ValidateModel(value); err != nil {
-			return argErr(err)
+		if err := CheckAgentSettings(ResolveAgentProvider(db), value, ResolveAgentReasoningEffort(db)); err != nil {
+			return argErr(fmt.Errorf("%w (change %s first)", err, SettingAgentReasoningEffort))
 		}
 		return value, SetAgentModel(db, value)
+	case SettingAgentReasoningEffort:
+		if err := CheckAgentSettings(ResolveAgentProvider(db), ResolveAgentModel(db), value); err != nil {
+			return argErr(err)
+		}
+		return value, SetAgentReasoningEffort(db, value)
 	case SettingAgentEnabled:
 		enabled, perr := ParseBoolSetting(value)
 		if perr != nil {

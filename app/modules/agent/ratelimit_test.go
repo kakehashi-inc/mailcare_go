@@ -62,3 +62,14 @@ func TestDetectRateLimitUsesProviderHook(t *testing.T) {
 		t.Fatal("providers without a hook fall back to the generic markers")
 	}
 }
+
+func TestIsUsageLimitMessage(t *testing.T) {
+	for _, o := range []RateLimitOutcome{{Limited: true}, {Limited: true, RetryAfter: "7:22 PM"}} {
+		if !IsUsageLimitMessage(o.ErrorMessage()) {
+			t.Errorf("%q not recognized", o.ErrorMessage())
+		}
+	}
+	if IsUsageLimitMessage("Codex produced no report") || IsUsageLimitMessage("") {
+		t.Error("other failures are not usage limits")
+	}
+}

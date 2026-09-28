@@ -59,6 +59,7 @@ type Meta struct {
 	Summary     string `json:"summary"`
 	Responsible string `json:"responsible"` // sender | recipient | domain | unknown | ""
 	Severity    string `json:"severity"`    // high | medium | low | ""
+	Confidence  string `json:"confidence"`  // high | medium | low | ""
 }
 
 // Output is the parsed agent transcript.
@@ -226,6 +227,7 @@ func parseMeta(text string) (Meta, bool) {
 	m.Summary = collapseSpace(m.Summary)
 	m.Responsible = validEnum(m.Responsible, ResponsibleSender, ResponsibleRecipient, ResponsibleDomain, ResponsibleUnknown)
 	m.Severity = validEnum(m.Severity, SeverityHigh, SeverityMedium, SeverityLow)
+	m.Confidence = validEnum(m.Confidence, ConfidenceHigh, ConfidenceMedium, ConfidenceLow)
 	return m, true
 }
 

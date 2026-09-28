@@ -38,6 +38,7 @@ import (
 //   bounces       app/models/bounce.go        details extracted from a bounce message (1:1 with its message row)
 //   groups        app/models/bounce_group.go  bounces bundled by the unit an administrator acts on
 //   agent_reports app/models/agent_report.go  analysis produced by an agent CLI
+//   agent_report_patterns app/models/agent_report_pattern.go  bounce patterns a completed report covered
 
 // MailIndexSchemaVersion is the version stamped into PRAGMA user_version of
 // every index file. The initial release ships version 1; a future release that
@@ -90,6 +91,9 @@ CREATE TABLE IF NOT EXISTS bounces (
     smtp_code           VARCHAR(3)    NOT NULL,
     diagnostic          TEXT          NOT NULL,
     diagnostic_template TEXT          NOT NULL,
+    diagnostic_source   VARCHAR(16)   NOT NULL,
+    category_rule       VARCHAR(64)   NOT NULL,
+    pattern_key         VARCHAR(16)   NOT NULL,
     remote_mta          TEXT          NOT NULL,
     remote_ip           VARCHAR(45)   NOT NULL,
     reporting_mta       TEXT          NOT NULL,
@@ -98,7 +102,7 @@ CREATE TABLE IF NOT EXISTS bounces (
     original_from       TEXT          NOT NULL,
     original_date       DATETIME
 );
-CREATE INDEX IF NOT EXISTS idx_bounces_group ON bounces(group_key);
+CREATE INDEX IF NOT EXISTS idx_bounces_group ON bounces(group_key, pattern_key);
 
 CREATE TABLE IF NOT EXISTS groups (
     group_key           VARCHAR(16)   NOT NULL PRIMARY KEY,
@@ -133,12 +137,23 @@ CREATE TABLE IF NOT EXISTS agent_reports (
     summary             TEXT          NOT NULL,
     report_markdown     TEXT          NOT NULL,
     error_message       TEXT          NOT NULL,
+    confidence          VARCHAR(16)   NOT NULL,
     message_count       INTEGER       NOT NULL,
+    model               TEXT          NOT NULL,
+    reasoning_effort    VARCHAR(16)   NOT NULL,
+    tokens_used         INTEGER       ,
+    command_count       INTEGER       ,
     started_at          DATETIME      ,
     finished_at         DATETIME      ,
     created_at          DATETIME      NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_reports_group ON agent_reports(group_key, id);
+
+CREATE TABLE IF NOT EXISTS agent_report_patterns (
+    report_id           INTEGER       NOT NULL REFERENCES agent_reports(id) ON DELETE CASCADE,
+    pattern_key         VARCHAR(16)   NOT NULL,
+    PRIMARY KEY (report_id, pattern_key)
+);
 `
 
 // OpenMailIndex opens (creating when absent) the per-mailbox index at path and

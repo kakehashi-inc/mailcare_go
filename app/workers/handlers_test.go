@@ -701,6 +701,31 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 	if _, found, _ := models.GetSettingStrict(s.db, modules.SettingAgentModel); rec.Code != http.StatusOK || found || model.AgentModel != "" {
 		t.Errorf("empty agent_model should remove the setting: %d %s", rec.Code, rec.Body.String())
 	}
+	// The reasoning level is checked against the model before anything is
+	// saved (m1 accepts low and high).
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "models_cache.json"), []byte(
+		`{"models":[{"slug":"m1","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var effort struct {
+		AgentModel  string `json:"agent_model"`
+		AgentEffort string `json:"agent_reasoning_effort"`
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"agent_model": "m1", "agent_reasoning_effort": "high"}, s.admin)
+	decode(t, rec.Body.Bytes(), &effort)
+	if rec.Code != http.StatusOK || effort.AgentModel != "m1" || effort.AgentEffort != "high" {
+		t.Errorf("agent_reasoning_effort: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"agent_reasoning_effort": "medium", "workers": 3}, s.admin)
+	if rec.Code != http.StatusBadRequest || modules.ResolveAgentReasoningEffort(s.db) != "high" || s.jm.Workers() == 3 {
+		t.Errorf("a level the model does not accept must refuse the request: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"agent_model": "", "agent_reasoning_effort": ""}, s.admin)
+	if rec.Code != http.StatusOK || modules.ResolveAgentReasoningEffort(s.db) != "" || modules.ResolveAgentModel(s.db) != "" {
+		t.Errorf("clearing the model and the level: %d %s", rec.Code, rec.Body.String())
+	}
 	// The worker count is persisted and applied to the job manager at once.
 	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"workers": 5}, s.admin)
 	if rec.Code != http.StatusOK {

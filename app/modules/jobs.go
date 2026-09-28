@@ -980,8 +980,12 @@ func (m *JobManager) runReindex(ctx context.Context, job *models.Job, mb *models
 
 // runAnalyze runs the agent over the groups named by the target: "" = the
 // actionable groups flagged for analysis, "*" = every actionable group, or
-// one group key. The run directories are left alone here; the daily cleanup
-// job removes the ones older than agent_keep_days (runCleanup).
+// one group key (any group, recipient-side ones included: the "Analyze"
+// button of the group detail). When a run is refused by a usage limit the
+// remaining groups are not started (they would be refused as well); they
+// stay flagged and the next sync retries them. The run directories are left
+// alone here; the daily cleanup job removes the ones older than
+// agent_keep_days (runCleanup).
 func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
 	provider := ResolveAgentProvider(m.db)
 	if !agent.IsValidProvider(provider) {
@@ -1020,6 +1024,7 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 		return "no group needs analysis", nil
 	}
 	model := ResolveAgentModel(m.db)
+	reasoning := ResolveAgentReasoningEffort(m.db)
 	progress(fmt.Sprintf("analyzing %d group(s) with %s", len(groups), provider))
 	done, failed := 0, 0
 	var failures []string
@@ -1030,7 +1035,8 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 		progress(fmt.Sprintf("(%d/%d) %s", i+1, len(groups), g.Label()))
 		report, err := agent.AnalyzeGroup(ctx, agent.AnalyzeInput{
 			MailsRoot: m.mailsRoot, AgentRoot: m.agentRoot, TemplatesFS: m.templates,
-			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Model: model, Language: "ja",
+			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Model: model,
+			ReasoningEffort: reasoning, Language: "ja",
 		}, progress)
 		switch {
 		case err != nil:
@@ -1041,6 +1047,14 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 			failed++
 			failures = append(failures, fmt.Sprintf("%s: %s", g.GroupKey, report.ErrorMessage))
 			progress(fmt.Sprintf("%s: agent failed: %s", g.GroupKey, report.ErrorMessage))
+			if agent.IsUsageLimitMessage(report.ErrorMessage) {
+				if left := len(groups) - i - 1; left > 0 {
+					skipped := fmt.Sprintf("stopped: %d group(s) not analyzed because of the usage limit", left)
+					progress(skipped)
+					failures = append(failures, skipped)
+				}
+				return fmt.Sprintf("analyzed %d, failed %d", done, failed), errors.New(strings.Join(failures, "; "))
+			}
 		default:
 			done++
 			progress(fmt.Sprintf("%s: completed", g.GroupKey))
@@ -1063,7 +1077,9 @@ func (m *JobManager) runNotify(ctx context.Context, job *models.Job, progress fu
 			return "", err
 		}
 		progress("sending a test mail to " + address)
-		if err := TestSMTP(ctx, s.SMTP, address); err != nil {
+		// A user's address gets the mail in that user's language and time
+		// zone; any other address in the defaults.
+		if err := TestSMTP(ctx, s.SMTP, address, MailLocaleForAddress(m.db, address, DefaultMailLocale())); err != nil {
 			progress(fmt.Sprintf("error: %v", err))
 			return "", err
 		}
@@ -1085,7 +1101,12 @@ func (m *JobManager) runNotify(ctx context.Context, job *models.Job, progress fu
 		progress(line)
 		return line, nil
 	}
+	// Some recipients failing does not fail the job (the others got the
+	// mail); the failures are part of the result.
 	line := fmt.Sprintf("sent %d group(s) to %s", res.Groups, strings.Join(res.Recipients, ", "))
+	if len(res.Failures) > 0 {
+		line += "; failed: " + strings.Join(res.Failures, "; ")
+	}
 	progress(line)
 	return line, nil
 }

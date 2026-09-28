@@ -16,11 +16,13 @@ import (
 	"mailcare/app/modules/mailengine"
 )
 
-// AnalyzeGroup builds the prompt for the group (listing the raw message files
-// so the CLI reads the originals itself), runs the provider CLI in a fresh
-// workspace directory made for this run, parses the REPORT/META blocks and
-// stores an agent report row. It returns the stored report (status completed
-// or error) and an error only when nothing could be recorded.
+// AnalyzeGroup prepares the evidence of the group (its bounce patterns and
+// one sample notice per pattern, see evidence.go) in a fresh workspace
+// directory made for this run, builds the prompt around it, runs the
+// provider CLI there, parses the REPORT/META blocks and stores an agent
+// report row with the usage the CLI reported. It returns the stored report
+// (status completed or error) and an error only when nothing could be
+// recorded.
 //
 // Success is decided by whether a usable REPORT block was extracted from the
 // transcript after the echoed prompt is removed (see StripPromptEcho and
@@ -30,10 +32,12 @@ import (
 // cancellation, a usage/rate limit ("usage limit reached (retry after ...)"),
 // a missing REPORT block or an unusable report (template placeholders, too
 // short, or secret-like content: see ValidateOutput) fail the run and the
-// reason is stored on the report. A failed run writes no REPORT.md, leaves the previous
-// completed report row (and the directory of that run) untouched and sets
-// needs_analysis so the next sync retries the group; its RESULT.log keeps the
-// full transcript.
+// reason is stored on the report. A failed run writes no REPORT.md, leaves the
+// previous completed report row (and the directory of that run) untouched
+// and, for an actionable group, sets needs_analysis so the next sync retries
+// the group; its RESULT.log keeps the full transcript. A completed report
+// records the patterns it covered; the group stays flagged only when a
+// bounce of another pattern arrived meanwhile.
 func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (*models.AgentReport, error) {
 	if progress == nil {
 		progress = func(string) {}
@@ -65,8 +69,10 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		return nil, fmt.Errorf("agent: record report: %w", err)
 	}
 
-	// Every failure re-flags the group so the next sync retries it, even
-	// when this run was triggered explicitly for a group whose flag was 0.
+	// Every failure of an actionable group re-flags it so the next sync
+	// retries it, even when this run was triggered explicitly for a group
+	// whose flag was 0. A recipient-side group is never analyzed
+	// automatically, so its flag stays cleared.
 	fail := func(reason error) (*models.AgentReport, error) {
 		progress("analysis failed: " + reason.Error())
 		report.Status = "error"
@@ -74,8 +80,10 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		if err := models.FailAgentReport(in.Index, report.ID, reason.Error()); err != nil {
 			return report, fmt.Errorf("agent: record failure: %w", err)
 		}
-		if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, true); err != nil {
-			progress("warning: could not set needs_analysis: " + err.Error())
+		if group.Actionable {
+			if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, true); err != nil {
+				progress("warning: could not set needs_analysis: " + err.Error())
+			}
 		}
 		return report, nil
 	}
@@ -94,46 +102,78 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		return fail(fmt.Errorf("copy templates: %w", err))
 	}
 
-	// 2. Prompt.
-	progress("building prompt for " + group.GroupKey)
+	// 2. Evidence: the patterns of the group and one sample notice per
+	// pattern. When the latest completed report covered some of the
+	// patterns, only the new ones are sampled (an update).
+	progress("building evidence for " + group.GroupKey)
 	stats, err := models.GroupStats(in.Index, group.GroupKey)
 	if err != nil {
 		return fail(fmt.Errorf("load group stats: %w", err))
 	}
-	msgs, _, err := models.ListMessages(in.Index, models.MessageFilter{GroupKey: group.GroupKey, Limit: MaxSampleMessages})
+	bounces, err := models.ListGroupBounces(in.Index, group.GroupKey)
 	if err != nil {
-		return fail(fmt.Errorf("list messages: %w", err))
+		return fail(fmt.Errorf("list bounces: %w", err))
 	}
+	previous, covered, err := previousCoverage(in.Index, group.GroupKey)
+	if err != nil {
+		return fail(fmt.Errorf("load previous report: %w", err))
+	}
+	ev := BuildEvidence(EvidenceInput{MailsRoot: in.MailsRoot, Address: in.Address, Group: group, Bounces: bounces, Covered: covered})
+	if err := writeEvidenceFiles(dir, ev); err != nil {
+		return fail(fmt.Errorf("write evidence: %w", err))
+	}
+	if !ev.Update {
+		previous = nil
+	}
+
+	// 3. Prompt. It goes in on stdin and is written to PROMPT.md after the
+	// run (only a provider that reads it from {prompt_file} gets the file
+	// before), so the agent finds no copy of it to read again.
 	promptText := BuildPrompt(PromptInput{
-		MailsRoot:   in.MailsRoot,
 		Address:     in.Address,
 		Language:    in.Language,
 		TemplatesFS: in.TemplatesFS,
 		Group:       group,
 		Stats:       stats,
-		Messages:    msgs,
+		Evidence:    ev,
+		Previous:    previous,
 	})
 	// The progress names the run directory relative to the address (its
 	// absolute path would expose the server's layout to every Web user).
 	progress("workspace " + group.GroupKey + "/" + strconv.FormatInt(report.ID, 10))
 	promptFile := filepath.Join(dir, PromptFileName)
-	if err := os.WriteFile(promptFile, []byte(promptText), 0o600); err != nil {
-		return fail(fmt.Errorf("write prompt: %w", err))
+	writePrompt := func() error { return os.WriteFile(promptFile, []byte(promptText), 0o600) }
+	promptWritten := false
+	if usesPromptFile(providerCommand(provider, in.Model, in.ReasoningEffort)) {
+		if err := writePrompt(); err != nil {
+			return fail(fmt.Errorf("write prompt: %w", err))
+		}
+		promptWritten = true
 	}
 
-	// 3. Run the CLI.
-	if _, ok := provider.(ModelSelector); ok && in.Model != "" {
-		progress(fmt.Sprintf("running %s (model %s) on %d messages", provider.Label(), in.Model, len(msgs)))
-	} else {
-		progress(fmt.Sprintf("running %s on %d messages", provider.Label(), len(msgs)))
-	}
+	// 4. Run the CLI.
+	progress(runLine(provider, in.Model, in.ReasoningEffort, ev))
 	runCtx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
-	out, runErr := runProvider(runCtx, provider, in.Model, dir, promptText, promptFile)
+	out, runErr := runProvider(runCtx, provider, in.Model, in.ReasoningEffort, dir, promptText, promptFile)
+	if !promptWritten {
+		if err := writePrompt(); err != nil {
+			progress("warning: could not write " + PromptFileName + ": " + err.Error())
+		}
+	}
 	// The echoed prompt is dropped before parsing so that its markers and
 	// placeholders (and its wording, for the rate-limit markers) are ignored.
 	answer := StripPromptEcho(out, promptText)
 	parsed := ParseOutput(answer)
+	usage := parseUsage(provider, out, answer)
+	if err := models.UpdateAgentReportUsage(in.Index, report.ID, usage); err != nil {
+		progress("warning: could not record the usage: " + err.Error())
+	}
+	report.Model, report.ReasoningEffort = usage.Model, usage.ReasoningEffort
+	report.TokensUsed, report.CommandCount = usage.TokensUsed, usage.CommandCount
+	if line := usageLine(usage); line != "" {
+		progress(line)
+	}
 
 	var exitErr *exec.ExitError
 	launchErr := runErr != nil && !errors.As(runErr, &exitErr)
@@ -164,8 +204,8 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		}
 	}
 
-	// 4. Record the outcome.
-	if err := os.WriteFile(filepath.Join(dir, ResultFileName), []byte(formatResultLog(failure, parsed, out)), 0o600); err != nil {
+	// 5. Record the outcome.
+	if err := os.WriteFile(filepath.Join(dir, ResultFileName), []byte(formatResultLog(failure, parsed, usage, out)), 0o600); err != nil {
 		progress("warning: could not write " + ResultFileName + ": " + err.Error())
 	}
 	if failure != nil {
@@ -175,16 +215,29 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		progress("warning: could not write " + ReportFileName + ": " + err.Error())
 	}
 	if err := models.CompleteAgentReport(in.Index, report.ID, parsed.Meta.Summary, parsed.Meta.Responsible,
-		parsed.Meta.Severity, parsed.Report); err != nil {
+		parsed.Meta.Severity, parsed.Meta.Confidence, parsed.Report); err != nil {
 		return report, fmt.Errorf("agent: record report: %w", err)
+	}
+	if err := models.InsertAgentReportPatterns(in.Index, report.ID, ev.PatternKeys()); err != nil {
+		progress("warning: could not record the covered patterns: " + err.Error())
 	}
 	report.Status = "completed"
 	report.Summary = parsed.Meta.Summary
 	report.Responsible = parsed.Meta.Responsible
 	report.Severity = parsed.Meta.Severity
+	report.Confidence = parsed.Meta.Confidence
 	report.ReportMarkdown = parsed.Report
-	if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, false); err != nil {
-		progress("warning: could not clear needs_analysis: " + err.Error())
+	// A bounce of a new pattern that arrived while the agent ran is not
+	// covered by this report, so the flag stays set for it.
+	needs := false
+	if group.Actionable {
+		if needs, err = models.GroupHasUncoveredPattern(in.Index, group.GroupKey); err != nil {
+			progress("warning: could not check the covered patterns: " + err.Error())
+			needs = false
+		}
+	}
+	if err := models.SetGroupNeedsAnalysis(in.Index, group.GroupKey, needs); err != nil {
+		progress("warning: could not update needs_analysis: " + err.Error())
 	}
 	// The machine-derived responsible party is replaced only by a definite
 	// answer. "unknown" (or a missing META) keeps the rule-based value on the
@@ -200,6 +253,96 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		progress("report stored")
 	}
 	return report, nil
+}
+
+// previousCoverage returns the latest completed report of a group and the
+// pattern keys it covered (nil, nil when there is none, or when it covered
+// no recorded pattern: a report written before patterns were recorded).
+func previousCoverage(db *sql.DB, groupKey string) (*models.AgentReport, map[string]bool, error) {
+	prev, err := models.LatestCompletedAgentReport(db, groupKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	keys, err := models.ListAgentReportPatterns(db, prev.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil, nil
+	}
+	covered := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		covered[k] = true
+	}
+	return prev, covered, nil
+}
+
+// writeEvidenceFiles writes the evidence file of every sample into the
+// workspace.
+func writeEvidenceFiles(dir string, ev *Evidence) error {
+	if len(ev.Samples) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Join(dir, EvidenceDirName), 0o700); err != nil {
+		return err
+	}
+	for _, s := range ev.Samples {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(s.FileName)), []byte(s.File), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// usesPromptFile reports whether a launch argv reads the prompt from
+// {prompt_file}.
+func usesPromptFile(argv []string) bool {
+	for _, a := range argv {
+		if strings.Contains(a, "{prompt_file}") {
+			return true
+		}
+	}
+	return false
+}
+
+// runLine is the progress line announcing the run.
+func runLine(p Provider, model, reasoning string, ev *Evidence) string {
+	var opts []string
+	if _, ok := p.(ModelSelector); ok && model != "" {
+		opts = append(opts, "model "+model)
+	}
+	if _, ok := p.(ReasoningSelector); ok && reasoning != "" {
+		opts = append(opts, "reasoning "+reasoning)
+	}
+	line := "running " + p.Label()
+	if len(opts) > 0 {
+		line += " (" + strings.Join(opts, ", ") + ")"
+	}
+	return fmt.Sprintf("%s on %d messages in %d patterns, %d samples", line, ev.Messages, len(ev.Patterns), len(ev.Samples))
+}
+
+// usageLine renders what the CLI reported about the run ("" when nothing).
+func usageLine(u models.AgentRunUsage) string {
+	var parts []string
+	if u.Model != "" {
+		parts = append(parts, "model "+u.Model)
+	}
+	if u.ReasoningEffort != "" {
+		parts = append(parts, "reasoning "+u.ReasoningEffort)
+	}
+	if u.TokensUsed.Valid {
+		parts = append(parts, fmt.Sprintf("tokens %d", u.TokensUsed.Int64))
+	}
+	if u.CommandCount.Valid {
+		parts = append(parts, fmt.Sprintf("commands %d", u.CommandCount.Int64))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "usage: " + strings.Join(parts, ", ")
 }
 
 // RunDir returns the workspace directory of one analysis run:
@@ -241,9 +384,9 @@ func copyTemplates(templates fs.FS, provider, dir string) error {
 	})
 }
 
-// formatResultLog renders RESULT.log: the verdict, the extracted values, then
-// the full CLI transcript.
-func formatResultLog(failure error, parsed Output, raw string) string {
+// formatResultLog renders RESULT.log: the verdict, the extracted values, the
+// usage the CLI reported, then the full CLI transcript.
+func formatResultLog(failure error, parsed Output, usage models.AgentRunUsage, raw string) string {
 	var b strings.Builder
 	if failure == nil {
 		b.WriteString("Result: Success\n")
@@ -255,6 +398,12 @@ func formatResultLog(failure error, parsed Output, raw string) string {
 	b.WriteString(orNone(parsed.Meta.Summary) + "\n")
 	b.WriteString("\nResponsible (extracted): " + orNone(parsed.Meta.Responsible) + "\n")
 	b.WriteString("Severity (extracted): " + orNone(parsed.Meta.Severity) + "\n")
+	b.WriteString("Confidence (extracted): " + orNone(parsed.Meta.Confidence) + "\n")
+	b.WriteString("\nUsage (reported by the CLI):\n")
+	b.WriteString("Model: " + orNone(usage.Model) + "\n")
+	b.WriteString("Reasoning effort: " + orNone(usage.ReasoningEffort) + "\n")
+	b.WriteString("Tokens used: " + orNone(nullIntText(usage.TokensUsed)) + "\n")
+	b.WriteString("Commands run: " + orNone(nullIntText(usage.CommandCount)) + "\n")
 	b.WriteString("\nReport (extracted):\n")
 	b.WriteString(orNone(parsed.Report) + "\n")
 	b.WriteString("\nResponse (full agent transcript):\n")
@@ -277,6 +426,14 @@ func isDefiniteResponsible(v string) bool {
 		return true
 	}
 	return false
+}
+
+// nullIntText renders a nullable integer ("" when NULL).
+func nullIntText(v sql.NullInt64) string {
+	if !v.Valid {
+		return ""
+	}
+	return strconv.FormatInt(v.Int64, 10)
 }
 
 func orNone(s string) string {

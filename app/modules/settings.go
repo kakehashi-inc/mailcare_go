@@ -117,9 +117,9 @@ func ResolveAgentProvider(db *sql.DB) string {
 }
 
 // SetAgentProvider persists the agent provider (non-default only). The caller
-// validates the name against the registered providers. Model names differ
-// between providers, so switching to another provider clears the model
-// (callers that set both set the model afterwards).
+// validates the name against the registered providers. Model names and
+// reasoning levels differ between providers, so switching to another
+// provider clears both (callers that set them too set them afterwards).
 func SetAgentProvider(db *sql.DB, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -127,6 +127,9 @@ func SetAgentProvider(db *sql.DB, name string) error {
 	}
 	if name != ResolveAgentProvider(db) {
 		if err := models.DeleteSetting(db, SettingAgentModel); err != nil {
+			return err
+		}
+		if err := models.DeleteSetting(db, SettingAgentReasoningEffort); err != nil {
 			return err
 		}
 	}
@@ -144,13 +147,87 @@ func ResolveAgentModel(db *sql.DB) string {
 }
 
 // SetAgentModel validates and persists the agent model ("" restores the CLI
-// default by removing the setting).
+// default by removing the setting). The saved reasoning level must stay
+// valid for the new model (CheckAgentSettings); otherwise nothing is saved.
 func SetAgentModel(db *sql.DB, model string) error {
 	model = strings.TrimSpace(model)
 	if err := agent.ValidateModel(model); err != nil {
 		return err
 	}
+	if err := CheckAgentSettings(ResolveAgentProvider(db), model, ResolveAgentReasoningEffort(db)); err != nil {
+		return err
+	}
 	return PersistSetting(db, SettingAgentModel, model, model == "")
+}
+
+// ResolveAgentReasoningEffort returns the reasoning level passed to the
+// agent CLI ("" = the CLI's own setting). A stored value of the wrong shape
+// is ignored.
+func ResolveAgentReasoningEffort(db *sql.DB) string {
+	level := strings.TrimSpace(models.GetSetting(db, SettingAgentReasoningEffort))
+	if agent.ValidateReasoningEffort(level) != nil {
+		return ""
+	}
+	return level
+}
+
+// SetAgentReasoningEffort validates the reasoning level against the
+// configured provider and model (CheckAgentSettings) and persists it (""
+// restores the CLI's own setting by removing the setting).
+func SetAgentReasoningEffort(db *sql.DB, level string) error {
+	level = strings.TrimSpace(level)
+	if err := CheckAgentSettings(ResolveAgentProvider(db), ResolveAgentModel(db), level); err != nil {
+		return err
+	}
+	return PersistSetting(db, SettingAgentReasoningEffort, level, level == "")
+}
+
+// SaveAgentSettings changes any of the agent provider, model and reasoning
+// level at once (nil = unchanged): the resulting combination is checked
+// first (CheckAgentSettings) and nothing is saved when it is refused. A
+// provider change without a model or level clears them, as SetAgentProvider
+// does. The provider name must be registered (checked by the caller).
+func SaveAgentSettings(db *sql.DB, provider, model, level *string) error {
+	finalProvider := ResolveAgentProvider(db)
+	finalModel := ResolveAgentModel(db)
+	finalLevel := ResolveAgentReasoningEffort(db)
+	if provider != nil {
+		name := strings.TrimSpace(*provider)
+		if name == "" {
+			return fmt.Errorf("agent provider must not be empty")
+		}
+		if name != finalProvider {
+			finalModel, finalLevel = "", ""
+		}
+		finalProvider = name
+	}
+	if model != nil {
+		finalModel = strings.TrimSpace(*model)
+	}
+	if level != nil {
+		finalLevel = strings.TrimSpace(*level)
+	}
+	if err := CheckAgentSettings(finalProvider, finalModel, finalLevel); err != nil {
+		return err
+	}
+	if err := PersistSetting(db, SettingAgentProvider, finalProvider, finalProvider == DefaultAgentProvider); err != nil {
+		return err
+	}
+	if err := PersistSetting(db, SettingAgentModel, finalModel, finalModel == ""); err != nil {
+		return err
+	}
+	return PersistSetting(db, SettingAgentReasoningEffort, finalLevel, finalLevel == "")
+}
+
+// CheckAgentSettings validates a combination of agent provider, model and
+// reasoning level before any of them is saved: the model's shape and the
+// reasoning level against what the model accepts (agent.CheckReasoningEffort;
+// a level the model is known not to accept is refused).
+func CheckAgentSettings(provider, model, level string) error {
+	if err := agent.ValidateModel(strings.TrimSpace(model)); err != nil {
+		return err
+	}
+	return agent.CheckReasoningEffort(provider, model, level)
 }
 
 // ResolveAgentEnabled reports whether agent analysis runs automatically after

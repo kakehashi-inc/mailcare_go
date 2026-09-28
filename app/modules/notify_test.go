@@ -359,11 +359,14 @@ func seedNotifiableIndex(t *testing.T, jm *JobManager, mb *models.Mailbox, mails
 			t.Fatal(err)
 		}
 		summary := "summary of " + g.GroupKey
+		// The first report could not establish the cause (confidence low).
+		confidence := ""
 		if i == 0 {
 			summary = ""
+			confidence = "low"
 		}
 		markdown := "# 原因の分析\n\nfirst paragraph of " + g.GroupKey + "\ncontinued\n\nsecond paragraph\n"
-		if err := models.CompleteAgentReport(idx, r.ID, summary, ResponsibleSender, "high", markdown); err != nil {
+		if err := models.CompleteAgentReport(idx, r.ID, summary, ResponsibleSender, "high", confidence, markdown); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -382,7 +385,9 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin, _ := CreateUserFrom(db, NewUser{Username: "admin", Email: "admin@example.test", Password: "password123", Role: RoleAdmin})
-	carol, _ := CreateUserFrom(db, NewUser{Username: "carol", Email: "carol@example.test", Password: "password123", Role: RoleUser})
+	// carol reads English in New York; admin keeps the defaults (Japanese, Tokyo).
+	carol, _ := CreateUserFrom(db, NewUser{Username: "carol", Email: "carol@example.test", Password: "password123", Role: RoleUser,
+		Language: "en", Timezone: "America/New_York"})
 	bob, _ := CreateUserFrom(db, NewUser{Username: "bob", Password: "password123", Role: RoleUser})
 	srv := startFakeSMTP(t)
 	ctx := context.Background()
@@ -428,54 +433,92 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendNotification: %v", err)
 	}
-	if !res.Sent || res.Groups != len(groups) || strings.Join(res.Recipients, ",") != "admin@example.test,carol@example.test" {
+	if !res.Sent || res.Groups != len(groups) || strings.Join(res.Recipients, ",") != "admin@example.test,carol@example.test" || len(res.Failures) != 0 {
 		t.Errorf("result %+v", res)
 	}
+	// One mail per recipient, each addressed to that recipient only.
 	msgs := srv.Messages()
-	if len(msgs) != 1 {
-		t.Fatalf("mails sent: %d", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("mails sent: %d, want one per recipient", len(msgs))
 	}
-	m := msgs[0]
-	if strings.Join(m.To, ",") != "admin@example.test,carol@example.test" || m.From != "mailcare@example.test" {
-		t.Errorf("envelope %+v", m)
-	}
-	subject := decodeSubject(t, m.Data)
-	if !strings.HasPrefix(subject, NotifyMailSubjectPrefix) || !strings.Contains(subject, " "+strconv.Itoa(len(groups))+" ") || !strings.Contains(subject, "(2026-09-17)") {
-		t.Errorf("subject = %q", subject)
-	}
-	if subject != res.Subject {
-		t.Errorf("result subject %q != mail subject %q", res.Subject, subject)
-	}
-	body := m.Data[strings.Index(m.Data, "\r\n\r\n")+4:]
-	if !strings.Contains(body, mb.Address) || strings.Contains(body, "empty@example.test") {
-		t.Errorf("mailbox headings wrong:\n%s", body)
-	}
-	labels, err := loadCategoryLabels()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, g := range groups {
-		url := GroupURL("http://localhost:9790", mb.ID, g.GroupKey)
-		if !strings.Contains(body, url) {
-			t.Errorf("body lacks the URL %s:\n%s", url, body)
+	byTo := map[string]string{}
+	for _, m := range msgs {
+		if len(m.To) != 1 || m.From != "mailcare@example.test" {
+			t.Errorf("envelope %+v", m)
 		}
-		if label := labels[g.Category]; label == "" || !strings.Contains(body, label+": "+g.UnitValue) {
-			t.Errorf("body lacks the category block %q for %s:\n%s", label, g.Category, body)
+		byTo[m.To[0]] = m.Data
+	}
+	for _, c := range []struct {
+		to, language, subjectPart, reviewMark, periodPart string
+	}{
+		// admin: Japanese, dates in Asia/Tokyo.
+		{"admin@example.test", "ja", " " + strconv.Itoa(len(groups)) + " ", "\u3010\u8981\u78ba\u8a8d\u3011", "\u671f\u9593: "},
+		// carol: English, dates in America/New_York.
+		{"carol@example.test", "en", " " + strconv.Itoa(len(groups)) + " alert(s) need attention ", "[Needs review] ", "Period: "},
+	} {
+		data, ok := byTo[c.to]
+		if !ok {
+			t.Fatalf("no mail to %s", c.to)
 		}
-		want := "summary of " + g.GroupKey
-		if i == 0 {
-			want = "first paragraph of " + g.GroupKey + " continued"
+		loc := MailLocaleFor(&models.User{Language: c.language, Timezone: map[string]string{"ja": "Asia/Tokyo", "en": "America/New_York"}[c.language]})
+		// The date is the recipient's: 9:00 in the server zone may still be
+		// the day before in New York.
+		subject := decodeSubject(t, data)
+		if date := "(" + now.In(loc.Location).Format("2006-01-02") + ")"; !strings.HasPrefix(subject, NotifyMailSubjectPrefix) ||
+			!strings.Contains(subject, c.subjectPart) || !strings.Contains(subject, date) {
+			t.Errorf("%s: subject = %q, want the date %s", c.to, subject, date)
 		}
-		if !strings.Contains(body, want) {
-			t.Errorf("body lacks the summary %q:\n%s", want, body)
+		body := data[strings.Index(data, "\r\n\r\n")+4:]
+		if !strings.Contains(body, mb.Address) || strings.Contains(body, "empty@example.test") {
+			t.Errorf("%s: mailbox headings wrong:\n%s", c.to, body)
+		}
+		labels, err := loadCategoryLabels(c.language)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, g := range groups {
+			url := GroupURL("http://localhost:9790", mb.ID, g.GroupKey)
+			if !strings.Contains(body, url) {
+				t.Errorf("%s: body lacks the URL %s:\n%s", c.to, url, body)
+			}
+			if label := labels[g.Category]; label == "" || !strings.Contains(body, label+": "+g.UnitValue) {
+				t.Errorf("%s: body lacks the category block %q for %s:\n%s", c.to, label, g.Category, body)
+			}
+			// The summary stays as the agent wrote it, whatever the language.
+			want := "summary of " + g.GroupKey
+			if i == 0 {
+				want = c.reviewMark + "first paragraph of " + g.GroupKey + " continued"
+			}
+			if !strings.Contains(body, want) {
+				t.Errorf("%s: body lacks the summary %q:\n%s", c.to, want, body)
+			}
+			if period := c.periodPart + localStamp(g.FirstSeen, loc.Location); !strings.Contains(body, period) {
+				t.Errorf("%s: body lacks the period in the recipient's time zone %q:\n%s", c.to, period, body)
+			}
+		}
+		if n := strings.Count(body, c.reviewMark); n != 1 {
+			t.Errorf("%s: the needs-review mark appears %d times, want once (the low-confidence report)", c.to, n)
+		}
+		if strings.Count(body, "URL: ") != len(groups) {
+			t.Errorf("%s: %d URL lines, want %d:\n%s", c.to, strings.Count(body, "URL: "), len(groups), body)
+		}
+		if strings.Contains(data, "<no value>") || strings.Contains(body, "{{") {
+			t.Errorf("%s: template left placeholders:\n%s", c.to, body)
 		}
 	}
-	if strings.Count(body, "URL: ") != len(groups) {
-		t.Errorf("%d URL lines, want %d:\n%s", strings.Count(body, "URL: "), len(groups), body)
+	// One recipient refused: the other still gets the mail, the failure is
+	// reported and the send counts; every recipient refused is an error.
+	srv.RejectRecipients = []string{"carol@example.test"}
+	res, err = SendNotification(ctx, db, key, mailsRoot, now)
+	if err != nil || !res.Sent || strings.Join(res.Recipients, ",") != "admin@example.test" ||
+		len(res.Failures) != 1 || !strings.HasPrefix(res.Failures[0], "carol@example.test: ") {
+		t.Errorf("partial failure: %+v (err %v)", res, err)
 	}
-	if strings.Contains(m.Data, "<no value>") || strings.Contains(body, "{{") {
-		t.Errorf("template left placeholders:\n%s", body)
+	srv.RejectRecipients = []string{"carol@example.test", "admin@example.test"}
+	if res, err = SendNotification(ctx, db, key, mailsRoot, now); err == nil || res.Sent || len(res.Failures) != 2 {
+		t.Errorf("total failure: %+v (err %v)", res, err)
 	}
+	srv.RejectRecipients = nil
 	// The send time is recorded and the settings expose it.
 	s, _ := ResolveNotificationSettings(db, nil)
 	if !s.LastSentAt.Valid || !s.LastSentAt.Time.Equal(now) {
@@ -498,7 +541,7 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, _ = ResolveNotificationSettings(db, nil)
-	n, err := BuildNotification(ctx, db, mailsRoot, EffectiveBaseURL(db, s), now)
+	n, err := BuildNotification(ctx, db, mailsRoot, EffectiveBaseURL(db, s), now, DefaultMailLocale())
 	if err != nil || n.Total != 0 || !strings.Contains(n.Body, "https://mailcare.example.test/settings/notifications") {
 		t.Errorf("build with base URL: total %d, err %v\n%s", n.Total, err, n.Body)
 	}

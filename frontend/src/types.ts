@@ -5,6 +5,8 @@ export type Role = 'admin' | 'user';
 export type GroupState = 'open' | 'resolved' | 'ignored';
 export type Responsible = 'sender' | 'recipient' | 'domain' | 'unknown';
 export type Severity = 'high' | 'medium' | 'low' | '';
+/** How firmly the agent established the cause from the notices. */
+export type Confidence = 'high' | 'medium' | 'low';
 export type ImapSecurity = 'ssl' | 'starttls' | 'none';
 export type SmtpSecurity = 'ssl' | 'starttls' | 'none';
 export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify' | 'cleanup' | 'notify';
@@ -141,7 +143,7 @@ export interface GroupDTO {
     unit_value: string;
     /** Who decides: a block list provider, the recipient domain, ... (empty for excluded groups). */
     authority: string;
-    /** False for recipient-side problems, which are never analyzed. */
+    /** False for recipient-side problems, which are not analyzed automatically. */
     actionable: boolean;
     recipient_domain: string;
     status_code: string;
@@ -157,6 +159,8 @@ export interface GroupDTO {
     needs_analysis: boolean;
     report_summary: string;
     report_severity: Severity | string;
+    /** Confidence of the latest completed report; null when none was given. */
+    report_confidence: Confidence | null;
     report_status: ReportStatus;
 }
 
@@ -174,9 +178,16 @@ export interface ReportDTO {
     summary: string;
     responsible: string;
     severity: string;
+    /** How firmly the agent established the cause; null when it gave none. */
+    confidence: Confidence | null;
     report_markdown: string;
     error_message: string;
     message_count: number;
+    /** What the CLI reported about the run; null when it did not tell. */
+    model: string | null;
+    reasoning_effort: string | null;
+    tokens_used: number | null;
+    command_count: number | null;
     started_at: string | null;
     finished_at: string | null;
     created_at: string;
@@ -295,6 +306,10 @@ export interface ProviderStatus {
     model_option: string;
     /** Model names the CLI is known to accept, for reference only (may be empty). */
     models: string[];
+    /** Option of the CLI that carries the reasoning level; empty when the provider cannot set one. */
+    reasoning_option: string;
+    /** Reasoning levels each known model accepts (may be empty when unknown). */
+    reasoning_levels: Record<string, string[]>;
 }
 
 /** GET /api/v1/settings */
@@ -303,6 +318,8 @@ export interface SettingsDTO {
     agent_provider: string;
     /** Model passed to the agent CLI; empty = the CLI's own default. */
     agent_model: string;
+    /** Reasoning level passed to the agent CLI; empty = the CLI's own setting. */
+    agent_reasoning_effort: string;
     agent_enabled: boolean;
     /** Days the workspace directory of an analysis run is kept (1-365). */
     agent_keep_days: number;
@@ -324,6 +341,8 @@ export interface SettingsInput {
     agent_provider?: string;
     /** Empty restores the CLI default. */
     agent_model?: string;
+    /** Empty restores the CLI's own setting. */
+    agent_reasoning_effort?: string;
     agent_enabled?: boolean;
     agent_keep_days?: number;
     mail_keep_days?: number;

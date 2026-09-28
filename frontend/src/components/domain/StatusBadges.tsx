@@ -42,6 +42,16 @@ export function SeverityBadge({ severity }: { severity: string }) {
     );
 }
 
+/** Shown when the agent could not establish the cause from the notices (confidence "low"). */
+export function NeedsReviewBadge() {
+    const { t } = useTranslation();
+    return (
+        <Badge tone='warning' icon='fact_check'>
+            {t('report.needsReview')}
+        </Badge>
+    );
+}
+
 const RESPONSIBLE_ICON: Record<string, string> = {
     sender: 'send',
     recipient: 'person',

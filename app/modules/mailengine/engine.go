@@ -41,6 +41,7 @@
 //	parse.go     ParsedMessage and the MIME parser
 //	classify.go  the bounce classification rule table (design 5.3)
 //	extract.go   extraction of bounce details (delivery-status and body text)
+//	sections.go  body section references and where the diagnostic was found
 //	category.go  the category rule table and the unit / authority extractors
 //	grouping.go  diagnostic template, group key/title and group maintenance
 //	group.go     GroupMailbox (the grouping phase) and the per-message step
@@ -76,8 +77,10 @@ type GroupResult struct {
 	Processed int // messages classified during the run
 	Bounces   int // of which detected as bounce notices (auto-replies included)
 	Groups    int // groups in the index after the run
-	// GroupsTouched lists the actionable groups whose message count grew
-	// during the run (new or existing); the caller schedules their analysis.
+	// GroupsTouched lists the actionable groups flagged for analysis during
+	// the run (new groups, and groups that received a bounce of a pattern
+	// their latest completed report did not cover); the caller schedules
+	// their analysis.
 	GroupsTouched []string
 }
 

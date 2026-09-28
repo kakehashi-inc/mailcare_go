@@ -26,6 +26,21 @@ const MAIL_KEEP_DAYS_MAX = 3650;
 const MODEL_MAX = 100;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$/;
 
+/**
+ * Reasoning levels offered for a model, with the same rule the server checks on save
+ * (agent.CheckReasoningEffort): a listed model offers its own levels, no model offers
+ * every known level, and a model the CLI does not list cannot be checked (known = false).
+ */
+function reasoningChoices(levels: Record<string, string[]>, model: string): { options: string[]; known: boolean } {
+    const listed = model !== '' ? levels[model] : undefined;
+    if (listed) return { options: listed, known: true };
+    const all: string[] = [];
+    for (const name of Object.keys(levels).sort()) {
+        for (const level of levels[name]) if (!all.includes(level)) all.push(level);
+    }
+    return { options: all, known: model === '' && all.length > 0 };
+}
+
 export function SettingsGeneralPage() {
     const { t } = useTranslation();
     useDocumentTitle(t('nav.settingsGeneral'));
@@ -35,6 +50,7 @@ export function SettingsGeneralPage() {
     const [newTime, setNewTime] = useState('');
     const [provider, setProvider] = useState('');
     const [model, setModel] = useState('');
+    const [effort, setEffort] = useState('');
     const [enabled, setEnabled] = useState(false);
     const [keepDays, setKeepDays] = useState('');
     const [mailKeepDays, setMailKeepDays] = useState('');
@@ -47,6 +63,7 @@ export function SettingsGeneralPage() {
         setTimes(settings.data.check_times);
         setProvider(settings.data.agent_provider);
         setModel(settings.data.agent_model);
+        setEffort(settings.data.agent_reasoning_effort);
         setEnabled(settings.data.agent_enabled);
         setKeepDays(String(settings.data.agent_keep_days));
         setMailKeepDays(String(settings.data.mail_keep_days));
@@ -61,6 +78,10 @@ export function SettingsGeneralPage() {
     const selectedProvider = settings.data?.providers.find(p => p.name === provider);
     const modelSupported = Boolean(selectedProvider?.model_option);
     const modelValid = model.trim() === '' || MODEL_RE.test(model.trim());
+    const reasoningSupported = Boolean(selectedProvider?.reasoning_option);
+    const reasoning = reasoningChoices(selectedProvider?.reasoning_levels ?? {}, modelSupported ? model.trim() : '');
+    // A level the chosen model does not accept blocks the save (the server refuses it as well).
+    const effortValid = !reasoningSupported || effort === '' || !reasoning.known || reasoning.options.includes(effort);
     const workersValue = Number(workers);
     const workersValid = /^\d+$/.test(workers.trim()) && workersValue >= WORKERS_MIN && workersValue <= WORKERS_MAX;
     const keepDaysValue = Number(keepDays);
@@ -79,6 +100,7 @@ export function SettingsGeneralPage() {
         keepDaysValid &&
         mailKeepDaysValid &&
         modelValid &&
+        effortValid &&
         !saving;
 
     function addTime() {
@@ -100,6 +122,7 @@ export function SettingsGeneralPage() {
                 check_times: times,
                 agent_provider: provider,
                 agent_model: modelSupported ? model.trim() : '',
+                agent_reasoning_effort: reasoningSupported ? effort : '',
                 agent_enabled: enabled,
                 agent_keep_days: keepDaysValue,
                 mail_keep_days: mailKeepDaysValue,
@@ -266,9 +289,15 @@ export function SettingsGeneralPage() {
                             value={provider}
                             onChange={e => {
                                 setProvider(e.target.value);
-                                // Model names differ between providers (the server clears the model as well).
-                                if (e.target.value !== settings.data?.agent_provider) setModel('');
-                                else setModel(settings.data?.agent_model ?? '');
+                                // Model names and reasoning levels differ between providers (the server
+                                // clears them as well).
+                                if (e.target.value !== settings.data?.agent_provider) {
+                                    setModel('');
+                                    setEffort('');
+                                } else {
+                                    setModel(settings.data?.agent_model ?? '');
+                                    setEffort(settings.data?.agent_reasoning_effort ?? '');
+                                }
                                 setDirty(true);
                             }}
                         >
@@ -341,6 +370,29 @@ export function SettingsGeneralPage() {
                                 ) : undefined
                             }
                         />
+                        <SelectField
+                            label={t('settings.agentReasoning')}
+                            width='medium'
+                            value={reasoningSupported ? effort : ''}
+                            onChange={e => {
+                                setEffort(e.target.value);
+                                setDirty(true);
+                            }}
+                            disabled={!reasoningSupported}
+                            error={effortValid ? undefined : t('settings.agentReasoningInvalid')}
+                            hint={reasoningSupported ? undefined : t('settings.agentReasoningUnsupported')}
+                        >
+                            <option value=''>{t('settings.agentReasoningUnset')}</option>
+                            {reasoningSupported && effort !== '' && !reasoning.options.includes(effort) && (
+                                <option value={effort}>{effort}</option>
+                            )}
+                            {reasoningSupported &&
+                                reasoning.options.map(level => (
+                                    <option key={level} value={level}>
+                                        {level}
+                                    </option>
+                                ))}
+                        </SelectField>
                         <ToggleField
                             label={t('settings.agentEnabled')}
                             hint={t('settings.agentEnabledHint')}

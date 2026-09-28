@@ -1,6 +1,6 @@
 {{/*
-  SMTP test mail (Japanese). Fields: .Date (local date and time), .Host, .Port,
-  .Security, .From.
+  SMTP test mail (Japanese). Fields: .Date (date and time in the recipient's
+  time zone), .Host, .Port, .Security, .From.
 */ -}}
 {{define "subject" -}}
 [MailCare] テスト送信 ({{.Date}})

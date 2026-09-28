@@ -131,7 +131,8 @@ type notificationTestInput struct {
 }
 
 // handleTestNotification sends the SMTP test mail to the given address
-// (default: the caller's own address) and reports the SMTP error text. The
+// (default: the caller's own address) in the language of the user owning
+// that address (else the caller's) and reports the SMTP error text. The
 // stored password is used only when the host, port, security mode and
 // username are the saved ones; a request that changes one of them must
 // carry smtp_password (400 otherwise), so the stored password is never
@@ -157,7 +158,10 @@ func (c *core) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := modules.TestSMTP(r.Context(), cfg, to); err != nil {
+	// A user's address gets the mail in that user's language and time zone;
+	// any other address in the caller's.
+	loc := modules.MailLocaleForAddress(c.db, to, modules.MailLocaleFor(userFrom(r)))
+	if err := modules.TestSMTP(r.Context(), cfg, to, loc); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

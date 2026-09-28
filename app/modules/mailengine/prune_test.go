@@ -79,7 +79,7 @@ func completeReport(t *testing.T, db *sql.DB, groupKey string) int64 {
 	if err := models.InsertAgentReport(db, r); err != nil {
 		t.Fatal(err)
 	}
-	if err := models.CompleteAgentReport(db, r.ID, "summary of "+groupKey, responsibleSender, "high", "# report"); err != nil {
+	if err := models.CompleteAgentReport(db, r.ID, "summary of "+groupKey, responsibleSender, "high", "", "# report"); err != nil {
 		t.Fatal(err)
 	}
 	if err := models.SetGroupNeedsAnalysis(db, groupKey, false); err != nil {

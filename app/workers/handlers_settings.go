@@ -19,13 +19,15 @@ func (c *core) settingsDTO(u *models.User) map[string]any {
 		providers = []agent.ProviderStatus{}
 	}
 	dto := map[string]any{
-		"check_times":     modules.ResolveCheckTimes(c.db),
-		"agent_provider":  modules.ResolveAgentProvider(c.db),
-		"agent_model":     modules.ResolveAgentModel(c.db),
-		"agent_enabled":   modules.ResolveAgentEnabled(c.db),
-		"agent_keep_days": modules.ResolveAgentKeepDays(c.db),
-		"mail_keep_days":  modules.ResolveMailKeepDays(c.db),
-		"providers":       providers,
+		"check_times":    modules.ResolveCheckTimes(c.db),
+		"agent_provider": modules.ResolveAgentProvider(c.db),
+		"agent_model":    modules.ResolveAgentModel(c.db),
+		// agent_reasoning_effort: "" = the CLI's own setting.
+		"agent_reasoning_effort": modules.ResolveAgentReasoningEffort(c.db),
+		"agent_enabled":          modules.ResolveAgentEnabled(c.db),
+		"agent_keep_days":        modules.ResolveAgentKeepDays(c.db),
+		"mail_keep_days":         modules.ResolveMailKeepDays(c.db),
+		"providers":              providers,
 		// check_times and notify_time are interpreted in this zone.
 		"server_timezone": modules.ServerTimezone(),
 	}
@@ -42,9 +44,10 @@ func (c *core) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c.settingsDTO(userFrom(r)))
 }
 
-// handleUpdateSettings changes the check times, the agent provider and
-// model (a provider change without a model clears the model), the agent
-// switch, the retention of the agent run directories, the retention
+// handleUpdateSettings changes the check times, the agent provider, model
+// and reasoning level (validated together; a provider change without a
+// model or level clears them, and a level the model is known not to accept
+// refuses the whole request), the agent switch, the retention of the agent run directories, the retention
 // of fetched mails and the worker count (applied to the job manager at
 // once). Absent fields are left unchanged.
 func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +55,7 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		CheckTimes    *[]string `json:"check_times"`
 		AgentProvider *string   `json:"agent_provider"`
 		AgentModel    *string   `json:"agent_model"`
+		AgentEffort   *string   `json:"agent_reasoning_effort"`
 		AgentEnabled  *bool     `json:"agent_enabled"`
 		AgentKeepDays *int      `json:"agent_keep_days"`
 		MailKeepDays  *int      `json:"mail_keep_days"`
@@ -70,12 +74,6 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.AgentModel != nil {
-		if err := agent.ValidateModel(strings.TrimSpace(*body.AgentModel)); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
 	if body.MailKeepDays != nil {
 		if err := modules.ValidateMailKeepDays(*body.MailKeepDays); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -90,11 +88,29 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	provider := ""
+	provider := modules.ResolveAgentProvider(c.db)
 	if body.AgentProvider != nil {
 		provider = strings.TrimSpace(*body.AgentProvider)
 		if !agent.IsValidProvider(provider) {
 			writeError(w, http.StatusBadRequest, "unknown agent provider")
+			return
+		}
+	}
+	agentChanged := body.AgentProvider != nil || body.AgentModel != nil || body.AgentEffort != nil
+	if agentChanged {
+		model := modules.ResolveAgentModel(c.db)
+		level := modules.ResolveAgentReasoningEffort(c.db)
+		if body.AgentProvider != nil && provider != modules.ResolveAgentProvider(c.db) {
+			model, level = "", ""
+		}
+		if body.AgentModel != nil {
+			model = *body.AgentModel
+		}
+		if body.AgentEffort != nil {
+			level = *body.AgentEffort
+		}
+		if err := modules.CheckAgentSettings(provider, model, level); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
@@ -104,15 +120,13 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.AgentProvider != nil {
-		if err := modules.SetAgentProvider(c.db, provider); err != nil {
-			writeInternalError(w, "failed to save the agent provider", err)
-			return
+	if agentChanged {
+		var providerArg *string
+		if body.AgentProvider != nil {
+			providerArg = &provider
 		}
-	}
-	if body.AgentModel != nil {
-		if err := modules.SetAgentModel(c.db, *body.AgentModel); err != nil {
-			writeInternalError(w, "failed to save the agent model", err)
+		if err := modules.SaveAgentSettings(c.db, providerArg, body.AgentModel, body.AgentEffort); err != nil {
+			writeInternalError(w, "failed to save the agent settings", err)
 			return
 		}
 	}

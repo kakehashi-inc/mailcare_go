@@ -2,7 +2,8 @@
   MailCare notification mail (Japanese, templates/mail).
 
   "subject" and "body" are rendered with the Notification value built in
-  app/modules/notify.go. The category labels are in categories_ja.txt.
+  app/modules/notify.go for one recipient (dates in that recipient's time
+  zone). The category labels are in categories_ja.txt.
 
   Available fields:
     .Date            YYYY-MM-DD of the day the mail is built
@@ -12,8 +13,8 @@
       .Address .DisplayName .Groups
     each group:
       .CategoryLabel .Category .UnitValue .Authority
-      .MessageCount .RecipientCount .FirstSeen .LastSeen (local time)
-      .Summary .URL
+      .MessageCount .RecipientCount .FirstSeen .LastSeen (recipient's time zone)
+      .Summary .NeedsReview (the agent could not establish the cause) .URL
 */ -}}
 {{define "subject" -}}
 [MailCare] 対応が必要なアラート {{.Total}} 件 ({{.Date}})
@@ -31,7 +32,7 @@ MailCare からのお知らせです。
 ■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
    対象メール: {{.MessageCount}} 件 / 宛先: {{.RecipientCount}} 件
    期間: {{.FirstSeen}} 〜 {{.LastSeen}}
-   要約: {{if .Summary}}{{.Summary}}{{else}}（分析報告の要約はありません）{{end}}
+   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
    URL: {{.URL}}
 {{end}}{{end}}
 --------------------------------------------------

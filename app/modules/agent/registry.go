@@ -65,8 +65,12 @@ func Providers() []ProviderStatus {
 		if models == nil {
 			models = []string{}
 		}
+		reasoningOption, levels := reasoningInfo(p)
+		if levels == nil {
+			levels = map[string][]string{}
+		}
 		out = append(out, ProviderStatus{Name: p.Name(), Label: p.Label(), Available: commandAvailable(p.Command()),
-			ModelOption: option, Models: models})
+			ModelOption: option, Models: models, ReasoningOption: reasoningOption, ReasoningLevels: levels})
 	}
 	return out
 }

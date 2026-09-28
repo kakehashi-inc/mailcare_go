@@ -32,6 +32,9 @@ type Server struct {
 	// Mechanisms is the AUTH line advertised by EHLO ("PLAIN LOGIN" by
 	// default). Empty advertises no AUTH extension.
 	Mechanisms string
+	// RejectRecipients lists the addresses RCPT TO answers with 550 (set
+	// before the mail is sent).
+	RejectRecipients []string
 
 	ln       net.Listener
 	mu       sync.Mutex
@@ -85,6 +88,18 @@ func (s *Server) serve() {
 			s.handle(conn)
 		}()
 	}
+}
+
+// rejects reports whether RCPT TO must refuse the address.
+func (s *Server) rejects(rcpt string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.RejectRecipients {
+		if strings.EqualFold(r, rcpt) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) accepts(user, pass string) bool {
@@ -168,7 +183,12 @@ func (s *Server) handle(conn net.Conn) {
 			msg = Message{From: angle(line[len("MAIL FROM:"):]), AuthUser: authed, AuthMech: authMech}
 			reply("250 2.1.0 ok")
 		case strings.HasPrefix(cmd, "RCPT TO:"):
-			msg.To = append(msg.To, angle(line[len("RCPT TO:"):]))
+			rcpt := angle(line[len("RCPT TO:"):])
+			if s.rejects(rcpt) {
+				reply("550 5.1.1 recipient rejected")
+				continue
+			}
+			msg.To = append(msg.To, rcpt)
 			reply("250 2.1.5 ok")
 		case cmd == "DATA":
 			reply("354 end data with <CR><LF>.<CR><LF>")

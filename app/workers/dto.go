@@ -23,6 +23,23 @@ func nullTimeString(t sql.NullTime) *string {
 	return &s
 }
 
+// stringOrNil returns nil for "" (a value the source did not tell).
+func stringOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// nullInt converts a nullable integer (nil when NULL).
+func nullInt(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	n := v.Int64
+	return &n
+}
+
 // UserDTO is a user as shown to the Web UI.
 type UserDTO struct {
 	ID          int64   `json:"id"`
@@ -138,6 +155,7 @@ type GroupDTO struct {
 	NeedsAnalysis      bool    `json:"needs_analysis"`
 	ReportSummary      string  `json:"report_summary"`
 	ReportSeverity     string  `json:"report_severity"`
+	ReportConfidence   *string `json:"report_confidence"`
 	ReportStatus       string  `json:"report_status"`
 }
 
@@ -155,6 +173,7 @@ func toGroupDTO(g *models.BounceGroup, completed, latest *models.AgentReport) Gr
 	if completed != nil {
 		dto.ReportSummary = completed.Summary
 		dto.ReportSeverity = completed.Severity
+		dto.ReportConfidence = stringOrNil(completed.Confidence)
 	}
 	if latest != nil {
 		dto.ReportStatus = latest.Status
@@ -171,28 +190,38 @@ type DashboardGroupDTO struct {
 	MailboxAddress string `json:"mailbox_address"`
 }
 
-// ReportDTO is an agent report.
+// ReportDTO is an agent report. Confidence, Model and ReasoningEffort are
+// null when the agent or the CLI did not tell them, TokensUsed and
+// CommandCount when the CLI output did not report them.
 type ReportDTO struct {
-	ID             int64   `json:"id"`
-	GroupKey       string  `json:"group_key"`
-	Provider       string  `json:"provider"`
-	Status         string  `json:"status"`
-	Summary        string  `json:"summary"`
-	Responsible    string  `json:"responsible"`
-	Severity       string  `json:"severity"`
-	ReportMarkdown string  `json:"report_markdown"`
-	ErrorMessage   string  `json:"error_message"`
-	MessageCount   int     `json:"message_count"`
-	StartedAt      *string `json:"started_at"`
-	FinishedAt     *string `json:"finished_at"`
-	CreatedAt      string  `json:"created_at"`
+	ID              int64   `json:"id"`
+	GroupKey        string  `json:"group_key"`
+	Provider        string  `json:"provider"`
+	Status          string  `json:"status"`
+	Summary         string  `json:"summary"`
+	Responsible     string  `json:"responsible"`
+	Severity        string  `json:"severity"`
+	Confidence      *string `json:"confidence"`
+	ReportMarkdown  string  `json:"report_markdown"`
+	ErrorMessage    string  `json:"error_message"`
+	MessageCount    int     `json:"message_count"`
+	Model           *string `json:"model"`
+	ReasoningEffort *string `json:"reasoning_effort"`
+	TokensUsed      *int64  `json:"tokens_used"`
+	CommandCount    *int64  `json:"command_count"`
+	StartedAt       *string `json:"started_at"`
+	FinishedAt      *string `json:"finished_at"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 func toReportDTO(r *models.AgentReport) ReportDTO {
 	return ReportDTO{
 		ID: r.ID, GroupKey: r.GroupKey, Provider: r.Provider, Status: r.Status, Summary: r.Summary,
-		Responsible: r.Responsible, Severity: r.Severity, ReportMarkdown: r.ReportMarkdown, ErrorMessage: r.ErrorMessage,
-		MessageCount: r.MessageCount, StartedAt: nullTimeString(r.StartedAt), FinishedAt: nullTimeString(r.FinishedAt),
+		Responsible: r.Responsible, Severity: r.Severity, Confidence: stringOrNil(r.Confidence),
+		ReportMarkdown: r.ReportMarkdown, ErrorMessage: r.ErrorMessage, MessageCount: r.MessageCount,
+		Model: stringOrNil(r.Model), ReasoningEffort: stringOrNil(r.ReasoningEffort),
+		TokensUsed: nullInt(r.TokensUsed), CommandCount: nullInt(r.CommandCount),
+		StartedAt: nullTimeString(r.StartedAt), FinishedAt: nullTimeString(r.FinishedAt),
 		CreatedAt: timeString(r.CreatedAt),
 	}
 }

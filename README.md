@@ -27,11 +27,16 @@ has to act on.
   acts on (the sending server IP, the sender address, the sending domain) and the party deciding the outcome
   (a blacklist provider, the recipient domain). Recipient-side problems (user unknown, mailbox full, ...) are
   recorded but excluded from Alerts, which show only what the mail administrator has to act on.
-- **Agent analysis** - an agent CLI installed on the machine (Codex CLI today; more can be added) is given the
-  paths of the raw mails of an actionable group and writes a cause analysis with recommended actions, stored
-  per group. A group that gains new mails is analyzed again. Every run gets its own workspace directory
-  (prompt, CLI output, report) under `data/agent/<address>/<group_key>/<report_id>/`; directories older than
-  the configured retention (30 days by default) are removed by the same daily cleanup.
+- **Agent analysis** - an agent CLI installed on the machine (Codex CLI today; more can be added) writes a
+  cause analysis with recommended actions for each actionable group, stored per group. MailCare hands it the
+  evidence the classification was based on (the patterns of the group with their counts, and one sample
+  notice per pattern with the delivery-status fields and an excerpt of the body part that holds the reason),
+  so the agent does not have to go through the raw mails. A group is analyzed again only when a notice of a
+  new pattern arrives. Excluded (recipient-side) groups are not analyzed automatically but can be analyzed
+  from the group detail. The model and the reasoning level passed to the CLI can be set; each report shows
+  the tokens the run used. Every run gets its own workspace directory (evidence, prompt, CLI output, report)
+  under `data/agent/<address>/<group_key>/<report_id>/`; directories older than the configured retention
+  (30 days by default) are removed by the same daily cleanup.
 - **Independent phases** - fetching, grouping and analysis are separate jobs that can be run one by one from
   the Tools screen or the CLI, or together as a sync of all addresses. The number of concurrent jobs
   (workers) is configurable; accounts on the same IMAP server are processed one after another automatically.
@@ -39,7 +44,8 @@ has to act on.
   18:00). The first fetch of an address looks back 90 days, later fetches 30 days (never further back than the
   mail retention), and only mails not fetched yet are taken.
 - **Mail notifications** - with SMTP configured, the selected recipient users (each user may register an
-  optional email address) get one mail listing every analyzed actionable group: its summary, the number of
+  optional email address) each get their own mail, in their language (Japanese / English) and time zone,
+  listing every analyzed actionable group: its summary (as the agent wrote it, in Japanese), the number of
   affected mails and the URL that opens the alert. The notification time and interval (daily to every 7 days)
   are configurable. The stored SMTP password is used only for the server it was saved for: changing the host,
   port, connection mode or username (in the settings screen, with `settings set`, or for a test mail) requires

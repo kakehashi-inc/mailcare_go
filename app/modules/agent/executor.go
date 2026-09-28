@@ -14,11 +14,12 @@ import (
 // child process left behind by the CLI would otherwise keep Wait blocked.
 const waitDelay = 5 * time.Second
 
-// runProvider launches the provider CLI (with the model when the provider
-// supports one and it is set) with the workspace as its working directory
-// and returns the combined stdout+stderr.
-func runProvider(ctx context.Context, p Provider, model, dir, promptText, promptFile string) (string, error) {
-	return runArgv(ctx, p.Name(), providerCommand(p, model), dir, promptText, promptFile)
+// runProvider launches the provider CLI (with the model and the reasoning
+// level when the provider supports them and they are set) with the
+// workspace as its working directory and returns the combined
+// stdout+stderr.
+func runProvider(ctx context.Context, p Provider, model, reasoning, dir, promptText, promptFile string) (string, error) {
+	return runArgv(ctx, p.Name(), providerCommand(p, model, reasoning), dir, promptText, promptFile)
 }
 
 // runArgv launches command (after placeholder substitution) directly, without

@@ -1,0 +1,16 @@
+{{/*
+  SMTP test mail (English). Fields: .Date (date and time in the recipient's
+  time zone), .Host, .Port, .Security, .From.
+*/ -}}
+{{define "subject" -}}
+[MailCare] Test mail ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+This is a test mail of the MailCare SMTP settings.
+If you received it, MailCare is ready to send notification mails.
+
+Mail server: {{.Host}}:{{.Port}} ({{.Security}})
+Sender: {{.From}}
+Sent at: {{.Date}}
+{{- end}}

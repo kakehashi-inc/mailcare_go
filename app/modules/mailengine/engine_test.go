@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -975,7 +977,15 @@ func seedReport(t *testing.T, root, address string) (kept, single string, stateU
 		if err := models.InsertAgentReport(db, r); err != nil {
 			t.Fatal(err)
 		}
-		if err := models.CompleteAgentReport(db, r.ID, "summary of "+key, responsibleDomain, "high", "# report"); err != nil {
+		if err := models.CompleteAgentReport(db, r.ID, "summary of "+key, responsibleDomain, "high", "", "# report"); err != nil {
+			t.Fatal(err)
+		}
+		// Like agent.AnalyzeGroup, the report records the patterns it covered.
+		patterns, err := models.ListGroupPatternKeys(db, key)
+		if err != nil || len(patterns) == 0 {
+			t.Fatalf("patterns of %s: %v (%d)", key, err, len(patterns))
+		}
+		if err := models.InsertAgentReportPatterns(db, r.ID, patterns); err != nil {
 			t.Fatal(err)
 		}
 		if err := models.UpdateGroupResponsible(db, key, responsibleDomain); err != nil {
@@ -1012,7 +1022,7 @@ func assertCarried(t *testing.T, root, address, kept, single string, stateUpdate
 		t.Errorf("%s: state = %s at %v, want resolved at %v", label, g.State, g.StateUpdatedAt, stateUpdated)
 	}
 	if g.NeedsAnalysis {
-		t.Errorf("%s: needs_analysis was set although the group did not grow", label)
+		t.Errorf("%s: needs_analysis was set although every pattern was covered", label)
 	}
 	if g.Responsible != responsibleDomain {
 		t.Errorf("%s: responsible = %q, want the agent's %q", label, g.Responsible, responsibleDomain)
@@ -1046,9 +1056,10 @@ func TestFullGroupingKeepsReports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Nothing grew, so no actionable group is reported as touched.
+	// Every pattern is covered by a report, so no actionable group is
+	// flagged.
 	if len(res.GroupsTouched) != 0 {
-		t.Errorf("full grouping touched %v although no group grew", res.GroupsTouched)
+		t.Errorf("full grouping flagged %v although every pattern was covered", res.GroupsTouched)
 	}
 	assertCarried(t, root, address, kept, single, stateUpdated, false, "full grouping")
 	// The report row itself survives with its id (nothing was deleted).
@@ -1133,7 +1144,7 @@ func TestReindexKeepsReportIDs(t *testing.T) {
 	if err := models.InsertAgentReport(db, second); err != nil {
 		t.Fatal(err)
 	}
-	if err := models.CompleteAgentReport(db, second.ID, "second summary", responsibleSender, "low", "# second"); err != nil {
+	if err := models.CompleteAgentReport(db, second.ID, "second summary", responsibleSender, "low", "", "# second"); err != nil {
 		t.Fatal(err)
 	}
 	before, err := models.ListAgentReports(db, kept)
@@ -1217,7 +1228,7 @@ func TestReportResponsibleUnknownKeepsRuleValue(t *testing.T) {
 		if err := models.InsertAgentReport(db, r); err != nil {
 			t.Fatal(err)
 		}
-		if err := models.CompleteAgentReport(db, r.ID, "summary", value, "low", "# report"); err != nil {
+		if err := models.CompleteAgentReport(db, r.ID, "summary", value, "low", "", "# report"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2612,4 +2623,177 @@ func readFirstSection(root, address, key, ext string) ([]byte, error) {
 		return nil, ErrInvalidMessageKey
 	}
 	return os.ReadFile(path)
+}
+
+func TestDiagnosticSource(t *testing.T) {
+	// The HTML body alone yields the diagnostic: its section is named.
+	pm := ParseMessage(readSample(t, "html_only_bounce_wording.eml"))
+	c := Classify(pm)
+	b := ExtractBounce(pm, c.Kind, "newsletter@example.jp")
+	if b.DiagnosticSource != "html:1" {
+		t.Errorf("html_only_bounce_wording: diagnostic_source = %q, want html:1", b.DiagnosticSource)
+	}
+
+	// The second text section holds the diagnostic.
+	pm = &ParsedMessage{FromAddress: "MAILER-DAEMON@x.example", Subject: "Undelivered Mail Returned to Sender",
+		TextSections: []string{"This is the mail system.", "<kei@customer.example.com>: host mx.customer.example.com[198.51.100.25] said: 550 5.1.1 User unknown"},
+		Headers:      map[string]string{}}
+	pm.finishBodies()
+	text := ExtractBounce(pm, bounceKindFailed, "newsletter@example.jp")
+	if text.DiagnosticSource != "text:2" {
+		t.Errorf("second text section: diagnostic_source = %q, want text:2", text.DiagnosticSource)
+	}
+
+	// The delivery-status part wins over the body.
+	pm = &ParsedMessage{FromAddress: "MAILER-DAEMON@x.example", Subject: "Undelivered Mail Returned to Sender",
+		TextSections: []string{"<kei@customer.example.com>: host mx.customer.example.com[198.51.100.25] said: 550 5.1.1 User unknown"},
+		Headers:      map[string]string{},
+		DeliveryStatus: &DeliveryStatus{Recipients: []DeliveryStatusRecipient{{FinalRecipient: "kei@customer.example.com",
+			Action: "failed", Status: "5.1.1", DiagnosticCode: "smtp; 550 5.1.1 User unknown", RemoteMTA: "dns; mx.customer.example.com"}}}}
+	pm.finishBodies()
+	dsn := ExtractBounce(pm, bounceKindFailed, "newsletter@example.jp")
+	if dsn.DiagnosticSource != DiagnosticSourceDSN {
+		t.Errorf("delivery-status: diagnostic_source = %q, want dsn", dsn.DiagnosticSource)
+	}
+
+	// No diagnostic at all.
+	pm = &ParsedMessage{FromAddress: "MAILER-DAEMON@x.example", Subject: "Undelivered Mail Returned to Sender",
+		TextSections: []string{"Your message could not be delivered."}, Headers: map[string]string{}}
+	pm.finishBodies()
+	if none := ExtractBounce(pm, bounceKindFailed, "newsletter@example.jp"); none.DiagnosticSource != "" {
+		t.Errorf("no diagnostic: diagnostic_source = %q, want empty", none.DiagnosticSource)
+	}
+
+	// The pattern key tells the kind of source apart, not the section number.
+	if text.PatternKey == "" || text.PatternKey == dsn.PatternKey {
+		t.Errorf("pattern keys text=%q dsn=%q must differ", text.PatternKey, dsn.PatternKey)
+	}
+	if PatternKey("5.1.1", "tpl", "mx", "text:1") != PatternKey("5.1.1", "tpl", "mx", "text:2") {
+		t.Error("the section number changed the pattern key")
+	}
+	// The tail of a queue ID does not split a pattern; the reply and status
+	// codes still do.
+	gmail := "450-4.2.1 the user is receiving mail at a rate 450 4.2.1 https://<host>/mail/?p=receivingrate <id>-<id>.%s - gsmtp"
+	if PatternKey("4.2.1", fmt.Sprintf(gmail, "218"), "mx", "dsn") != PatternKey("4.2.1", fmt.Sprintf(gmail, "<n>"), "mx", "dsn") {
+		t.Error("a queue ID tail split the pattern")
+	}
+	if PatternKey("4.2.1", "450 4.2.1 busy", "mx", "dsn") == PatternKey("4.2.1", "550 4.2.1 busy", "mx", "dsn") {
+		t.Error("the reply code must still tell patterns apart")
+	}
+	if kind, n, ok := ParseSectionRef("html:3"); !ok || kind != "html" || n != 3 {
+		t.Errorf("ParseSectionRef(html:3) = %q %d %v", kind, n, ok)
+	}
+	for _, bad := range []string{"", "dsn", "text", "text:0", "pdf:1", "html:x"} {
+		if _, _, ok := ParseSectionRef(bad); ok {
+			t.Errorf("ParseSectionRef(%q) accepted", bad)
+		}
+	}
+}
+
+func TestReturnedMessageAuthHeaders(t *testing.T) {
+	raw := "From: MAILER-DAEMON@mail.example.jp\r\nTo: newsletter@example.jp\r\nSubject: Undelivered Mail Returned to Sender\r\n" +
+		"Date: Mon, 01 Jun 2026 10:00:00 +0900\r\nMIME-Version: 1.0\r\n" +
+		"Content-Type: multipart/report; report-type=delivery-status; boundary=\"B\"\r\n\r\n" +
+		"--B\r\nContent-Type: text/plain\r\n\r\nrejected\r\n" +
+		"--B\r\nContent-Type: text/rfc822-headers\r\n\r\n" +
+		"From: News <newsletter@example.jp>\r\nTo: kei@customer.example.com\r\nSubject: Hello\r\n" +
+		"DKIM-Signature: v=1; a=rsa-sha256; d=Example.jp; s=sel;\r\n bh=abc; b=def\r\n" +
+		"Authentication-Results: mx.customer.example.com;\r\n spf=fail smtp.mailfrom=example.jp\r\n" +
+		"Received-SPF: fail (domain of example.jp does not designate 192.0.2.1)\r\n\r\n" +
+		"--B--\r\n"
+	pm := ParseMessage([]byte(raw))
+	om := pm.OriginalMessage
+	if om == nil {
+		t.Fatal("no original message")
+	}
+	if om.To != "kei@customer.example.com" || len(om.DKIMDomains) != 1 || om.DKIMDomains[0] != "example.jp" {
+		t.Errorf("original = %+v", om)
+	}
+	if len(om.AuthenticationResults) != 1 || !strings.Contains(om.AuthenticationResults[0], "spf=fail") ||
+		strings.Contains(om.AuthenticationResults[0], "\n") {
+		t.Errorf("Authentication-Results = %q", om.AuthenticationResults)
+	}
+	if len(om.ReceivedSPF) != 1 || !strings.HasPrefix(om.ReceivedSPF[0], "fail") {
+		t.Errorf("Received-SPF = %q", om.ReceivedSPF)
+	}
+}
+
+// TestAnalysisFlagFollowsPatterns checks that a group is flagged for
+// analysis only for a pattern its latest completed report did not cover.
+func TestAnalysisFlagFollowsPatterns(t *testing.T) {
+	root := t.TempDir()
+	address := "newsletter@example.jp"
+	storeSamples(t, root, address, 1, samples...)
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	spamKey := GroupKey(categoryIPBlocked, "203.0.113.5", "spamhaus.org")
+	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patterns, err := models.ListGroupPatternKeys(db, spamKey)
+	if err != nil || len(patterns) == 0 {
+		t.Fatalf("patterns: %v (%d)", err, len(patterns))
+	}
+	cover := func(keys []string) {
+		t.Helper()
+		r := &models.AgentReport{GroupKey: spamKey, Provider: "codex"}
+		if err := models.InsertAgentReport(db, r); err != nil {
+			t.Fatal(err)
+		}
+		if err := models.CompleteAgentReport(db, r.ID, "summary", responsibleSender, "high", "high", "# report"); err != nil {
+			t.Fatal(err)
+		}
+		if err := models.InsertAgentReportPatterns(db, r.ID, keys); err != nil {
+			t.Fatal(err)
+		}
+		if err := models.SetGroupNeedsAnalysis(db, spamKey, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flagged := func(label string) bool {
+		t.Helper()
+		g, err := models.GetGroup(db, spamKey)
+		if err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+		return g.NeedsAnalysis
+	}
+
+	// Every pattern covered: regrouping every message flags nothing.
+	cover(patterns)
+	db.Close()
+	res, err := GroupMailbox(context.Background(), root, address, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db, err = models.OpenMailIndex(MailboxIndexPath(root, address)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { db.Close() }()
+	if flagged("covered") || slices.Contains(res.GroupsTouched, spamKey) {
+		t.Errorf("covered group flagged (touched %v)", res.GroupsTouched)
+	}
+	if uncovered, err := models.GroupHasUncoveredPattern(db, spamKey); err != nil || uncovered {
+		t.Errorf("GroupHasUncoveredPattern = %v, %v; want false", uncovered, err)
+	}
+
+	// A newer report that covers none of the patterns: the next regrouping
+	// flags the group.
+	cover(nil)
+	db.Close()
+	res, err = GroupMailbox(context.Background(), root, address, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db, err = models.OpenMailIndex(MailboxIndexPath(root, address)); err != nil {
+		t.Fatal(err)
+	}
+	if !flagged("uncovered") || !slices.Contains(res.GroupsTouched, spamKey) {
+		t.Errorf("uncovered group not flagged (touched %v)", res.GroupsTouched)
+	}
+	if uncovered, err := models.GroupHasUncoveredPattern(db, spamKey); err != nil || !uncovered {
+		t.Errorf("GroupHasUncoveredPattern = %v, %v; want true", uncovered, err)
+	}
 }

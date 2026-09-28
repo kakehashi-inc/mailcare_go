@@ -109,12 +109,19 @@ type DeliveryStatusRecipient struct {
 }
 
 // OriginalMessage holds the headers of the message a bounce refers to, taken
-// from a message/rfc822 or text/rfc822-headers part.
+// from a message/rfc822 or text/rfc822-headers part. The sender
+// authentication headers (Authentication-Results, Received-SPF and the
+// signing domains of DKIM-Signature) are kept for the agent evidence only;
+// the index stores MessageID, Subject, From and Date.
 type OriginalMessage struct {
-	MessageID string
-	Subject   string
-	From      string
-	Date      time.Time
+	MessageID             string
+	Subject               string
+	From                  string
+	To                    string
+	Date                  time.Time
+	AuthenticationResults []string
+	ReceivedSPF           []string
+	DKIMDomains           []string
 }
 
 // Nothing about a message is capped: every header value, every body section
@@ -377,6 +384,14 @@ func originalFromHeader(h message.Header) *OriginalMessage {
 	}
 	addr, name := headerAddress(mh, "From")
 	om.From = formatAddress(addr, name)
+	om.To = headerText(mh, "To")
+	om.AuthenticationResults = foldedValues(h.Values("Authentication-Results"))
+	om.ReceivedSPF = foldedValues(h.Values("Received-SPF"))
+	for _, sig := range h.Values("DKIM-Signature") {
+		if m := dkimDomainRe.FindStringSubmatch(sig); m != nil {
+			om.DKIMDomains = append(om.DKIMDomains, strings.ToLower(m[1]))
+		}
+	}
 	if t, err := mh.Date(); err == nil {
 		om.Date = t.UTC()
 	} else if raw := h.Get("Date"); raw != "" {
@@ -385,6 +400,20 @@ func originalFromHeader(h message.Header) *OriginalMessage {
 		}
 	}
 	return om
+}
+
+// dkimDomainRe captures the signing domain (d= tag) of a DKIM-Signature.
+var dkimDomainRe = regexp.MustCompile(`(?i)(?:^|[;\s])d\s*=\s*([a-z0-9.\-]+)`)
+
+// foldedValues folds every value onto one line and drops the empty ones.
+func foldedValues(values []string) []string {
+	var out []string
+	for _, v := range values {
+		if v = foldSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // parseDeliveryStatus reads the per-message and per-recipient field groups of

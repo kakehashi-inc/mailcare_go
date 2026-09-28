@@ -14,15 +14,16 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/mailengine"
 )
 
 const testGroupKey = "0123456789abcdef"
 
-// newTestIndex creates a temporary index with one group of two bounce
-// messages (with raw files on disk) and returns the index plus the roots.
+// newTestIndex creates a temporary index with one actionable group of two
+// bounce messages of the same pattern (with their notices on disk where the
+// mail engine keeps them) and returns the index plus the roots.
 func newTestIndex(t *testing.T) (db *sql.DB, mailsRoot, agentRoot, address string) {
 	t.Helper()
-	stubMessageFilePath(t)
 	base := t.TempDir()
 	mailsRoot = filepath.Join(base, "mails")
 	agentRoot = filepath.Join(base, "agent")
@@ -33,50 +34,58 @@ func newTestIndex(t *testing.T) (db *sql.DB, mailsRoot, agentRoot, address strin
 	}
 	t.Cleanup(func() { db.Close() })
 
-	dir := filepath.Join(mailsRoot, address)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if err := models.UpsertGroup(db, &models.BounceGroup{
-		GroupKey: testGroupKey, Category: CategoryUserUnknown,
-		UnitValue: "user2@example.net", Authority: "", Actionable: false,
-		RecipientDomain: "example.net", StatusCode: "5.1.1",
-		DiagnosticTemplate: "550 5.1.1 <addr>: user unknown", Responsible: ResponsibleUnknown,
+		GroupKey: testGroupKey, Category: CategoryUnknownFailure,
+		UnitValue: "example.net", Authority: "5.7.1 550 5.7.1 message rejected by policy", Actionable: true,
+		RecipientDomain: "example.net", StatusCode: "5.7.1",
+		DiagnosticTemplate: "550 5.7.1 message rejected by policy", Responsible: ResponsibleUnknown,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	for i, key := range []string{"20260901-120000_aaaaaaaaaaaa", "20260902-120000_bbbbbbbbbbbb"} {
-		for _, name := range []string{key + ".eml", key + "-1.txt"} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte("raw "+key), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		m := &models.Message{
-			MessageKey: key, UID: uint32(i + 1), UIDValidity: 1, Folder: "INBOX", Subject: "Undelivered Mail",
-			FromAddress: "mailer-daemon@example.com", Date: time.Date(2026, 9, 1+i, 12, 0, 0, 0, time.UTC),
-			TextCount: 1, IsBounce: true, BounceKind: "failed", GroupKey: testGroupKey,
-		}
-		if err := models.InsertMessage(db, m); err != nil {
-			t.Fatal(err)
-		}
-		if err := models.UpsertBounce(db, &models.Bounce{
-			ID: m.ID, GroupKey: testGroupKey, Recipient: "user" + key[:1] + "@example.net", RecipientDomain: "example.net",
-			Action: "failed", StatusCode: "5.1.1", SMTPCode: "550", RemoteMTA: "mx.example.net", RemoteIP: "192.0.2.10",
-		}); err != nil {
-			t.Fatal(err)
-		}
+		addTestBounce(t, db, mailsRoot, address, key, uint32(i+1), "pa")
+	}
+	return db, mailsRoot, agentRoot, address
+}
+
+// addTestBounce stores the HTML-only notice of evidence_test.go under key
+// and indexes it as a bounce of the test group with the given pattern.
+func addTestBounce(t *testing.T, db *sql.DB, mailsRoot, address, key string, uid uint32, pattern string) {
+	t.Helper()
+	path := mailengine.MessageFilePath(mailsRoot, address, key, "eml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(noticeHTMLOnly()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	day, _ := strconv.Atoi(key[6:8])
+	m := &models.Message{
+		MessageKey: key, UID: uid, UIDValidity: 1, Folder: "INBOX", Subject: "Undelivered Mail",
+		FromAddress: "mailer-daemon@example.com", Date: time.Date(2026, 9, day, 12, 0, 0, 0, time.UTC),
+		TextCount: 1, HTMLCount: 1, BodySource: "text", IsBounce: true, BounceKind: "failed", GroupKey: testGroupKey,
+	}
+	if err := models.InsertMessage(db, m); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.UpsertBounce(db, &models.Bounce{
+		ID: m.ID, GroupKey: testGroupKey, Recipient: "user" + key[len(key)-1:] + "@example.net", RecipientDomain: "example.net",
+		Action: "failed", StatusCode: "5.7.1", SMTPCode: "550", Diagnostic: "550 5.7.1 Message rejected by policy",
+		DiagnosticTemplate: "550 5.7.1 message rejected by policy", DiagnosticSource: "html:1", CategoryRule: "unknown_failure",
+		PatternKey: pattern, RemoteMTA: "mx.example.net", RemoteIP: "192.0.2.10",
+	}); err != nil {
+		t.Fatal(err)
 	}
 	// Counters (message count, recipients, IPs, first/last seen) are derived
 	// from the inserted messages the same way the mail engine does it.
 	if err := models.RefreshGroupCounters(db, testGroupKey); err != nil {
 		t.Fatal(err)
 	}
-	return db, mailsRoot, agentRoot, address
 }
 
 const cannedSuccess = "OpenAI Codex v0\nsession id: 1234\n" +
 	ReportBegin + "\n" + sampleReport + "\n" + ReportEnd + "\n" +
-	MetaBegin + "\n{\"summary\":\"宛先が存在しません。\",\"responsible\":\"recipient\",\"severity\":\"low\"}\n" + MetaEnd + "\n"
+	MetaBegin + "\n{\"summary\":\"宛先が存在しません。\",\"responsible\":\"recipient\",\"severity\":\"low\",\"confidence\":\"low\"}\n" + MetaEnd + "\n"
 
 func TestAnalyzeGroupSuccess(t *testing.T) {
 	db, mailsRoot, agentRoot, address := newTestIndex(t)
@@ -98,7 +107,8 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	if rep.Status != "completed" || rep.Provider != "fake" || rep.MessageCount != 2 {
 		t.Fatalf("unexpected report: %+v", rep)
 	}
-	if rep.Summary != "宛先が存在しません。" || rep.Responsible != ResponsibleRecipient || rep.Severity != SeverityLow || rep.ReportMarkdown != sampleReport {
+	if rep.Summary != "宛先が存在しません。" || rep.Responsible != ResponsibleRecipient || rep.Severity != SeverityLow ||
+		rep.Confidence != ConfidenceLow || rep.ReportMarkdown != sampleReport {
 		t.Fatalf("unexpected extracted values: %+v", rep)
 	}
 
@@ -106,8 +116,16 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.ID != rep.ID || stored.ReportMarkdown != sampleReport || !stored.FinishedAt.Valid {
+	if stored.ID != rep.ID || stored.ReportMarkdown != sampleReport || !stored.FinishedAt.Valid || stored.Confidence != ConfidenceLow {
 		t.Fatalf("stored report differs: %+v", stored)
+	}
+	// The fake CLI reports no usage: everything stays unknown.
+	if stored.Model != "" || stored.ReasoningEffort != "" || stored.TokensUsed.Valid || stored.CommandCount.Valid {
+		t.Errorf("usage of a CLI that reports none: %+v", stored)
+	}
+	// The report records the patterns it covered.
+	if covered, err := models.ListAgentReportPatterns(db, rep.ID); err != nil || !slices.Equal(covered, []string{"pa"}) {
+		t.Errorf("covered patterns = %v (err %v)", covered, err)
 	}
 	g, err := models.GetGroup(db, testGroupKey)
 	if err != nil {
@@ -125,7 +143,8 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	if work != filepath.Join(agentRoot, address, testGroupKey, strconv.FormatInt(rep.ID, 10)) {
 		t.Fatalf("unexpected run directory %s", work)
 	}
-	for _, f := range []string{PromptFileName, ResultFileName, ReportFileName, "AGENTS.md", filepath.Join("sub", "notes.txt"), "received_prompt.txt"} {
+	for _, f := range []string{PromptFileName, ResultFileName, ReportFileName, "AGENTS.md", filepath.Join("sub", "notes.txt"), "received_prompt.txt",
+		filepath.Join(EvidenceDirName, "20260902-120000_bbbbbbbbbbbb.txt")} {
 		if _, err := os.Stat(filepath.Join(work, f)); err != nil {
 			t.Errorf("workspace file %s missing: %v", f, err)
 		}
@@ -148,13 +167,19 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	if runtime.GOOS != "windows" && string(prompt) != string(received) {
 		t.Error("the CLI must receive PROMPT.md verbatim on stdin")
 	}
-	if !strings.Contains(string(prompt), filepath.Join(mailsRoot, address, "20260902-120000_bbbbbbbbbbbb.eml")) ||
-		!strings.Contains(string(prompt), "text: "+filepath.Join(mailsRoot, address, "20260902-120000_bbbbbbbbbbbb-1.txt")) {
-		t.Error("prompt must list the message files and their text sections")
+	// One pattern, sampled by its newest notice; the mail files themselves
+	// are not named.
+	if strings.Contains(string(prompt), mailsRoot) {
+		t.Error("the prompt must not name the mail files")
+	}
+	if _, err := os.Stat(filepath.Join(work, EvidenceDirName, "20260901-120000_aaaaaaaaaaaa.txt")); err == nil {
+		t.Error("only the newest notice of a pattern is a sample")
 	}
 	for _, want := range []string{
-		"Category: user_unknown - ", "Action unit (unit_value): user2@example.net - ",
-		"Actionable by the mail administrator: no (recipient-side problem)",
+		"Category: unknown_failure - ", "Action unit (unit_value): example.net - ",
+		"Actionable by the mail administrator: yes",
+		"Messages: 2 in 1 patterns.", "[S1] pattern P1, message 20260902-120000_bbbbbbbbbbbb",
+		"| Remote server said: 550 5.7.1 Message rejected by policy",
 	} {
 		if !strings.Contains(string(prompt), want) {
 			t.Errorf("prompt must carry the group's category context (%q)", want)
@@ -170,6 +195,143 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	}
 	if len(lines) == 0 || lines[len(lines)-1] != "report stored" {
 		t.Errorf("progress lines unexpected: %v", lines)
+	}
+	if !slices.ContainsFunc(lines, func(l string) bool {
+		return strings.HasPrefix(l, "running ") && strings.HasSuffix(l, " on 2 messages in 1 patterns, 1 samples")
+	}) {
+		t.Errorf("progress must announce the run: %v", lines)
+	}
+}
+
+// usageFake is a fake provider that reads its usage like codex does.
+type usageFake struct{ fakeProvider }
+
+func (usageFake) ParseUsage(raw, answer string) models.AgentRunUsage {
+	return codexProvider{}.ParseUsage(raw, answer)
+}
+
+func TestAnalyzeGroupPromptWrittenAfterRunAndUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	db, mailsRoot, agentRoot, address := newTestIndex(t)
+	dir := t.TempDir()
+	answer := "--------\nmodel: gpt-test\nreasoning effort: high\n--------\ncodex\nexec\ncat evidence/x.txt\n" +
+		cannedSuccess + "tokens used\n12,345\n"
+	cannedPath := filepath.Join(dir, "canned.txt")
+	if err := os.WriteFile(cannedPath, []byte(answer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The CLI records whether PROMPT.md and the evidence file exist while it
+	// runs.
+	script := filepath.Join(dir, "cli.sh")
+	body := "#!/bin/sh\ncat > /dev/null\n" +
+		"if [ -e " + PromptFileName + " ]; then echo present > saw_prompt.txt; else echo absent > saw_prompt.txt; fi\n" +
+		"ls " + EvidenceDirName + " > saw_evidence.txt\ncat \"" + cannedPath + "\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registerFake(t, usageFake{fakeProvider{name: "fake", command: []string{script}}})
+	rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
+		MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
+	}, nil)
+	if err != nil || rep.Status != "completed" {
+		t.Fatalf("run: %+v %v", rep, err)
+	}
+	work := RunDir(agentRoot, address, testGroupKey, rep.ID)
+	if saw, _ := os.ReadFile(filepath.Join(work, "saw_prompt.txt")); strings.TrimSpace(string(saw)) != "absent" {
+		t.Errorf("PROMPT.md must not exist while the CLI runs (saw %q)", saw)
+	}
+	if saw, _ := os.ReadFile(filepath.Join(work, "saw_evidence.txt")); !strings.Contains(string(saw), "20260902-120000_bbbbbbbbbbbb.txt") {
+		t.Errorf("the evidence file must exist while the CLI runs (saw %q)", saw)
+	}
+	if _, err := os.Stat(filepath.Join(work, PromptFileName)); err != nil {
+		t.Errorf("PROMPT.md must be kept after the run: %v", err)
+	}
+	stored, err := models.LatestCompletedAgentReport(db, testGroupKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Model != "gpt-test" || stored.ReasoningEffort != "high" || stored.TokensUsed.Int64 != 12345 || stored.CommandCount.Int64 != 1 {
+		t.Errorf("usage not recorded: %+v", stored)
+	}
+	result, _ := os.ReadFile(filepath.Join(work, ResultFileName))
+	if !strings.Contains(string(result), "Tokens used: 12345\n") || !strings.Contains(string(result), "Commands run: 1\n") {
+		t.Errorf("RESULT.log must carry the usage:\n%s", result)
+	}
+}
+
+func TestAnalyzeGroupUpdate(t *testing.T) {
+	db, mailsRoot, agentRoot, address := newTestIndex(t)
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), cannedSuccess)})
+	in := AnalyzeInput{MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake"}
+	first, err := AnalyzeGroup(context.Background(), in, nil)
+	if err != nil || first.Status != "completed" {
+		t.Fatalf("first run: %+v %v", first, err)
+	}
+	// A notice of a new pattern arrives: only it is sampled, the previous
+	// report is quoted.
+	addTestBounce(t, db, mailsRoot, address, "20260903-120000_cccccccccccc", 3, "pb")
+	registerFake(t, fakeProvider{name: "fake", command: writeEchoingFakeCLI(t, t.TempDir(), cannedSuccess)})
+	second, err := AnalyzeGroup(context.Background(), in, nil)
+	if err != nil || second.Status != "completed" {
+		t.Fatalf("second run: %+v %v", second, err)
+	}
+	work := RunDir(agentRoot, address, testGroupKey, second.ID)
+	prompt, _ := os.ReadFile(filepath.Join(work, PromptFileName))
+	for _, want := range []string{"This is an UPDATE of the PREVIOUS REPORT below", "=== PREVIOUS REPORT", "Summary: 宛先が存在しません。",
+		"[new]", "[covered]", "[S1] pattern P", "message 20260903-120000_cccccccccccc"} {
+		if !strings.Contains(string(prompt), want) {
+			t.Errorf("update prompt lacks %q", want)
+		}
+	}
+	if strings.Count(string(prompt), "\n[S") != 1 {
+		t.Error("only the new pattern gets a sample")
+	}
+	if covered, _ := models.ListAgentReportPatterns(db, second.ID); !slices.Equal(covered, []string{"pa", "pb"}) {
+		t.Errorf("the update covers every pattern, got %v", covered)
+	}
+	if g, _ := models.GetGroup(db, testGroupKey); g.NeedsAnalysis {
+		t.Error("every pattern is covered: needs_analysis must be clear")
+	}
+}
+
+func TestAnalyzeGroupRecipientSideFailureKeepsFlagClear(t *testing.T) {
+	db, mailsRoot, agentRoot, address := newTestIndex(t)
+	if err := models.UpsertGroup(db, &models.BounceGroup{
+		GroupKey: testGroupKey, Category: CategoryUserUnknown, UnitValue: "user2@example.net", Actionable: false,
+		RecipientDomain: "example.net", StatusCode: "5.1.1", Responsible: ResponsibleRecipient,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.RefreshGroupCounters(db, testGroupKey); err != nil {
+		t.Fatal(err)
+	}
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "I refuse to answer.\n")})
+	rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
+		MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
+	}, nil)
+	if err != nil || rep.Status != "error" {
+		t.Fatalf("expected a failure: %+v %v", rep, err)
+	}
+	if g, _ := models.GetGroup(db, testGroupKey); g.NeedsAnalysis {
+		t.Error("a recipient-side group is not analyzed automatically: its flag must stay clear")
+	}
+	// A successful run of a recipient-side group works the same way.
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), cannedSuccess)})
+	rep, err = AnalyzeGroup(context.Background(), AnalyzeInput{
+		MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
+	}, nil)
+	if err != nil || rep.Status != "completed" {
+		t.Fatalf("recipient-side run: %+v %v", rep, err)
+	}
+	work := RunDir(agentRoot, address, testGroupKey, rep.ID)
+	prompt, _ := os.ReadFile(filepath.Join(work, PromptFileName))
+	if !strings.Contains(string(prompt), "This group is NOT actionable") {
+		t.Error("a recipient-side group gets the recipient-side task")
+	}
+	if g, _ := models.GetGroup(db, testGroupKey); g.NeedsAnalysis {
+		t.Error("needs_analysis of a recipient-side group must stay clear")
 	}
 }
 

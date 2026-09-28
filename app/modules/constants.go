@@ -117,9 +117,9 @@ const (
 	AgentReportEnd   = agent.ReportEnd
 	AgentMetaBegin   = agent.MetaBegin
 	AgentMetaEnd     = agent.MetaEnd
-	// AgentMaxSampleMessages bounds how many message files are listed in one
-	// prompt (the newest ones are chosen).
-	AgentMaxSampleMessages = agent.MaxSampleMessages
+	// AgentMaxEvidenceSamples bounds how many sample notices (one per bounce
+	// pattern) one prompt carries.
+	AgentMaxEvidenceSamples = agent.MaxEvidenceSamples
 	// DefaultAgentKeepDays is how many days the workspace directory of an
 	// analysis run (data/agent/<address>/<group_key>/<report_id>/) is kept;
 	// older run directories are removed by the daily cleanup job. The setting
@@ -245,17 +245,20 @@ const (
 	// that encrypts the stored passwords and seals the Web session cookies.
 	// It is generated on first use and is the one setting that is always
 	// stored; the CLI never shows it and never lets it be set (secret.go).
-	SettingSecretKey      = "secret_key"
-	SettingWebListen      = "web_listen"
-	SettingWebPort        = "web_port"
-	SettingCheckTimes     = "check_times"
-	SettingAgentProvider  = "agent_provider"
-	SettingAgentModel     = "agent_model"     // model passed to the agent CLI ("" / absent = the CLI default)
-	SettingAgentEnabled   = "agent_enabled"   // "1" (default) or "0"
-	SettingAgentKeepDays  = "agent_keep_days" // days an agent run directory is kept (DefaultAgentKeepDays)
-	SettingMailKeepDays   = "mail_keep_days"  // days a fetched mail is kept (DefaultMailKeepDays)
-	SettingCookieTTLHours = "cookie_ttl_hours"
-	SettingWorkers        = "workers"
+	SettingSecretKey     = "secret_key"
+	SettingWebListen     = "web_listen"
+	SettingWebPort       = "web_port"
+	SettingCheckTimes    = "check_times"
+	SettingAgentProvider = "agent_provider"
+	SettingAgentModel    = "agent_model" // model passed to the agent CLI ("" / absent = the CLI default)
+	// SettingAgentReasoningEffort is the reasoning level passed to the agent
+	// CLI ("" / absent = the CLI's own setting).
+	SettingAgentReasoningEffort = "agent_reasoning_effort"
+	SettingAgentEnabled         = "agent_enabled"   // "1" (default) or "0"
+	SettingAgentKeepDays        = "agent_keep_days" // days an agent run directory is kept (DefaultAgentKeepDays)
+	SettingMailKeepDays         = "mail_keep_days"  // days a fetched mail is kept (DefaultMailKeepDays)
+	SettingCookieTTLHours       = "cookie_ttl_hours"
+	SettingWorkers              = "workers"
 	// Notification mail (SMTP) settings. The password is stored encrypted with
 	// the master key (see secret.go).
 	SettingSMTPHost        = "smtp_host"

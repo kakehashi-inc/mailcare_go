@@ -87,8 +87,9 @@ func UpsertGroup(db Execer, g *BounceGroup) error {
 
 // RefreshGroupCounters recomputes the message/recipient/IP counts and the
 // first/last seen dates of a group from its messages. It never sets the
-// analysis flag itself (the grouping phase flags an actionable group when
-// its count grew during a run, see mailengine); a recipient-side group
+// analysis flag itself (the grouping phase flags an actionable group that
+// received a bounce of a pattern its latest completed report did not cover,
+// see mailengine); a recipient-side group
 // (actionable = 0) always ends with the flag cleared.
 func RefreshGroupCounters(db Execer, groupKey string) error {
 	// MIN()/MAX() over a DATETIME column carry no declared type, so the driver

@@ -14,7 +14,6 @@ type carriedGroup struct {
 	State          string
 	StateUpdatedAt sql.NullTime
 	NeedsAnalysis  bool
-	MessageCount   int
 }
 
 // carryover holds what Reindex keeps from the previous index: the IMAP
@@ -23,9 +22,10 @@ type carriedGroup struct {
 // are restored for the group keys that come back (group keys are
 // deterministic, so a rebuilt group is the same problem).
 type carryover struct {
-	sources map[string]models.MessageSource
-	groups  map[string]carriedGroup
-	reports []*models.AgentReport // in old id order
+	sources  map[string]models.MessageSource
+	groups   map[string]carriedGroup
+	reports  []*models.AgentReport // in old id order
+	patterns map[int64][]string    // report id -> pattern keys the report covered
 }
 
 // messageSource returns the carried source of a message key (nil when the
@@ -83,27 +83,32 @@ func readCarryover(path string) (*carryover, error) {
 	}
 	for _, g := range groups {
 		c.groups[g.GroupKey] = carriedGroup{
-			State: g.State, StateUpdatedAt: g.StateUpdatedAt, NeedsAnalysis: g.NeedsAnalysis, MessageCount: g.MessageCount,
+			State: g.State, StateUpdatedAt: g.StateUpdatedAt, NeedsAnalysis: g.NeedsAnalysis,
 		}
 	}
 	c.reports, err = models.ListAllAgentReports(db)
 	if err != nil {
 		return nil, err
 	}
+	c.patterns, err = models.ListAllAgentReportPatterns(db)
+	if err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
-// apply restores the carried state and reports into the rebuilt index for
-// the group keys that exist there. needs_analysis is carried over as it was,
-// except that a group whose message count grew is flagged again (a
+// apply restores the carried state, reports and report patterns into the
+// rebuilt index for the group keys that exist there. needs_analysis is
+// carried over as it was, except that an actionable group with a bounce
+// pattern its latest completed report did not cover is flagged again (a
 // recipient-side group is never flagged, RestoreGroupState). It returns how
 // many groups and reports were restored.
 func (c *carryover) apply(db *sql.DB) (groups, reports int, err error) {
 	if c == nil {
 		return 0, 0, nil
 	}
-	restored := map[string]bool{}
-	for key, old := range c.groups {
+	restored := map[string]*models.BounceGroup{}
+	for key := range c.groups {
 		g, err := models.GetGroup(db, key)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
@@ -111,21 +116,31 @@ func (c *carryover) apply(db *sql.DB) (groups, reports int, err error) {
 		if err != nil {
 			return groups, reports, fmt.Errorf("lookup group %s: %w", key, err)
 		}
-		needs := old.NeedsAnalysis || g.MessageCount > old.MessageCount
-		if err := models.RestoreGroupState(db, key, old.State, old.StateUpdatedAt, needs); err != nil {
-			return groups, reports, fmt.Errorf("restore group %s: %w", key, err)
-		}
-		restored[key] = true
-		groups++
+		restored[key] = g
 	}
 	for _, r := range c.reports {
-		if !restored[r.GroupKey] {
+		if restored[r.GroupKey] == nil {
 			continue
 		}
 		if err := models.RestoreAgentReport(db, r); err != nil {
 			return groups, reports, fmt.Errorf("restore report of %s: %w", r.GroupKey, err)
 		}
+		if err := models.InsertAgentReportPatterns(db, r.ID, c.patterns[r.ID]); err != nil {
+			return groups, reports, fmt.Errorf("restore report patterns of %s: %w", r.GroupKey, err)
+		}
 		reports++
+	}
+	for key, g := range restored {
+		old := c.groups[key]
+		uncovered, err := models.GroupHasUncoveredPattern(db, key)
+		if err != nil {
+			return groups, reports, fmt.Errorf("check patterns of %s: %w", key, err)
+		}
+		needs := old.NeedsAnalysis || (g.Actionable && uncovered)
+		if err := models.RestoreGroupState(db, key, old.State, old.StateUpdatedAt, needs); err != nil {
+			return groups, reports, fmt.Errorf("restore group %s: %w", key, err)
+		}
+		groups++
 	}
 	return groups, reports, nil
 }

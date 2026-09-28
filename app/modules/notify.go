@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/agent"
 	"mailcare/app/modules/mailengine"
 )
 
@@ -26,21 +27,80 @@ import (
 // The settings live in the settings table (SMTP connection, recipients,
 // time, interval, public URL). A notification collects, from the index of
 // every mailbox, the actionable open groups that have a completed agent
-// report and sends one text/plain mail (rendered from
-// templates/mail/notification_ja.txt) to every selected user that has a
-// notification address. The scheduler queues a notify job when the notify
-// time arrives and the interval since the last mail has elapsed.
+// report and sends one text/plain mail to each selected user that has a
+// notification address, rendered in that user's language and time zone
+// (MailLocale; templates/mail/notification_<language>.txt). The scheduler
+// queues a notify job when the notify time arrives and the interval since
+// the last mail has elapsed.
 
 const (
-	// notifyTemplateFile / testTemplateFile / categoryLabelsFile are the
-	// mail templates inside TemplatesFS. All user-facing text of the
-	// mails lives there, never in Go source.
-	notifyTemplateFile  = "templates/mail/notification_ja.txt"
-	testTemplateFile    = "templates/mail/test_ja.txt"
-	categoryLabelsFile  = "templates/mail/categories_ja.txt"
+	// The mail templates inside TemplatesFS are
+	// templates/mail/<kind>_<language>.txt (mailTemplatePath). All
+	// user-facing text of the mails lives there, never in Go source.
+	notifyTemplateKind  = "notification"
+	testTemplateKind    = "test"
+	categoryLabelsKind  = "categories"
 	notifyTestPrefix    = "test:" // notify job target for a test mail
 	notifyMaxRecipients = 100
 )
+
+// MailLocale is the language and the time zone a mail is rendered in.
+type MailLocale struct {
+	Language string         // a user language (ja | en); templates missing for it fall back to Japanese
+	Location *time.Location // dates and times of the mail
+}
+
+// DefaultMailLocale is used for mails that go to no known user: Japanese
+// and the server's local time.
+func DefaultMailLocale() MailLocale {
+	return MailLocale{Language: models.DefaultLanguage, Location: time.Local}
+}
+
+// MailLocaleFor returns the locale of a user: the user's language and time
+// zone (the defaults when unset or not loadable).
+func MailLocaleFor(u *models.User) MailLocale {
+	loc := DefaultMailLocale()
+	if u == nil {
+		return loc
+	}
+	if lang := strings.TrimSpace(u.Language); lang != "" {
+		loc.Language = lang
+	}
+	if tz := strings.TrimSpace(u.Timezone); tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc.Location = l
+		}
+	}
+	return loc
+}
+
+// MailLocaleForAddress returns the locale of the user whose notification
+// address is address, or fallback when no user has it.
+func MailLocaleForAddress(db *sql.DB, address string, fallback MailLocale) MailLocale {
+	if norm, err := NormalizeEmail(address); err == nil && norm != "" {
+		if u, err := models.GetUserByEmail(db, norm); err == nil {
+			return MailLocaleFor(u)
+		}
+	}
+	return fallback
+}
+
+// key identifies a locale for caching rendered mails.
+func (l MailLocale) key() string {
+	return l.Language + "|" + l.Location.String()
+}
+
+// mailTemplatePath returns the template file of a kind for a language, or
+// the Japanese one when TemplatesFS has none for the language.
+func mailTemplatePath(kind, language string) string {
+	path := "templates/mail/" + kind + "_" + language + ".txt"
+	if TemplatesFS != nil && language != models.DefaultLanguage {
+		if _, err := fs.Stat(TemplatesFS, path); err == nil {
+			return path
+		}
+	}
+	return "templates/mail/" + kind + "_" + models.DefaultLanguage + ".txt"
+}
 
 // NotificationSettings is the resolved notification configuration.
 type NotificationSettings struct {
@@ -483,10 +543,15 @@ type NotificationGroup struct {
 	Authority      string
 	MessageCount   int
 	RecipientCount int
-	FirstSeen      string // local "2006-01-02 15:04" ("" when unknown)
+	FirstSeen      string // "2006-01-02 15:04" in the recipient's time zone ("" when unknown)
 	LastSeen       string
 	Summary        string
-	URL            string
+	// NeedsReview is true when the agent could not establish the cause
+	// from the notices (report confidence "low").
+	NeedsReview bool
+	URL         string
+
+	firstSeen, lastSeen sql.NullTime // FirstSeen / LastSeen before rendering
 }
 
 // NotificationMailbox is the heading of one mail address.
@@ -499,7 +564,7 @@ type NotificationMailbox struct {
 
 // Notification is the rendered mail and the data it was built from.
 type Notification struct {
-	Date      string // YYYY-MM-DD (local)
+	Date      string // YYYY-MM-DD in the recipient's time zone
 	Total     int
 	BaseURL   string
 	Mailboxes []NotificationMailbox
@@ -507,21 +572,30 @@ type Notification struct {
 	Body      string
 }
 
-// BuildNotification collects, from the index of every mailbox, the
-// actionable open groups that have a completed agent report and renders the
-// mail. Mailboxes without an index are skipped; a mailbox whose index cannot
-// be opened is logged and skipped. Total is 0 when there is nothing to send.
-func BuildNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL string, now time.Time) (*Notification, error) {
-	n := &Notification{Date: now.In(time.Local).Format("2006-01-02"), BaseURL: strings.TrimRight(baseURL, "/")}
-	labels, err := loadCategoryLabels()
+// BuildNotification collects the groups (collectNotification) and renders
+// the mail for one locale (renderNotificationFor). Total is 0 when there is
+// nothing to send.
+func BuildNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL string, now time.Time, loc MailLocale) (*Notification, error) {
+	mailboxes, err := collectNotification(ctx, db, mailsRoot, baseURL)
 	if err != nil {
 		return nil, err
 	}
+	return renderNotificationFor(mailboxes, baseURL, now, loc)
+}
+
+// collectNotification collects, from the index of every mailbox, the
+// actionable open groups that have a completed agent report (language
+// independent; the category labels and the dates are filled per recipient
+// by renderNotificationFor). Mailboxes without an index are skipped; a
+// mailbox whose index cannot be opened is logged and skipped.
+func collectNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL string) ([]NotificationMailbox, error) {
+	baseURL = strings.TrimRight(baseURL, "/")
 	mailboxes, err := models.ListMailboxes(db)
 	if err != nil {
 		return nil, err
 	}
 	sort.Slice(mailboxes, func(i, j int) bool { return mailboxes[i].Address < mailboxes[j].Address })
+	var out []NotificationMailbox
 	for _, mb := range mailboxes {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -529,7 +603,7 @@ func BuildNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL strin
 		if _, err := os.Stat(mailengine.MailboxIndexPath(mailsRoot, mb.Address)); err != nil {
 			continue
 		}
-		groups, err := collectNotificationGroups(ctx, mailsRoot, mb, n.BaseURL, labels)
+		groups, err := collectNotificationGroups(ctx, mailsRoot, mb, baseURL)
 		if err != nil {
 			log.Printf("notification: %s skipped: %v", mb.Address, err)
 			continue
@@ -537,18 +611,46 @@ func BuildNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL strin
 		if len(groups) == 0 {
 			continue
 		}
-		n.Mailboxes = append(n.Mailboxes, NotificationMailbox{ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, Groups: groups})
-		n.Total += len(groups)
+		out = append(out, NotificationMailbox{ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, Groups: groups})
 	}
-	if err := renderNotification(n); err != nil {
+	return out, nil
+}
+
+// renderNotificationFor renders the mail of the collected groups in one
+// locale: the category labels of its language, the dates in its time zone
+// and the template of its language. The report summaries stay as the agent
+// wrote them.
+func renderNotificationFor(mailboxes []NotificationMailbox, baseURL string, now time.Time, loc MailLocale) (*Notification, error) {
+	labels, err := loadCategoryLabels(loc.Language)
+	if err != nil {
 		return nil, err
 	}
+	n := &Notification{Date: now.In(loc.Location).Format("2006-01-02"), BaseURL: strings.TrimRight(baseURL, "/")}
+	for _, mb := range mailboxes {
+		groups := make([]NotificationGroup, 0, len(mb.Groups))
+		for _, g := range mb.Groups {
+			g.CategoryLabel = labels[g.Category]
+			if g.CategoryLabel == "" {
+				g.CategoryLabel = g.Category
+			}
+			g.FirstSeen, g.LastSeen = localStamp(g.firstSeen, loc.Location), localStamp(g.lastSeen, loc.Location)
+			groups = append(groups, g)
+		}
+		mb.Groups = groups
+		n.Mailboxes = append(n.Mailboxes, mb)
+		n.Total += len(groups)
+	}
+	subject, body, err := renderSubjectAndBody(mailTemplatePath(notifyTemplateKind, loc.Language), n)
+	if err != nil {
+		return nil, err
+	}
+	n.Subject, n.Body = subject, body
 	return n, nil
 }
 
 // collectNotificationGroups reads the open actionable groups with a
 // completed report from the index of one mailbox.
-func collectNotificationGroups(ctx context.Context, mailsRoot string, mb *models.Mailbox, baseURL string, labels map[string]string) ([]NotificationGroup, error) {
+func collectNotificationGroups(ctx context.Context, mailsRoot string, mb *models.Mailbox, baseURL string) ([]NotificationGroup, error) {
 	idx, err := mailengine.OpenIndex(ctx, mailsRoot, mb.Address, nil)
 	if err != nil {
 		return nil, err
@@ -573,15 +675,11 @@ func collectNotificationGroups(ctx context.Context, mailsRoot string, mb *models
 		if summary == "" {
 			summary = firstParagraph(report.ReportMarkdown)
 		}
-		label := labels[g.Category]
-		if label == "" {
-			label = g.Category
-		}
 		out = append(out, NotificationGroup{
-			GroupKey: g.GroupKey, Category: g.Category, CategoryLabel: label, UnitValue: g.UnitValue, Authority: g.Authority,
-			MessageCount: g.MessageCount, RecipientCount: g.RecipientCount,
-			FirstSeen: localStamp(g.FirstSeen), LastSeen: localStamp(g.LastSeen), Summary: summary,
-			URL: GroupURL(baseURL, mb.ID, g.GroupKey),
+			GroupKey: g.GroupKey, Category: g.Category, UnitValue: g.UnitValue, Authority: g.Authority,
+			MessageCount: g.MessageCount, RecipientCount: g.RecipientCount, Summary: summary,
+			NeedsReview: report.Confidence == agent.ConfidenceLow, URL: GroupURL(baseURL, mb.ID, g.GroupKey),
+			firstSeen: g.FirstSeen, lastSeen: g.LastSeen,
 		})
 	}
 	return out, nil
@@ -592,11 +690,12 @@ func GroupURL(baseURL string, mailboxID int64, groupKey string) string {
 	return fmt.Sprintf("%s/alerts/%d/groups/%s", strings.TrimRight(baseURL, "/"), mailboxID, url.PathEscape(groupKey))
 }
 
-func localStamp(t sql.NullTime) string {
+// localStamp renders a date and time in a time zone ("" when NULL).
+func localStamp(t sql.NullTime, loc *time.Location) string {
 	if !t.Valid {
 		return ""
 	}
-	return t.Time.In(time.Local).Format("2006-01-02 15:04")
+	return t.Time.In(loc).Format("2006-01-02 15:04")
 }
 
 // firstParagraph returns the first paragraph of a Markdown report that is
@@ -653,22 +752,13 @@ func renderSubjectAndBody(name string, data any) (subject, body string, err erro
 	return subject, body, nil
 }
 
-// renderNotification fills Subject and Body from the notification template.
-func renderNotification(n *Notification) error {
-	subject, body, err := renderSubjectAndBody(notifyTemplateFile, n)
-	if err != nil {
-		return err
-	}
-	n.Subject, n.Body = subject, body
-	return nil
-}
-
-// loadCategoryLabels reads the category label file (key<TAB>label per line).
-func loadCategoryLabels() (map[string]string, error) {
+// loadCategoryLabels reads the category label file of a language
+// (key<TAB>label per line).
+func loadCategoryLabels(language string) (map[string]string, error) {
 	if TemplatesFS == nil {
 		return nil, errors.New("mail templates are not available")
 	}
-	data, err := fs.ReadFile(TemplatesFS, categoryLabelsFile)
+	data, err := fs.ReadFile(TemplatesFS, mailTemplatePath(categoryLabelsKind, language))
 	if err != nil {
 		return nil, fmt.Errorf("category labels: %w", err)
 	}
@@ -770,8 +860,9 @@ func SMTPConfigForTest(db *sql.DB, key []byte, in *SMTPTestInput) (SMTPConfig, e
 	return cfg, nil
 }
 
-// TestSMTP sends a short mail that only proves the SMTP settings work.
-func TestSMTP(ctx context.Context, cfg SMTPConfig, to string) error {
+// TestSMTP sends a short mail that only proves the SMTP settings work,
+// rendered in the given locale.
+func TestSMTP(ctx context.Context, cfg SMTPConfig, to string, loc MailLocale) error {
 	to, err := NormalizeEmail(to)
 	if err != nil {
 		return err
@@ -786,8 +877,8 @@ func TestSMTP(ctx context.Context, cfg SMTPConfig, to string) error {
 	if port <= 0 {
 		port = DefaultSMTPPort
 	}
-	subject, body, err := renderSubjectAndBody(testTemplateFile, map[string]any{
-		"Date": time.Now().In(time.Local).Format("2006-01-02 15:04"), "Host": cfg.Host, "Port": port,
+	subject, body, err := renderSubjectAndBody(mailTemplatePath(testTemplateKind, loc.Language), map[string]any{
+		"Date": time.Now().In(loc.Location).Format("2006-01-02 15:04"), "Host": cfg.Host, "Port": port,
 		"Security": cfg.Security, "From": cfg.From,
 	})
 	if err != nil {
@@ -799,10 +890,10 @@ func TestSMTP(ctx context.Context, cfg SMTPConfig, to string) error {
 // NotificationResult reports what SendNotification did.
 type NotificationResult struct {
 	Sent       bool
-	Skipped    string // why nothing was sent ("" when Sent)
-	Recipients []string
+	Skipped    string   // why nothing was sent ("" when Sent)
+	Recipients []string // the addresses the mail was delivered to
+	Failures   []string // "<address>: <error>" for the addresses it could not be delivered to
 	Groups     int
-	Subject    string
 }
 
 // Skipped reasons (stored in the job result as "skipped: <reason>").
@@ -814,11 +905,15 @@ const (
 )
 
 // SendNotification applies the send conditions of the design (SMTP
-// configured, at least one recipient with an address, at least one group),
-// sends the mail and records the time. notify_enabled is not checked here:
-// it only gates the scheduled sending (NotifyDue), so "send now" works while
-// the schedule is off. A failed condition is not an error: the result says
-// why nothing was sent.
+// configured, at least one recipient with an address, at least one group)
+// and sends one mail to each recipient in that user's language and time
+// zone (the groups are collected once; the mail is rendered once per
+// locale). The time is recorded when at least one mail was delivered; the
+// addresses that failed are listed in Failures, and only when every mail
+// failed is an error returned. notify_enabled is not checked here: it only
+// gates the scheduled sending (NotifyDue), so "send now" works while the
+// schedule is off. A failed condition is not an error: the result says why
+// nothing was sent.
 func SendNotification(ctx context.Context, db *sql.DB, key []byte, mailsRoot string, now time.Time) (*NotificationResult, error) {
 	s, err := ResolveNotificationSettings(db, key)
 	if err != nil {
@@ -829,34 +924,70 @@ func SendNotification(ctx context.Context, db *sql.DB, key []byte, mailsRoot str
 		res.Skipped = SkipSMTPNotConfigured
 		return res, nil
 	}
-	selected, addresses, err := NotificationRecipients(db, s)
+	selected, _, err := NotificationRecipients(db, s)
 	if err != nil {
 		return nil, err
 	}
+	recipients := notificationTargets(selected)
 	switch {
 	case len(selected) == 0:
 		res.Skipped = SkipNoRecipient
 		return res, nil
-	case len(addresses) == 0:
+	case len(recipients) == 0:
 		res.Skipped = SkipRecipientsNoEmail
 		return res, nil
 	}
-	res.Recipients = addresses
-	n, err := BuildNotification(ctx, db, mailsRoot, EffectiveBaseURL(db, s), now)
+	baseURL := EffectiveBaseURL(db, s)
+	mailboxes, err := collectNotification(ctx, db, mailsRoot, baseURL)
 	if err != nil {
 		return nil, err
 	}
-	res.Groups, res.Subject = n.Total, n.Subject
-	if n.Total == 0 {
+	for _, mb := range mailboxes {
+		res.Groups += len(mb.Groups)
+	}
+	if res.Groups == 0 {
 		res.Skipped = SkipNoActionableGroups
 		return res, nil
 	}
-	if err := SendMail(ctx, s.SMTP, s.SMTP.From, addresses, n.Subject, n.Body); err != nil {
-		return nil, err
+	rendered := map[string]*Notification{}
+	var errs []error
+	for _, u := range recipients {
+		loc := MailLocaleFor(u)
+		n := rendered[loc.key()]
+		if n == nil {
+			if n, err = renderNotificationFor(mailboxes, baseURL, now, loc); err != nil {
+				return nil, err
+			}
+			rendered[loc.key()] = n
+		}
+		if err := SendMail(ctx, s.SMTP, s.SMTP.From, []string{u.Email}, n.Subject, n.Body); err != nil {
+			res.Failures = append(res.Failures, u.Email+": "+err.Error())
+			errs = append(errs, fmt.Errorf("%s: %w", u.Email, err))
+			continue
+		}
+		res.Recipients = append(res.Recipients, u.Email)
+	}
+	if len(res.Recipients) == 0 {
+		return res, errors.Join(errs...)
 	}
 	res.Sent = true
 	if err := SetNotifyLastSent(db, now); err != nil {
 		log.Printf("failed to record the notification time: %v", err)
 	}
 	return res, nil
+}
+
+// notificationTargets returns the selected users that have a notification
+// address, one per address (the first user wins).
+func notificationTargets(selected []*models.User) []*models.User {
+	seen := map[string]bool{}
+	var out []*models.User
+	for _, u := range selected {
+		if u.Email == "" || seen[u.Email] {
+			continue
+		}
+		seen[u.Email] = true
+		out = append(out, u)
+	}
+	return out
 }

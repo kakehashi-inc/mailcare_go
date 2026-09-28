@@ -22,14 +22,17 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 	}
 	f := fields{}
 	if pm.DeliveryStatus != nil {
+		f.source = DiagnosticSourceDSN
 		f.fromDeliveryStatus(pm.DeliveryStatus, kind)
 		b.ReportingMTA = pm.DeliveryStatus.ReportingMTA
 	}
 	// The primary body (every text section joined) first; whatever is still
 	// empty is completed from the HTML sections rendered as text when the
 	// message has both kinds (design 5.2).
+	f.source = pm.primarySource()
 	f.fromBody(unfold(pm.bodyForClassification()), pm.Headers, exclude)
 	if secondary := pm.secondaryBody(); secondary != "" {
+		f.source = bodySourceHTML
 		f.fromBody(unfold(secondary), nil, exclude)
 	}
 	f.finish()
@@ -46,6 +49,7 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 	b.StatusCode = f.status
 	b.SMTPCode = f.code
 	b.Diagnostic = f.diag
+	b.DiagnosticSource = locateDiagnostic(pm, f.diagSource, f.diagRaw)
 	b.RemoteMTA = f.host
 	b.RemoteIP = f.ip
 	if pm.OriginalMessage != nil {
@@ -59,15 +63,20 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 		templateSource = pm.Subject
 	}
 	b.DiagnosticTemplate = DiagnosticTemplate(templateSource)
+	b.PatternKey = PatternKey(b.StatusCode, b.DiagnosticTemplate, b.RemoteMTA, b.DiagnosticSource)
 	// The responsible party is a property of the group (design 5.4); the
 	// bounce row does not repeat it.
 	return b
 }
 
 // fields accumulates the extracted values; every rule only fills what is
-// still empty.
+// still empty. source names what is being read while the values are filled
+// (DiagnosticSourceDSN, "text" or "html"); diagSource and diagRaw remember
+// where the diagnostic was taken from and its text as matched there, so
+// that the section holding it can be named afterwards (locateDiagnostic).
 type fields struct {
 	addr, host, ip, code, status, diag, action string
+	source, diagSource, diagRaw                string
 }
 
 func (f *fields) fill(name, value string) {
@@ -99,6 +108,7 @@ func (f *fields) fill(name, value string) {
 	case "diag":
 		if f.diag == "" {
 			f.diag = value
+			f.diagSource, f.diagRaw = f.source, value
 		}
 	}
 }

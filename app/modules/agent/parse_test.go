@@ -84,7 +84,8 @@ func TestParseOutputMetaTolerance(t *testing.T) {
 		want   Meta
 	}{
 		{"fenced", "```json\n{\"summary\":\"a  b\\nc\",\"responsible\":\"domain\",\"severity\":\"HIGH\"}\n```", true, Meta{Summary: "a b c", Responsible: ResponsibleDomain, Severity: SeverityHigh}},
-		{"invalid enums", "{\"summary\":\"s\",\"responsible\":\"nobody\",\"severity\":\"critical\"}", true, Meta{Summary: "s"}},
+		{"invalid enums", "{\"summary\":\"s\",\"responsible\":\"nobody\",\"severity\":\"critical\",\"confidence\":\"sure\"}", true, Meta{Summary: "s"}},
+		{"confidence", "{\"summary\":\"s\",\"confidence\":\" LOW \"}", true, Meta{Summary: "s", Confidence: ConfidenceLow}},
 		{"not json", "summary: nothing here", false, Meta{Summary: sampleFirstParagraph}},
 		{"array", "[1,2]", false, Meta{Summary: sampleFirstParagraph}},
 	}

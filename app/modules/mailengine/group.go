@@ -14,7 +14,8 @@ import (
 // Every message is parsed again from its .eml (the index holds no parsed
 // copy); the writes of one message form one transaction (groupMessage), so
 // the counters of a group are always in step with its bounces. An
-// actionable group whose message count grew is listed in
+// actionable group that received a bounce of a pattern its latest completed
+// report did not cover is flagged for analysis and listed in
 // GroupResult.GroupsTouched.
 //
 // With full = true every message is done again: the classification is
@@ -22,8 +23,9 @@ import (
 // row), then all messages are processed and groups left without messages
 // are deleted together with their reports. A group whose key comes back
 // keeps its state, its reports and its needs_analysis flag (set again only
-// when its message count grew), and the responsible party named by its
-// latest completed report is re-applied.
+// when one of its patterns is not covered by its latest completed report),
+// and the responsible party named by its latest completed report is
+// re-applied.
 func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, progress Progress) (*GroupResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -84,7 +86,7 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, pro
 	if err != nil {
 		return nil, err
 	}
-	report(progress, fmt.Sprintf("grouped %d messages, %d bounces, %d groups (%d actionable groups gained messages)",
+	report(progress, fmt.Sprintf("grouped %d messages, %d bounces, %d groups (%d actionable groups need analysis)",
 		result.Processed, result.Bounces, result.Groups, len(touched)))
 	return result, nil
 }
@@ -93,8 +95,11 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, pro
 // for one index row and marks it classified (design 5.3 + 5.4). Every write
 // of the message happens in one transaction: the group row (UpsertGroup),
 // the bounces row (only for failed / delayed notices; auto-replies, daemon
-// mail without failure evidence and ordinary mail get none), the counters
-// and the analysis flag of the group (groupTracker.recount) and finally the
+// mail without failure evidence and ordinary mail get none; it records where
+// the diagnostic was found, the category rule and the pattern key), the
+// counters and the analysis flag of the group (groupTracker.recount: set
+// when the pattern of the bounce is not covered by the latest completed
+// report) and finally the
 // detection outcome (is_bounce, bounce_kind, rule, the body actually used)
 // of the messages row. The order groups -> bounces -> messages also holds
 // without a transaction: an interruption leaves the message unclassified,
@@ -143,7 +148,11 @@ func groupMessageIn(db models.Execer, msg *models.Message, pm *ParsedMessage, tr
 	} else if err := models.DeleteBounce(db, msg.ID); err != nil {
 		return err
 	}
-	if err := tracker.recount(db, group); err != nil {
+	patternKey := ""
+	if bounce != nil {
+		patternKey = bounce.PatternKey
+	}
+	if err := tracker.recount(db, group, patternKey); err != nil {
 		return err
 	}
 	// 3. the detection outcome; the message counts as processed only now.

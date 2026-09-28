@@ -1,0 +1,42 @@
+{{/*
+  MailCare notification mail (English, templates/mail).
+
+  "subject" and "body" are rendered with the Notification value built in
+  app/modules/notify.go for one recipient (dates in that recipient's time
+  zone). The category labels are in categories_en.txt. The report summaries
+  are written by the agent in the report language and are shown as they are.
+
+  Available fields:
+    .Date            YYYY-MM-DD of the day the mail is built
+    .Total           number of groups in the mail
+    .BaseURL         the public URL of MailCare (link base)
+    .Mailboxes       one entry per mail address that has groups:
+      .Address .DisplayName .Groups
+    each group:
+      .CategoryLabel .Category .UnitValue .Authority
+      .MessageCount .RecipientCount .FirstSeen .LastSeen (recipient's time zone)
+      .Summary .NeedsReview (the agent could not establish the cause) .URL
+*/ -}}
+{{define "subject" -}}
+[MailCare] {{.Total}} alert(s) need attention ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+This is a notification from MailCare.
+{{.Total}} group(s) of bounces need the mail administrator's attention (as of {{.Date}}).
+Open the URL of each group for the details and the recommended actions.
+{{range .Mailboxes}}
+==================================================
+Mail address: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}} ({{.DisplayName}}){{end}}
+==================================================
+{{range .Groups}}
+* {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}} (decided by: {{.Authority}}){{end}}
+   Mails: {{.MessageCount}} / Recipients: {{.RecipientCount}}
+   Period: {{.FirstSeen}} - {{.LastSeen}}
+   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(the analysis report has no summary){{end}}
+   URL: {{.URL}}
+{{end}}{{end}}
+--------------------------------------------------
+This mail was sent automatically by MailCare.
+You can change the notification settings at {{.BaseURL}}/settings/notifications
+{{- end}}

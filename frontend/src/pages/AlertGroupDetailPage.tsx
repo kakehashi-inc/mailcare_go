@@ -9,6 +9,7 @@ import {
     BounceKindBadge,
     CategoryBadge,
     GroupStateBadge,
+    NeedsReviewBadge,
     ReportStatusBadge,
     ResponsibleBadge,
     SeverityBadge,
@@ -93,12 +94,38 @@ function newestFailedAfter(reports: ReportDTO[], shown: ReportDTO | null): Repor
     return newest;
 }
 
+/** What the CLI reported about a run: model (with reasoning level), tokens and commands; "-" when unknown. */
+function ReportUsage({ report }: { report: ReportDTO }) {
+    const { t } = useTranslation();
+    const count = (n: number | null) => (n === null ? '-' : n.toLocaleString());
+    return (
+        <div className='mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted'>
+            <span>
+                {t('report.model')}: <span className='font-mono'>{report.model ?? '-'}</span>
+                {report.reasoning_effort && (
+                    <>
+                        {' '}
+                        ({t('report.reasoning')}: <span className='font-mono'>{report.reasoning_effort}</span>)
+                    </>
+                )}
+            </span>
+            <span>
+                {t('report.tokens')}: <span className='tabular-nums'>{count(report.tokens_used)}</span>
+            </span>
+            <span>
+                {t('report.commands')}: <span className='tabular-nums'>{count(report.command_count)}</span>
+            </span>
+        </div>
+    );
+}
+
 function ReportView({ report }: { report: ReportDTO }) {
     const { t } = useTranslation();
     return (
         <div>
             <div className='flex flex-wrap items-center gap-2 text-sm text-muted'>
                 <ReportStatusBadge status={report.status} />
+                {report.confidence === 'low' && <NeedsReviewBadge />}
                 {report.severity && <SeverityBadge severity={report.severity} />}
                 {report.responsible && <ResponsibleBadge responsible={report.responsible} />}
                 <span>
@@ -109,6 +136,7 @@ function ReportView({ report }: { report: ReportDTO }) {
                     <DateTime value={report.finished_at ?? report.created_at} />
                 </span>
             </div>
+            <ReportUsage report={report} />
             {report.status === 'error' && report.error_message && (
                 <Alert tone='danger' className='mt-3'>
                     {report.error_message}
@@ -282,6 +310,7 @@ export function AlertGroupDetailPage() {
                             <ActionableBadge actionable={group.actionable} />
                             {!excludedOpen && <GroupStateBadge state={group.state} />}
                             {group.actionable && <SeverityBadge severity={group.report_severity} />}
+                            {group.report_confidence === 'low' && <NeedsReviewBadge />}
                             <ResponsibleBadge responsible={group.responsible} />
                             {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
                                 <Badge tone='warning' icon='pending_actions'>
@@ -352,7 +381,7 @@ export function AlertGroupDetailPage() {
                         <CardHeader
                             title={t('report.title')}
                             actions={
-                                group.actionable && isAdmin ? (
+                                isAdmin ? (
                                     <Button
                                         size='sm'
                                         variant='primary'
@@ -361,7 +390,11 @@ export function AlertGroupDetailPage() {
                                         disabled={reportRunning}
                                         onClick={() => void analyze()}
                                     >
-                                        {reportRunning ? t('report.running') : t('report.reanalyze')}
+                                        {reportRunning
+                                            ? t('report.running')
+                                            : report
+                                              ? t('report.reanalyze')
+                                              : t('report.analyze')}
                                     </Button>
                                 ) : undefined
                             }
@@ -396,12 +429,14 @@ export function AlertGroupDetailPage() {
                         )}
                         {report ? (
                             <ReportView report={report} />
-                        ) : group.actionable ? (
-                            <EmptyState
-                                title={t('report.none')}
-                                description={isAdmin ? t('report.noneHint') : t('report.noneHintMember')}
-                            />
-                        ) : null}
+                        ) : (
+                            !reportRunning && (
+                                <EmptyState
+                                    title={t('report.none')}
+                                    description={isAdmin ? t('report.noneHint') : t('report.noneHintMember')}
+                                />
+                            )
+                        )}
                         {history.length > 0 && (
                             <details className='mt-6'>
                                 <summary className='cursor-pointer text-base font-medium text-muted hover:text-ink'>

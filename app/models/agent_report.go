@@ -12,23 +12,35 @@ import (
 // prompt, the CLI transcript and the report file of a run live in the run's
 // workspace directory data/agent/<address>/<group_key>/<id>/.
 type AgentReport struct {
-	ID             int64        `json:"id"`
-	GroupKey       string       `json:"group_key"`
-	Provider       string       `json:"provider"`
-	Status         string       `json:"status"`   // running | completed | error
-	Severity       string       `json:"severity"` // high | medium | low | ""
-	Responsible    string       `json:"responsible"`
-	Summary        string       `json:"summary"`
-	ReportMarkdown string       `json:"report_markdown"`
-	ErrorMessage   string       `json:"error_message"`
-	MessageCount   int          `json:"message_count"`
-	StartedAt      sql.NullTime `json:"-"`
-	FinishedAt     sql.NullTime `json:"-"`
-	CreatedAt      time.Time    `json:"created_at"`
+	ID             int64  `json:"id"`
+	GroupKey       string `json:"group_key"`
+	Provider       string `json:"provider"`
+	Status         string `json:"status"`   // running | completed | error
+	Severity       string `json:"severity"` // high | medium | low | ""
+	Responsible    string `json:"responsible"`
+	Summary        string `json:"summary"`
+	ReportMarkdown string `json:"report_markdown"`
+	ErrorMessage   string `json:"error_message"`
+	// Confidence is how firmly the agent could establish the cause: high |
+	// medium | low, "" when the agent gave none.
+	Confidence   string `json:"confidence"`
+	MessageCount int    `json:"message_count"`
+	// Model and ReasoningEffort are what the CLI reported it actually used
+	// ("" when it did not say); TokensUsed and CommandCount are the tokens
+	// the run consumed and the commands the agent ran (NULL when the CLI
+	// output did not tell).
+	Model           string        `json:"model"`
+	ReasoningEffort string        `json:"reasoning_effort"`
+	TokensUsed      sql.NullInt64 `json:"-"`
+	CommandCount    sql.NullInt64 `json:"-"`
+	StartedAt       sql.NullTime  `json:"-"`
+	FinishedAt      sql.NullTime  `json:"-"`
+	CreatedAt       time.Time     `json:"created_at"`
 }
 
 const agentReportColumns = `id, group_key, provider, status, severity, responsible, summary, report_markdown,
-	error_message, message_count, started_at, finished_at, created_at`
+	error_message, confidence, message_count, model, reasoning_effort, tokens_used, command_count, started_at,
+	finished_at, created_at`
 
 // InsertAgentReport creates a running report row and fills in its ID.
 func InsertAgentReport(db *sql.DB, r *AgentReport) error {
@@ -38,8 +50,8 @@ func InsertAgentReport(db *sql.DB, r *AgentReport) error {
 	}
 	res, err := db.Exec(
 		`INSERT INTO agent_reports (group_key, provider, status, severity, responsible, summary, report_markdown,
-		   error_message, message_count, started_at, created_at)
-		 VALUES (?, ?, ?, '', '', '', '', '', ?, ?, ?)`,
+		   error_message, confidence, message_count, model, reasoning_effort, started_at, created_at)
+		 VALUES (?, ?, ?, '', '', '', '', '', '', ?, '', '', ?, ?)`,
 		r.GroupKey, r.Provider, r.Status, r.MessageCount, now, now,
 	)
 	if err != nil {
@@ -52,12 +64,29 @@ func InsertAgentReport(db *sql.DB, r *AgentReport) error {
 }
 
 // CompleteAgentReport stores the parsed result of a finished run.
-func CompleteAgentReport(db *sql.DB, id int64, summary, responsible, severity, markdown string) error {
+func CompleteAgentReport(db *sql.DB, id int64, summary, responsible, severity, confidence, markdown string) error {
 	_, err := db.Exec(
-		`UPDATE agent_reports SET status = 'completed', summary = ?, responsible = ?, severity = ?, report_markdown = ?,
-		   finished_at = ? WHERE id = ?`,
-		summary, responsible, severity, markdown, time.Now().UTC(), id,
+		`UPDATE agent_reports SET status = 'completed', summary = ?, responsible = ?, severity = ?, confidence = ?,
+		   report_markdown = ?, finished_at = ? WHERE id = ?`,
+		summary, responsible, severity, confidence, markdown, time.Now().UTC(), id,
 	)
+	return err
+}
+
+// AgentRunUsage is what the CLI output of a run tells about the run itself
+// ("" / NULL for whatever it did not tell).
+type AgentRunUsage struct {
+	Model           string
+	ReasoningEffort string
+	TokensUsed      sql.NullInt64
+	CommandCount    sql.NullInt64
+}
+
+// UpdateAgentReportUsage records the model, reasoning effort, token count
+// and command count of a run (successful or not).
+func UpdateAgentReportUsage(db *sql.DB, id int64, u AgentRunUsage) error {
+	_, err := db.Exec(`UPDATE agent_reports SET model = ?, reasoning_effort = ?, tokens_used = ?, command_count = ?
+		WHERE id = ?`, u.Model, u.ReasoningEffort, u.TokensUsed, u.CommandCount, id)
 	return err
 }
 
@@ -78,12 +107,11 @@ func RestoreAgentReport(db *sql.DB, r *AgentReport) error {
 		return errors.New("restore agent report: missing id")
 	}
 	_, err := db.Exec(
-		`INSERT INTO agent_reports (id, group_key, provider, status, severity, responsible, summary, report_markdown,
-		   error_message, message_count, started_at, finished_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO agent_reports (`+agentReportColumns+`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.GroupKey, r.Provider, r.Status, r.Severity, r.Responsible, r.Summary,
-		r.ReportMarkdown, r.ErrorMessage, r.MessageCount, utcNullTime(r.StartedAt),
-		utcNullTime(r.FinishedAt), r.CreatedAt.UTC(),
+		r.ReportMarkdown, r.ErrorMessage, r.Confidence, r.MessageCount, r.Model, r.ReasoningEffort, r.TokensUsed,
+		r.CommandCount, utcNullTime(r.StartedAt), utcNullTime(r.FinishedAt), r.CreatedAt.UTC(),
 	)
 	return err
 }
@@ -157,7 +185,8 @@ func queryAgentReports(db *sql.DB, query string, args ...any) ([]*AgentReport, e
 func scanAgentReport(s rowScanner) (*AgentReport, error) {
 	r := &AgentReport{}
 	if err := s.Scan(&r.ID, &r.GroupKey, &r.Provider, &r.Status, &r.Severity, &r.Responsible, &r.Summary,
-		&r.ReportMarkdown, &r.ErrorMessage, &r.MessageCount, &r.StartedAt, &r.FinishedAt, &r.CreatedAt); err != nil {
+		&r.ReportMarkdown, &r.ErrorMessage, &r.Confidence, &r.MessageCount, &r.Model, &r.ReasoningEffort,
+		&r.TokensUsed, &r.CommandCount, &r.StartedAt, &r.FinishedAt, &r.CreatedAt); err != nil {
 		return nil, err
 	}
 	return r, nil

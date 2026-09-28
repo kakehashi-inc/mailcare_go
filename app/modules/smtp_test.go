@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"mailcare/app/models"
 	"mailcare/app/modules/smtptest"
 )
 
@@ -147,7 +148,7 @@ func TestTestSMTPSendsTheTestTemplate(t *testing.T) {
 	TemplatesFS = os.DirFS("../..")
 	srv := startFakeSMTP(t)
 	cfg := SMTPConfig{Host: srv.Host(), Port: srv.Port(), Security: IMAPSecurityNone, From: "mc@example.test"}
-	if err := TestSMTP(context.Background(), cfg, "Admin@Example.test"); err != nil {
+	if err := TestSMTP(context.Background(), cfg, "Admin@Example.test", DefaultMailLocale()); err != nil {
 		t.Fatalf("TestSMTP: %v", err)
 	}
 	msgs := srv.Messages()
@@ -160,13 +161,56 @@ func TestTestSMTPSendsTheTestTemplate(t *testing.T) {
 	if !strings.Contains(msgs[0].Data, srv.Host()) || !strings.Contains(msgs[0].Data, "mc@example.test") {
 		t.Errorf("test body lacks the settings:\n%s", msgs[0].Data)
 	}
-	if err := TestSMTP(context.Background(), cfg, ""); err == nil {
+	if err := TestSMTP(context.Background(), cfg, "", DefaultMailLocale()); err == nil {
 		t.Errorf("empty recipient accepted")
 	}
-	if err := TestSMTP(context.Background(), cfg, "not-an-address"); err == nil {
+	if err := TestSMTP(context.Background(), cfg, "not-an-address", DefaultMailLocale()); err == nil {
 		t.Errorf("invalid recipient accepted")
 	}
-	if err := TestSMTP(context.Background(), SMTPConfig{}, "a@example.test"); err != ErrSMTPNotConfigured {
+	if err := TestSMTP(context.Background(), SMTPConfig{}, "a@example.test", DefaultMailLocale()); err != ErrSMTPNotConfigured {
 		t.Errorf("unconfigured: %v", err)
+	}
+	// An English locale gets the English template; a language without
+	// templates falls back to Japanese.
+	en := MailLocale{Language: "en", Location: time.UTC}
+	if err := TestSMTP(context.Background(), cfg, "b@example.test", en); err != nil {
+		t.Fatal(err)
+	}
+	fr := MailLocale{Language: "fr", Location: time.UTC}
+	if err := TestSMTP(context.Background(), cfg, "c@example.test", fr); err != nil {
+		t.Fatal(err)
+	}
+	msgs = srv.Messages()
+	if got := decodeSubject(t, msgs[len(msgs)-2].Data); !strings.HasPrefix(got, NotifyMailSubjectPrefix+"Test mail (") {
+		t.Errorf("english subject = %q", got)
+	}
+	if ja := decodeSubject(t, msgs[0].Data); decodeSubject(t, msgs[len(msgs)-1].Data)[:20] != ja[:20] {
+		t.Errorf("an unknown language must fall back to the Japanese template")
+	}
+}
+
+func TestMailLocale(t *testing.T) {
+	if l := MailLocaleFor(nil); l.Language != "ja" || l.Location != time.Local {
+		t.Errorf("nil user: %+v", l)
+	}
+	l := MailLocaleFor(&models.User{Language: "en", Timezone: "America/New_York"})
+	if l.Language != "en" || l.Location.String() != "America/New_York" {
+		t.Errorf("user locale: %+v", l)
+	}
+	if l := MailLocaleFor(&models.User{Language: "en", Timezone: "Not/AZone"}); l.Location != time.Local {
+		t.Errorf("unknown zone must fall back to the server time: %+v", l)
+	}
+	TemplatesFS = os.DirFS("../..")
+	if got := mailTemplatePath("notification", "en"); got != "templates/mail/notification_en.txt" {
+		t.Errorf("english template = %q", got)
+	}
+	if got := mailTemplatePath("notification", "fr"); got != "templates/mail/notification_ja.txt" {
+		t.Errorf("missing language must fall back to Japanese, got %q", got)
+	}
+	for _, lang := range []string{"ja", "en"} {
+		labels, err := loadCategoryLabels(lang)
+		if err != nil || len(labels) != 13 {
+			t.Errorf("%s category labels: %d (err %v)", lang, len(labels), err)
+		}
 	}
 }

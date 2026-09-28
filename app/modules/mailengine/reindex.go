@@ -48,8 +48,9 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 // next UID, see storeWithFreeUID), and, for
 // every group key that exists in the rebuilt index (keys are deterministic),
 // the group state (open / resolved / ignored with its timestamp), the
-// needs_analysis flag and the agent reports; a group whose message count
-// grew is flagged for analysis again, and the responsible party named by
+// needs_analysis flag and the agent reports with the patterns they covered;
+// an actionable group with a pattern its latest completed report did not
+// cover is flagged for analysis again, and the responsible party named by
 // the latest completed report is re-applied. Groups that no longer exist
 // lose their reports. When the previous index cannot be read or was written
 // with another schema version nothing is carried over. Section files are

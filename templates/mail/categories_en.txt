@@ -1,0 +1,15 @@
+# English labels of the bounce group categories (key<TAB>label).
+# Lines starting with # are ignored. An unlisted category is shown by its key.
+ip_blocked	Sending IP blocked
+rate_limited	Sending rate limited
+sender_blocked	Sender address rejected
+auth_failure	Sender authentication failed
+content_rejected	Rejected for its content
+message_too_large	Message too large
+server_config	Sending server misconfigured
+unknown_failure	Unknown failure
+user_unknown	Recipient address does not exist
+mailbox_full	Recipient mailbox full
+mailbox_disabled	Recipient address disabled
+domain_not_found	Recipient domain not found
+delivery_delay	Delivery delayed

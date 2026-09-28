@@ -20,9 +20,18 @@ func (o RateLimitOutcome) ErrorMessage() string {
 		return ""
 	}
 	if o.RetryAfter == "" {
-		return "usage limit reached"
+		return usageLimitPrefix
 	}
-	return "usage limit reached (retry after " + o.RetryAfter + ")"
+	return usageLimitPrefix + " (retry after " + o.RetryAfter + ")"
+}
+
+// usageLimitPrefix starts every ErrorMessage of a limited run.
+const usageLimitPrefix = "usage limit reached"
+
+// IsUsageLimitMessage reports whether a report error message says the run
+// was refused by a usage or rate limit (RateLimitOutcome.ErrorMessage).
+func IsUsageLimitMessage(msg string) bool {
+	return strings.HasPrefix(msg, usageLimitPrefix)
 }
 
 // RateLimitDetector is an optional Provider extension. A provider whose CLI

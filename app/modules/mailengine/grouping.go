@@ -2,9 +2,7 @@ package mailengine
 
 import (
 	"crypto/sha1"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"regexp"
 	"strings"
 
@@ -114,14 +112,38 @@ func GroupKey(category, unitValue, authority string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// PatternKey is the first 16 hex digits of
+// sha1(status_code|pattern template|remote_mta|source kind): bounces of a
+// group that share it are the same pattern (same status, same wording, same
+// remote MTA, diagnostic read from the same kind of place). The agent
+// samples one notice per pattern, and a group is analyzed again only when a
+// pattern appears that its latest completed report did not cover. The
+// pattern template is the diagnostic template with the numbers that
+// directly follow an <id> placeholder also replaced (the tail of a queue ID
+// such as "<id>-<id>.218" is kept verbatim by DiagnosticTemplate when it
+// looks like an SMTP reply code, which would split one pattern per notice).
+func PatternKey(statusCode, diagnosticTemplate, remoteMTA, diagnosticSource string) string {
+	template := patternIDTailRe.ReplaceAllString(groupKeyPart(diagnosticTemplate), "$1<n>")
+	sum := sha1.Sum([]byte(groupKeyPart(statusCode) + "|" + template + "|" +
+		groupKeyPart(remoteMTA) + "|" + SourceKind(diagnosticSource)))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// patternIDTailRe matches a number right after an <id> placeholder and its
+// separator ("<id>.218", "<id>-5").
+var patternIDTailRe = regexp.MustCompile(`(<id>[.\-])[0-9]+\b`)
+
 // groupForBounce categorizes a bounce and builds the group row it belongs
-// to (the responsible party is a column of the group only). Only failed and
-// delayed notices belong to a group (isGroupedKind); anything else is nil.
+// to (the responsible party is a column of the group only); the name of the
+// category rule that matched is recorded on the bounce (CategoryRule). Only
+// failed and delayed notices belong to a group (isGroupedKind); anything
+// else is nil.
 func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 	if !isGroupedKind(kind) || b == nil {
 		return nil
 	}
 	c := Categorize(b, kind)
+	b.CategoryRule = c.Reason
 	return &models.BounceGroup{
 		GroupKey:           GroupKey(c.Category, c.UnitValue, c.Authority),
 		Category:           c.Category,
@@ -137,37 +159,32 @@ func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 
 // groupTracker collects the groups touched during one run and decides, for
 // every message, whether its group must be flagged for analysis: an
-// actionable group is flagged as soon as its message count exceeds the
-// count it had before the run (design 5.4 "incremental"). The counters and
-// the flag are written inside the transaction of the message, so they are
-// always in step with the bounces rows. At the end the flagged groups are
-// reported as GroupResult.GroupsTouched.
+// actionable group is flagged when the bounce just filed into it has a
+// pattern (bounces.pattern_key) that the latest completed report of the
+// group did not cover (always the case for a group without a completed
+// report, a new group included). More notices of a covered pattern only
+// update the counters (design 5.4 "incremental"). The counters and the flag
+// are written inside the transaction of the message, so they are always in
+// step with the bounces rows. At the end the flagged groups are reported as
+// GroupResult.GroupsTouched.
 type groupTracker struct {
 	order      []string
 	seen       map[string]bool
-	before     map[string]int  // message_count before the run (0 for new groups)
 	actionable map[string]bool // groups.actionable as written by the last upsert
-	grew       map[string]bool // actionable groups flagged during the run
+	flagged    map[string]bool // actionable groups flagged during the run
 }
 
 func newGroupTracker() *groupTracker {
-	return &groupTracker{seen: map[string]bool{}, before: map[string]int{}, actionable: map[string]bool{}, grew: map[string]bool{}}
+	return &groupTracker{seen: map[string]bool{}, actionable: map[string]bool{}, flagged: map[string]bool{}}
 }
 
-// upsert stores the descriptive columns of the group and remembers its key
-// together with its message count before the run.
+// upsert stores the descriptive columns of the group and remembers its key.
 func (t *groupTracker) upsert(db models.Execer, g *models.BounceGroup) error {
 	if g == nil {
 		return nil
 	}
 	if !t.seen[g.GroupKey] {
-		var count int
-		err := db.QueryRow(`SELECT message_count FROM groups WHERE group_key = ?`, g.GroupKey).Scan(&count)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
 		t.seen[g.GroupKey] = true
-		t.before[g.GroupKey] = count
 		t.order = append(t.order, g.GroupKey)
 	}
 	if err := models.UpsertGroup(db, g); err != nil {
@@ -178,39 +195,40 @@ func (t *groupTracker) upsert(db models.Execer, g *models.BounceGroup) error {
 }
 
 // recount refreshes the counters of the group after the bounces row of the
-// current message was written and, when the group is actionable and its
-// message count now exceeds the count before the run, sets needs_analysis
-// (once per run; recipient-side groups are never flagged).
-func (t *groupTracker) recount(db models.Execer, g *models.BounceGroup) error {
+// current message was written and, when the group is actionable and the
+// pattern of that bounce is not covered by the latest completed report of
+// the group, sets needs_analysis (once per run; recipient-side groups are
+// never flagged).
+func (t *groupTracker) recount(db models.Execer, g *models.BounceGroup, patternKey string) error {
 	if g == nil {
 		return nil
 	}
 	if err := models.RefreshGroupCounters(db, g.GroupKey); err != nil {
 		return err
 	}
-	if !t.actionable[g.GroupKey] || t.grew[g.GroupKey] {
+	if !t.actionable[g.GroupKey] || t.flagged[g.GroupKey] {
 		return nil
 	}
-	var count int
-	if err := db.QueryRow(`SELECT message_count FROM groups WHERE group_key = ?`, g.GroupKey).Scan(&count); err != nil {
+	covered, err := models.PatternCovered(db, g.GroupKey, patternKey)
+	if err != nil {
 		return err
 	}
-	if count <= t.before[g.GroupKey] {
+	if covered {
 		return nil
 	}
 	if err := models.SetGroupNeedsAnalysis(db, g.GroupKey, true); err != nil {
 		return err
 	}
-	t.grew[g.GroupKey] = true
+	t.flagged[g.GroupKey] = true
 	return nil
 }
 
-// touched returns the keys of the actionable groups whose message count
-// grew during the run, in first-seen order (GroupResult.GroupsTouched).
+// touched returns the keys of the actionable groups flagged for analysis
+// during the run, in first-seen order (GroupResult.GroupsTouched).
 func (t *groupTracker) touched() []string {
 	touched := []string{}
 	for _, key := range t.order {
-		if t.grew[key] {
+		if t.flagged[key] {
 			touched = append(touched, key)
 		}
 	}
