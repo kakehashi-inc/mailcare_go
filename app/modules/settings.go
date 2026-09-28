@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/agent"
 )
 
 // Settings resolution: explicit argument > saved setting > code default. A
@@ -116,13 +117,40 @@ func ResolveAgentProvider(db *sql.DB) string {
 }
 
 // SetAgentProvider persists the agent provider (non-default only). The caller
-// validates the name against the registered providers.
+// validates the name against the registered providers. Model names differ
+// between providers, so switching to another provider clears the model
+// (callers that set both set the model afterwards).
 func SetAgentProvider(db *sql.DB, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("agent provider must not be empty")
 	}
+	if name != ResolveAgentProvider(db) {
+		if err := models.DeleteSetting(db, SettingAgentModel); err != nil {
+			return err
+		}
+	}
 	return PersistSetting(db, SettingAgentProvider, name, name == DefaultAgentProvider)
+}
+
+// ResolveAgentModel returns the model passed to the agent CLI ("" = the
+// CLI's own default). A stored value that is no longer valid is ignored.
+func ResolveAgentModel(db *sql.DB) string {
+	model := strings.TrimSpace(models.GetSetting(db, SettingAgentModel))
+	if agent.ValidateModel(model) != nil {
+		return ""
+	}
+	return model
+}
+
+// SetAgentModel validates and persists the agent model ("" restores the CLI
+// default by removing the setting).
+func SetAgentModel(db *sql.DB, model string) error {
+	model = strings.TrimSpace(model)
+	if err := agent.ValidateModel(model); err != nil {
+		return err
+	}
+	return PersistSetting(db, SettingAgentModel, model, model == "")
 }
 
 // ResolveAgentEnabled reports whether agent analysis runs automatically after

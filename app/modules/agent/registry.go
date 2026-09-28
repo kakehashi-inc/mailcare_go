@@ -61,7 +61,12 @@ func commandAvailable(argv []string) bool {
 func Providers() []ProviderStatus {
 	out := make([]ProviderStatus, 0, len(providers))
 	for _, p := range providers {
-		out = append(out, ProviderStatus{Name: p.Name(), Label: p.Label(), Available: commandAvailable(p.Command())})
+		option, models := modelInfo(p)
+		if models == nil {
+			models = []string{}
+		}
+		out = append(out, ProviderStatus{Name: p.Name(), Label: p.Label(), Available: commandAvailable(p.Command()),
+			ModelOption: option, Models: models})
 	}
 	return out
 }

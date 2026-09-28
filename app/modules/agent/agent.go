@@ -94,11 +94,15 @@ type Provider interface {
 	Command() []string
 }
 
-// ProviderStatus describes a provider and whether its CLI is on PATH.
+// ProviderStatus describes a provider, whether its CLI is on PATH and, for a
+// provider that accepts a model (ModelSelector), the option that names it
+// and the models it is known to accept (for reference only).
 type ProviderStatus struct {
-	Name      string `json:"name"`
-	Label     string `json:"label"`
-	Available bool   `json:"available"`
+	Name        string   `json:"name"`
+	Label       string   `json:"label"`
+	Available   bool     `json:"available"`
+	ModelOption string   `json:"model_option"`
+	Models      []string `json:"models"`
 }
 
 // AnalyzeInput carries everything AnalyzeGroup needs.
@@ -110,5 +114,6 @@ type AnalyzeInput struct {
 	Index       *sql.DB // the opened per-mailbox index
 	GroupKey    string
 	Provider    string // provider name; "" = DefaultProvider
+	Model       string // model passed to a provider that supports one (ModelSelector); "" = the CLI default
 	Language    string // language for the report ("ja" default)
 }

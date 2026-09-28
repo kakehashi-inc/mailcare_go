@@ -291,12 +291,18 @@ export interface ProviderStatus {
     name: string;
     label: string;
     available: boolean;
+    /** Option of the CLI that names the model ("--model"); empty when the provider cannot select a model. */
+    model_option: string;
+    /** Model names the CLI is known to accept, for reference only (may be empty). */
+    models: string[];
 }
 
 /** GET /api/v1/settings */
 export interface SettingsDTO {
     check_times: string[];
     agent_provider: string;
+    /** Model passed to the agent CLI; empty = the CLI's own default. */
+    agent_model: string;
     agent_enabled: boolean;
     /** Days the workspace directory of an analysis run is kept (1-365). */
     agent_keep_days: number;
@@ -316,6 +322,8 @@ export interface SettingsDTO {
 export interface SettingsInput {
     check_times?: string[];
     agent_provider?: string;
+    /** Empty restores the CLI default. */
+    agent_model?: string;
     agent_enabled?: boolean;
     agent_keep_days?: number;
     mail_keep_days?: number;

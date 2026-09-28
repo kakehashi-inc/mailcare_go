@@ -21,6 +21,7 @@ func (c *core) settingsDTO(u *models.User) map[string]any {
 	dto := map[string]any{
 		"check_times":     modules.ResolveCheckTimes(c.db),
 		"agent_provider":  modules.ResolveAgentProvider(c.db),
+		"agent_model":     modules.ResolveAgentModel(c.db),
 		"agent_enabled":   modules.ResolveAgentEnabled(c.db),
 		"agent_keep_days": modules.ResolveAgentKeepDays(c.db),
 		"mail_keep_days":  modules.ResolveMailKeepDays(c.db),
@@ -41,14 +42,16 @@ func (c *core) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, c.settingsDTO(userFrom(r)))
 }
 
-// handleUpdateSettings changes the check times, the agent provider, the
-// agent switch, the retention of the agent run directories, the retention
+// handleUpdateSettings changes the check times, the agent provider and
+// model (a provider change without a model clears the model), the agent
+// switch, the retention of the agent run directories, the retention
 // of fetched mails and the worker count (applied to the job manager at
 // once). Absent fields are left unchanged.
 func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		CheckTimes    *[]string `json:"check_times"`
 		AgentProvider *string   `json:"agent_provider"`
+		AgentModel    *string   `json:"agent_model"`
 		AgentEnabled  *bool     `json:"agent_enabled"`
 		AgentKeepDays *int      `json:"agent_keep_days"`
 		MailKeepDays  *int      `json:"mail_keep_days"`
@@ -63,6 +66,12 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.AgentKeepDays != nil {
 		if err := modules.ValidateAgentKeepDays(*body.AgentKeepDays); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if body.AgentModel != nil {
+		if err := agent.ValidateModel(strings.TrimSpace(*body.AgentModel)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -98,6 +107,12 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if body.AgentProvider != nil {
 		if err := modules.SetAgentProvider(c.db, provider); err != nil {
 			writeInternalError(w, "failed to save the agent provider", err)
+			return
+		}
+	}
+	if body.AgentModel != nil {
+		if err := modules.SetAgentModel(c.db, *body.AgentModel); err != nil {
+			writeInternalError(w, "failed to save the agent model", err)
 			return
 		}
 	}

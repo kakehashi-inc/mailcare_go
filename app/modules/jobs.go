@@ -1019,6 +1019,7 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 	if len(groups) == 0 {
 		return "no group needs analysis", nil
 	}
+	model := ResolveAgentModel(m.db)
 	progress(fmt.Sprintf("analyzing %d group(s) with %s", len(groups), provider))
 	done, failed := 0, 0
 	var failures []string
@@ -1029,7 +1030,7 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 		progress(fmt.Sprintf("(%d/%d) %s", i+1, len(groups), g.Label()))
 		report, err := agent.AnalyzeGroup(ctx, agent.AnalyzeInput{
 			MailsRoot: m.mailsRoot, AgentRoot: m.agentRoot, TemplatesFS: m.templates,
-			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Language: "ja",
+			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Model: model, Language: "ja",
 		}, progress)
 		switch {
 		case err != nil:

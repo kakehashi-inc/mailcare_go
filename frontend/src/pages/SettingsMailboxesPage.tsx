@@ -82,9 +82,18 @@ export function SettingsMailboxesPage() {
             header: t('mailbox.server'),
             cell: mb => (
                 <span className='break-all font-mono text-sm'>
-                    {mb.imap_host}:{mb.imap_port} ({t(`imapSecurity.${mb.imap_security}`)})
+                    <span className='block text-ink'>
+                        {mb.imap_host}:{mb.imap_port}
+                    </span>
+                    {mb.folder && <span className='block text-muted'>{mb.folder}</span>}
                 </span>
             ),
+        },
+        {
+            key: 'fetchDays',
+            header: t('mailbox.fetchDays'),
+            className: 'whitespace-nowrap',
+            cell: mb => t('mailbox.fetchDaysValue', { count: mb.recent_days }),
         },
         { key: 'enabled', header: t('common.status'), cell: mb => <EnabledBadge enabled={mb.enabled} /> },
         {

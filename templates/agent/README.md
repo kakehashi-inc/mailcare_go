@@ -69,6 +69,13 @@ template directory. Nothing else branches on a provider name.
      (no shell), so it works the same on Windows, macOS and Linux;
      `exec.LookPath` decides availability from `Command()[0]`.
 
+   Optionally implement `ModelSelector` (`app/modules/agent/model.go`) when
+   the CLI accepts a model: `ModelOption()` names the option shown in the
+   settings (`--model`), `CommandWithModel(model)` returns the argv with the
+   model in place and `Models()` lists model names for reference (nil when
+   unknown; it must be cheap and never fail). Without it the `agent_model`
+   setting is ignored for the provider and the settings disable the input.
+
 2. Optionally add `templates/agent/<name>/` with the files the CLI reads from
    its working directory (for example `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`).
    Copy `codex/AGENTS.md` as a starting point: it states the read-only rules,

@@ -10,6 +10,18 @@ import {
 const CONTROL =
     'w-full min-h-tap rounded-md border border-line bg-surface px-3 py-2 text-base text-ink placeholder:text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60';
 
+/**
+ * Width of a control whose value is short, applied to the control only (the label, hint and error keep the
+ * full width of the container, so a hint never wraps at the width of a narrow input). "short" suits numbers
+ * and times, "medium" names and choices; without it the control fills its container.
+ */
+export type ControlWidth = 'short' | 'medium';
+
+export const CONTROL_WIDTH: Record<ControlWidth, string> = {
+    short: 'max-w-xs',
+    medium: 'max-w-md',
+};
+
 interface ShellProps {
     id: string;
     label: ReactNode;
@@ -46,15 +58,16 @@ function Shell({ id, label, hint, error, required, children, className = '' }: S
     );
 }
 
-interface InputFieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'id'> {
+interface InputFieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'id' | 'width'> {
     label: ReactNode;
     hint?: ReactNode;
     error?: ReactNode;
+    width?: ControlWidth;
     wrapperClassName?: string;
 }
 
 export const InputField = forwardRef<HTMLInputElement, InputFieldProps>(function InputField(
-    { label, hint, error, required, wrapperClassName, className = '', ...rest },
+    { label, hint, error, required, width, wrapperClassName, className = '', ...rest },
     ref
 ) {
     const id = useId();
@@ -66,7 +79,7 @@ export const InputField = forwardRef<HTMLInputElement, InputFieldProps>(function
                 required={required}
                 aria-invalid={error ? true : undefined}
                 aria-describedby={error ? `${id}-error` : hint ? `${id}-hint` : undefined}
-                className={`${CONTROL} ${className}`}
+                className={`${CONTROL} ${width ? CONTROL_WIDTH[width] : ''} ${className}`}
                 {...rest}
             />
         </Shell>
@@ -77,6 +90,7 @@ interface SelectFieldProps extends Omit<SelectHTMLAttributes<HTMLSelectElement>,
     label: ReactNode;
     hint?: ReactNode;
     error?: ReactNode;
+    width?: ControlWidth;
     wrapperClassName?: string;
 }
 
@@ -85,6 +99,7 @@ export function SelectField({
     hint,
     error,
     required,
+    width,
     wrapperClassName,
     className = '',
     children,
@@ -98,7 +113,7 @@ export function SelectField({
                 required={required}
                 aria-invalid={error ? true : undefined}
                 aria-describedby={error ? `${id}-error` : hint ? `${id}-hint` : undefined}
-                className={`${CONTROL} ${className}`}
+                className={`${CONTROL} ${width ? CONTROL_WIDTH[width] : ''} ${className}`}
                 {...rest}
             >
                 {children}
@@ -178,36 +193,54 @@ interface ToggleFieldProps {
     disabled?: boolean;
 }
 
-/** A switch that also reads as on/off text for people who cannot see the color. */
+/**
+ * A switch that also reads as on/off text for people who cannot see the color. The switch sits on the left,
+ * right next to its label (like CheckboxField), so it is always clear which setting it belongs to; clicking
+ * the label toggles it too.
+ */
 export function ToggleField({ label, hint, checked, onChange, disabled }: ToggleFieldProps) {
     const id = useId();
     return (
-        <div className='flex items-start justify-between gap-4'>
-            <span className='flex min-h-tap flex-col justify-center'>
-                <span id={`${id}-label`} className='text-base font-medium text-ink'>
-                    {label}
-                </span>
-                {hint && <span className='text-sm text-muted'>{hint}</span>}
-            </span>
+        <div className='flex items-start gap-3'>
             <button
                 id={id}
                 type='button'
                 role='switch'
                 aria-checked={checked}
                 aria-labelledby={`${id}-label`}
+                aria-describedby={hint ? `${id}-hint` : undefined}
                 disabled={disabled}
                 onClick={() => onChange(!checked)}
-                className={`relative inline-flex h-11 w-20 shrink-0 items-center rounded-full border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50 ${
-                    checked ? 'border-accent bg-accent' : 'border-line bg-well'
-                }`}
+                className='group inline-flex min-h-tap shrink-0 items-center focus:outline-none disabled:cursor-not-allowed disabled:opacity-50'
             >
                 <span
-                    className={`absolute top-1 h-8 w-8 rounded-full bg-surface shadow transition-transform ${
-                        checked ? 'translate-x-11' : 'translate-x-1'
+                    aria-hidden='true'
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors group-focus-visible:ring-2 group-focus-visible:ring-accent group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-surface ${
+                        checked ? 'border-accent bg-accent' : 'border-line bg-well'
                     }`}
-                />
+                >
+                    <span
+                        className={`absolute h-5 w-5 rounded-full bg-surface shadow transition-transform ${
+                            checked ? 'translate-x-[1.25rem]' : 'translate-x-0.5'
+                        }`}
+                    />
+                </span>
                 <span className='sr-only'>{checked ? 'on' : 'off'}</span>
             </button>
+            <span className='flex min-h-tap flex-col justify-center'>
+                <label
+                    id={`${id}-label`}
+                    htmlFor={id}
+                    className={`text-base font-medium text-ink ${disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                    {label}
+                </label>
+                {hint && (
+                    <span id={`${id}-hint`} className='text-sm text-muted'>
+                        {hint}
+                    </span>
+                )}
+            </span>
         </div>
     );
 }

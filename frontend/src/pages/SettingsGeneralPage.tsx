@@ -7,7 +7,7 @@ import { Button, IconButton } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { DescriptionList } from '../components/ui/DescriptionList';
 import { ErrorState } from '../components/ui/ErrorState';
-import { InputField, SelectField, ToggleField, controlClass } from '../components/ui/Field';
+import { CONTROL_WIDTH, InputField, SelectField, ToggleField, controlClass } from '../components/ui/Field';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
@@ -22,6 +22,9 @@ const KEEP_DAYS_MIN = 1;
 const KEEP_DAYS_MAX = 365;
 const MAIL_KEEP_DAYS_MIN = 1;
 const MAIL_KEEP_DAYS_MAX = 3650;
+// Same rule as agent.ValidateModel: starts with a letter or digit, no white space.
+const MODEL_MAX = 100;
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$/;
 
 export function SettingsGeneralPage() {
     const { t } = useTranslation();
@@ -31,6 +34,7 @@ export function SettingsGeneralPage() {
     const [times, setTimes] = useState<string[]>([]);
     const [newTime, setNewTime] = useState('');
     const [provider, setProvider] = useState('');
+    const [model, setModel] = useState('');
     const [enabled, setEnabled] = useState(false);
     const [keepDays, setKeepDays] = useState('');
     const [mailKeepDays, setMailKeepDays] = useState('');
@@ -42,6 +46,7 @@ export function SettingsGeneralPage() {
         if (!settings.data) return;
         setTimes(settings.data.check_times);
         setProvider(settings.data.agent_provider);
+        setModel(settings.data.agent_model);
         setEnabled(settings.data.agent_enabled);
         setKeepDays(String(settings.data.agent_keep_days));
         setMailKeepDays(String(settings.data.mail_keep_days));
@@ -54,6 +59,8 @@ export function SettingsGeneralPage() {
     const newTimeValid = newTime === '' || TIME_RE.test(newTime);
     const newTimeDuplicate = newTime !== '' && times.includes(newTime);
     const selectedProvider = settings.data?.providers.find(p => p.name === provider);
+    const modelSupported = Boolean(selectedProvider?.model_option);
+    const modelValid = model.trim() === '' || MODEL_RE.test(model.trim());
     const workersValue = Number(workers);
     const workersValid = /^\d+$/.test(workers.trim()) && workersValue >= WORKERS_MIN && workersValue <= WORKERS_MAX;
     const keepDaysValue = Number(keepDays);
@@ -71,6 +78,7 @@ export function SettingsGeneralPage() {
         workersValid &&
         keepDaysValid &&
         mailKeepDaysValid &&
+        modelValid &&
         !saving;
 
     function addTime() {
@@ -91,6 +99,7 @@ export function SettingsGeneralPage() {
             await updateSettings({
                 check_times: times,
                 agent_provider: provider,
+                agent_model: modelSupported ? model.trim() : '',
                 agent_enabled: enabled,
                 agent_keep_days: keepDaysValue,
                 mail_keep_days: mailKeepDaysValue,
@@ -141,7 +150,10 @@ export function SettingsGeneralPage() {
                     {times.length === 0 ? (
                         <p className='text-sm text-muted'>{t('settings.noCheckTimes')}</p>
                     ) : (
-                        <ul className='flex flex-col gap-2' aria-label={t('settings.checkTimes')}>
+                        <ul
+                            className={`flex flex-col gap-2 ${CONTROL_WIDTH.short}`}
+                            aria-label={t('settings.checkTimes')}
+                        >
                             {times.map((time, i) => (
                                 <li
                                     key={`${time}-${i}`}
@@ -167,16 +179,16 @@ export function SettingsGeneralPage() {
                         </Alert>
                     )}
                     <form
-                        className='mt-4 flex flex-col gap-2 sm:flex-row sm:items-end'
+                        className='mt-4'
                         onSubmit={e => {
                             e.preventDefault();
                             addTime();
                         }}
                     >
-                        <div className='flex-1'>
-                            <label htmlFor='new-check-time' className='mb-1 block text-sm font-medium text-ink'>
-                                {t('settings.addTime')}
-                            </label>
+                        <label htmlFor='new-check-time' className='mb-1 block text-sm font-medium text-ink'>
+                            {t('settings.addTime')}
+                        </label>
+                        <div className='flex items-center gap-2'>
                             <input
                                 id='new-check-time'
                                 type='time'
@@ -185,23 +197,23 @@ export function SettingsGeneralPage() {
                                 onChange={e => setNewTime(e.target.value)}
                                 aria-invalid={!newTimeValid || newTimeDuplicate || undefined}
                                 aria-describedby='new-check-time-hint'
-                                className={controlClass}
+                                className={`${controlClass} min-w-0 ${CONTROL_WIDTH.short}`}
                             />
-                            <p
-                                id='new-check-time-hint'
-                                className={`mt-1 text-sm ${newTimeDuplicate ? 'text-danger' : 'text-muted'}`}
+                            <Button
+                                type='submit'
+                                icon='add'
+                                disabled={!newTime || !newTimeValid || newTimeDuplicate}
+                                className='shrink-0'
                             >
-                                {newTimeDuplicate ? t('settings.duplicateTime') : t('settings.addTimeHint')}
-                            </p>
+                                {t('common.add')}
+                            </Button>
                         </div>
-                        <Button
-                            type='submit'
-                            icon='add'
-                            disabled={!newTime || !newTimeValid || newTimeDuplicate}
-                            className='sm:mb-7'
+                        <p
+                            id='new-check-time-hint'
+                            className={`mt-1 text-sm ${newTimeDuplicate ? 'text-danger' : 'text-muted'}`}
                         >
-                            {t('common.add')}
-                        </Button>
+                            {newTimeDuplicate ? t('settings.duplicateTime') : t('settings.addTimeHint')}
+                        </p>
                     </form>
                 </Card>
 
@@ -221,7 +233,7 @@ export function SettingsGeneralPage() {
                         }}
                         hint={t('settings.mailKeepDaysHint')}
                         error={mailKeepDaysValid ? undefined : t('settings.mailKeepDaysInvalid')}
-                        wrapperClassName='max-w-xs'
+                        width='short'
                     />
                 </Card>
 
@@ -241,7 +253,7 @@ export function SettingsGeneralPage() {
                         }}
                         hint={t('settings.workersHint')}
                         error={workersValid ? undefined : t('settings.workersInvalid')}
-                        wrapperClassName='max-w-xs'
+                        width='short'
                     />
                 </Card>
 
@@ -250,9 +262,13 @@ export function SettingsGeneralPage() {
                     <div className='flex flex-col gap-4'>
                         <SelectField
                             label={t('settings.agentProvider')}
+                            width='medium'
                             value={provider}
                             onChange={e => {
                                 setProvider(e.target.value);
+                                // Model names differ between providers (the server clears the model as well).
+                                if (e.target.value !== settings.data?.agent_provider) setModel('');
+                                else setModel(settings.data?.agent_model ?? '');
                                 setDirty(true);
                             }}
                         >
@@ -287,6 +303,44 @@ export function SettingsGeneralPage() {
                                 {t('settings.providerUnavailableHint', { provider: selectedProvider.label })}
                             </Alert>
                         )}
+                        <InputField
+                            label={t('settings.agentModel')}
+                            value={modelSupported ? model : ''}
+                            onChange={e => {
+                                setModel(e.target.value);
+                                setDirty(true);
+                            }}
+                            disabled={!modelSupported}
+                            placeholder={modelSupported ? t('settings.agentModelPlaceholder') : undefined}
+                            autoComplete='off'
+                            spellCheck={false}
+                            maxLength={MODEL_MAX}
+                            width='medium'
+                            className='font-mono'
+                            error={modelValid ? undefined : t('settings.agentModelInvalid')}
+                            hint={
+                                !modelSupported ? (
+                                    t('settings.agentModelUnsupported')
+                                ) : selectedProvider && selectedProvider.models.length > 0 ? (
+                                    <span className='flex flex-wrap items-center gap-1'>
+                                        <span>{t('settings.agentModelExamples')}:</span>
+                                        {selectedProvider.models.map(m => (
+                                            <button
+                                                key={m}
+                                                type='button'
+                                                onClick={() => {
+                                                    setModel(m);
+                                                    setDirty(true);
+                                                }}
+                                                className='rounded bg-well px-1.5 py-0.5 font-mono text-xs text-ink hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                                            >
+                                                {m}
+                                            </button>
+                                        ))}
+                                    </span>
+                                ) : undefined
+                            }
+                        />
                         <ToggleField
                             label={t('settings.agentEnabled')}
                             hint={t('settings.agentEnabledHint')}
@@ -310,7 +364,7 @@ export function SettingsGeneralPage() {
                             }}
                             hint={t('settings.agentKeepDaysHint')}
                             error={keepDaysValid ? undefined : t('settings.agentKeepDaysInvalid')}
-                            wrapperClassName='max-w-xs'
+                            width='short'
                         />
                     </div>
                 </Card>

@@ -122,10 +122,14 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 	}
 
 	// 3. Run the CLI.
-	progress(fmt.Sprintf("running %s on %d messages", provider.Label(), len(msgs)))
+	if _, ok := provider.(ModelSelector); ok && in.Model != "" {
+		progress(fmt.Sprintf("running %s (model %s) on %d messages", provider.Label(), in.Model, len(msgs)))
+	} else {
+		progress(fmt.Sprintf("running %s on %d messages", provider.Label(), len(msgs)))
+	}
 	runCtx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
-	out, runErr := runProvider(runCtx, provider, dir, promptText, promptFile)
+	out, runErr := runProvider(runCtx, provider, in.Model, dir, promptText, promptFile)
 	// The echoed prompt is dropped before parsing so that its markers and
 	// placeholders (and its wording, for the rate-limit markers) are ignored.
 	answer := StripPromptEcho(out, promptText)

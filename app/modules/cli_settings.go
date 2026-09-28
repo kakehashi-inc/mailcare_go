@@ -108,6 +108,7 @@ func (c *SettingsShowCmd) Run() error {
 		SettingWorkers:        ResolveWorkers(db),
 		SettingCheckTimes:     ResolveCheckTimes(db),
 		SettingAgentProvider:  provider,
+		SettingAgentModel:     ResolveAgentModel(db),
 		SettingAgentEnabled:   ResolveAgentEnabled(db),
 		SettingAgentKeepDays:  ResolveAgentKeepDays(db),
 		SettingMailKeepDays:   ResolveMailKeepDays(db),
@@ -150,6 +151,11 @@ func (c *SettingsShowCmd) Run() error {
 		available = "available"
 	}
 	fmt.Printf("%-18s %s (%s)\n", SettingAgentProvider+":", provider, available)
+	model := ResolveAgentModel(db)
+	if model == "" {
+		model = "(CLI default)"
+	}
+	fmt.Printf("%-18s %s\n", SettingAgentModel+":", model)
 	fmt.Printf("%-18s %v\n", SettingAgentEnabled+":", values[SettingAgentEnabled])
 	fmt.Printf("%-18s %v\n", SettingAgentKeepDays+":", values[SettingAgentKeepDays])
 	fmt.Printf("%-18s %v\n", SettingMailKeepDays+":", values[SettingMailKeepDays])
@@ -247,7 +253,7 @@ func (c *SettingsSetCmd) Run() error {
 // SettingKeys lists the keys "settings set" accepts.
 func SettingKeys() []string {
 	return []string{
-		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentEnabled,
+		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentModel, SettingAgentEnabled,
 		SettingAgentKeepDays, SettingMailKeepDays, SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
 		SettingSMTPUsername,
 		settingSMTPPassword,
@@ -316,6 +322,11 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 			return "", NewExitErrorf(ExitArgument, "unknown agent provider %q (registered: %s)", value, strings.Join(names, ", "))
 		}
 		return value, SetAgentProvider(db, value)
+	case SettingAgentModel:
+		if err := agent.ValidateModel(value); err != nil {
+			return argErr(err)
+		}
+		return value, SetAgentModel(db, value)
 	case SettingAgentEnabled:
 		enabled, perr := ParseBoolSetting(value)
 		if perr != nil {

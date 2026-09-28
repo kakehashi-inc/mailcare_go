@@ -250,6 +250,7 @@ const (
 	SettingWebPort        = "web_port"
 	SettingCheckTimes     = "check_times"
 	SettingAgentProvider  = "agent_provider"
+	SettingAgentModel     = "agent_model"     // model passed to the agent CLI ("" / absent = the CLI default)
 	SettingAgentEnabled   = "agent_enabled"   // "1" (default) or "0"
 	SettingAgentKeepDays  = "agent_keep_days" // days an agent run directory is kept (DefaultAgentKeepDays)
 	SettingMailKeepDays   = "mail_keep_days"  // days a fetched mail is kept (DefaultMailKeepDays)

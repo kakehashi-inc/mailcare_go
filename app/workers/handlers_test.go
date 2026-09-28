@@ -616,6 +616,9 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		{"mail_keep_days": 0},
 		{"mail_keep_days": modules.MaxMailKeepDays + 1},
 		{"mail_keep_days": -1},
+		{"agent_model": "-c evil"},
+		{"agent_model": "gpt 5"},
+		{"agent_model": strings.Repeat("a", 101)},
 	} {
 		rec := do(t, s.h, http.MethodPut, "/api/v1/settings", bad, s.admin)
 		if rec.Code != http.StatusBadRequest {
@@ -683,6 +686,20 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 	}
 	if _, found, _ := models.GetSettingStrict(s.db, modules.SettingAgentKeepDays); found {
 		t.Errorf("default agent_keep_days still stored")
+	}
+	// The agent model is stored as given, "" removes it (the CLI default).
+	var model struct {
+		AgentModel string `json:"agent_model"`
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"agent_model": " gpt-5.5 "}, s.admin)
+	decode(t, rec.Body.Bytes(), &model)
+	if rec.Code != http.StatusOK || model.AgentModel != "gpt-5.5" || modules.ResolveAgentModel(s.db) != "gpt-5.5" {
+		t.Errorf("agent_model: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"agent_model": ""}, s.admin)
+	decode(t, rec.Body.Bytes(), &model)
+	if _, found, _ := models.GetSettingStrict(s.db, modules.SettingAgentModel); rec.Code != http.StatusOK || found || model.AgentModel != "" {
+		t.Errorf("empty agent_model should remove the setting: %d %s", rec.Code, rec.Body.String())
 	}
 	// The worker count is persisted and applied to the job manager at once.
 	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"workers": 5}, s.admin)
