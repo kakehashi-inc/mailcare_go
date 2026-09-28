@@ -50,7 +50,6 @@ func (v *VersionCmd) Run() error {
 
 func main() {
 	// Wire binary-embedded assets into the modules package.
-	modules.MigrationsFS = migrationsFS
 	modules.FrontendFS = frontendFS
 	modules.TemplatesFS = templatesFS
 	modules.AppVersion = version
@@ -71,19 +70,20 @@ func main() {
 		kong.ConfigureHelp(kong.HelpOptions{Compact: true}),
 		// Defaults are referenced from constants so help text never drifts.
 		kong.Vars{
-			"default_web_listen":     modules.DefaultWebListenAddr,
-			"default_web_port":       strconv.Itoa(modules.DefaultWebPort),
-			"default_imap_port":      strconv.Itoa(modules.DefaultIMAPPort),
-			"default_initial_days":   strconv.Itoa(modules.DefaultInitialDays),
-			"default_recent_days":    strconv.Itoa(modules.DefaultRecentDays),
-			"default_workers":        strconv.Itoa(modules.DefaultWorkers),
-			"max_workers":            strconv.Itoa(modules.MaxWorkers),
-			"default_mail_keep_days": strconv.Itoa(modules.DefaultMailKeepDays),
-			"min_mail_keep_days":     strconv.Itoa(modules.MinMailKeepDays),
-			"max_mail_keep_days":     strconv.Itoa(modules.MaxMailKeepDays),
-			"default_timezone":       models.DefaultTimezone,
-			"default_language":       models.DefaultLanguage,
-			"default_theme":          models.DefaultTheme,
+			"default_web_listen":       modules.DefaultWebListenAddr,
+			"default_web_port":         strconv.Itoa(modules.DefaultWebPort),
+			"default_imap_port":        strconv.Itoa(modules.DefaultIMAPPort),
+			"default_initial_days":     strconv.Itoa(modules.DefaultInitialDays),
+			"default_server_keep_days": strconv.Itoa(modules.DefaultServerKeepDays),
+			"default_recent_days":      strconv.Itoa(modules.DefaultRecentDays),
+			"default_workers":          strconv.Itoa(modules.DefaultWorkers),
+			"max_workers":              strconv.Itoa(modules.MaxWorkers),
+			"default_mail_keep_days":   strconv.Itoa(modules.DefaultMailKeepDays),
+			"min_mail_keep_days":       strconv.Itoa(modules.MinMailKeepDays),
+			"max_mail_keep_days":       strconv.Itoa(modules.MaxMailKeepDays),
+			"default_timezone":         models.DefaultTimezone,
+			"default_language":         models.DefaultLanguage,
+			"default_theme":            models.DefaultTheme,
 		},
 	)
 	modules.SetDataDir(cli.DataDir)

@@ -92,6 +92,8 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 		HTMLCount:   pm.HTMLCount(),
 		BodySource:  pm.BodySource,
 		FetchedAt:   src.FetchedAt,
+		// Carried over by reindex (never set by a fetch).
+		ServerDeletedAt: models.NullTime(src.ServerDeletedAt),
 	}
 	if err := models.InsertMessage(db, msg); err != nil {
 		return nil, pm, fmt.Errorf("insert message %s: %w", key, err)

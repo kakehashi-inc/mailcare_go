@@ -542,8 +542,9 @@ func TestResourceLocksSerializeJobs(t *testing.T) {
 	}
 	// A cleanup holds the mailbox key and the agent key (like a reindex): it
 	// waits for a running analysis of any address and blocks the jobs that
-	// read or rewrite the mails of its own address.
-	if keys := jobResourceKeys(JobKindCleanup, a); strings.Join(keys, ",") != "mailbox:a@example.test,agent" {
+	// read or rewrite the mails of its own address. With a server retention
+	// (the default of a new mailbox) it also holds the IMAP host.
+	if keys := jobResourceKeys(JobKindCleanup, a); strings.Join(keys, ",") != "host:"+strings.ToLower(a.ImapHost)+",mailbox:a@example.test,agent" {
 		t.Errorf("cleanup keys: %v", keys)
 	}
 	for _, j := range []*models.Job{analyzeA, analyzeB, reindexC, syncA} {
@@ -557,7 +558,7 @@ func TestResourceLocksSerializeJobs(t *testing.T) {
 	claim(nil) // the cleanup waits for the agent key held by the analysis of another address
 	jm.releaseLocks(analyzeB2.ID)
 	claim(cleanupA)
-	if locks := jm.heldLocks(); strings.Join(locks, ",") != "agent,mailbox:a@example.test" {
+	if locks := jm.heldLocks(); strings.Join(locks, ",") != "agent,host:"+strings.ToLower(a.ImapHost)+",mailbox:a@example.test" {
 		t.Errorf("locks with cleanup A: %v", locks)
 	}
 	groupA2, _, _ := jm.Enqueue(JobKindGroup, a.ID, "", "cli")
@@ -810,12 +811,12 @@ func TestCleanupJobAppliesRetentions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cleanup: %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if result != "removed 3 messages, 2 groups, 2 agent workspaces, 1 jobs" {
+	if result != "deleted 0 server mails, removed 3 messages, 2 groups, 2 agent workspaces, 1 jobs" {
 		t.Errorf("result = %q", result)
 	}
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{
-		"cleaning up (mail retention 30 days, agent workspace retention 2 days, job history 30 days)",
+		"cleaning up (server retention 60 days, mail retention 30 days, agent workspace retention 2 days, job history 30 days)",
 		"removed 3 message(s) older than 30 days, 2 group(s) left empty and removed",
 		"removed 1 stale temporary file(s)",
 		"removed 2 expired agent workspace(s)",
@@ -864,7 +865,7 @@ func TestCleanupJobAppliesRetentions(t *testing.T) {
 	// Nothing left: the counts are zero and the progress stays short.
 	lines = nil
 	result, err = jm.RunJob(context.Background(), mailboxJob(JobKindCleanup, mb, ""), func(m string) { lines = append(lines, m) })
-	if err != nil || result != "removed 0 messages, 0 groups, 0 agent workspaces, 0 jobs" || len(lines) != 2 {
+	if err != nil || result != "deleted 0 server mails, removed 0 messages, 0 groups, 0 agent workspaces, 0 jobs" || len(lines) != 2 {
 		t.Errorf("second cleanup: %q, %v, lines %q", result, err, lines)
 	}
 	// Without any mailbox the expansion job prunes the job history itself.
@@ -937,7 +938,7 @@ func TestCleanupJobReportsFailures(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "mail retention: ") {
 		t.Fatalf("expected a retention error, got %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if result != "removed 0 messages, 0 groups, 1 agent workspaces, 0 jobs" {
+	if result != "deleted 0 server mails, removed 0 messages, 0 groups, 1 agent workspaces, 0 jobs" {
 		t.Errorf("result = %q", result)
 	}
 	if _, err := os.Stat(expired); !os.IsNotExist(err) {
@@ -1216,7 +1217,7 @@ func TestFetchJobKeepsExpiredMail(t *testing.T) {
 	}
 	// The cleanup removes the expired one and keeps the recent one.
 	result, err = jm.RunJob(context.Background(), mailboxJob(JobKindCleanup, mb, ""), nil)
-	if err != nil || result != "removed 1 messages, 0 groups, 0 agent workspaces, 0 jobs" {
+	if err != nil || result != "deleted 0 server mails, removed 1 messages, 0 groups, 0 agent workspaces, 0 jobs" {
 		t.Errorf("cleanup: %q, %v", result, err)
 	}
 	msgs, err := models.ListAllMessages(idx)

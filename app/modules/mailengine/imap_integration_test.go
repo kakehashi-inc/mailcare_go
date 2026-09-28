@@ -3,6 +3,7 @@ package mailengine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -33,6 +34,12 @@ type memIMAP struct {
 // is closed when the test ends.
 func startMemIMAP(t *testing.T) *memIMAP {
 	t.Helper()
+	return startMemIMAPCaps(t, imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}})
+}
+
+// startMemIMAPCaps is startMemIMAP advertising the given capabilities.
+func startMemIMAPCaps(t *testing.T, caps imap.CapSet) *memIMAP {
+	t.Helper()
 	memServer := imapmemserver.New()
 	user := imapmemserver.NewUser(memUsername, memPassword)
 	if err := user.Create(memFolder, nil); err != nil {
@@ -45,7 +52,7 @@ func startMemIMAP(t *testing.T) *memIMAP {
 			return memServer.NewSession(), nil, nil
 		},
 		InsecureAuth: true,
-		Caps:         imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}},
+		Caps:         caps,
 		Logger:       testLogger{t},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -443,4 +450,224 @@ func withNewMessageID(raw []byte, id string) []byte {
 		}
 	}
 	return []byte(strings.Join(lines, "\r\n"))
+}
+
+// serverCount returns how many messages the folder of the in-memory server
+// holds.
+func (m *memIMAP) serverCount(t *testing.T) uint32 {
+	t.Helper()
+	s, err := connect(context.Background(), m.mailbox(), memPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.close(true)
+	sel, err := s.selectFolder(context.Background(), memFolder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sel.NumMessages
+}
+
+// fetchAndGroup fetches the server's messages into a fresh data root and
+// groups them.
+func fetchAndGroup(t *testing.T, srv *memIMAP) string {
+	t.Helper()
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := FetchMailbox(ctx, root, srv.mailbox(), memPassword, FetchOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GroupMailbox(ctx, root, memUsername, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestDeleteFromServer(t *testing.T) {
+	srv := startMemIMAP(t)
+	for i, name := range []string{"postfix_dsn.eml", "office365_dsn.eml", "spamhaus_block_a.eml", "qmail_bounce.eml",
+		"gmail_bounce.eml", "autoreply.eml", "normal.eml"} {
+		srv.appendSample(t, name, 10+i)
+	}
+	root := fetchAndGroup(t, srv)
+	ctx := context.Background()
+	mb := srv.mailbox()
+	keep := 24 * time.Hour
+	indexPath := MailboxIndexPath(root, mb.Address)
+
+	db, err := models.OpenMailIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := models.ListGroups(db, models.GroupFilter{})
+	if err != nil || len(groups) < 3 {
+		t.Fatalf("need at least 3 groups: %v (%d)", err, len(groups))
+	}
+	// One group resolved, one ignored, the others stay open.
+	if err := models.SetGroupState(db, groups[0].GroupKey, "resolved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.SetGroupState(db, groups[1].GroupKey, "ignored"); err != nil {
+		t.Fatal(err)
+	}
+	due, err := models.ListServerDeletionCandidates(db, memFolder, time.Now().Add(-keep))
+	if err != nil || len(due) == 0 {
+		t.Fatalf("candidates: %v (%d)", err, len(due))
+	}
+	for _, c := range due {
+		m, _ := models.GetMessageByKey(db, c.MessageKey)
+		if m.GroupKey != groups[0].GroupKey && m.GroupKey != groups[1].GroupKey {
+			t.Errorf("candidate %s belongs to the open group %s", c.MessageKey, m.GroupKey)
+		}
+	}
+	// A candidate whose Message-ID no longer matches stays on the server.
+	mismatch := due[0]
+	if _, err := db.Exec(`UPDATE messages SET message_id = 'someone-else@example.jp' WHERE id = ?`, mismatch.ID); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	before := srv.serverCount(t)
+
+	// keep 0 and a disabled mailbox do nothing (and connect to nothing).
+	if res, err := DeleteFromServer(ctx, root, mb, memPassword, 0, nil); err != nil || res.Deleted != 0 {
+		t.Errorf("keep 0: %+v %v", res, err)
+	}
+	disabled := srv.mailbox()
+	disabled.Enabled = false
+	if res, err := DeleteFromServer(ctx, root, disabled, "wrong password", keep, nil); err != nil || res.Deleted != 0 {
+		t.Errorf("disabled mailbox: %+v %v", res, err)
+	}
+
+	var lines []string
+	res, err := DeleteFromServer(ctx, root, mb, memPassword, keep, func(l string) { lines = append(lines, l) })
+	if err != nil {
+		t.Fatalf("DeleteFromServer: %v\n%s", err, strings.Join(lines, "\n"))
+	}
+	if res.Deleted != len(due)-1 || res.Skipped != 1 {
+		t.Errorf("result %+v, want %d deleted / 1 skipped", res, len(due)-1)
+	}
+	if after := srv.serverCount(t); after != before-uint32(len(due)-1) {
+		t.Errorf("server holds %d messages, want %d", after, before-uint32(len(due)-1))
+	}
+	db, err = models.OpenMailIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range due {
+		m, err := models.GetMessageByKey(db, c.MessageKey)
+		if err != nil {
+			t.Fatalf("the local row must stay: %v", err)
+		}
+		if m.ServerDeletedAt.Valid == (c.ID == mismatch.ID) {
+			t.Errorf("%s: server_deleted_at = %v", c.MessageKey, m.ServerDeletedAt)
+		}
+	}
+	db.Close()
+
+	// A second run deletes nothing more.
+	if res, err := DeleteFromServer(ctx, root, mb, memPassword, keep, nil); err != nil || res.Deleted != 0 || res.Skipped != 1 {
+		t.Errorf("second run: %+v %v", res, err)
+	}
+	// Reindex carries the deletion time over.
+	if _, err := Reindex(ctx, root, mb.Address, nil); err != nil {
+		t.Fatal(err)
+	}
+	db, err = models.OpenMailIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, c := range due {
+		m, err := models.GetMessageByKey(db, c.MessageKey)
+		if err != nil || m.ServerDeletedAt.Valid == (c.ID == mismatch.ID) {
+			t.Errorf("after reindex %s: %+v %v", c.MessageKey, m, err)
+		}
+	}
+}
+
+func TestDeleteFromServerSafety(t *testing.T) {
+	ctx := context.Background()
+	keep := 24 * time.Hour
+	resolveAll := func(t *testing.T, root string) {
+		t.Helper()
+		db, err := models.OpenMailIndex(MailboxIndexPath(root, memUsername))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(`UPDATE groups SET state = 'resolved'`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A server without UIDPLUS (IMAP4rev1 only): the plain EXPUNGE is used
+	// while no other message carries \Deleted ...
+	srv := startMemIMAPCaps(t, imap.CapSet{imap.CapIMAP4rev1: {}})
+	srv.appendSample(t, "postfix_dsn.eml", 10)
+	srv.appendSample(t, "normal.eml", 10)
+	root := fetchAndGroup(t, srv)
+	resolveAll(t, root)
+	res, err := DeleteFromServer(ctx, root, srv.mailbox(), memPassword, keep, nil)
+	if err != nil || res.Deleted != 1 {
+		t.Errorf("without UIDPLUS: %+v %v", res, err)
+	}
+	if n := srv.serverCount(t); n != 1 {
+		t.Errorf("without UIDPLUS the server holds %d messages, want 1 (the ordinary mail)", n)
+	}
+
+	// ... and nothing is expunged while another client's message carries it.
+	srv = startMemIMAPCaps(t, imap.CapSet{imap.CapIMAP4rev1: {}})
+	srv.appendSample(t, "postfix_dsn.eml", 10)
+	srv.appendSample(t, "normal.eml", 10)
+	root = fetchAndGroup(t, srv)
+	resolveAll(t, root)
+	s, err := connect(ctx, srv.mailbox(), memPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.selectFolder(ctx, memFolder); err != nil {
+		t.Fatal(err)
+	}
+	// The ordinary mail (appended last, UID 2) is flagged by "another client".
+	if err := s.client.Store(imap.UIDSetNum(2), deletedFlag(imap.StoreFlagsAdd), nil).Close(); err != nil {
+		t.Fatal(err)
+	}
+	s.close(true)
+	res, err = DeleteFromServer(ctx, root, srv.mailbox(), memPassword, keep, nil)
+	if !errors.Is(err, ErrOtherDeletedFlags) || res.Deleted != 0 {
+		t.Errorf("foreign \\Deleted flag: %+v %v", res, err)
+	}
+	if n := srv.serverCount(t); n != 2 {
+		t.Errorf("with a foreign \\Deleted flag the server holds %d messages, want 2", n)
+	}
+	db, err := models.OpenMailIndex(MailboxIndexPath(root, memUsername))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if due, _ := models.ListServerDeletionCandidates(db, memFolder, time.Now().Add(-keep)); len(due) != 1 {
+		t.Errorf("the candidate must stay due for the next cleanup, got %d", len(due))
+	}
+	db.Close()
+
+	// A folder re-created under another UIDVALIDITY: every candidate is
+	// skipped.
+	srv = startMemIMAP(t)
+	srv.appendSample(t, "postfix_dsn.eml", 10)
+	root = fetchAndGroup(t, srv)
+	resolveAll(t, root)
+	db, err = models.OpenMailIndex(MailboxIndexPath(root, memUsername))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE messages SET uidvalidity = uidvalidity + 1`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	res, err = DeleteFromServer(ctx, root, srv.mailbox(), memPassword, keep, nil)
+	if err != nil || res.Deleted != 0 || res.Skipped != 1 {
+		t.Errorf("other UIDVALIDITY: %+v %v", res, err)
+	}
+	if n := srv.serverCount(t); n != 1 {
+		t.Errorf("other UIDVALIDITY: the server holds %d messages, want 1", n)
+	}
 }

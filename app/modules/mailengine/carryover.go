@@ -40,17 +40,11 @@ func (c *carryover) messageSource(key string) *models.MessageSource {
 	return nil
 }
 
-// errCarryoverOutdated is returned by readCarryover when the previous index
-// has an older schema: its rows cannot be read through the models, so
-// nothing is carried over.
-var errCarryoverOutdated = errors.New("previous index has an outdated schema")
-
 // readCarryover reads the message sources, the groups and the agent reports
-// of the index at path through the models. The file is opened directly (not
-// through OpenMailIndex, which would fail on an outdated schema); when its
-// schema version is not the current one, errCarryoverOutdated is returned
-// and the caller continues without carrying anything over. A missing file
-// yields nil, nil.
+// (with the patterns they covered) of the index at path through the models.
+// The file is opened with models.OpenMailIndex, which first migrates it to
+// the current schema, so an index written by an older version is read like
+// a current one. A missing file yields nil, nil.
 func readCarryover(path string) (*carryover, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -58,19 +52,11 @@ func readCarryover(path string) (*carryover, error) {
 		}
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_time_format=sqlite")
+	db, err := models.OpenMailIndex(path)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-
-	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		return nil, err
-	}
-	if version != models.MailIndexSchemaVersion {
-		return nil, fmt.Errorf("%w (version %d, current %d)", errCarryoverOutdated, version, models.MailIndexSchemaVersion)
-	}
 
 	c := &carryover{groups: map[string]carriedGroup{}}
 	c.sources, err = models.ListMessageSources(db)

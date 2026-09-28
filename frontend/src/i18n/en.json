@@ -203,6 +203,12 @@
         "agentUnavailable": "The command for provider \"{{provider}}\" was not found on the server. Analyses will fail."
     },
     "mailbox": {
+        "sectionServerKeep": "Deleting mails on the server",
+        "sectionServerKeepHint": "The daily cleanup deletes the mails of resolved or ignored groups from the IMAP server for good. Deleted mails cannot be restored. MailCare keeps its own copy until the mail retention.",
+        "serverKeepDays": "Server retention",
+        "serverKeepDaysHint": "Mails older than this many days (from the mail's date) are deleted. 0 never deletes them on the server.",
+        "serverKeepDaysInvalid": "Enter a whole number from 0 to {{max}}.",
+        "serverKeepNever": "Never",
         "select": "Mailbox",
         "choose": "Choose a mailbox",
         "all": "All mailboxes",
@@ -353,14 +359,20 @@
         "excludedReturnHint": "Reopening it moves it back to the excluded list."
     },
     "mails": {
+        "kindTabs": "Mail kind",
+        "kind": {
+            "all": "All",
+            "bounce": "Bounces",
+            "other": "Others"
+        },
         "chooseMailbox": "Choose the mailbox whose messages you want to browse.",
         "searchPlaceholder": "Search subject, sender or recipient",
-        "onlyBounce": "Bounces only",
         "groupFilter": "Group",
         "empty": "No messages",
         "emptyFiltered": "Try changing the filters."
     },
     "mail": {
+        "serverDeletedAt": "Deleted from the server",
         "detail": "Message detail",
         "subject": "Subject",
         "noSubject": "(no subject)",
@@ -470,8 +482,8 @@
         },
         "cleanup": {
             "title": "Cleanup",
-            "description": "Removes the mails past their retention (original, body sections and index row), the old agent workspaces and the jobs finished more than 30 days ago. The server runs this automatically whenever the date changes.",
-            "warning": "A bounce group left without mails is removed together with its analysis report."
+            "description": "Deletes the mails of resolved or ignored groups from the IMAP server as set per mail address, then removes the mails past their retention (original, body sections and index row), the old agent workspaces and the jobs finished more than 30 days ago. The server runs this automatically whenever the date changes.",
+            "warning": "Mails deleted from the IMAP server cannot be restored. A bounce group left without mails is removed together with its analysis report."
         },
         "runAria": "Start {{tool}}"
     },

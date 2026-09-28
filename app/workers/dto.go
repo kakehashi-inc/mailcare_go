@@ -100,6 +100,7 @@ type MailboxDTO struct {
 	Enabled        bool             `json:"enabled"`
 	InitialDays    int              `json:"initial_days"`
 	RecentDays     int              `json:"recent_days"`
+	ServerKeepDays int              `json:"server_keep_days"` // 0 = the mails stay on the server
 	LastFetchedAt  *string          `json:"last_fetched_at"`
 	LastFetchError string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
 	CreatedAt      string           `json:"created_at"`
@@ -111,7 +112,8 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 	return MailboxDTO{
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost, ImapPort: mb.ImapPort,
 		ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername, Folder: mb.Folder, Enabled: mb.Enabled,
-		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, LastFetchedAt: nullTimeString(mb.LastFetchedAt),
+		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, ServerKeepDays: mb.ServerKeepDays,
+		LastFetchedAt:  nullTimeString(mb.LastFetchedAt),
 		LastFetchError: mb.LastFetchError,
 		CreatedAt:      timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
 	}
@@ -119,7 +121,7 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 
 // mailboxDTOFor converts a mailbox for the given user: administrators get
 // every field, other users get the connection settings and fetch ranges
-// blanked (empty strings and zeros).
+// and retentions blanked (empty strings and zeros).
 func mailboxDTOFor(mb *models.Mailbox, u *models.User) MailboxDTO {
 	dto := toMailboxDTO(mb)
 	if u == nil || u.Role != modules.RoleAdmin {
@@ -131,7 +133,7 @@ func mailboxDTOFor(mb *models.Mailbox, u *models.User) MailboxDTO {
 // redactMailboxDTO blanks the fields reserved for administrators.
 func redactMailboxDTO(dto *MailboxDTO) {
 	dto.ImapHost, dto.ImapPort, dto.ImapSecurity, dto.ImapUsername, dto.Folder = "", 0, "", "", ""
-	dto.InitialDays, dto.RecentDays = 0, 0
+	dto.InitialDays, dto.RecentDays, dto.ServerKeepDays = 0, 0, 0
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.
@@ -254,6 +256,9 @@ type MessageDTO struct {
 	Classified  bool    `json:"classified"`
 	GroupKey    string  `json:"group_key"`
 	FetchedAt   string  `json:"fetched_at"`
+	// ServerDeletedAt is when MailCare deleted the mail from the IMAP server
+	// (the server retention); null while it is there.
+	ServerDeletedAt *string `json:"server_deleted_at"`
 }
 
 func toMessageDTO(m *models.Message) MessageDTO {
@@ -263,6 +268,7 @@ func toMessageDTO(m *models.Message) MessageDTO {
 		Date: timeString(m.Date), ReceivedAt: nullTimeString(m.ReceivedAt), Size: m.Size, TextCount: m.TextCount,
 		HTMLCount: m.HTMLCount, BodySource: m.BodySource, IsBounce: m.IsBounce, BounceKind: m.BounceKind, Rule: m.Rule,
 		Classified: m.Classified, GroupKey: m.GroupKey, FetchedAt: timeString(m.FetchedAt),
+		ServerDeletedAt: nullTimeString(m.ServerDeletedAt),
 	}
 }
 

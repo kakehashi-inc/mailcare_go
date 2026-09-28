@@ -29,6 +29,11 @@ type Mailbox struct {
 	Folder          string `json:"folder"`
 	InitialDays     int    `json:"initial_days"`
 	RecentDays      int    `json:"recent_days"`
+	// ServerKeepDays is how many days (counted from the mail's date) a mail
+	// of a resolved or ignored group stays on the IMAP server before the
+	// daily cleanup deletes it there; 0 keeps every mail on the server
+	// (also the value of a row saved before the setting existed).
+	ServerKeepDays int `json:"server_keep_days"`
 }
 
 // ProtocolIMAP is the value of the "protocol" key in mailboxes.detail_info.
@@ -45,13 +50,16 @@ type mailboxDetails struct {
 	Folder      string `json:"folder"`
 	InitialDays int    `json:"initial_days"`
 	RecentDays  int    `json:"recent_days"`
+	// ServerKeepDays: absent in rows saved before the setting existed,
+	// which reads as 0 (never delete on the server).
+	ServerKeepDays int `json:"server_keep_days"`
 }
 
 func (m *Mailbox) detailsJSON() string {
 	return marshalJSON(mailboxDetails{
 		Protocol: ProtocolIMAP, Host: m.ImapHost, Port: m.ImapPort, Security: m.ImapSecurity,
 		Username: m.ImapUsername, PasswordEnc: m.ImapPasswordEnc,
-		Folder: m.Folder, InitialDays: m.InitialDays, RecentDays: m.RecentDays,
+		Folder: m.Folder, InitialDays: m.InitialDays, RecentDays: m.RecentDays, ServerKeepDays: m.ServerKeepDays,
 	})
 }
 
@@ -60,6 +68,7 @@ func (m *Mailbox) applyDetails(raw string) {
 	unmarshalJSON(raw, &j)
 	m.ImapHost, m.ImapPort, m.ImapSecurity, m.ImapUsername = j.Host, j.Port, j.Security, j.Username
 	m.ImapPasswordEnc, m.Folder, m.InitialDays, m.RecentDays = j.PasswordEnc, j.Folder, j.InitialDays, j.RecentDays
+	m.ServerKeepDays = j.ServerKeepDays
 }
 
 const mailboxColumns = `id, address, display_name, enabled, detail_info, last_fetched_at, last_fetch_error, created_at, updated_at`

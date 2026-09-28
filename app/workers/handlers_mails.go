@@ -85,8 +85,17 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		perPage = n
 	}
+	kind := q.Get("kind")
+	switch kind {
+	case "", "all":
+		kind = models.MessageKindAll
+	case models.MessageKindBounce, models.MessageKindOther:
+	default:
+		writeError(w, http.StatusBadRequest, "kind must be all, bounce or other")
+		return
+	}
 	filter := models.MessageFilter{
-		Query: q.Get("q"), OnlyBounce: q.Get("only_bounce") == "1", GroupKey: q.Get("group"),
+		Query: q.Get("q"), Kind: kind, GroupKey: q.Get("group"),
 		Offset: (page - 1) * perPage, Limit: perPage,
 	}
 	idx, err := c.openIndex(r, mb)
@@ -100,8 +109,14 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "failed to list messages", err)
 		return
 	}
+	// counts: the same search and group filter per kind (the switch shows them).
+	counts, err := models.CountMessagesByKind(idx, filter)
+	if err != nil {
+		writeInternalError(w, "failed to count messages", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"messages": toMessageDTOs(messages), "total": total, "page": page, "per_page": perPage,
+		"messages": toMessageDTOs(messages), "total": total, "page": page, "per_page": perPage, "counts": counts,
 	})
 }
 

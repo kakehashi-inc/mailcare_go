@@ -95,6 +95,15 @@ export function SettingsMailboxesPage() {
             className: 'whitespace-nowrap',
             cell: mb => t('mailbox.fetchDaysValue', { count: mb.recent_days }),
         },
+        {
+            key: 'serverKeep',
+            header: t('mailbox.serverKeepDays'),
+            className: 'whitespace-nowrap',
+            cell: mb =>
+                mb.server_keep_days > 0
+                    ? t('mailbox.fetchDaysValue', { count: mb.server_keep_days })
+                    : t('mailbox.serverKeepNever'),
+        },
         { key: 'enabled', header: t('common.status'), cell: mb => <EnabledBadge enabled={mb.enabled} /> },
         {
             key: 'check',

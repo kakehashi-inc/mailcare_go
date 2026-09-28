@@ -11,13 +11,7 @@ import { CheckboxField, InputField, SelectField, ToggleField } from '../componen
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
-import {
-    DEFAULT_FOLDER,
-    DEFAULT_IMAP_PORT_PLAIN,
-    DEFAULT_IMAP_PORT_SSL,
-    DEFAULT_INITIAL_DAYS,
-    DEFAULT_RECENT_DAYS,
-} from '../constants';
+import { DEFAULT_FOLDER, DEFAULT_IMAP_PORT_PLAIN, DEFAULT_IMAP_PORT_SSL, DEFAULT_INITIAL_DAYS, DEFAULT_RECENT_DAYS, DEFAULT_SERVER_KEEP_DAYS, MAX_SERVER_KEEP_DAYS } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { ImapSecurity, MailboxDTO, MailboxInput } from '../types';
@@ -35,6 +29,7 @@ interface FormState {
     enabled: boolean;
     initial_days: string;
     recent_days: string;
+    server_keep_days: string;
 }
 
 const EMPTY: FormState = {
@@ -49,6 +44,7 @@ const EMPTY: FormState = {
     enabled: true,
     initial_days: String(DEFAULT_INITIAL_DAYS),
     recent_days: String(DEFAULT_RECENT_DAYS),
+    server_keep_days: String(DEFAULT_SERVER_KEEP_DAYS),
 };
 
 // Every field is defaulted: the DTO never carries imap_password and the
@@ -66,6 +62,8 @@ function fromDto(mb: MailboxDTO): FormState {
         enabled: mb.enabled ?? true,
         initial_days: mb.initial_days ? String(mb.initial_days) : EMPTY.initial_days,
         recent_days: mb.recent_days ? String(mb.recent_days) : EMPTY.recent_days,
+        // 0 is a real value (never delete on the server), not "unset".
+        server_keep_days: String(mb.server_keep_days ?? 0),
     };
 }
 
@@ -122,6 +120,13 @@ export function MailboxEditPage() {
             : undefined;
     const daysError = (v: string) =>
         v !== '' && (!Number.isInteger(Number(v)) || Number(v) < 1) ? t('mailbox.daysInvalid') : undefined;
+    const serverKeepError =
+        form.server_keep_days === '' ||
+        !Number.isInteger(Number(form.server_keep_days)) ||
+        Number(form.server_keep_days) < 0 ||
+        Number(form.server_keep_days) > MAX_SERVER_KEEP_DAYS
+            ? t('mailbox.serverKeepDaysInvalid', { max: MAX_SERVER_KEEP_DAYS })
+            : undefined;
     const passwordRequired = isNew && form.imap_password === '';
     // The server uses the stored password only for the server it was saved
     // for: a change of the host, port, connection mode or username of an
@@ -143,6 +148,7 @@ export function MailboxEditPage() {
         !portError &&
         !daysError(form.initial_days) &&
         !daysError(form.recent_days) &&
+        !serverKeepError &&
         !passwordRequired &&
         !passwordError;
 
@@ -160,6 +166,7 @@ export function MailboxEditPage() {
             enabled: form.enabled,
             initial_days: form.initial_days === '' ? undefined : Number(form.initial_days),
             recent_days: form.recent_days === '' ? undefined : Number(form.recent_days),
+            server_keep_days: Number(form.server_keep_days),
         };
     }
 
@@ -378,6 +385,23 @@ export function MailboxEditPage() {
                             error={daysError(form.recent_days)}
                         />
                     </div>
+                </Card>
+
+                <Card>
+                    <CardHeader title={t('mailbox.sectionServerKeep')} description={t('mailbox.sectionServerKeepHint')} />
+                    <InputField
+                        label={t('mailbox.serverKeepDays')}
+                        type='number'
+                        inputMode='numeric'
+                        min={0}
+                        max={MAX_SERVER_KEEP_DAYS}
+                        step={1}
+                        value={form.server_keep_days}
+                        onChange={e => set('server_keep_days', e.target.value)}
+                        hint={t('mailbox.serverKeepDaysHint')}
+                        error={serverKeepError}
+                        width='short'
+                    />
                 </Card>
 
                 {error && <InlineError message={error} />}

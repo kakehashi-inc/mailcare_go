@@ -36,6 +36,10 @@ type Message struct {
 	BounceKind  string       `json:"bounce_kind"` // failed | delayed | auto_reply | other | ""
 	Rule        string       `json:"rule"`        // name of the detection rule that matched
 	FetchedAt   time.Time    `json:"fetched_at"`
+	// ServerDeletedAt is when MailCare deleted the message from the IMAP
+	// server (the server retention of the mailbox); NULL while it is still
+	// there. The raw file and the row stay until the local retention.
+	ServerDeletedAt sql.NullTime `json:"-"`
 
 	// GroupKey is the group of the bounce (bounces.group_key), "" when the
 	// message is not a grouped bounce. It is read with the row, never written
@@ -47,7 +51,7 @@ type Message struct {
 // row (alias m / b), in scanMessage order.
 const messageColumns = `m.id, m.message_key, m.folder, m.uidvalidity, m.uid, m.message_id, m.subject, m.from_address,
 	m.from_name, m.to_address, m.to_name, m.date, m.received_at, m.size, m.text_count, m.html_count, m.body_source,
-	m.classified, m.is_bounce, m.bounce_kind, m.rule, m.fetched_at, COALESCE(b.group_key, '')`
+	m.classified, m.is_bounce, m.bounce_kind, m.rule, m.fetched_at, m.server_deleted_at, COALESCE(b.group_key, '')`
 
 const messageFrom = ` FROM messages m LEFT JOIN bounces b ON b.id = m.id`
 
@@ -63,17 +67,18 @@ func InsertMessage(db *sql.DB, m *Message) error {
 	}
 	m.Date = m.Date.UTC().Round(0)
 	m.ReceivedAt = utcNullTime(m.ReceivedAt)
+	m.ServerDeletedAt = utcNullTime(m.ServerDeletedAt)
 	if m.Folder == "" {
 		m.Folder = "INBOX"
 	}
 	res, err := db.Exec(
 		`INSERT INTO messages (message_key, folder, uidvalidity, uid, message_id, subject, from_address, from_name,
 		   to_address, to_name, date, received_at, size, text_count, html_count, body_source, classified, is_bounce,
-		   bounce_kind, rule, fetched_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   bounce_kind, rule, fetched_at, server_deleted_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.MessageKey, m.Folder, m.UIDValidity, m.UID, m.MessageID, m.Subject, m.FromAddress, m.FromName,
 		m.ToAddress, m.ToName, m.Date, m.ReceivedAt, m.Size, m.TextCount, m.HTMLCount, m.BodySource,
-		boolToInt(m.Classified), boolToInt(m.IsBounce), m.BounceKind, m.Rule, m.FetchedAt,
+		boolToInt(m.Classified), boolToInt(m.IsBounce), m.BounceKind, m.Rule, m.FetchedAt, m.ServerDeletedAt,
 	)
 	if err != nil {
 		return err
@@ -182,22 +187,70 @@ func DeleteMessage(db *sql.DB, id int64) error {
 	return err
 }
 
+// ServerDeletionCandidate is a message the server retention may delete from
+// the IMAP server.
+type ServerDeletionCandidate struct {
+	ID          int64
+	MessageKey  string
+	MessageID   string
+	UIDValidity uint32
+	UID         uint32
+}
+
+// ListServerDeletionCandidates returns the messages of a folder that are
+// still on the IMAP server (server_deleted_at NULL), dated before cutoff and
+// filed into a group marked resolved or ignored, oldest first. Messages with
+// a synthetic identity (uidvalidity 0: indexed from a raw file the fetch
+// never saw) are never candidates.
+func ListServerDeletionCandidates(db *sql.DB, folder string, cutoff time.Time) ([]ServerDeletionCandidate, error) {
+	rows, err := db.Query(`SELECT m.id, m.message_key, m.message_id, m.uidvalidity, m.uid
+		FROM messages m JOIN bounces b ON b.id = m.id JOIN groups g ON g.group_key = b.group_key
+		WHERE g.state IN ('resolved', 'ignored') AND m.server_deleted_at IS NULL AND m.folder = ?
+		  AND m.uidvalidity <> 0 AND m.date < ?
+		ORDER BY m.date ASC, m.id ASC`, folder, cutoff.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ServerDeletionCandidate
+	for rows.Next() {
+		var c ServerDeletionCandidate
+		if err := rows.Scan(&c.ID, &c.MessageKey, &c.MessageID, &c.UIDValidity, &c.UID); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// MarkServerDeleted records that the messages were deleted from (or are no
+// longer on) the IMAP server.
+func MarkServerDeleted(db *sql.DB, ids []int64, at time.Time) error {
+	for _, id := range ids {
+		if _, err := db.Exec(`UPDATE messages SET server_deleted_at = ? WHERE id = ?`, at.UTC(), id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // MessageSource is the IMAP identity and the fetch facts of an indexed
 // message, keyed by message_key (used by reindex to carry them over from the
 // previous index, since the raw file does not record them).
 type MessageSource struct {
-	Folder      string
-	UIDValidity uint32
-	UID         uint32
-	Size        int64
-	ReceivedAt  sql.NullTime
-	FetchedAt   time.Time
+	Folder          string
+	UIDValidity     uint32
+	UID             uint32
+	Size            int64
+	ReceivedAt      sql.NullTime
+	FetchedAt       time.Time
+	ServerDeletedAt sql.NullTime
 }
 
 // ListMessageSources returns the source facts of every message keyed by
 // message_key.
 func ListMessageSources(db *sql.DB) (map[string]MessageSource, error) {
-	rows, err := db.Query(`SELECT message_key, folder, uidvalidity, uid, size, received_at, fetched_at FROM messages`)
+	rows, err := db.Query(`SELECT message_key, folder, uidvalidity, uid, size, received_at, fetched_at, server_deleted_at FROM messages`)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +259,7 @@ func ListMessageSources(db *sql.DB) (map[string]MessageSource, error) {
 	for rows.Next() {
 		var key string
 		var s MessageSource
-		if err := rows.Scan(&key, &s.Folder, &s.UIDValidity, &s.UID, &s.Size, &s.ReceivedAt, &s.FetchedAt); err != nil {
+		if err := rows.Scan(&key, &s.Folder, &s.UIDValidity, &s.UID, &s.Size, &s.ReceivedAt, &s.FetchedAt, &s.ServerDeletedAt); err != nil {
 			return nil, err
 		}
 		out[key] = s
@@ -214,13 +267,39 @@ func ListMessageSources(db *sql.DB) (map[string]MessageSource, error) {
 	return out, rows.Err()
 }
 
+// Message kinds of MessageFilter.Kind.
+const (
+	MessageKindAll    = ""       // every message
+	MessageKindBounce = "bounce" // detected as a daemon notice (is_bounce = 1; auto-replies included)
+	MessageKindOther  = "other"  // everything else (is_bounce = 0)
+)
+
 // MessageFilter narrows ListMessages.
 type MessageFilter struct {
-	Query      string // matched against subject, from and to (LIKE)
-	OnlyBounce bool
-	GroupKey   string
-	Offset     int
-	Limit      int
+	Query    string // matched against subject, from and to (LIKE)
+	Kind     string // MessageKindAll | MessageKindBounce | MessageKindOther
+	GroupKey string
+	Offset   int
+	Limit    int
+}
+
+// MessageKindCounts is how many messages of each kind match a filter (its
+// Kind ignored).
+type MessageKindCounts struct {
+	All    int `json:"all"`
+	Bounce int `json:"bounce"`
+	Other  int `json:"other"`
+}
+
+// CountMessagesByKind counts the messages matching the filter per kind,
+// whatever f.Kind says (the counts of the kind switch).
+func CountMessagesByKind(db *sql.DB, f MessageFilter) (MessageKindCounts, error) {
+	f.Kind = MessageKindAll
+	where, args := messageWhere(f)
+	var c MessageKindCounts
+	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(m.is_bounce), 0)`+messageFrom+where, args...).Scan(&c.All, &c.Bounce)
+	c.Other = c.All - c.Bounce
+	return c, err
 }
 
 // ListMessages returns messages newest first with the total count matching the filter.
@@ -270,8 +349,11 @@ func queryMessages(db *sql.DB, query string, args ...any) ([]*Message, error) {
 func messageWhere(f MessageFilter) (string, []any) {
 	var conds []string
 	var args []any
-	if f.OnlyBounce {
+	switch f.Kind {
+	case MessageKindBounce:
 		conds = append(conds, `m.is_bounce = 1`)
+	case MessageKindOther:
+		conds = append(conds, `m.is_bounce = 0`)
 	}
 	if f.GroupKey != "" {
 		conds = append(conds, `b.group_key = ?`)
@@ -294,7 +376,8 @@ func scanMessage(s rowScanner) (*Message, error) {
 	var classified, isBounce int
 	if err := s.Scan(&m.ID, &m.MessageKey, &m.Folder, &m.UIDValidity, &m.UID, &m.MessageID, &m.Subject,
 		&m.FromAddress, &m.FromName, &m.ToAddress, &m.ToName, &m.Date, &m.ReceivedAt, &m.Size, &m.TextCount,
-		&m.HTMLCount, &m.BodySource, &classified, &isBounce, &m.BounceKind, &m.Rule, &m.FetchedAt, &m.GroupKey); err != nil {
+		&m.HTMLCount, &m.BodySource, &classified, &isBounce, &m.BounceKind, &m.Rule, &m.FetchedAt, &m.ServerDeletedAt,
+		&m.GroupKey); err != nil {
 		return nil, err
 	}
 	m.Classified, m.IsBounce = classified != 0, isBounce != 0

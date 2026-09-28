@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,7 +23,6 @@ import (
 // fresh master key). No listener, job worker or scheduler is started.
 func newTestCore(t *testing.T) *core {
 	t.Helper()
-	modules.MigrationsFS = os.DirFS("../..")
 	dataDir := t.TempDir()
 	modules.SetDataDir(dataDir)
 	db, err := modules.OpenDB("")

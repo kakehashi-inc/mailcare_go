@@ -112,6 +112,8 @@ export interface MailboxDTO {
     enabled: boolean;
     initial_days: number;
     recent_days: number;
+    /** Days (from the mail's date) a mail of a resolved or ignored group stays on the IMAP server; 0 = never deleted there. */
+    server_keep_days: number;
     /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
     last_fetched_at: string | null;
     last_fetch_error: string;
@@ -133,6 +135,8 @@ export interface MailboxInput {
     enabled?: boolean;
     initial_days?: number;
     recent_days?: number;
+    /** Omitted: the default (60) for a new mailbox, unchanged on update. */
+    server_keep_days?: number;
 }
 
 export interface GroupDTO {
@@ -224,6 +228,8 @@ export interface MessageDTO {
     rule: string;
     group_key: string;
     fetched_at: string;
+    /** When MailCare deleted the mail from the IMAP server (server retention); null while it is there. */
+    server_deleted_at: string | null;
 }
 
 export interface BounceDTO {
@@ -417,11 +423,16 @@ export interface GroupDetailResponse {
 }
 
 /** GET /api/v1/mailboxes/{id}/messages */
+/** Mail kind switch of the mail list: all, daemon notices (auto-replies included), everything else. */
+export type MessageKind = 'all' | 'bounce' | 'other';
+
 export interface MessageListResponse {
     messages: MessageDTO[];
     total: number;
     page: number;
     per_page: number;
+    /** Messages per kind for the same search and group filter. */
+    counts: Record<MessageKind, number>;
 }
 
 /** GET /api/v1/mailboxes/{id}/messages/{key} */

@@ -531,3 +531,82 @@ func TestImapEndpointBracketsIPv6(t *testing.T) {
 		t.Errorf("IPv6 endpoint not bracketed in show and list:\n%s", out)
 	}
 }
+
+func TestMailboxServerKeepDays(t *testing.T) {
+	db := newTestDB(t)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailsRoot, err := MailsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentRoot, err := AgentDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := func(address string) *MailboxInput {
+		return &MailboxInput{Address: address, ImapHost: "imap.example.test", ImapUsername: "u", ImapPassword: "p"}
+	}
+	days := func(n int) *int { return &n }
+
+	// A new mailbox gets the default; an explicit value (0 included) wins.
+	mb, err := CreateMailbox(db, key, in("a@example.test"))
+	if err != nil || mb.ServerKeepDays != DefaultServerKeepDays {
+		t.Fatalf("default: %+v %v", mb, err)
+	}
+	never := in("b@example.test")
+	never.ServerKeepDays = days(0)
+	if mb, err := CreateMailbox(db, key, never); err != nil || mb.ServerKeepDays != 0 {
+		t.Errorf("explicit 0: %+v %v", mb, err)
+	}
+	for _, bad := range []int{-1, MaxServerKeepDays + 1} {
+		wrong := in("c@example.test")
+		wrong.ServerKeepDays = days(bad)
+		if _, err := CreateMailbox(db, key, wrong); err == nil {
+			t.Errorf("%d accepted", bad)
+		}
+	}
+
+	// An update without the field keeps the stored value; with it, stores it.
+	update := in("a@example.test")
+	update.ImapPassword = ""
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, mb, update); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := models.GetMailboxByID(db, mb.ID)
+	if stored.ServerKeepDays != DefaultServerKeepDays {
+		t.Errorf("update without the field changed it to %d", stored.ServerKeepDays)
+	}
+	update.ServerKeepDays = days(120)
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ = models.GetMailboxByID(db, mb.ID); stored.ServerKeepDays != 120 {
+		t.Errorf("update stored %d, want 120", stored.ServerKeepDays)
+	}
+
+	// A mailbox saved before the setting existed (no key in detail_info)
+	// keeps its mails on the server.
+	if _, err := db.Exec(`UPDATE mailboxes SET detail_info = json_remove(detail_info, '$.server_keep_days') WHERE id = ?`, mb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ = models.GetMailboxByID(db, mb.ID); stored.ServerKeepDays != 0 {
+		t.Errorf("a row without the setting reads %d, want 0", stored.ServerKeepDays)
+	}
+
+	// The cleanup waits for the IMAP host only when it deletes there.
+	stored.ServerKeepDays = 60
+	if keys := jobResourceKeys(JobKindCleanup, stored); len(keys) != 3 || keys[0] != "host:imap.example.test" {
+		t.Errorf("cleanup keys with a server retention: %v", keys)
+	}
+	stored.Enabled = false
+	if keys := jobResourceKeys(JobKindCleanup, stored); len(keys) != 2 {
+		t.Errorf("cleanup keys of a disabled mailbox: %v", keys)
+	}
+	stored.Enabled, stored.ServerKeepDays = true, 0
+	if keys := jobResourceKeys(JobKindCleanup, stored); len(keys) != 2 {
+		t.Errorf("cleanup keys without a server retention: %v", keys)
+	}
+}

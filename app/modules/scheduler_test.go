@@ -2,7 +2,6 @@ package modules
 
 import (
 	"database/sql"
-	"os"
 	"testing"
 	"time"
 
@@ -140,7 +139,6 @@ func TestSchedulerTickQueuesOneSyncJob(t *testing.T) {
 // newTestDB opens a migrated master database in a fresh data directory.
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	MigrationsFS = os.DirFS("../..")
 	SetDataDir(t.TempDir())
 	db, err := OpenDB("")
 	if err != nil {

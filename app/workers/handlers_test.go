@@ -291,10 +291,11 @@ func TestGroupsEndpoints(t *testing.T) {
 }
 
 type messagesResponse struct {
-	Messages []MessageDTO `json:"messages"`
-	Total    int          `json:"total"`
-	Page     int          `json:"page"`
-	PerPage  int          `json:"per_page"`
+	Messages []MessageDTO             `json:"messages"`
+	Total    int                      `json:"total"`
+	Page     int                      `json:"page"`
+	PerPage  int                      `json:"per_page"`
+	Counts   models.MessageKindCounts `json:"counts"`
 }
 
 func TestMessagesEndpoints(t *testing.T) {
@@ -318,19 +319,36 @@ func TestMessagesEndpoints(t *testing.T) {
 	if list.Total != 3 || len(list.Messages) != 1 || list.Page != 2 || list.PerPage != 2 {
 		t.Errorf("page 2: %+v", list)
 	}
-	rec = do(t, s.h, http.MethodGet, s.path("/messages?only_bounce=1"), nil, s.user)
+	// Every list carries the counts per kind for the same search.
+	if list.Counts.All != 3 || list.Counts.Bounce != 2 || list.Counts.Other != 1 {
+		t.Errorf("counts: %+v", list.Counts)
+	}
+	rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=bounce"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
-	if list.Total != 2 || len(list.Messages) != 2 {
-		t.Errorf("only_bounce: %+v", list)
+	if list.Total != 2 || len(list.Messages) != 2 || list.Counts.All != 3 {
+		t.Errorf("kind=bounce: %+v", list)
 	}
 	for _, m := range list.Messages {
 		if !m.IsBounce || m.GroupKey == "" {
-			t.Errorf("non-bounce in only_bounce: %+v", m)
+			t.Errorf("non-bounce in kind=bounce: %+v", m)
 		}
+	}
+	rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=other"), nil, s.user)
+	decode(t, rec.Body.Bytes(), &list)
+	if list.Total != 1 || len(list.Messages) != 1 || list.Messages[0].IsBounce {
+		t.Errorf("kind=other: %+v", list)
+	}
+	rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=all"), nil, s.user)
+	decode(t, rec.Body.Bytes(), &list)
+	if list.Total != 3 {
+		t.Errorf("kind=all: %+v", list)
+	}
+	if rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=nope"), nil, s.user); rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown kind: %d", rec.Code)
 	}
 	rec = do(t, s.h, http.MethodGet, s.path("/messages?q=campaign"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
-	if list.Total != 1 || list.Messages[0].IsBounce {
+	if list.Total != 1 || list.Messages[0].IsBounce || list.Counts.All != 1 || list.Counts.Other != 1 || list.Counts.Bounce != 0 {
 		t.Errorf("q: %+v", list)
 	}
 	for _, bad := range []string{"?page=0", "?per_page=0", "?per_page=1000", "?page=x"} {

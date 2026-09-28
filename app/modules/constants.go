@@ -87,6 +87,14 @@ const (
 	DefaultInitialDays = 90
 	// DefaultRecentDays is how far back every later check looks.
 	DefaultRecentDays = 30
+	// DefaultServerKeepDays is the server retention of a newly registered
+	// mailbox: the days (from the mail's date) a mail of a resolved or
+	// ignored group stays on the IMAP server before the daily cleanup
+	// deletes it there. 0 keeps every mail on the server; a mailbox saved
+	// before the setting existed reads as 0.
+	DefaultServerKeepDays = 60
+	// MaxServerKeepDays bounds the server retention.
+	MaxServerKeepDays = 3650
 	// DefaultIMAPPort is the IMAPS port used when none is given.
 	DefaultIMAPPort = 993
 	// IMAPTimeout bounds one IMAP network operation.

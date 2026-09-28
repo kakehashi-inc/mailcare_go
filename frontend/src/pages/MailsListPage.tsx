@@ -9,18 +9,22 @@ import { Button } from '../components/ui/Button';
 import { DateTime } from '../components/ui/DateTime';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
-import { CheckboxField, InputField } from '../components/ui/Field';
+import { InputField } from '../components/ui/Field';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { Pagination } from '../components/ui/Pagination';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { Table, type Column } from '../components/ui/Table';
+import { Tabs } from '../components/ui/Tabs';
 import { MAIL_PAGE_SIZE } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
-import type { MessageDTO } from '../types';
+import type { MessageDTO, MessageKind } from '../types';
 import { errorMessage } from '../utils/errors';
 import { formatBytes, mailboxLabel } from '../utils/format';
+
+const KINDS: MessageKind[] = ['all', 'bounce', 'other'];
+const KIND_ICONS: Record<MessageKind, string> = { all: 'inbox', bounce: 'report', other: 'mail' };
 
 export function MailsListPage() {
     const { t } = useTranslation();
@@ -29,21 +33,18 @@ export function MailsListPage() {
     const navigate = useNavigate();
     const [params, setParams] = useSearchParams();
     const q = params.get('q') ?? '';
-    const onlyBounce = params.get('only_bounce') === '1';
+    const kindParam = params.get('kind');
+    const kind: MessageKind = kindParam === 'bounce' || kindParam === 'other' ? kindParam : 'all';
     const group = params.get('group') ?? '';
     const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
     const [search, setSearch] = useState(q);
-    // The checkbox mirrors the URL parameter but keeps its own state so that
-    // it flips at once; the URL update happens in a transition.
-    const [onlyBounceChecked, setOnlyBounceChecked] = useState(onlyBounce);
-    useEffect(() => setOnlyBounceChecked(onlyBounce), [onlyBounce]);
 
     const { mailboxes } = useMailboxes();
     const mailbox = useAsync(() => getMailbox(id), [id]);
     useDocumentTitle(mailbox.data ? `${t('nav.mails')} - ${mailbox.data.address}` : t('nav.mails'));
     const list = useAsync(
-        () => listMessages(id, { q, only_bounce: onlyBounce, group, page, per_page: MAIL_PAGE_SIZE }),
-        [id, q, onlyBounce, group, page]
+        () => listMessages(id, { q, kind, group, page, per_page: MAIL_PAGE_SIZE }),
+        [id, q, kind, group, page]
     );
 
     function update(patch: Record<string, string>) {
@@ -106,7 +107,7 @@ export function MailsListPage() {
                 crumbs={[{ label: t('nav.mails'), to: '/mails' }, { label: mailbox.data?.address ?? '...' }]}
             />
 
-            <div className='grid grid-cols-1 gap-3 md:grid-cols-3'>
+            <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>
                 <MailboxSelect
                     mailboxes={mailboxes}
                     value={mailboxId}
@@ -131,16 +132,6 @@ export function MailsListPage() {
                         enterKeyHint='search'
                     />
                 </form>
-                <div className='flex items-end'>
-                    <CheckboxField
-                        label={t('mails.onlyBounce')}
-                        checked={onlyBounceChecked}
-                        onChange={e => {
-                            setOnlyBounceChecked(e.target.checked);
-                            update({ only_bounce: e.target.checked ? '1' : '' });
-                        }}
-                    />
-                </div>
             </div>
 
             {group && (
@@ -154,7 +145,21 @@ export function MailsListPage() {
                 </div>
             )}
 
-            <div className='mt-4 flex flex-col gap-4'>
+            <div className='mt-4'>
+                <Tabs<MessageKind>
+                    label={t('mails.kindTabs')}
+                    value={kind}
+                    onChange={k => update({ kind: k === 'all' ? '' : k })}
+                    tabs={KINDS.map(k => ({
+                        key: k,
+                        label: t(`mails.kind.${k}`),
+                        icon: KIND_ICONS[k],
+                        count: data?.counts?.[k],
+                    }))}
+                />
+            </div>
+
+            <div role='tabpanel' id={`tabpanel-${kind}`} aria-labelledby={`tab-${kind}`} className='mt-4 flex flex-col gap-4'>
                 {list.loading ? (
                     <LoadingBlock />
                 ) : list.error || !data ? (
@@ -171,7 +176,7 @@ export function MailsListPage() {
                             emptyState={
                                 <EmptyState
                                     title={t('mails.empty')}
-                                    description={q || onlyBounce || group ? t('mails.emptyFiltered') : undefined}
+                                    description={q || kind !== 'all' || group ? t('mails.emptyFiltered') : undefined}
                                 />
                             }
                             dense

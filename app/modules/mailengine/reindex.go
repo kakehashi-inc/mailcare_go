@@ -3,7 +3,6 @@ package mailengine
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -15,24 +14,17 @@ import (
 	"mailcare/app/models"
 )
 
-// OpenIndex opens the per-mailbox index. When the file carries an outdated
-// schema it is rebuilt from the raw files first (which can take a while).
+// OpenIndex opens the per-mailbox index, applying its pending migrations
+// (models.OpenMailIndex). ctx and progress are kept for the callers; opening
+// never rebuilds the index.
 func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress) (*sql.DB, error) {
-	path := MailboxIndexPath(mailsRoot, address)
-	db, err := models.OpenMailIndex(path)
-	if err == nil {
-		return db, nil
-	}
-	if !errors.Is(err, models.ErrMailIndexOutdated) {
-		return nil, fmt.Errorf("open index %s: %w", filepath.Base(path), err)
-	}
-	report(progress, "index schema is outdated; rebuilding from the raw files")
-	if _, err := Reindex(ctx, mailsRoot, address, progress); err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	db, err = models.OpenMailIndex(path)
+	path := MailboxIndexPath(mailsRoot, address)
+	db, err := models.OpenMailIndex(path)
 	if err != nil {
-		return nil, fmt.Errorf("open rebuilt index %s: %w", filepath.Base(path), err)
+		return nil, fmt.Errorf("open index %s: %w", filepath.Base(path), err)
 	}
 	return db, nil
 }
@@ -42,7 +34,7 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 // by a full grouping (classify, extract, categorize, group). From the
 // previous index it carries over, for every message key that still has a
 // .eml, the IMAP identity and the fetch facts of the row (folder,
-// uidvalidity, uid, size, received_at, fetched_at; a raw file the previous
+// uidvalidity, uid, size, received_at, fetched_at, server_deleted_at; a raw file the previous
 // index did not know gets a synthetic identity, see sourceForKey, and a
 // synthetic identity that collides with an indexed row is retried with the
 // next UID, see storeWithFreeUID), and, for
@@ -52,8 +44,9 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 // an actionable group with a pattern its latest completed report did not
 // cover is flagged for analysis again, and the responsible party named by
 // the latest completed report is re-applied. Groups that no longer exist
-// lose their reports. When the previous index cannot be read or was written
-// with another schema version nothing is carried over. Section files are
+// lose their reports. The previous index is migrated to the current schema
+// before it is read, so an older schema still carries everything over; only
+// when it cannot be opened or read is nothing carried over. Section files are
 // written over the files of the same name; nothing is deleted.
 //
 // The new index is built as <address>.sqlite.rebuild and swapped in only at
@@ -285,6 +278,9 @@ func sourceForKey(dir, key string, carried *models.MessageSource) Source {
 		}
 		if carried.ReceivedAt.Valid {
 			src.ReceivedAt = carried.ReceivedAt.Time
+		}
+		if carried.ServerDeletedAt.Valid {
+			src.ServerDeletedAt = carried.ServerDeletedAt.Time
 		}
 		return src
 	}

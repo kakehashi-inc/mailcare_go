@@ -13,6 +13,9 @@
 //	              import followed by a full grouping, states carried over)
 //	PruneMailbox  remove the mails older than the retention (files and
 //	              rows; the groups they belonged to are recounted)
+//	DeleteFromServer  delete the mails of resolved / ignored groups older
+//	              than the server retention of the mailbox from the IMAP
+//	              server (the files and rows stay)
 //
 // The package never touches the master database: it receives the mailbox row
 // and the decrypted password from the caller and reports back through the
@@ -49,6 +52,7 @@
 //	reindex.go   OpenIndex and Reindex
 //	carryover.go what Reindex keeps from the previous index (sources, states, reports)
 //	prune.go     PruneMailbox (the mail retention) and RemoveStaleTempFiles
+//	serverdelete.go  DeleteFromServer (the server retention)
 package mailengine
 
 import "time"

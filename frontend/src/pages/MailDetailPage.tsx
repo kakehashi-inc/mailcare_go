@@ -197,6 +197,14 @@ export function MailDetailPage() {
                                 ...(message.folder
                                     ? [{ label: t('mail.folder'), value: `${message.folder} (UID ${message.uid})` }]
                                     : []),
+                                ...(message.server_deleted_at
+                                    ? [
+                                          {
+                                              label: t('mail.serverDeletedAt'),
+                                              value: <DateTime value={message.server_deleted_at} />,
+                                          },
+                                      ]
+                                    : []),
                                 { label: t('mail.size'), value: formatBytes(message.size) },
                                 {
                                     label: t('mail.kind'),

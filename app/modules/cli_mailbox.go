@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"mailcare/app/models"
+	"time"
 )
 
 // --- mailbox commands ---
@@ -27,7 +28,8 @@ func mailboxRow(mb *models.Mailbox) map[string]interface{} {
 		"id": mb.ID, "address": mb.Address, "display_name": mb.DisplayName, "imap_host": mb.ImapHost,
 		"imap_port": mb.ImapPort, "imap_security": mb.ImapSecurity, "imap_username": mb.ImapUsername,
 		"folder": mb.Folder, "enabled": mb.Enabled, "initial_days": mb.InitialDays, "recent_days": mb.RecentDays,
-		"last_fetched_at": rfc3339OrNull(mb.LastFetchedAt), "last_fetch_error": mb.LastFetchError,
+		"server_keep_days": mb.ServerKeepDays,
+		"last_fetched_at":  rfc3339OrNull(mb.LastFetchedAt), "last_fetch_error": mb.LastFetchError,
 	}
 }
 
@@ -35,6 +37,14 @@ func mailboxRow(mb *models.Mailbox) map[string]interface{} {
 // (an IPv6 literal is bracketed: "[::1]:993").
 func imapEndpoint(mb *models.Mailbox) string {
 	return net.JoinHostPort(mb.ImapHost, strconv.Itoa(mb.ImapPort))
+}
+
+// serverKeepLabel renders the server retention ("60 days", "never delete").
+func serverKeepLabel(days int) string {
+	if days <= 0 {
+		return "never delete"
+	}
+	return keepDaysLabel(time.Duration(days) * 24 * time.Hour)
 }
 
 func printMailbox(mb *models.Mailbox) {
@@ -47,6 +57,7 @@ func printMailbox(mb *models.Mailbox) {
 	fmt.Printf("enabled:       %v\n", mb.Enabled)
 	fmt.Printf("initial days:  %d\n", mb.InitialDays)
 	fmt.Printf("recent days:   %d\n", mb.RecentDays)
+	fmt.Printf("server keep:   %s\n", serverKeepLabel(mb.ServerKeepDays))
 	fmt.Printf("last fetch:    %s (%s)\n", formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
 	if mb.LastFetchError != "" {
 		fmt.Printf("last error:    %s\n", mb.LastFetchError)
@@ -64,8 +75,10 @@ type MailboxAddCmd struct {
 	Folder      string `help:"IMAP folder" default:"INBOX"`
 	InitialDays int    `help:"Days to look back on the first check (default: ${default_initial_days})" name:"initial-days" default:"0"`
 	RecentDays  int    `help:"Days to look back on later checks (default: ${default_recent_days})" name:"recent-days" default:"0"`
-	DisplayName string `help:"Display name" name:"display-name"`
-	Disabled    bool   `help:"Register as disabled (not checked automatically)"`
+	// ServerKeepDays: -1 = the default.
+	ServerKeepDays int    `help:"Days (from the mail's date) a mail of a resolved or ignored group stays on the IMAP server before the daily cleanup deletes it there; 0 = never (default: ${default_server_keep_days})" name:"server-keep-days" default:"-1"`
+	DisplayName    string `help:"Display name" name:"display-name"`
+	Disabled       bool   `help:"Register as disabled (not checked automatically)"`
 }
 
 func (c *MailboxAddCmd) Run() error {
@@ -89,6 +102,9 @@ func (c *MailboxAddCmd) Run() error {
 		Address: c.Address, DisplayName: c.DisplayName, ImapHost: c.Host, ImapPort: c.Port, ImapSecurity: c.Security,
 		ImapUsername: c.Username, ImapPassword: password, Folder: c.Folder, Enabled: &enabled,
 		InitialDays: c.InitialDays, RecentDays: c.RecentDays,
+	}
+	if c.ServerKeepDays != -1 {
+		in.ServerKeepDays = &c.ServerKeepDays
 	}
 	mb, err := CreateMailbox(db, key, in)
 	if err != nil {
@@ -190,9 +206,11 @@ type MailboxUpdateCmd struct {
 	Folder      string `help:"IMAP folder"`
 	InitialDays int    `help:"Days to look back on the first check" name:"initial-days" default:"0"`
 	RecentDays  int    `help:"Days to look back on later checks" name:"recent-days" default:"0"`
-	DisplayName string `help:"Display name" name:"display-name"`
-	Enabled     bool   `help:"Enable the mailbox"`
-	Disabled    bool   `help:"Disable the mailbox"`
+	// ServerKeepDays: -1 = unchanged.
+	ServerKeepDays int    `help:"Days (from the mail's date) a mail of a resolved or ignored group stays on the IMAP server before the daily cleanup deletes it there; 0 = never" name:"server-keep-days" default:"-1"`
+	DisplayName    string `help:"Display name" name:"display-name"`
+	Enabled        bool   `help:"Enable the mailbox"`
+	Disabled       bool   `help:"Disable the mailbox"`
 }
 
 func (c *MailboxUpdateCmd) Run() error {
@@ -247,6 +265,9 @@ func (c *MailboxUpdateCmd) Run() error {
 	}
 	if c.RecentDays != 0 {
 		in.RecentDays = c.RecentDays
+	}
+	if c.ServerKeepDays != -1 {
+		in.ServerKeepDays = &c.ServerKeepDays
 	}
 	if c.DisplayName != "" {
 		in.DisplayName = c.DisplayName

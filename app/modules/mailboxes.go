@@ -42,16 +42,22 @@ type MailboxInput struct {
 	Enabled      *bool  `json:"enabled"`       // nil = true
 	InitialDays  int    `json:"initial_days"`  // 0 = DefaultInitialDays
 	RecentDays   int    `json:"recent_days"`   // 0 = DefaultRecentDays
+	// ServerKeepDays is the server retention (0..MaxServerKeepDays, 0 =
+	// never delete on the server). nil = DefaultServerKeepDays on creation,
+	// the stored value on update.
+	ServerKeepDays *int `json:"server_keep_days"`
 }
 
 // MailboxInputFrom builds an input pre-filled from a stored mailbox (without
 // the password) so a partial update can override single fields.
 func MailboxInputFrom(mb *models.Mailbox) *MailboxInput {
 	enabled := mb.Enabled
+	serverKeep := mb.ServerKeepDays
 	return &MailboxInput{
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost,
 		ImapPort: mb.ImapPort, ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername,
 		Folder: mb.Folder, Enabled: &enabled, InitialDays: mb.InitialDays, RecentDays: mb.RecentDays,
+		ServerKeepDays: &serverKeep,
 	}
 }
 
@@ -121,6 +127,9 @@ func ValidateMailboxInput(in *MailboxInput) error {
 	if in.RecentDays < 1 || in.RecentDays > 3650 {
 		return errors.New("recent_days must be between 1 and 3650")
 	}
+	if in.ServerKeepDays != nil && (*in.ServerKeepDays < 0 || *in.ServerKeepDays > MaxServerKeepDays) {
+		return fmt.Errorf("server_keep_days must be between 0 and %d (0 = keep the mails on the server)", MaxServerKeepDays)
+	}
 	return nil
 }
 
@@ -151,6 +160,9 @@ func applyMailboxInput(key []byte, mb *models.Mailbox, in *MailboxInput) error {
 	mb.Enabled = *in.Enabled
 	mb.InitialDays = in.InitialDays
 	mb.RecentDays = in.RecentDays
+	if in.ServerKeepDays != nil {
+		mb.ServerKeepDays = *in.ServerKeepDays
+	}
 	mb.ImapPasswordEnc = ""
 	if in.ImapPassword != "" {
 		enc, err := EncryptSecret(key, in.ImapPassword)
@@ -214,7 +226,7 @@ func CreateMailbox(db *sql.DB, key []byte, in *MailboxInput) (*models.Mailbox, e
 	if err := checkAddressAvailable(db, in.Address, 0); err != nil {
 		return nil, err
 	}
-	mb := &models.Mailbox{}
+	mb := &models.Mailbox{ServerKeepDays: DefaultServerKeepDays}
 	if err := applyMailboxInput(key, mb, in); err != nil {
 		return nil, err
 	}

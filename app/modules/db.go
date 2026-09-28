@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,10 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
+
+	"mailcare/app/migrations"
 )
 
 // ResolveDBPath returns the path to the database (<data>/DBFileName).
@@ -88,29 +89,21 @@ func DataDirPermissionWarning(dir string) string {
 }
 
 // LogMigrations makes the applied migrations appear in the log. The server
-// sets it; CLI commands keep goose quiet so that their output stays clean.
+// sets it; CLI commands stay quiet so that their output stays clean.
 var LogMigrations bool
 
-// migrateLogger routes goose output to the standard logger, dropping the
-// "no migrations to run" chatter and everything when LogMigrations is off.
-type migrateLogger struct{}
-
-func (*migrateLogger) Fatalf(format string, v ...any) { log.Fatalf(format, v...) }
-func (*migrateLogger) Printf(format string, v ...any) {
-	if !LogMigrations || strings.Contains(format, "no migrations to run") {
-		return
-	}
-	log.Printf(format, v...)
-}
-
+// runMigrations applies the pending migrations of the master database
+// (app/migrations/master) and logs each applied file when LogMigrations is
+// set.
 func runMigrations(db *sql.DB) error {
-	if MigrationsFS == nil {
-		return fmt.Errorf("migrations filesystem not initialized")
+	applied, err := migrations.Apply(context.Background(), db, migrations.Master())
+	if err != nil {
+		return fmt.Errorf("migrate the database: %w", err)
 	}
-	goose.SetBaseFS(MigrationsFS)
-	goose.SetLogger(&migrateLogger{})
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return err
+	if LogMigrations {
+		for _, name := range applied {
+			log.Printf("applied migration %s", name)
+		}
 	}
-	return goose.Up(db, "app/migrations")
+	return nil
 }

@@ -86,6 +86,10 @@ type Source struct {
 	Size        int64
 	ReceivedAt  time.Time // IMAP INTERNALDATE
 	FetchedAt   time.Time
+	// ServerDeletedAt is when the message was deleted from the IMAP server
+	// (zero while it is there); only reindex sets it, from the previous
+	// index.
+	ServerDeletedAt time.Time
 }
 
 // DeliveryStatus is the structured message/delivery-status part (RFC 3464).

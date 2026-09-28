@@ -1,9 +1,9 @@
 package models
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +11,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
+
+	"mailcare/app/migrations"
 )
 
 // Per-mailbox index database (data/mails/<address>.sqlite).
@@ -18,20 +20,15 @@ import (
 // The index holds everything MailCare knows about the fetched mail of one
 // address: the parsed headers and body layout of every message, the bounce
 // details extracted from the daemon notices, the groups those bounces are
-// bundled into and the reports the agent produced. It is derived data: apart
-// from the group states and the reports (carried over by reindex) everything
-// can be rebuilt from the raw .eml files, so it is NOT managed by goose
-// migrations. The schema carries a version in PRAGMA user_version; when the
-// stored version is older than MailIndexSchemaVersion the caller must rebuild
-// the index from the raw files (OpenMailIndex returns ErrMailIndexOutdated).
+// bundled into and the reports the agent produced. Apart from the group
+// states and the reports (carried over by reindex) everything can be rebuilt
+// from the raw .eml files.
 //
-// Design rules: every attribute is a real column (the index has no JSON
-// column) and no column has a default value; text whose length is known is
-// declared VARCHAR(n) and text of unpredictable length TEXT (SQLite does not
-// enforce the declared length; the length of user input is checked where it
-// is entered, mail-derived text is stored whole); enumerations are kept by
-// the application constants, not by constraints; every DATETIME column holds
-// UTC.
+// The schema is managed by goose migrations like the master database's:
+// app/migrations/index/*.sql, applied by OpenMailIndex every time an index
+// is opened (the file records the applied versions in its own
+// goose_db_version table). The design rules of the columns are stated in
+// app/migrations/index/0001_init.sql.
 //
 // Tables (one model file per table):
 //   messages      app/models/message.go       every fetched mail (headers, body layout, detection outcome)
@@ -40,125 +37,10 @@ import (
 //   agent_reports app/models/agent_report.go  analysis produced by an agent CLI
 //   agent_report_patterns app/models/agent_report_pattern.go  bounce patterns a completed report covered
 
-// MailIndexSchemaVersion is the version stamped into PRAGMA user_version of
-// every index file. The initial release ships version 1; a future release that
-// changes the index schema raises it, and an index stamped with a lower
-// version is rebuilt from the raw files instead of migrated.
-const MailIndexSchemaVersion = 1
-
-// ErrMailIndexOutdated is returned by OpenMailIndex when the file was created
-// with an older schema and must be rebuilt.
-var ErrMailIndexOutdated = errors.New("mail index schema is outdated; rebuild the index")
-
-const mailIndexSchema = `
-CREATE TABLE IF NOT EXISTS messages (
-    id                  INTEGER       PRIMARY KEY AUTOINCREMENT,
-    message_key         VARCHAR(28)   NOT NULL UNIQUE,
-    folder              TEXT          NOT NULL,
-    uidvalidity         INTEGER       NOT NULL,
-    uid                 INTEGER       NOT NULL,
-    message_id          TEXT          NOT NULL,
-    subject             TEXT          NOT NULL,
-    from_address        TEXT          NOT NULL,
-    from_name           TEXT          NOT NULL,
-    to_address          TEXT          NOT NULL,
-    to_name             TEXT          NOT NULL,
-    date                DATETIME      NOT NULL,
-    received_at         DATETIME      ,
-    size                INTEGER       NOT NULL,
-    text_count          INTEGER       NOT NULL,
-    html_count          INTEGER       NOT NULL,
-    body_source         VARCHAR(16)   NOT NULL,
-    classified          INTEGER       NOT NULL,
-    is_bounce           INTEGER       NOT NULL,
-    bounce_kind         VARCHAR(32)   NOT NULL,
-    rule                VARCHAR(64)   NOT NULL,
-    fetched_at          DATETIME      NOT NULL,
-    UNIQUE (folder, uidvalidity, uid)
-);
-CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date);
-CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
-CREATE INDEX IF NOT EXISTS idx_messages_bounce ON messages(is_bounce, date);
-CREATE INDEX IF NOT EXISTS idx_messages_classified ON messages(classified);
-
-CREATE TABLE IF NOT EXISTS bounces (
-    id                  INTEGER       PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
-    group_key           VARCHAR(16)   NOT NULL,
-    recipient           TEXT          NOT NULL,
-    recipient_domain    TEXT          NOT NULL,
-    action              VARCHAR(32)   NOT NULL,
-    status_code         VARCHAR(11)   NOT NULL,
-    smtp_code           VARCHAR(3)    NOT NULL,
-    diagnostic          TEXT          NOT NULL,
-    diagnostic_template TEXT          NOT NULL,
-    diagnostic_source   VARCHAR(16)   NOT NULL,
-    category_rule       VARCHAR(64)   NOT NULL,
-    pattern_key         VARCHAR(16)   NOT NULL,
-    remote_mta          TEXT          NOT NULL,
-    remote_ip           VARCHAR(45)   NOT NULL,
-    reporting_mta       TEXT          NOT NULL,
-    original_message_id TEXT          NOT NULL,
-    original_subject    TEXT          NOT NULL,
-    original_from       TEXT          NOT NULL,
-    original_date       DATETIME
-);
-CREATE INDEX IF NOT EXISTS idx_bounces_group ON bounces(group_key, pattern_key);
-
-CREATE TABLE IF NOT EXISTS groups (
-    group_key           VARCHAR(16)   NOT NULL PRIMARY KEY,
-    category            VARCHAR(64)   NOT NULL,
-    actionable          INTEGER       NOT NULL,
-    unit_value          TEXT          NOT NULL,
-    authority           TEXT          NOT NULL,
-    recipient_domain    TEXT          NOT NULL,
-    status_code         VARCHAR(11)   NOT NULL,
-    diagnostic_template TEXT          NOT NULL,
-    responsible         VARCHAR(32)   NOT NULL,
-    state               VARCHAR(32)   NOT NULL,
-    state_updated_at    DATETIME      ,
-    needs_analysis      INTEGER       NOT NULL,
-    message_count       INTEGER       NOT NULL,
-    recipient_count     INTEGER       NOT NULL,
-    remote_ip_count     INTEGER       NOT NULL,
-    first_seen          DATETIME      ,
-    last_seen           DATETIME      ,
-    created_at          DATETIME      NOT NULL,
-    updated_at          DATETIME      NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_groups_state ON groups(actionable, state, last_seen);
-
-CREATE TABLE IF NOT EXISTS agent_reports (
-    id                  INTEGER       PRIMARY KEY AUTOINCREMENT,
-    group_key           VARCHAR(16)   NOT NULL REFERENCES groups(group_key) ON DELETE CASCADE,
-    provider            VARCHAR(64)   NOT NULL,
-    status              VARCHAR(32)   NOT NULL,
-    severity            VARCHAR(32)   NOT NULL,
-    responsible         VARCHAR(32)   NOT NULL,
-    summary             TEXT          NOT NULL,
-    report_markdown     TEXT          NOT NULL,
-    error_message       TEXT          NOT NULL,
-    confidence          VARCHAR(16)   NOT NULL,
-    message_count       INTEGER       NOT NULL,
-    model               TEXT          NOT NULL,
-    reasoning_effort    VARCHAR(16)   NOT NULL,
-    tokens_used         INTEGER       ,
-    command_count       INTEGER       ,
-    started_at          DATETIME      ,
-    finished_at         DATETIME      ,
-    created_at          DATETIME      NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_agent_reports_group ON agent_reports(group_key, id);
-
-CREATE TABLE IF NOT EXISTS agent_report_patterns (
-    report_id           INTEGER       NOT NULL REFERENCES agent_reports(id) ON DELETE CASCADE,
-    pattern_key         VARCHAR(16)   NOT NULL,
-    PRIMARY KEY (report_id, pattern_key)
-);
-`
-
-// OpenMailIndex opens (creating when absent) the per-mailbox index at path and
-// ensures its schema. A file created with an older schema is left untouched and
-// ErrMailIndexOutdated is returned so the caller can delete and rebuild it.
+// OpenMailIndex opens (creating when absent) the per-mailbox index at path
+// and applies its pending migrations. An index created before the migrations
+// were introduced (same tables, no goose_db_version table) is adopted as it
+// is: the first migration only creates what is missing.
 func OpenMailIndex(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -168,24 +50,9 @@ func OpenMailIndex(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+	if _, err := migrations.Apply(context.Background(), db, migrations.Index()); err != nil {
 		db.Close()
-		return nil, err
-	}
-	if version != 0 && version < MailIndexSchemaVersion {
-		db.Close()
-		return nil, ErrMailIndexOutdated
-	}
-	if _, err := db.Exec(mailIndexSchema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to create the mail index schema: %w", err)
-	}
-	if version == 0 {
-		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, MailIndexSchemaVersion)); err != nil {
-			db.Close()
-			return nil, err
-		}
+		return nil, fmt.Errorf("failed to migrate the mail index: %w", err)
 	}
 	return db, nil
 }

@@ -313,9 +313,17 @@ func jobResourceKeys(kind string, mb *models.Mailbox) []string {
 		return []string{mailboxKey}
 	case JobKindAnalyze:
 		return []string{lockAgent, lockAnalyzePrefix + mb.Address}
-	case JobKindReindex, JobKindCleanup:
-		// Both rewrite or remove mails and groups the agent may be reading
-		// (the prompt lists raw files), so they never overlap an analysis.
+	case JobKindReindex:
+		// Rewrites the mails and groups the agent reads its evidence from,
+		// so it never overlaps an analysis.
+		return []string{mailboxKey, lockAgent}
+	case JobKindCleanup:
+		// Removes mails and groups the agent reads its evidence from, so it
+		// never overlaps an analysis; when it deletes on the IMAP server it
+		// also waits its turn with the other accounts of that server.
+		if serverRetentionApplies(mb) {
+			return []string{lockHostPrefix + strings.ToLower(strings.TrimSpace(mb.ImapHost)), mailboxKey, lockAgent}
+		}
 		return []string{mailboxKey, lockAgent}
 	}
 	return nil
@@ -813,9 +821,19 @@ func (m *JobManager) runFetch(ctx context.Context, mb *models.Mailbox, progress 
 	return line, nil
 }
 
+// serverRetentionApplies reports whether the cleanup of a mailbox deletes
+// on its IMAP server (an enabled mailbox with a server retention).
+func serverRetentionApplies(mb *models.Mailbox) bool {
+	return mb.Enabled && mb.ServerKeepDays > 0
+}
+
 // runCleanup applies the retentions for one mailbox (the daily cleanup job,
-// also runnable by hand): first the mails older than mail_keep_days are
-// removed (mailengine.PruneMailbox: files and index rows, the groups they
+// also runnable by hand): first, for an enabled mailbox with a server
+// retention, the mails of resolved or ignored groups older than
+// server_keep_days are deleted from the IMAP server (mailengine.
+// DeleteFromServer; it runs before the local retention so that a row is
+// never removed from the index while its mail is still due on the server),
+// then the mails older than mail_keep_days are removed (mailengine.PruneMailbox: files and index rows, the groups they
 // belonged to recounted, the groups left empty deleted with their reports)
 // together with the leftovers of interrupted writes in the mailbox
 // directory (mailengine.RemoveStaleTempFiles; counted in a progress line
@@ -828,9 +846,25 @@ func (m *JobManager) runFetch(ctx context.Context, mb *models.Mailbox, progress 
 func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progress func(string)) (string, error) {
 	mailKeep := time.Duration(ResolveMailKeepDays(m.db)) * 24 * time.Hour
 	agentKeep := time.Duration(ResolveAgentKeepDays(m.db)) * 24 * time.Hour
-	progress(fmt.Sprintf("cleaning up (mail retention %s, agent workspace retention %s, job history %s)",
-		keepDaysLabel(mailKeep), keepDaysLabel(agentKeep), keepDaysLabel(jobRetention)))
+	serverKeep := "off"
+	if serverRetentionApplies(mb) {
+		serverKeep = serverKeepLabel(mb.ServerKeepDays)
+	}
+	progress(fmt.Sprintf("cleaning up (server retention %s, mail retention %s, agent workspace retention %s, job history %s)",
+		serverKeep, keepDaysLabel(mailKeep), keepDaysLabel(agentKeep), keepDaysLabel(jobRetention)))
 	var errs []error
+	serverDeleted := 0
+	if serverRetentionApplies(mb) {
+		deleted, err := m.deleteFromServer(ctx, mb, progress)
+		serverDeleted = deleted
+		if err != nil {
+			progress(fmt.Sprintf("error: server retention: %v", err))
+			errs = append(errs, fmt.Errorf("server retention: %w", err))
+		}
+		if ctx.Err() != nil {
+			return fmt.Sprintf("deleted %d server mails, removed 0 messages, 0 groups, 0 agent workspaces, 0 jobs", serverDeleted), errors.New("server shutting down")
+		}
+	}
 	pruned, err := mailengine.PruneMailbox(ctx, m.mailsRoot, mb.Address, mailKeep, mailengine.Progress(progress))
 	if err != nil {
 		progress(fmt.Sprintf("error: mail retention: %v", err))
@@ -840,7 +874,7 @@ func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progres
 		pruned = &mailengine.PruneResult{}
 	}
 	if ctx.Err() != nil {
-		return fmt.Sprintf("removed %d messages, %d groups, 0 agent workspaces, 0 jobs", pruned.Removed, pruned.RemovedGroups), errors.New("server shutting down")
+		return fmt.Sprintf("deleted %d server mails, removed %d messages, %d groups, 0 agent workspaces, 0 jobs", serverDeleted, pruned.Removed, pruned.RemovedGroups), errors.New("server shutting down")
 	}
 	if _, err := mailengine.RemoveStaleTempFiles(m.mailsRoot, mb.Address, mailengine.Progress(progress)); err != nil {
 		progress(fmt.Sprintf("error: temporary files: %v", err))
@@ -858,12 +892,28 @@ func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progres
 	if err != nil {
 		errs = append(errs, err)
 	}
-	line := fmt.Sprintf("removed %d messages, %d groups, %d agent workspaces, %d jobs", pruned.Removed, pruned.RemovedGroups, workspaces, jobs)
+	line := fmt.Sprintf("deleted %d server mails, removed %d messages, %d groups, %d agent workspaces, %d jobs",
+		serverDeleted, pruned.Removed, pruned.RemovedGroups, workspaces, jobs)
 	progress(line)
 	if len(errs) > 0 {
 		return line, fmt.Errorf("%s: %w", mb.Address, errors.Join(errs...))
 	}
 	return line, nil
+}
+
+// deleteFromServer applies the server retention of one mailbox
+// (mailengine.DeleteFromServer) and returns how many mails went.
+func (m *JobManager) deleteFromServer(ctx context.Context, mb *models.Mailbox, progress func(string)) (int, error) {
+	password, err := MailboxPassword(m.key, mb)
+	if err != nil {
+		return 0, err
+	}
+	keep := time.Duration(mb.ServerKeepDays) * 24 * time.Hour
+	res, err := mailengine.DeleteFromServer(ctx, m.mailsRoot, mb, password, keep, mailengine.Progress(progress))
+	if res == nil {
+		return 0, err
+	}
+	return res.Deleted, err
 }
 
 // pruneJobHistory deletes the finished jobs older than jobRetention and

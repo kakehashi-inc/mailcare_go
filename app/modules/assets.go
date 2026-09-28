@@ -2,9 +2,9 @@ package modules
 
 import "io/fs"
 
-// Embedded filesystems are injected from package main at startup.
+// Embedded filesystems are injected from package main at startup (the goose
+// migrations are embedded by package app/migrations itself).
 //
-//   - MigrationsFS: root contains "app/migrations/*.sql" (goose migrations).
 //   - FrontendFS:   root contains "frontend/dist/**" (the built SPA).
 //   - TemplatesFS:  root contains "templates/agent/<provider>/**" (workspace
 //     skeletons copied into the agent workspace of a group; the agent
@@ -15,9 +15,8 @@ import "io/fs"
 // modules/workers can reach the binary-embedded assets without an import cycle
 // back into package main.
 var (
-	MigrationsFS fs.FS
-	FrontendFS   fs.FS
-	TemplatesFS  fs.FS
+	FrontendFS  fs.FS
+	TemplatesFS fs.FS
 )
 
 // AppVersion is the build version injected from package main at startup

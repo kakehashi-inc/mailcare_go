@@ -19,6 +19,12 @@ has to act on.
   cleanup that runs once a day, when the date changes, removes older mails, files and index entry alike, and a
   bounce group left without mails disappears together with its analysis. The same cleanup drops finished jobs
   older than 30 days from the job history. It can also be started from the Tools screen or the CLI.
+- **Deleting mails on the server** - the same daily cleanup deletes, for good, the mails of resolved or ignored
+  groups from the IMAP server once they are older (from the mail's date) than the days set per mail address
+  (60 by default for a new address; 0 never deletes). Every mail's Message-ID is checked right before
+  deletion; on a server that cannot expunge single messages by UID (no UIDPLUS) mails are deleted only while
+  no other message is flagged for deletion by another client. MailCare keeps its own copy until the mail
+  retention.
 - **Detection** - the sender, sender name, subject and `multipart/report` delivery status decide whether a
   mail is a bounce and of which kind (failed / delayed / auto-reply). The failing recipient, the extended
   status code (`5.1.1`), the remote MTA and IP and the diagnostic text are extracted.

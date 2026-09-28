@@ -45,6 +45,8 @@ export const DEFAULT_IMAP_PORT_SSL = 993;
 export const DEFAULT_IMAP_PORT_PLAIN = 143;
 export const DEFAULT_INITIAL_DAYS = 90;
 export const DEFAULT_RECENT_DAYS = 30;
+export const DEFAULT_SERVER_KEEP_DAYS = 60;
+export const MAX_SERVER_KEEP_DAYS = 3650;
 export const DEFAULT_FOLDER = 'INBOX';
 
 // Default values of the notification (SMTP) settings form (mirrors the server defaults).

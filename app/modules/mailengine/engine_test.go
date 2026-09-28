@@ -1271,42 +1271,57 @@ func TestReportResponsibleUnknownKeepsRuleValue(t *testing.T) {
 	check("reindex")
 }
 
-func TestOpenIndexRebuildsOutdatedSchema(t *testing.T) {
+func TestOpenIndexAppliesMigrations(t *testing.T) {
 	root, address := buildMailbox(t)
 	path := MailboxIndexPath(root, address)
-	db, err := sql.Open("sqlite", path)
+	version := func(db *sql.DB) int64 {
+		t.Helper()
+		var v int64
+		if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&v); err != nil {
+			t.Fatalf("goose_db_version: %v", err)
+		}
+		return v
+	}
+	db, err := models.OpenMailIndex(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Pretend the file was written by an older program version.
-	if _, err := db.Exec(`PRAGMA user_version = -1`); err != nil {
-		t.Fatal(err)
+	if v := version(db); v < 1 {
+		t.Fatalf("migration version = %d", v)
+	}
+	current := version(db)
+
+	// An index written before the migrations were introduced (no goose
+	// table, a table of a later version missing) is adopted as it is: the
+	// data stays and what is missing is created.
+	for _, stmt := range []string{`DROP TABLE goose_db_version`, `DROP TABLE agent_report_patterns`, `PRAGMA user_version = 1`} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
 	}
 	db.Close()
-	if _, err := models.OpenMailIndex(path); err != models.ErrMailIndexOutdated {
-		t.Fatalf("precondition: OpenMailIndex err = %v, want outdated", err)
-	}
-	var lines []string
-	db, err = OpenIndex(context.Background(), root, address, func(m string) { lines = append(lines, m) })
+	db, err = OpenIndex(context.Background(), root, address, nil)
 	if err != nil {
 		t.Fatalf("OpenIndex: %v", err)
 	}
 	defer db.Close()
-	total, _, err := models.CountMessages(db)
+	if v := version(db); v != current {
+		t.Errorf("adopted index version = %d, want %d", v, current)
+	}
+	if total, _, err := models.CountMessages(db); err != nil || total != len(samples) {
+		t.Errorf("adopted index holds %d messages (err %v), want %d", total, err, len(samples))
+	}
+	if _, err := models.ListAllAgentReportPatterns(db); err != nil {
+		t.Errorf("the missing table was not created: %v", err)
+	}
+	// Opening again applies nothing and keeps the data.
+	again, err := models.OpenMailIndex(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if total != len(samples) {
-		t.Errorf("rebuilt index holds %d messages, want %d", total, len(samples))
-	}
-	joined := strings.Join(lines, "\n")
-	if len(lines) == 0 || !strings.Contains(joined, "outdated") {
-		t.Errorf("no rebuild progress reported: %v", lines)
-	}
-	// The old index cannot be read through the models, so nothing is
-	// carried over and the reason is reported.
-	if !strings.Contains(joined, "not carried over") || !strings.Contains(joined, "outdated schema") {
-		t.Errorf("carry-over skip not reported:\n%s", joined)
+	defer again.Close()
+	if v := version(again); v != current {
+		t.Errorf("reopened index version = %d, want %d", v, current)
 	}
 }
 
