@@ -6,6 +6,10 @@ import (
 	"io/fs"
 	"os"
 	"strconv"
+	// The IANA time zone database is built into the binary, so the users'
+	// time zones load the same on every OS (a minimal container or a Windows
+	// machine may have no zoneinfo of its own).
+	_ "time/tzdata"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"

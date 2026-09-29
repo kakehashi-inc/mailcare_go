@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGroupReportPDF(t *testing.T) {
@@ -48,6 +49,17 @@ func TestGroupExport(t *testing.T) {
 	}
 	gk := list.Groups[0].GroupKey
 
+	// The dates are written in the requesting user's time zone, one that is
+	// neither UTC nor the server's.
+	if _, err := s.db.Exec(`UPDATE users SET timezone = 'America/Los_Angeles' WHERE username = 'bob'`); err != nil {
+		t.Fatal(err)
+	}
+	userLoc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+
 	// Every signed-in user may export.
 	rec = do(t, s.h, http.MethodGet, s.path("/groups/"+gk+"/export"), nil, s.user)
 	if rec.Code != http.StatusOK {
@@ -60,6 +72,12 @@ func TestGroupExport(t *testing.T) {
 	if !strings.HasPrefix(disposition, `attachment; filename="mailcare-group-`+gk+"-") || !strings.HasSuffix(disposition, `.zip"`) {
 		t.Errorf("disposition %q", disposition)
 	}
+	// The time in the file name is the user's wall clock too.
+	stamp := strings.TrimSuffix(strings.TrimPrefix(disposition, `attachment; filename="mailcare-group-`+gk+"-"), `.zip"`)
+	named, err := time.ParseInLocation("20060102-150405", stamp, userLoc)
+	if err != nil || named.Before(before.Add(-time.Second)) || named.After(time.Now()) {
+		t.Errorf("file name time %q (%v), want now in the user's zone", stamp, err)
+	}
 	zr, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
 	if err != nil {
 		t.Fatalf("read archive: %v", err)
@@ -67,6 +85,13 @@ func TestGroupExport(t *testing.T) {
 	entries := map[string]string{}
 	for _, f := range zr.File {
 		name := f.Name
+		// The MS-DOS date (the wall clock archivers show) is in the user's
+		// zone: the reader derives the entry's zone from it and the exact
+		// extended timestamp.
+		_, got := f.Modified.Zone()
+		if _, want := f.Modified.In(userLoc).Zone(); got != want {
+			t.Errorf("%s: dated with UTC offset %ds, want the user's %ds", name, got, want)
+		}
 		// The entries sit at the top level, with no folder named like the archive.
 		if dir, _, ok := strings.Cut(name, "/"); ok && dir+"/" != groupExportMailsDir {
 			t.Fatalf("entry %s is not at the top level or in mails/", name)

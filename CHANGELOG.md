@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The overview card of an alert has a "Show report" button. It downloads a PDF report of the overview and the statistics, written in your language and time zone.
 - The overview card of an alert has a "Download" button. It downloads a ZIP with the report contents as JSON, the index records of every source mail, the source mails themselves (original message, headers, text and HTML bodies), and a README describing the files and the JSON format, handy for AI agents and other tools.
 
+### Fixed
+
+- On Windows (and on minimal Linux containers), time zones such as Asia/Tokyo can now be chosen in the profile; they were rejected before, and notification mails used the server's time instead.
+
 ## [0.2.0] - 2026-09-29
 
 ### Added

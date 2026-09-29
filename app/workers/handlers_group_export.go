@@ -40,9 +40,10 @@ const (
 const groupExportReadme = "templates/export/group_README.md"
 
 // groupOutputName is the file name base of the PDF report and of the
-// export of a group (the export time in UTC).
-func groupOutputName(groupKey string, now time.Time) string {
-	return "mailcare-group-" + groupKey + "-" + now.Format("20060102-150405")
+// export of a group, with the export time in the time zone of the user who
+// asked for it (loc).
+func groupOutputName(groupKey string, now time.Time, loc *time.Location) string {
+	return "mailcare-group-" + groupKey + "-" + now.In(loc).Format("20060102-150405")
 }
 
 // groupReports returns the newest completed report and the newest report
@@ -104,7 +105,7 @@ func (c *core) handleGroupReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/pdf")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+groupOutputName(g.GroupKey, now)+`.pdf"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+groupOutputName(g.GroupKey, now, locale.Location)+`.pdf"`)
 	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(http.StatusOK)
@@ -134,6 +135,10 @@ func (c *core) handleExportGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer idx.Close()
 	now := time.Now().UTC()
+	// The dates of the entries are written in the time zone of the user who
+	// asked for the archive: the MS-DOS date and time of a ZIP entry carry no
+	// zone, and archivers show them as local time.
+	loc := modules.MailLocaleFor(userFrom(r)).Location
 	export, plans, err := c.buildGroupExport(idx, mb, g, now)
 	if err != nil {
 		writeInternalError(w, "failed to build the group export", err)
@@ -154,7 +159,7 @@ func (c *core) handleExportGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := groupOutputName(g.GroupKey, now)
+	name := groupOutputName(g.GroupKey, now, loc)
 	// A controller that cannot change the deadline keeps the server's.
 	_ = http.NewResponseController(w).SetWriteDeadline(now.Add(groupExportWriteTimeout))
 	w.Header().Set("Content-Type", "application/zip")
@@ -169,13 +174,13 @@ func (c *core) handleExportGroup(w http.ResponseWriter, r *http.Request) {
 		name string
 		data []byte
 	}{{groupExportReadmeName, readme}, {groupExportJSONName, body}} {
-		if err := writeZipEntry(zw, e.name, now, e.data); err != nil {
+		if err := writeZipEntry(zw, e.name, now.In(loc), e.data); err != nil {
 			log.Printf("group export %s: %v", g.GroupKey, err)
 			return
 		}
 	}
 	for _, p := range plans {
-		if err := writeExportMessage(zw, groupExportMailsDir, p); err != nil {
+		if err := writeExportMessage(zw, groupExportMailsDir, p, loc); err != nil {
 			log.Printf("group export %s: %v", g.GroupKey, err)
 			return
 		}
@@ -294,10 +299,10 @@ func headerFileName(key string) string {
 	return key + "-headers.txt"
 }
 
-// writeExportMessage adds the files of one message under dir. A file that
-// vanished since it was listed (the retention cleanup ran meanwhile) is
-// left out.
-func writeExportMessage(zw *zip.Writer, dir string, p exportMessageFiles) error {
+// writeExportMessage adds the files of one message under dir, dated by
+// their modification times in loc. A file that vanished since it was listed
+// (the retention cleanup ran meanwhile) is left out.
+func writeExportMessage(zw *zip.Writer, dir string, p exportMessageFiles, loc *time.Location) error {
 	if p.eml != "" {
 		raw, err := os.ReadFile(p.eml)
 		switch {
@@ -305,7 +310,7 @@ func writeExportMessage(zw *zip.Writer, dir string, p exportMessageFiles) error 
 		case err != nil:
 			return err
 		default:
-			modified := fileModTime(p.eml)
+			modified := fileModTime(p.eml).In(loc)
 			if err := writeZipEntry(zw, dir+filepath.Base(p.eml), modified, raw); err != nil {
 				return err
 			}
@@ -315,14 +320,16 @@ func writeExportMessage(zw *zip.Writer, dir string, p exportMessageFiles) error 
 		}
 	}
 	for _, s := range p.sections {
-		if err := copyZipEntry(zw, dir+filepath.Base(s), s); err != nil {
+		if err := copyZipEntry(zw, dir+filepath.Base(s), s, loc); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// writeZipEntry adds one compressed file with the given content.
+// writeZipEntry adds one compressed file with the given content, dated by
+// modified in its own time zone (the MS-DOS date of the entry is the wall
+// clock of modified; an extended timestamp carries the exact instant).
 func writeZipEntry(zw *zip.Writer, name string, modified time.Time, data []byte) error {
 	f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: modified})
 	if err != nil {
@@ -332,9 +339,9 @@ func writeZipEntry(zw *zip.Writer, name string, modified time.Time, data []byte)
 	return err
 }
 
-// copyZipEntry adds the file at path as one compressed entry; a missing
-// file is skipped.
-func copyZipEntry(zw *zip.Writer, name, path string) error {
+// copyZipEntry adds the file at path as one compressed entry dated by its
+// modification time in loc; a missing file is skipped.
+func copyZipEntry(zw *zip.Writer, name, path string, loc *time.Location) error {
 	src, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -343,7 +350,7 @@ func copyZipEntry(zw *zip.Writer, name, path string) error {
 		return err
 	}
 	defer src.Close()
-	f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: fileModTime(path)})
+	f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: fileModTime(path).In(loc)})
 	if err != nil {
 		return err
 	}
