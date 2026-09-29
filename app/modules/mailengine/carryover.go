@@ -85,8 +85,9 @@ func readCarryover(path string) (*carryover, error) {
 
 // apply restores the carried state, reports and report patterns into the
 // rebuilt index for the group keys that exist there. needs_analysis is
-// carried over as it was, except that an actionable group with a bounce
-// pattern its latest completed report did not cover is flagged again (a
+// carried over as it was, except that an actionable group with a member
+// pattern (bounce or DMARC record) its latest completed report did not
+// cover is flagged again (a
 // recipient-side group is never flagged, RestoreGroupState). It returns how
 // many groups and reports were restored.
 func (c *carryover) apply(db *sql.DB) (groups, reports int, err error) {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"mailcare/app/models"
@@ -61,6 +62,17 @@ func groupDTOs(idx *sql.DB, groups []*models.BounceGroup) ([]GroupDTO, error) {
 	return out, nil
 }
 
+// Paging of the group list.
+const (
+	defaultGroupPageSize = 50
+	maxGroupPageSize     = 500
+	maxGroupPage         = 1000000 // bounds the offset
+)
+
+// handleListGroups answers one page (page, per_page) of the groups of a
+// mailbox matching the filters, in the requested order (sort), with the
+// number of matching groups and, except for the excluded scope, the count
+// per state.
 func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	mb, ok := c.mailboxFromPath(w, r)
 	if !ok {
@@ -68,7 +80,28 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	filter := models.GroupFilter{State: q.Get("state"), Responsible: q.Get("responsible"), Category: q.Get("category"),
-		Query: q.Get("q")}
+		Query: q.Get("q"), Sort: q.Get("sort")}
+	if !models.ValidGroupSort(filter.Sort) {
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
+	}
+	page, perPage := 1, defaultGroupPageSize
+	for _, p := range []struct {
+		name string
+		dst  *int
+		max  int
+	}{{"page", &page, maxGroupPage}, {"per_page", &perPage, maxGroupPageSize}} {
+		s := q.Get(p.name)
+		if s == "" {
+			continue
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > p.max {
+			writeError(w, http.StatusBadRequest, "system.invalidRequest")
+			return
+		}
+		*p.dst = n
+	}
 	scope, ok := modules.GroupListScope(q.Get("scope"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, "system.invalidRequest")
@@ -97,7 +130,7 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer idx.Close()
-	groups, err := models.ListGroups(idx, filter)
+	groups, total, err := models.ListGroupsPage(idx, filter, (page-1)*perPage, perPage)
 	if err != nil {
 		writeInternalError(w, "failed to list groups", err)
 		return
@@ -107,7 +140,7 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "failed to load reports", err)
 		return
 	}
-	resp := map[string]any{"groups": out}
+	resp := map[string]any{"groups": out, "total": total, "page": page, "per_page": perPage}
 	// Excluded groups have no states to track, so their list carries no counts.
 	if scope != models.GroupScopeExcluded {
 		counts, err := models.CountGroups(idx, scope)

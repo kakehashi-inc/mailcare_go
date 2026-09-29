@@ -27,7 +27,8 @@ func (c *core) nextCheckAt() *string {
 }
 
 // handleDashboard aggregates every mailbox: counters, the newest open
-// actionable groups, the active and recent jobs, the next check and the agent
+// actionable groups, the busy mailboxes, the active and recent jobs
+// (administrators only; empty for members), the next check and the agent
 // status. A mailbox whose index cannot be opened contributes zeros (logged).
 func (c *core) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	mailboxes, err := models.ListMailboxes(c.db)
@@ -93,22 +94,61 @@ func (c *core) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		dto.RecentGroups = append(dto.RecentGroups, g.DashboardGroupDTO)
 	}
 
-	addresses := c.mailboxAddresses()
+	// Jobs are shown to administrators only; members get empty lists. Every
+	// user sees which mailboxes are busy (a job on their mails is queued or
+	// running).
 	active, err := models.ListActiveJobs(c.db)
 	if err != nil {
 		writeInternalError(w, "failed to list jobs", err)
 		return
 	}
-	dto.ActiveJobs = toJobDTOs(active, addresses)
-	recentJobs, err := models.ListJobs(c.db, dashboardRecentJobs)
-	if err != nil {
-		writeInternalError(w, "failed to list jobs", err)
-		return
+	dto.BusyMailboxIDs = busyMailboxIDs(active, mailboxes)
+	dto.ActiveJobs, dto.RecentJobs = []JobDTO{}, []JobDTO{}
+	if u != nil && u.Role == modules.RoleAdmin {
+		addresses := c.mailboxAddresses()
+		dto.ActiveJobs = toJobDTOs(active, addresses)
+		recentJobs, err := models.ListJobs(c.db, dashboardRecentJobs)
+		if err != nil {
+			writeInternalError(w, "failed to list jobs", err)
+			return
+		}
+		dto.RecentJobs = toJobDTOs(recentJobs, addresses)
 	}
-	dto.RecentJobs = toJobDTOs(recentJobs, addresses)
 
 	provider := modules.ResolveAgentProvider(c.db)
 	dto.Agent = DashboardAgentDTO{Provider: provider, Enabled: modules.ResolveAgentEnabled(c.db),
 		Available: agent.ProviderAvailable(provider)}
 	writeJSON(w, http.StatusOK, dto)
+}
+
+// mailboxJobKinds are the job kinds that work on the mails of a mailbox: a
+// mailbox is busy while one of them is queued or running for it (or for
+// every mailbox).
+var mailboxJobKinds = map[string]bool{
+	modules.JobKindSync: true, modules.JobKindFetch: true, modules.JobKindGroup: true,
+	modules.JobKindReindex: true, modules.JobKindReclassify: true, modules.JobKindCleanup: true,
+}
+
+// busyMailboxIDs returns the ids of the mailboxes that an active job of
+// mailboxJobKinds works on, in mailbox order.
+func busyMailboxIDs(active []*models.Job, mailboxes []*models.Mailbox) []int64 {
+	all := false
+	busy := map[int64]bool{}
+	for _, j := range active {
+		if !mailboxJobKinds[j.Kind] {
+			continue
+		}
+		if !j.MailboxID.Valid {
+			all = true
+			continue
+		}
+		busy[j.MailboxID.Int64] = true
+	}
+	ids := []int64{}
+	for _, mb := range mailboxes {
+		if all || busy[mb.ID] {
+			ids = append(ids, mb.ID)
+		}
+	}
+	return ids
 }

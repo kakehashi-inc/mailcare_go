@@ -42,6 +42,7 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                 const open = mb.stats?.groups.open;
                 const messages = mb.stats?.messages;
                 const targetMessages = mb.stats?.target_messages;
+                const junkMessages = mb.stats?.junk_messages;
                 const value = highlight === 'open' ? open : messages;
                 return (
                     <li key={mb.id}>
@@ -64,7 +65,7 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                                 {!mb.enabled && <span className='text-sm text-muted'>{t('common.disabled')}</span>}
                             </div>
                             <div className='mt-auto flex items-end justify-between gap-3'>
-                                <div className='flex flex-wrap gap-x-6 gap-y-2'>
+                                <div className='flex min-w-0 flex-wrap gap-x-6 gap-y-2'>
                                     <div>
                                         <p className='text-sm text-muted'>
                                             {highlight === 'open'
@@ -78,13 +79,21 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                                         </p>
                                     </div>
                                     {highlight === 'messages' && (
-                                        <div>
-                                            <p className='text-sm text-muted'>{t('field.mailbox.targetMessages')}</p>
-                                            <p className='text-2xl font-bold text-ink'>{targetMessages ?? '-'}</p>
-                                        </div>
+                                        <>
+                                            <div>
+                                                <p className='text-sm text-muted'>
+                                                    {t('field.mailbox.targetMessages')}
+                                                </p>
+                                                <p className='text-2xl font-bold text-ink'>{targetMessages ?? '-'}</p>
+                                            </div>
+                                            <div>
+                                                <p className='text-sm text-muted'>{t('field.mailbox.junkMessages')}</p>
+                                                <p className='text-2xl font-bold text-ink'>{junkMessages ?? '-'}</p>
+                                            </div>
+                                        </>
                                     )}
                                 </div>
-                                <p className='text-right text-sm text-muted'>
+                                <p className='shrink-0 whitespace-nowrap text-right text-sm text-muted'>
                                     {t('field.mailbox.lastChecked')}
                                     <br />
                                     <DateTime

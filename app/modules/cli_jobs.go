@@ -368,8 +368,8 @@ func (c *AnalyzeCmd) Run() error {
 }
 
 // CleanupCmd applies the retentions now (what the scheduler does once a day
-// at cleanup_time): deletes the daemon notices classified with certain
-// evidence (mailengine.serverDeletableRules) past the server
+// at cleanup_time): deletes the notices classified with certain evidence
+// and the junk mails (mailengine.serverDeletionRules) past the server
 // retention from the IMAP server, then removes the mails older than
 // mail_keep_days, the stale temporary files, the agent run directories older
 // than agent_keep_days and the jobs finished more than 30 days ago.

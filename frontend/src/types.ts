@@ -24,8 +24,9 @@ export type GroupScope = 'actionable' | 'excluded' | 'all';
 export type BodySource = 'text' | 'html' | '';
 
 /**
- * Bounce categories assigned by the grouping phase (design document 5.4).
- * The first eight are actionable by the sending side; the last five describe
+ * Group categories assigned by the grouping phase (Documents/メール判定仕様.md).
+ * The first eleven are actionable by the sending side (the three dmarc_* ones
+ * bundle failing records of DMARC aggregate reports); the last five describe
  * recipient-side problems and are excluded from analysis.
  */
 export const BOUNCE_CATEGORIES = [
@@ -37,6 +38,9 @@ export const BOUNCE_CATEGORIES = [
     'message_too_large',
     'server_config',
     'unknown_failure',
+    'dmarc_spf_missing',
+    'dmarc_dkim_failed',
+    'dmarc_not_authenticated',
     'user_unknown',
     'mailbox_full',
     'mailbox_disabled',
@@ -97,6 +101,8 @@ export interface MailboxStats {
     unclassified: number;
     /** Mails MailCare handles as its targets: notices classified with certain evidence (deleted from the IMAP server or not). */
     target_messages: number;
+    /** Junk mails (phishing, spam): deleted from the server like the targets, counted apart. */
+    junk_messages: number;
     /** Counts of the actionable Alerts list only (excluded groups are not counted). */
     groups: { open: number; resolved: number; ignored: number };
 }
@@ -145,9 +151,9 @@ export interface GroupDTO {
     group_key: string;
     /** The UI builds the headline from category, unit_value and authority (utils/category.ts). */
     category: BounceCategory | string;
-    /** What the administrator acts on: an IP, a sender address, a domain, ... */
+    /** What the administrator acts on: an IP, a sender address, a domain, ... (the From domain for the dmarc_* groups). */
     unit_value: string;
-    /** Who decides: a block list provider, the recipient domain, ... (empty for excluded groups). */
+    /** Who decides: a block list provider, the recipient domain, ... (empty for excluded groups and the dmarc_* groups). */
     authority: string;
     /** False for recipient-side problems, which are not analyzed automatically. */
     actionable: boolean;
@@ -276,6 +282,25 @@ export interface JobDTO {
     finished_at: string | null;
 }
 
+/** Status filter of the job history: every finished job, or one finished status (done, error, canceled). */
+export const JOB_HISTORY_FILTERS = ['all', 'done', 'error', 'canceled'] as const;
+export type JobHistoryFilter = (typeof JOB_HISTORY_FILTERS)[number];
+
+/** GET /api/v1/jobs?state=finished */
+export interface JobHistoryParams {
+    status?: JobHistoryFilter;
+    page?: number;
+    per_page?: number;
+}
+export interface JobHistoryResponse {
+    jobs: JobDTO[];
+    total: number;
+    page: number;
+    per_page: number;
+    /** Finished jobs per status filter. */
+    counts: Record<JobHistoryFilter, number>;
+}
+
 export interface JobInput {
     kind: JobKind;
     /** null (or omitted) means every mail address: the server queues one child job per address. */
@@ -306,6 +331,9 @@ export interface DashboardDTO {
     /** open_groups counts actionable groups only; unclassified is the number of mails waiting to be grouped. */
     totals: { mailboxes: number; open_groups: number; bounces: number; messages: number; unclassified: number };
     recent_groups: DashboardGroup[];
+    /** Mailboxes a sync, fetch, group, reindex, reclassify or cleanup job is queued or running for (every user). */
+    busy_mailbox_ids: number[];
+    /** Filled for administrators only (empty for members). */
     active_jobs: JobDTO[];
     recent_jobs: JobDTO[];
     next_check_at: string | null;
@@ -419,8 +447,15 @@ export interface NotificationTestInput {
 }
 
 /** GET /api/v1/mailboxes/{id}/groups */
+/** Orders of the group list (server side): last seen oldest first, most messages first, severity; omitted = newest first. */
+export type GroupSort = 'last_seen_asc' | 'count_desc' | 'severity';
+
 export interface GroupListResponse {
     groups: GroupDTO[];
+    /** Groups matching the filters (every page). */
+    total: number;
+    page: number;
+    per_page: number;
     /** Per-state counts within the requested scope (absent for the excluded scope, which is not counted). */
     counts?: { open: number; resolved: number; ignored: number };
 }
@@ -435,8 +470,8 @@ export interface GroupDetailResponse {
 }
 
 /** GET /api/v1/mailboxes/{id}/messages */
-/** Mail kind switch of the mail list: all, daemon notices (auto-replies included), everything else. */
-export type MessageKind = 'all' | 'bounce' | 'other';
+/** Mail kind switch of the mail list: all, notices (auto-replies and DMARC reports included), junk (phishing, spam), everything else. */
+export type MessageKind = 'all' | 'bounce' | 'junk' | 'other';
 
 export interface MessageListResponse {
     messages: MessageDTO[];

@@ -28,6 +28,9 @@ export default {
         muted: "light-dark(#64748b, #9ca3af)",
         // Borders and dividers.
         line: "light-dark(#e2e8f0, #1f2937)",
+        // Borders of interactive controls (buttons): at least 3:1 against
+        // canvas, surface and well, so a control reads as one (WCAG 1.4.11).
+        control: "light-dark(#7d8ba1, #64748b)",
         // Interactive accent with its hover state and the text drawn on it.
         accent: {
           DEFAULT: "light-dark(#4f46e5, #818cf8)",

@@ -5,36 +5,42 @@ import (
 	"strings"
 )
 
-// Classification is the outcome of the bounce detection for one message
+// Classification is the outcome of the detection for one message
 // (messages.is_bounce / bounce_kind / rule / body_source).
 type Classification struct {
-	IsBounce bool
-	Kind     string // failed | delayed | auto_reply | other ("" when not a bounce)
-	Rule     string // name of the matching rule ("" when not a bounce)
+	IsBounce bool   // a notice (every kind but junk)
+	Kind     string // failed | delayed | auto_reply | other | report | junk ("" for ordinary mail)
+	Rule     string // name of the matching rule ("" for ordinary mail)
 	// BodySource is the body the decision was made on: the primary body
 	// ("text", else "html") or "html" when only the HTML body of a message
 	// that also has a text body matched; "" when the message has no body.
 	BodySource string
 }
 
-// classifyRule is one row of the rule table (design 5.3). Rules are evaluated
-// in order and the first match wins. match returns the bounce kind ("" means
-// the rule does not apply).
+// classifyRule is one row of the rule table (design document "mail
+// classification"). Rules are evaluated in order and the first match wins.
+// match returns the bounce kind ("" means the rule does not apply); mb is
+// the monitored address the mail was fetched from.
 type classifyRule struct {
 	name  string
-	match func(pm *ParsedMessage, body string) string
+	match func(pm *ParsedMessage, body string, mb mailboxIdentity) string
 }
 
 // classifyRules is the rule table. Keep the order of the design document:
-// structured DSNs first, then daemon senders, then auto-replies (before the
-// subject patterns, so that an automatic reply quoting a bounce subject is
-// not taken for the bounce), then subject patterns, daemon display names and
-// finally the body wording.
+// the rules with certain evidence of a notice first (structured DSNs, DMARC
+// aggregate reports, daemon senders, marked auto-replies), then junk
+// (phishing, spam), then the rules that go by the subject or the display
+// name alone (auto-reply subjects before the bounce subjects, so that an
+// automatic reply quoting a bounce subject is not taken for the bounce),
+// and finally the body wording. Junk is evaluated before the weak rules so
+// that phishing with a bounce-like subject is taken for junk, and after the
+// certain ones so that a genuine notice (the monitored server's own DSNs,
+// whose From is the monitored domain without DKIM) never is.
 var classifyRules = []classifyRule{
 	{
 		// 1. multipart/report; report-type=delivery-status
 		name: ruleDSNReport,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if pm.ContentType != "multipart/report" || pm.ReportType != "delivery-status" {
 				if pm.DeliveryStatus == nil || len(pm.DeliveryStatus.Recipients) == 0 {
 					return ""
@@ -44,9 +50,21 @@ var classifyRules = []classifyRule{
 		},
 	},
 	{
+		// 1'. A DMARC aggregate report is attached (the XML document parsed,
+		// dmarc.go): a notice of its own kind whose failing records are
+		// grouped.
+		name: ruleDMARCReport,
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
+			if pm.DMARC != nil {
+				return bounceKindReport
+			}
+			return ""
+		},
+	},
+	{
 		// 2. From / Return-Path local part is a mail daemon
 		name: ruleDaemonSender,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if !isDaemonAddress(pm.FromAddress) && !isDaemonAddress(pm.ReturnPath) {
 				return ""
 			}
@@ -59,7 +77,7 @@ var classifyRules = []classifyRule{
 		// before the subject patterns: "Automatic reply: Undeliverable: ..."
 		// is a reply, not the bounce it quotes.
 		name: ruleAutoReply,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if hasAutoSubmitted(pm.AutoSubmitted, "auto-replied") {
 				return bounceKindAutoReply
 			}
@@ -67,12 +85,73 @@ var classifyRules = []classifyRule{
 		},
 	},
 	{
-		// 3'. An out-of-office subject without "Auto-Submitted:
-		// auto-replied". Kept apart by its rule name: a person's mail can
-		// carry such a subject too, so the server retention leaves it on the
-		// IMAP server.
+		// 3'. An out-of-office subject on a mail marked as machine-sent:
+		// the null Return-Path (<>) or an Auto-Submitted header other than
+		// "no" (Exchange sends "auto-generated" with its automatic
+		// replies). Certain like 3.
+		name: ruleAutoReplyMarked,
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
+			if !autoReplySubjectRe.MatchString(pm.Subject) {
+				return ""
+			}
+			// The first Return-Path is the one the delivering server added.
+			first, _, _ := strings.Cut(pm.Headers["Return-Path"], "\n")
+			nullSender := strings.TrimSpace(first) == "<>"
+			submitted := pm.AutoSubmitted != "" && !strings.HasPrefix(pm.AutoSubmitted, "no")
+			if nullSender || submitted {
+				return bounceKindAutoReply
+			}
+			return ""
+		},
+	},
+	{
+		// J1. Phishing: a forged sender name (junk.go).
+		name: rulePhishingDisplayName,
+		match: func(pm *ParsedMessage, body string, mb mailboxIdentity) string {
+			if phishingDisplayName(pm, mb) {
+				return bounceKindJunk
+			}
+			return ""
+		},
+	},
+	{
+		// J2. Phishing: a From of the monitored domain that failed DMARC.
+		name: rulePhishingForgedFrom,
+		match: func(pm *ParsedMessage, body string, mb mailboxIdentity) string {
+			if phishingForgedFrom(pm, mb) {
+				return bounceKindJunk
+			}
+			return ""
+		},
+	},
+	{
+		// J3. Phishing: a link to another organization that carries the
+		// monitored address.
+		name: rulePhishingLink,
+		match: func(pm *ParsedMessage, body string, mb mailboxIdentity) string {
+			if phishingLink(pm, mb) {
+				return bounceKindJunk
+			}
+			return ""
+		},
+	},
+	{
+		// J4. Spam: a spam verdict header.
+		name: ruleSpamFlag,
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
+			if spamFlagged(pm) {
+				return bounceKindJunk
+			}
+			return ""
+		},
+	},
+	{
+		// 3''. An out-of-office subject on a mail that 3 and 3' did not
+		// match (no machine-sent mark). Kept apart by its rule name: a
+		// person's mail can carry such a subject too, so the server
+		// retention leaves it on the IMAP server.
 		name: ruleAutoReplySubject,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if autoReplySubjectRe.MatchString(pm.Subject) {
 				return bounceKindAutoReply
 			}
@@ -80,12 +159,12 @@ var classifyRules = []classifyRule{
 		},
 	},
 	{
-		// 3''. Auto-Submitted: auto-generated without an out-of-office
+		// 3'''. Auto-Submitted: auto-generated without an out-of-office
 		// subject: a message a system generated on its own (notifications,
 		// reports, tickets), kept apart by its rule name so that the server
 		// retention leaves it on the IMAP server.
 		name: ruleAutoGenerated,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if hasAutoSubmitted(pm.AutoSubmitted, "auto-generated") {
 				return bounceKindAutoReply
 			}
@@ -95,7 +174,7 @@ var classifyRules = []classifyRule{
 	{
 		// 4. Subject matches a known bounce pattern
 		name: ruleSubjectPattern,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if !bounceSubjectRe.MatchString(pm.Subject) {
 				return ""
 			}
@@ -110,7 +189,7 @@ var classifyRules = []classifyRule{
 		// a failure only when the subject or body says so ("Postmaster Team"
 		// announcing maintenance is "other" and is not grouped).
 		name: ruleDaemonDisplayName,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if daemonDisplayNameRe.MatchString(pm.FromName) {
 				return kindFromText(pm.Subject, body)
 			}
@@ -123,7 +202,7 @@ var classifyRules = []classifyRule{
 		// gave it away, e.g. a notification relay forwarding an NDR; also
 		// what makes an HTML-only bounce wording count).
 		name: ruleBodyPattern,
-		match: func(pm *ParsedMessage, body string) string {
+		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if !bounceBodyRe.MatchString(body) {
 				return ""
 			}
@@ -229,20 +308,23 @@ var (
 	daemonDisplayNameRe = regexp.MustCompile(`(?i)^\s*(?:mail delivery (?:sub)?system|mail delivery service|mail administrator|mailer[ -]?daemon|postmaster|internet mail delivery|delivery notification)\b`)
 )
 
-// Classify runs the rule table over a parsed message: first with the
-// primary body (every text section joined, else the HTML sections rendered
-// as text), then, when the message also carries HTML sections, with the
-// HTML text. A match on either makes the message a bounce (design 5.2 / 5.3).
-func Classify(pm *ParsedMessage) Classification {
+// Classify runs the rule table over a parsed message fetched from the
+// monitored address mailbox: first with the primary body (every text section
+// joined, else the HTML sections rendered as text), then, when the message
+// also carries HTML sections, with the HTML text. A match on either decides
+// the message: a notice (is_bounce) or junk (design document "mail
+// classification").
+func Classify(pm *ParsedMessage, mailbox string) Classification {
 	if pm == nil {
 		return Classification{}
 	}
-	if c, ok := classifyWith(pm, pm.bodyForClassification()); ok {
+	mb := newMailboxIdentity(mailbox)
+	if c, ok := classifyWith(pm, pm.bodyForClassification(), mb); ok {
 		c.BodySource = pm.primarySource()
 		return c
 	}
 	if secondary := pm.secondaryBody(); secondary != "" {
-		if c, ok := classifyWith(pm, secondary); ok {
+		if c, ok := classifyWith(pm, secondary, mb); ok {
 			c.BodySource = bodySourceHTML
 			return c
 		}
@@ -250,11 +332,12 @@ func Classify(pm *ParsedMessage) Classification {
 	return Classification{BodySource: pm.primarySource()}
 }
 
-// classifyWith evaluates the rule table with one body text.
-func classifyWith(pm *ParsedMessage, body string) (Classification, bool) {
+// classifyWith evaluates the rule table with one body text. Every kind but
+// junk is a notice (is_bounce).
+func classifyWith(pm *ParsedMessage, body string, mb mailboxIdentity) (Classification, bool) {
 	for _, rule := range classifyRules {
-		if kind := rule.match(pm, body); kind != "" {
-			return Classification{IsBounce: true, Kind: kind, Rule: rule.name}, true
+		if kind := rule.match(pm, body, mb); kind != "" {
+			return Classification{IsBounce: kind != bounceKindJunk, Kind: kind, Rule: rule.name}, true
 		}
 	}
 	return Classification{}, false

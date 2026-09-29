@@ -19,22 +19,35 @@ type ServerDeleteResult struct {
 	Skipped int // candidates left on the server (UIDVALIDITY changed, Message-ID missing or different)
 }
 
-// serverDeletableRules are the classification rules whose evidence is
-// certain enough for the server retention to delete a message from the
-// IMAP server for good: a delivery-status report, a mail daemon sender
-// address, "Auto-Submitted: auto-replied" and the fixed wording of a
-// non-delivery report. Matches on the subject or the display name alone
-// (auto_reply_subject, subject_pattern, daemon_display_name) and
-// automatically generated messages (auto_generated) are left on the server:
-// a person's mail can look like them.
-var serverDeletableRules = []string{ruleDSNReport, ruleDaemonSender, ruleAutoReply, ruleBodyPattern}
+// serverDeletableRules are the classification rules whose evidence of a
+// notice is certain enough for the server retention to delete a message
+// from the IMAP server for good: a delivery-status report, a DMARC
+// aggregate report, a mail daemon sender address, "Auto-Submitted:
+// auto-replied", an out-of-office subject on a mail marked as machine-sent
+// and the fixed wording of a non-delivery report. Matches on the subject or
+// the display name alone (auto_reply_subject, subject_pattern,
+// daemon_display_name) and automatically generated messages
+// (auto_generated) are left on the server: a person's mail can look like
+// them. These are the target messages (the "target mails" of the design
+// document); junk (junkRules) is deleted as well but counted apart.
+var serverDeletableRules = []string{ruleDSNReport, ruleDMARCReport, ruleDaemonSender, ruleAutoReply, ruleAutoReplyMarked, ruleBodyPattern}
+
+// serverDeletionRules is everything the server retention deletes: the
+// target messages and the junk.
+var serverDeletionRules = append(append([]string{}, serverDeletableRules...), junkRules...)
 
 // CountTargetMessages returns how many messages of an index MailCare
-// handles as its targets: the daemon notices classified with certain
-// evidence (serverDeletableRules, the same messages the cleanup applies the
-// server retention to), whether or not they are still on the IMAP server.
+// handles as its targets: the notices classified with certain evidence
+// (serverDeletableRules), whether or not they are still on the IMAP server.
 func CountTargetMessages(db *sql.DB) (int, error) {
 	return models.CountClassifiedByRules(db, serverDeletableRules)
+}
+
+// CountJunkMessages returns how many messages of an index are junk
+// (junkRules: phishing and spam), whether or not they are still on the IMAP
+// server.
+func CountJunkMessages(db *sql.DB) (int, error) {
+	return models.CountClassifiedByRules(db, junkRules)
 }
 
 // ErrOtherDeletedFlags is returned by DeleteFromServer on a server without
@@ -49,12 +62,12 @@ var ErrOtherDeletedFlags = errors.New(`other messages in the folder are flagged 
 const serverDeleteBatch = 200
 
 // DeleteFromServer applies the server retention of a mailbox (design 5.6.1):
-// the mails of its folder classified as a daemon notice (failures, delays,
-// auto-replies and other daemon mail, whatever the state of their group) by
-// one of serverDeletableRules (not the ordinary mail, the mails not
-// classified yet or the ones matched on weaker evidence) whose date is
-// older than keep are deleted from the IMAP
-// server for good (\Deleted, then an expunge; no move to a trash folder). The raw
+// the mails of its folder classified by one of serverDeletionRules (the
+// notices with certain evidence: failures, delays, DMARC reports,
+// auto-replies and other daemon mail, whatever the state of their group;
+// and the junk), not the ordinary mail, the mails not classified yet or the
+// ones matched on weaker evidence, whose date is older than keep are
+// deleted from the IMAP server for good (\Deleted, then an expunge; no move to a trash folder). The raw
 // files and the index rows stay (the local retention removes them later);
 // the rows get server_deleted_at so they are not tried again, and a reindex
 // carries it over.
@@ -85,14 +98,14 @@ func DeleteFromServer(ctx context.Context, mailsRoot string, mb *models.Mailbox,
 		return res, err
 	}
 	defer db.Close()
-	candidates, err := models.ListServerDeletionCandidates(db, folder, time.Now().Add(-keep), serverDeletableRules)
+	candidates, err := models.ListServerDeletionCandidates(db, folder, time.Now().Add(-keep), serverDeletionRules)
 	if err != nil {
 		return res, fmt.Errorf("list server deletion candidates: %w", err)
 	}
 	if len(candidates) == 0 {
 		return res, nil
 	}
-	report(progress, fmt.Sprintf("%d daemon notice(s) are past the server retention", len(candidates)))
+	report(progress, fmt.Sprintf("%d notice(s) and junk mail(s) are past the server retention", len(candidates)))
 
 	s, err := connect(ctx, mb, password)
 	if err != nil {

@@ -88,9 +88,9 @@ const (
 	// DefaultRecentDays is how far back every later check looks.
 	DefaultRecentDays = 10
 	// DefaultServerKeepDays is the server retention of a newly registered
-	// mailbox: the days (from the mail's date) a daemon notice classified
-	// with certain evidence (mailengine.serverDeletableRules) stays on the IMAP server
-	// before the daily cleanup deletes it there. 0 keeps every mail on the
+	// mailbox: the days (from the mail's date) a notice classified with
+	// certain evidence or a junk mail (mailengine.serverDeletionRules) stays
+	// on the IMAP server before the daily cleanup deletes it there. 0 keeps every mail on the
 	// server; a mailbox saved before the setting existed reads as 0. A new
 	// mailbox gets at most the mail retention (mail_keep_days), and the
 	// retention cannot be set above it (checkServerKeepDays).
@@ -209,6 +209,10 @@ const (
 	CategoryMailboxDisabled = "mailbox_disabled" // unit: recipient address
 	CategoryDomainNotFound  = "domain_not_found" // unit: recipient domain
 	CategoryDeliveryDelay   = "delivery_delay"   // unit: recipient domain
+	// DMARC (records of aggregate reports that failed DMARC; actionable, unit: the domain of the record).
+	CategoryDMARCSPFMissing       = "dmarc_spf_missing"
+	CategoryDMARCDKIMFailed       = "dmarc_dkim_failed"
+	CategoryDMARCNotAuthenticated = "dmarc_not_authenticated"
 )
 
 // KnownCategories lists every group category (actionable ones first).
@@ -216,6 +220,7 @@ func KnownCategories() []string {
 	return []string{
 		CategoryIPBlocked, CategoryRateLimited, CategorySenderBlocked, CategoryAuthFailure, CategoryContentRejected,
 		CategoryMessageTooLarge, CategoryServerConfig, CategoryUnknownFailure,
+		CategoryDMARCSPFMissing, CategoryDMARCDKIMFailed, CategoryDMARCNotAuthenticated,
 		CategoryUserUnknown, CategoryMailboxFull, CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDeliveryDelay,
 	}
 }
@@ -246,6 +251,8 @@ const (
 	BounceKindDelayed   = "delayed"    // temporary failure / delay notice (4.x.x)
 	BounceKindAutoReply = "auto_reply" // vacation / out-of-office
 	BounceKindOther     = "other"      // daemon mail of another kind
+	BounceKindReport    = "report"     // DMARC aggregate report
+	BounceKindJunk      = "junk"       // phishing / spam (is_bounce = 0)
 )
 
 // --- Settings keys ---

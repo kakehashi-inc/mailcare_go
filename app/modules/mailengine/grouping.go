@@ -39,7 +39,7 @@ var (
 
 // DiagnosticTemplate normalizes a diagnostic text so that notices differing
 // only in addresses, hosts, IPs, IDs, dates or numbers collapse to the same
-// string (design 5.4). SMTP reply codes (550) and extended status codes
+// string (design document "mail classification" 4.1). SMTP reply codes (550) and extended status codes
 // (5.1.1) are kept verbatim.
 func DiagnosticTemplate(diagnostic string) string {
 	s := strings.ToLower(strings.TrimSpace(diagnostic))
@@ -99,7 +99,7 @@ func DiagnosticTemplate(diagnostic string) string {
 	return strings.TrimSpace(tplSpaceRe.ReplaceAllString(s, " "))
 }
 
-// groupKeyPart normalizes one component of the group identity (design 5.4:
+// groupKeyPart normalizes one component of the group identity (design document "mail classification" 4.3:
 // lower-cased, trimmed).
 func groupKeyPart(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
@@ -113,8 +113,9 @@ func GroupKey(category, unitValue, authority string) string {
 }
 
 // PatternKey is the first 16 hex digits of
-// sha1(status_code|pattern template|remote_mta|source kind): bounces of a
-// group that share it are the same pattern (same status, same wording, same
+// sha1(status_code|pattern template|remote_mta|source kind): bounces (and
+// DMARC records, source kind dmarc, see dmarcRecordsFor) of a group that
+// share it are the same pattern (same status, same wording, same
 // remote MTA, diagnostic read from the same kind of place). The agent
 // samples one notice per pattern, and a group is analyzed again only when a
 // pattern appears that its latest completed report did not cover. The
@@ -158,14 +159,15 @@ func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 }
 
 // groupTracker collects the groups touched during one run and decides, for
-// every message, whether its group must be flagged for analysis: an
-// actionable group is flagged when the bounce just filed into it has a
-// pattern (bounces.pattern_key) that the latest completed report of the
-// group did not cover (always the case for a group without a completed
-// report, a new group included). More notices of a covered pattern only
-// update the counters (design 5.4 "incremental"). The counters and the flag
-// are written inside the transaction of the message, so they are always in
-// step with the bounces rows. At the end the flagged groups are reported as
+// every message, whether its groups must be flagged for analysis: an
+// actionable group is flagged when a member just filed into it (a bounce,
+// or a failing record of a DMARC report) has a pattern (pattern_key) that
+// the latest completed report of the group did not cover (always the case
+// for a group without a completed report, a new group included). More
+// members of a covered pattern only update the counters (design 5.4
+// "incremental"). The counters and the flag are written inside the
+// transaction of the message, so they are always in step with the bounces
+// and dmarc_records rows. At the end the flagged groups are reported as
 // GroupResult.GroupsTouched.
 type groupTracker struct {
 	order      []string
@@ -194,32 +196,34 @@ func (t *groupTracker) upsert(db models.Execer, g *models.BounceGroup) error {
 	return nil
 }
 
-// recount refreshes the counters of the group after the bounces row of the
-// current message was written and, when the group is actionable and the
-// pattern of that bounce is not covered by the latest completed report of
-// the group, sets needs_analysis (once per run; recipient-side groups are
-// never flagged).
-func (t *groupTracker) recount(db models.Execer, g *models.BounceGroup, patternKey string) error {
+// recount refreshes the counters of the group once after the members of
+// the current message were written and, when the group is actionable and
+// one of the patterns of those members is not covered by the latest
+// completed report of the group, sets needs_analysis (once per run;
+// recipient-side groups are never flagged).
+func (t *groupTracker) recount(db models.Execer, g *models.BounceGroup, patternKeys ...string) error {
 	if g == nil {
 		return nil
 	}
 	if err := models.RefreshGroupCounters(db, g.GroupKey); err != nil {
 		return err
 	}
-	if !t.actionable[g.GroupKey] || t.flagged[g.GroupKey] {
-		return nil
+	for _, patternKey := range patternKeys {
+		if !t.actionable[g.GroupKey] || t.flagged[g.GroupKey] {
+			return nil
+		}
+		covered, err := models.PatternCovered(db, g.GroupKey, patternKey)
+		if err != nil {
+			return err
+		}
+		if covered {
+			continue
+		}
+		if err := models.SetGroupNeedsAnalysis(db, g.GroupKey, true); err != nil {
+			return err
+		}
+		t.flagged[g.GroupKey] = true
 	}
-	covered, err := models.PatternCovered(db, g.GroupKey, patternKey)
-	if err != nil {
-		return err
-	}
-	if covered {
-		return nil
-	}
-	if err := models.SetGroupNeedsAnalysis(db, g.GroupKey, true); err != nil {
-		return err
-	}
-	t.flagged[g.GroupKey] = true
 	return nil
 }
 

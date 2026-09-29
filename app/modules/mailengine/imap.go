@@ -147,10 +147,15 @@ func TestConnection(ctx context.Context, mb *models.Mailbox, password string) er
 
 // FetchMailbox downloads the messages not yet indexed (initial_days back on
 // the first run, recent_days afterwards, but never before opts.NotBefore
-// when it is set; the whole folder with opts.AllTime), stores their raw and derived files and adds their index
-// rows with classified = 0 (design 5.1). No classification or grouping
-// happens here; GroupMailbox does that. The caller records the outcome on
-// the mailbox row.
+// when it is set; the whole folder with opts.AllTime), stores their raw and
+// derived files and adds their index rows with classified = 0 (design 5.1).
+// Every UID of the folder is a message of its own: messages that share a
+// Message-ID (the same mail delivered more than once) are each indexed. A
+// message already indexed under a stale identity (the folder's UIDVALIDITY
+// changed, or it was indexed from a raw file) is not stored again; its row
+// takes the new UID (storeOptions.reidentify). No classification or
+// grouping happens here; GroupMailbox does that. The caller records the
+// outcome on the mailbox row.
 func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, password string, opts FetchOptions, progress Progress) (*FetchResult, error) {
 	if mb == nil {
 		return nil, errors.New("mailengine: mailbox is nil")
@@ -207,8 +212,8 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 	result.UIDValidity = sel.UIDValidity
 	if total > 0 {
 		// The index holds messages but none under this UIDVALIDITY: the
-		// folder was re-created and the window is re-scanned (duplicates are
-		// recognised by Message-ID).
+		// folder was re-created and the window is re-scanned (the indexed
+		// messages are recognised by Message-ID and take their new UID).
 		maxUID, err := models.MaxUIDForValidity(db, sel.UIDValidity, folder)
 		if err != nil {
 			return nil, fmt.Errorf("lookup uidvalidity: %w", err)
@@ -281,12 +286,15 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 				ReceivedAt:  internalDate.UTC(),
 				FetchedAt:   time.Now().UTC(),
 			}
-			_, _, err := storeMessage(db, dir, raw, src, storeOptions{writeEML: true, dedupeByMessageID: true})
+			_, _, err := storeMessage(db, dir, raw, src, storeOptions{writeEML: true, reidentify: true})
 			if err != nil {
-				if errors.Is(err, errDuplicateMessage) || isUniqueViolation(err) {
-					// Already indexed (same Message-ID after a UIDVALIDITY
-					// change, or the same key): count it as skipped.
-					result.Skipped++
+				if errors.Is(err, errReidentified) {
+					result.Reidentified++
+					return nil
+				}
+				if isUniqueViolation(err) {
+					// The same identity was indexed meanwhile (a concurrent
+					// fetch of this mailbox): nothing is missing.
 					return nil
 				}
 				return err
@@ -299,7 +307,11 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 		}
 	}
 
-	report(progress, fmt.Sprintf("indexed %d messages, %d skipped", result.Fetched, result.Skipped))
+	line := fmt.Sprintf("indexed %d messages", result.Fetched)
+	if result.Reidentified > 0 {
+		line += fmt.Sprintf(", %d already indexed under a previous UID", result.Reidentified)
+	}
+	report(progress, line)
 	return result, nil
 }
 

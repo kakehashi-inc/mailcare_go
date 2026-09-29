@@ -12,6 +12,7 @@ import (
 const (
 	defaultJobLimit = 50
 	maxJobLimit     = 500
+	maxJobPage      = 1000000 // bounds the offset of the history
 )
 
 // requestedBy tags a job with the Web user who asked for it.
@@ -37,7 +38,29 @@ func (c *core) enqueueAndRespond(w http.ResponseWriter, r *http.Request, kind st
 	writeJSON(w, status, map[string]any{"job": toJobDTO(job, c.mailboxAddresses()), "created": created})
 }
 
+// handleListJobs lists jobs (administrators only). state selects the list:
+// "active" answers every queued and running job (oldest first), "finished"
+// one page (page, per_page) of the finished jobs matching status ("" / all,
+// done, error, canceled) with the total and the count per status, and no state the
+// newest jobs of any status (at most limit).
 func (c *core) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Query().Get("state") {
+	case "":
+	case "active":
+		jobs, err := models.ListActiveJobs(c.db)
+		if err != nil {
+			writeInternalError(w, "failed to list jobs", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"jobs": toJobDTOs(jobs, c.mailboxAddresses())})
+		return
+	case "finished":
+		c.listFinishedJobs(w, r)
+		return
+	default:
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
+	}
 	limit := defaultJobLimit
 	if s := r.URL.Query().Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
@@ -53,6 +76,50 @@ func (c *core) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": toJobDTOs(jobs, c.mailboxAddresses())})
+}
+
+// listFinishedJobs answers one page of the finished-job history.
+func (c *core) listFinishedJobs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	status := q.Get("status")
+	switch status {
+	case "", "all":
+		status = models.JobHistoryAll
+	case models.JobHistoryDone, models.JobHistoryError, models.JobHistoryCanceled:
+	default:
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
+	}
+	page, perPage := 1, defaultJobLimit
+	for _, p := range []struct {
+		name string
+		dst  *int
+		max  int
+	}{{"page", &page, maxJobPage}, {"per_page", &perPage, maxJobLimit}} {
+		s := q.Get(p.name)
+		if s == "" {
+			continue
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > p.max {
+			writeError(w, http.StatusBadRequest, "system.invalidRequest")
+			return
+		}
+		*p.dst = n
+	}
+	jobs, total, err := models.ListFinishedJobs(c.db, status, (page-1)*perPage, perPage)
+	if err != nil {
+		writeInternalError(w, "failed to list jobs", err)
+		return
+	}
+	counts, err := models.CountFinishedJobs(c.db)
+	if err != nil {
+		writeInternalError(w, "failed to count jobs", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"jobs": toJobDTOs(jobs, c.mailboxAddresses()), "total": total, "page": page, "per_page": perPage, "counts": counts,
+	})
 }
 
 // handleCreateJob queues a job of any kind (administrators only; the route

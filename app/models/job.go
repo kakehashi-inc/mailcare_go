@@ -168,6 +168,54 @@ func ListJobs(db *sql.DB, limit int) ([]*Job, error) {
 	return queryJobs(db, `SELECT `+jobColumns+` FROM jobs ORDER BY id DESC LIMIT ?`, limit)
 }
 
+// Status filters of the finished-job history (ListFinishedJobs).
+const (
+	JobHistoryAll      = ""         // every finished job: done, error and canceled
+	JobHistoryDone     = "done"     // completed jobs
+	JobHistoryError    = "error"    // jobs that ended with an error
+	JobHistoryCanceled = "canceled" // jobs canceled while queued
+)
+
+// finishedJobCondition is the WHERE condition of a history filter and its
+// arguments.
+func finishedJobCondition(status string) (string, []any) {
+	if status == JobHistoryAll {
+		return `status IN ('done','error','canceled')`, nil
+	}
+	return `status = ?`, []any{status}
+}
+
+// ListFinishedJobs returns one page of the finished jobs matching the
+// history filter (JobHistory*), the most recently finished first, with the
+// total number of matching jobs.
+func ListFinishedJobs(db *sql.DB, status string, offset, limit int) ([]*Job, int, error) {
+	where, args := finishedJobCondition(status)
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	jobs, err := queryJobs(db, `SELECT `+jobColumns+` FROM jobs WHERE `+where+
+		` ORDER BY finished_at DESC, id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	return jobs, total, err
+}
+
+// FinishedJobCounts is how many finished jobs each history filter matches.
+type FinishedJobCounts struct {
+	All      int `json:"all"`
+	Done     int `json:"done"`
+	Error    int `json:"error"`
+	Canceled int `json:"canceled"`
+}
+
+// CountFinishedJobs counts the finished jobs per history filter.
+func CountFinishedJobs(db *sql.DB) (FinishedJobCounts, error) {
+	var c FinishedJobCounts
+	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(status = 'done'), 0), COALESCE(SUM(status = 'error'), 0),
+		COALESCE(SUM(status = 'canceled'), 0)
+		FROM jobs WHERE status IN ('done','error','canceled')`).Scan(&c.All, &c.Done, &c.Error, &c.Canceled)
+	return c, err
+}
+
 // ListActiveJobs returns queued and running jobs, oldest first.
 func ListActiveJobs(db *sql.DB) ([]*Job, error) {
 	return queryJobs(db, `SELECT `+jobColumns+` FROM jobs WHERE status IN ('queued','running') ORDER BY id ASC`)

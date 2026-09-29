@@ -2,6 +2,7 @@ package models
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 	"time"
 )
@@ -90,19 +91,42 @@ func scanBounce(s rowScanner) (*Bounce, error) {
 	return b, nil
 }
 
-// GroupBounce is a bounce of a group together with the key, the date and
+// GroupBounce is a member of a group together with the key, the date and
 // the body source (messages.body_source: the body the notice was classified
 // on) of its message: what the agent needs to pick and read sample notices.
+// A member is a bounce, or a failing record of a DMARC aggregate report
+// (DMARC set; the Bounce fields then carry its group, pattern, category
+// rule, sending IP (RemoteIP), reporter (ReportingMTA) and the diagnostic
+// source DiagnosticSourceDMARC).
 type GroupBounce struct {
 	Bounce
 	MessageKey string
 	Date       time.Time
 	BodySource string
+	DMARC      *DMARCRecord
 }
 
-// ListGroupBounces returns every bounce of a group with its message key and
-// date, newest message first.
+// ListGroupBounces returns every member of a group (its bounces and its
+// DMARC records) with its message key and date, newest message first.
 func ListGroupBounces(db *sql.DB, groupKey string) ([]*GroupBounce, error) {
+	out, err := listGroupBouncesOnly(db, groupKey)
+	if err != nil {
+		return nil, err
+	}
+	records, err := groupDMARCRecords(db, groupKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return out, nil
+	}
+	out = append(out, records...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
+	return out, nil
+}
+
+// listGroupBouncesOnly returns the bounces of a group, newest message first.
+func listGroupBouncesOnly(db *sql.DB, groupKey string) ([]*GroupBounce, error) {
 	rows, err := db.Query(`SELECT m.message_key, m.date, m.body_source, `+prefixColumns("b.", bounceColumns)+`
 		FROM bounces b JOIN messages m ON m.id = b.id WHERE b.group_key = ? ORDER BY m.date DESC, m.id DESC`, groupKey)
 	if err != nil {
@@ -125,10 +149,12 @@ func ListGroupBounces(db *sql.DB, groupKey string) ([]*GroupBounce, error) {
 	return out, rows.Err()
 }
 
-// ListGroupPatternKeys returns the distinct pattern keys of the bounces of a
-// group, sorted.
+// ListGroupPatternKeys returns the distinct pattern keys of the members of a
+// group (bounces and DMARC records), sorted.
 func ListGroupPatternKeys(db *sql.DB, groupKey string) ([]string, error) {
-	rows, err := db.Query(`SELECT DISTINCT pattern_key FROM bounces WHERE group_key = ? ORDER BY pattern_key`, groupKey)
+	rows, err := db.Query(`SELECT pattern_key FROM bounces WHERE group_key = ?
+		UNION SELECT pattern_key FROM dmarc_records WHERE group_key = ?
+		ORDER BY pattern_key`, groupKey, groupKey)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +180,9 @@ func prefixColumns(alias, columns string) string {
 	return strings.Join(parts, ", ")
 }
 
-// GroupBounceStats summarizes the bounces of a group for display.
+// GroupBounceStats summarizes the members of a group for display: the
+// recipients and remote MTAs of its bounces, and the remote IPs of its
+// bounces together with the sending IPs of its DMARC records.
 type GroupBounceStats struct {
 	Recipients []string `json:"recipients"`
 	RemoteIPs  []string `json:"remote_ips"`
@@ -165,15 +193,15 @@ type GroupBounceStats struct {
 func GroupStats(db *sql.DB, groupKey string) (*GroupBounceStats, error) {
 	st := &GroupBounceStats{Recipients: []string{}, RemoteIPs: []string{}, RemoteMTAs: []string{}}
 	for _, q := range []struct {
-		column string
-		dst    *[]string
+		query string
+		dst   *[]string
 	}{
-		{"recipient", &st.Recipients},
-		{"remote_ip", &st.RemoteIPs},
-		{"remote_mta", &st.RemoteMTAs},
+		{`SELECT DISTINCT recipient FROM bounces WHERE group_key = ?1 AND recipient <> '' ORDER BY 1`, &st.Recipients},
+		{`SELECT remote_ip FROM bounces WHERE group_key = ?1 AND remote_ip <> ''
+		  UNION SELECT source_ip FROM dmarc_records WHERE group_key = ?1 AND source_ip <> '' ORDER BY 1`, &st.RemoteIPs},
+		{`SELECT DISTINCT remote_mta FROM bounces WHERE group_key = ?1 AND remote_mta <> '' ORDER BY 1`, &st.RemoteMTAs},
 	} {
-		rows, err := db.Query(`SELECT DISTINCT `+q.column+` FROM bounces WHERE group_key = ? AND `+q.column+` <> ''
-			ORDER BY `+q.column, groupKey)
+		rows, err := db.Query(q.query, groupKey)
 		if err != nil {
 			return nil, err
 		}

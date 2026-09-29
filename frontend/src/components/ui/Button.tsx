@@ -4,23 +4,26 @@ import { Icon } from './Icon';
 import { Spinner } from './Spinner';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'link';
-export type ButtonSize = 'md' | 'sm';
+export type ButtonSize = 'md' | 'sm' | 'xs';
 
 const BASE =
     'inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50';
 
 const VARIANT: Record<ButtonVariant, string> = {
     primary: 'bg-accent text-accent-contrast hover:bg-accent-hover',
-    secondary: 'border border-line bg-surface text-ink hover:bg-well',
+    // Filled and outlined so that it reads as a button on a card as well (the border is the control color).
+    secondary: 'border border-control bg-well text-ink hover:border-ink',
     danger: 'bg-danger text-danger-contrast hover:bg-danger-hover',
     ghost: 'text-ink hover:bg-well',
     link: 'text-accent underline-offset-2 hover:underline',
 };
 
 const SIZE: Record<ButtonSize, string> = {
-    // 44px minimum tap target in both sizes; "sm" only tightens the padding.
+    // 44px minimum tap target in "md" and "sm"; "sm" only tightens the padding.
     md: 'min-h-tap px-4 py-2 text-base',
     sm: 'min-h-tap px-3 py-1.5 text-sm',
+    // The size of a Badge, for actions placed in a row of badges (below the 44px tap target).
+    xs: 'gap-1 px-2.5 py-0.5 text-sm',
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -44,7 +47,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
             aria-busy={loading || undefined}
             className={`${BASE} ${VARIANT[variant]} ${SIZE[size]} ${block ? 'w-full' : ''} ${className}`}
         >
-            {loading ? <Spinner size={16} /> : icon ? <Icon name={icon} className='text-[20px]' /> : null}
+            {loading ? (
+                <Spinner size={16} />
+            ) : icon ? (
+                <Icon name={icon} className={size === 'xs' ? 'text-[16px]' : 'text-[20px]'} />
+            ) : null}
             {children}
         </button>
     );

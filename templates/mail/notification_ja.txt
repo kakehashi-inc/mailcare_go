@@ -3,7 +3,7 @@
 
   "subject" and "body" are rendered with the Notification value built in
   app/modules/notify.go for one recipient (dates in that recipient's time
-  zone). The category labels are in categories_ja.txt.
+  zone). The category labels come from frontend/src/i18n/ja.json (value.category).
 
   Available fields:
     .Date            YYYY-MM-DD of the day the mail is built
@@ -22,7 +22,7 @@
 
 {{define "body" -}}
 MailCare からのお知らせです。
-メール管理者の対応が必要なバウンスのグループが {{.Total}} 件あります（{{.Date}} 時点）。
+メール管理者の対応が必要なグループが {{.Total}} 件あります（{{.Date}} 時点）。
 各グループの詳細と推奨する対応は、末尾の URL から確認できます。
 {{range .Mailboxes}}
 ==================================================
@@ -30,7 +30,7 @@ MailCare からのお知らせです。
 ==================================================
 {{range .Groups}}
 ■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
-   対象メール: {{.MessageCount}} 件 / 宛先: {{.RecipientCount}} 件
+   対象メール: {{.MessageCount}} 件{{if .RecipientCount}} / 宛先: {{.RecipientCount}} 件{{end}}
    期間: {{.FirstSeen}} 〜 {{.LastSeen}}
    要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
    URL: {{.URL}}

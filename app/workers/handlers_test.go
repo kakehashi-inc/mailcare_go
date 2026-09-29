@@ -2,6 +2,7 @@ package workers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -252,9 +253,10 @@ func TestGroupsEndpoints(t *testing.T) {
 		t.Errorf("malformed group key: %d", rec.Code)
 	}
 
-	// State changes (administrators only; the user role is read-only).
-	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "resolved"}, s.user); rec.Code != http.StatusForbidden {
-		t.Errorf("set state as user: %d, want 403", rec.Code)
+	// State changes (every signed-in user).
+	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "ignored"}, s.user); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"state":"ignored"`) {
+		t.Errorf("set state as user: %d %s, want 200", rec.Code, rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "done"}, s.admin)
 	if rec.Code != http.StatusBadRequest {
@@ -548,21 +550,27 @@ func TestJobsEndpoints(t *testing.T) {
 	if rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": 999}, s.admin); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown mailbox: %d, want 404", rec.Code)
 	}
-	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=1", nil, s.user)
+	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=1", nil, s.admin)
 	if rec.Code != http.StatusOK || strings.Count(rec.Body.String(), `"kind":`) != 1 {
 		t.Errorf("list limit: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=0", nil, s.user); rec.Code != http.StatusBadRequest {
+	if rec := do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=0", nil, s.admin); rec.Code != http.StatusBadRequest {
 		t.Errorf("limit 0: %d", rec.Code)
 	}
-	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs/"+itoa(env.Job.ID), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs/"+itoa(env.Job.ID), nil, s.admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"id":`+itoa(env.Job.ID)) {
 		t.Errorf("get job: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := do(t, s.h, http.MethodGet, "/api/v1/jobs/999", nil, s.user); rec.Code != http.StatusNotFound {
+	if rec := do(t, s.h, http.MethodGet, "/api/v1/jobs/999", nil, s.admin); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown job: %d", rec.Code)
 	}
 	// Cancel: user forbidden, admin cancels a queued job, a finished one is 409.
+	// Members see no jobs at all (list, detail) and cannot cancel.
+	for _, path := range []string{"/api/v1/jobs", "/api/v1/jobs/" + itoa(env.Job.ID)} {
+		if rec := do(t, s.h, http.MethodGet, path, nil, s.user); rec.Code != http.StatusForbidden {
+			t.Errorf("GET %s as user: %d, want 403", path, rec.Code)
+		}
+	}
 	if rec := do(t, s.h, http.MethodDelete, "/api/v1/jobs/"+itoa(env.Job.ID), nil, s.user); rec.Code != http.StatusForbidden {
 		t.Errorf("cancel as user: %d", rec.Code)
 	}
@@ -597,7 +605,7 @@ func TestJobsEndpoints(t *testing.T) {
 	if rec := do(t, s.h, http.MethodDelete, "/api/v1/mailboxes/"+itoa(s.mb.ID)+"?keep_data=1", nil, s.admin); rec.Code != http.StatusOK {
 		t.Fatalf("delete mailbox: %d %s", rec.Code, rec.Body.String())
 	}
-	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs/"+itoa(env.Job.ID), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs/"+itoa(env.Job.ID), nil, s.admin)
 	var one struct {
 		Job JobDTO `json:"job"`
 	}
@@ -605,7 +613,7 @@ func TestJobsEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK || one.Job.Status != "canceled" || one.Job.MailboxID != nil || one.Job.MailboxAddress != "" || !one.Job.MailboxDeleted {
 		t.Errorf("job of the deleted mailbox: %d %+v", rec.Code, one.Job)
 	}
-	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=50", nil, s.user)
+	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=50", nil, s.admin)
 	var list struct {
 		Jobs []JobDTO `json:"jobs"`
 	}
@@ -840,8 +848,28 @@ func TestDashboardAndMailboxStats(t *testing.T) {
 	if d.NextCheckAt == nil || len(d.CheckTimes) != 3 || d.Agent.Provider != modules.DefaultAgentProvider || !d.Agent.Enabled {
 		t.Errorf("schedule/agent %+v %v %+v", d.CheckTimes, d.NextCheckAt, d.Agent)
 	}
-	if len(d.ActiveJobs) != 0 || len(d.RecentJobs) != 0 {
-		t.Errorf("jobs should be empty: %+v %+v", d.ActiveJobs, d.RecentJobs)
+	if len(d.ActiveJobs) != 0 || len(d.RecentJobs) != 0 || len(d.BusyMailboxIDs) != 0 {
+		t.Errorf("jobs should be empty: %+v %+v %v", d.ActiveJobs, d.RecentJobs, d.BusyMailboxIDs)
+	}
+	// Jobs are shown to administrators only: a queued job appears on the
+	// administrator's dashboard, never on a member's.
+	if rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "reclassify", "mailbox_id": s.mb.ID}, s.admin); rec.Code != http.StatusCreated {
+		t.Fatalf("queue job: %d %s", rec.Code, rec.Body.String())
+	}
+	var admin DashboardDTO
+	decode(t, do(t, s.h, http.MethodGet, "/api/v1/dashboard", nil, s.admin).Body.Bytes(), &admin)
+	if len(admin.RecentJobs) == 0 {
+		t.Errorf("administrator dashboard lists no job: %+v", admin.RecentJobs)
+	}
+	var member DashboardDTO
+	rec = do(t, s.h, http.MethodGet, "/api/v1/dashboard", nil, s.user)
+	decode(t, rec.Body.Bytes(), &member)
+	if len(member.ActiveJobs) != 0 || len(member.RecentJobs) != 0 || !strings.Contains(rec.Body.String(), `"active_jobs":[]`) {
+		t.Errorf("member dashboard lists jobs: %s", rec.Body.String())
+	}
+	// Every user still sees which mailbox is busy.
+	if len(member.BusyMailboxIDs) != 1 || member.BusyMailboxIDs[0] != s.mb.ID {
+		t.Errorf("member busy mailboxes = %v, want [%d]", member.BusyMailboxIDs, s.mb.ID)
 	}
 	// A second mailbox without any data contributes zeros, not an error.
 	if _, err := modules.CreateMailbox(s.db, s.key, &modules.MailboxInput{Address: "empty@example.test",
@@ -885,5 +913,159 @@ func TestDashboardAndMailboxStats(t *testing.T) {
 	}
 	if rec := do(t, s.h, http.MethodGet, "/api/v1/mailboxes/999", nil, s.user); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown mailbox: %d", rec.Code)
+	}
+}
+
+// TestJobLists: the active list holds every queued and running job; the
+// history pages the finished ones, filtered by status, with counts per
+// status; members get 403; bad parameters 400.
+func TestJobLists(t *testing.T) {
+	s := newSeededCore(t)
+	insert := func(kind, status string) *models.Job {
+		j := &models.Job{Kind: kind, MailboxID: sql.NullInt64{Int64: s.mb.ID, Valid: true}, Status: status, RequestedBy: "test"}
+		if err := models.InsertJob(s.db, j); err != nil {
+			t.Fatal(err)
+		}
+		switch status {
+		case "done", "error":
+			errMsg := ""
+			if status == "error" {
+				errMsg = "boom"
+			}
+			if err := models.FinishJob(s.db, j.ID, "r", errMsg); err != nil {
+				t.Fatal(err)
+			}
+		case "canceled":
+			if _, err := models.CancelQueuedJob(s.db, j.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return j
+	}
+	insert("fetch", "queued")
+	for i := 0; i < 3; i++ {
+		insert("group", "done")
+	}
+	insert("sync", "error")
+	insert("reindex", "canceled")
+
+	type page struct {
+		Jobs    []JobDTO                 `json:"jobs"`
+		Total   int                      `json:"total"`
+		Page    int                      `json:"page"`
+		PerPage int                      `json:"per_page"`
+		Counts  models.FinishedJobCounts `json:"counts"`
+	}
+	get := func(query string) page {
+		t.Helper()
+		rec := do(t, s.h, http.MethodGet, "/api/v1/jobs?"+query, nil, s.admin)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", query, rec.Code, rec.Body.String())
+		}
+		var p page
+		decode(t, rec.Body.Bytes(), &p)
+		return p
+	}
+	if p := get("state=active"); len(p.Jobs) != 1 || p.Jobs[0].Status != "queued" {
+		t.Errorf("active = %+v", p.Jobs)
+	}
+	all := get("state=finished")
+	if all.Total != 5 || len(all.Jobs) != 5 || all.PerPage != 50 || all.Counts != (models.FinishedJobCounts{All: 5, Done: 3, Error: 1, Canceled: 1}) {
+		t.Errorf("finished = %+v", all)
+	}
+	if p := get("state=finished&status=done&per_page=2&page=2"); p.Total != 3 || len(p.Jobs) != 1 || p.Jobs[0].Status != "done" || p.Page != 2 {
+		t.Errorf("done page 2 = %+v", p)
+	}
+	if p := get("state=finished&status=error"); p.Total != 1 || p.Jobs[0].Status != "error" {
+		t.Errorf("error = %+v", p)
+	}
+	if p := get("state=finished&status=canceled"); p.Total != 1 || p.Jobs[0].Status != "canceled" {
+		t.Errorf("canceled = %+v", p)
+	}
+	for _, q := range []string{"state=nope", "state=finished&status=queued", "state=finished&status=running", "state=finished&page=0", "state=finished&per_page=501"} {
+		if rec := do(t, s.h, http.MethodGet, "/api/v1/jobs?"+q, nil, s.admin); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", q, rec.Code)
+		}
+	}
+	if rec := do(t, s.h, http.MethodGet, "/api/v1/jobs?state=active", nil, s.user); rec.Code != http.StatusForbidden {
+		t.Errorf("active as user: %d, want 403", rec.Code)
+	}
+}
+
+// TestBusyMailboxIDs: only the jobs that work on the mails of a mailbox make
+// it busy; a job for every mailbox makes all of them busy.
+func TestBusyMailboxIDs(t *testing.T) {
+	mbs := []*models.Mailbox{{ID: 1}, {ID: 2}}
+	job := func(kind string, mailbox int64) *models.Job {
+		j := &models.Job{Kind: kind}
+		if mailbox > 0 {
+			j.MailboxID = sql.NullInt64{Int64: mailbox, Valid: true}
+		}
+		return j
+	}
+	if got := busyMailboxIDs([]*models.Job{job("fetch", 2), job("analyze", 1), job("notify", 0)}, mbs); len(got) != 1 || got[0] != 2 {
+		t.Errorf("busy = %v, want [2]", got)
+	}
+	if got := busyMailboxIDs([]*models.Job{job("sync", 0)}, mbs); len(got) != 2 {
+		t.Errorf("busy for an expansion job = %v, want both", got)
+	}
+}
+
+// TestGroupListPaging: the group list is paged on the server in a total
+// order (pages never overlap), sorted by the requested order, with the
+// number of matching groups; bad paging or sort parameters answer 400.
+func TestGroupListPaging(t *testing.T) {
+	s := newSeededCore(t)
+	type page struct {
+		Groups  []GroupDTO `json:"groups"`
+		Total   int        `json:"total"`
+		Page    int        `json:"page"`
+		PerPage int        `json:"per_page"`
+	}
+	get := func(query string) page {
+		t.Helper()
+		rec := do(t, s.h, http.MethodGet, s.path("/groups?scope=all&"+query), nil, s.user)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", query, rec.Code, rec.Body.String())
+		}
+		var p page
+		decode(t, rec.Body.Bytes(), &p)
+		return p
+	}
+	all := get("")
+	if all.Total != s.reindex.Groups || len(all.Groups) != all.Total || all.Page != 1 || all.PerPage != 50 {
+		t.Fatalf("default page = total %d, %d groups, page %d, per_page %d (want %d groups)",
+			all.Total, len(all.Groups), all.Page, all.PerPage, s.reindex.Groups)
+	}
+	if all.Total < 2 {
+		t.Fatalf("the seed needs at least two groups, has %d", all.Total)
+	}
+	seen := map[string]bool{}
+	for n := 1; n <= all.Total; n++ {
+		p := get("per_page=1&page=" + itoa(int64(n)))
+		if p.Total != all.Total || len(p.Groups) != 1 || p.Groups[0].GroupKey != all.Groups[n-1].GroupKey || seen[p.Groups[0].GroupKey] {
+			t.Errorf("page %d = %+v, want group %s", n, p, all.Groups[n-1].GroupKey)
+		}
+		seen[p.Groups[0].GroupKey] = true
+	}
+	if p := get("per_page=1&page=" + itoa(int64(all.Total+1))); len(p.Groups) != 0 || p.Total != all.Total {
+		t.Errorf("page past the end = %+v", p)
+	}
+	byCount := get("sort=count_desc")
+	for i := 1; i < len(byCount.Groups); i++ {
+		a, b := byCount.Groups[i-1], byCount.Groups[i]
+		if a.State == b.State && a.MessageCount < b.MessageCount {
+			t.Errorf("count_desc not descending: %d before %d", a.MessageCount, b.MessageCount)
+		}
+	}
+	for _, sort := range []string{"last_seen_asc", "severity"} {
+		if p := get("sort=" + sort); p.Total != all.Total {
+			t.Errorf("sort=%s lists %d groups", sort, p.Total)
+		}
+	}
+	for _, q := range []string{"sort=nope", "page=0", "per_page=0", "per_page=501"} {
+		if rec := do(t, s.h, http.MethodGet, s.path("/groups?"+q), nil, s.user); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", q, rec.Code)
+		}
 	}
 }

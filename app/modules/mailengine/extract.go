@@ -28,7 +28,7 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 	}
 	// The primary body (every text section joined) first; whatever is still
 	// empty is completed from the HTML sections rendered as text when the
-	// message has both kinds (design 5.2).
+	// message has both kinds (design document "mail classification" 2.1).
 	f.source = pm.primarySource()
 	f.fromBody(unfold(pm.bodyForClassification()), pm.Headers, exclude)
 	if secondary := pm.secondaryBody(); secondary != "" {
@@ -64,7 +64,7 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 	}
 	b.DiagnosticTemplate = DiagnosticTemplate(templateSource)
 	b.PatternKey = PatternKey(b.StatusCode, b.DiagnosticTemplate, b.RemoteMTA, b.DiagnosticSource)
-	// The responsible party is a property of the group (design 5.4); the
+	// The responsible party is a property of the group (design document "mail classification" 4.1); the
 	// bounce row does not repeat it.
 	return b
 }

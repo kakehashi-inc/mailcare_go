@@ -10,17 +10,18 @@ import (
 
 // GroupMailbox is the grouping phase (design 5.4): it classifies the
 // messages the phase has not processed yet (messages.classified = 0),
-// extracts the bounce details, categorizes them and files them into groups.
-// Every message is parsed again from its .eml (the index holds no parsed
-// copy); the writes of one message form one transaction (groupMessage), so
-// the counters of a group are always in step with its bounces. An
-// actionable group that received a bounce of a pattern its latest completed
-// report did not cover is flagged for analysis and listed in
+// extracts the bounce details and the failing records of DMARC reports,
+// categorizes them and files them into groups. Every message is parsed
+// again from its .eml (the index holds no parsed copy); the writes of one
+// message form one transaction (groupMessage), so the counters of a group
+// are always in step with its members. An actionable group that received a
+// member (bounce or DMARC record) of a pattern its latest completed report
+// did not cover is flagged for analysis and listed in
 // GroupResult.GroupsTouched.
 //
 // With full = true every message is done again: the classification is
 // cleared first (ClearMailClassification, which also drops every bounces
-// row), then all messages are processed and groups left without messages
+// and dmarc_records row), then all messages are processed and groups left without messages
 // are deleted together with their reports. A group whose key comes back
 // keeps its state, its reports and its needs_analysis flag (set again only
 // when one of its patterns is not covered by its latest completed report),
@@ -92,16 +93,17 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, pro
 }
 
 // groupMessage runs classification, extraction, categorization and grouping
-// for one index row and marks it classified (design 5.3 + 5.4). Every write
-// of the message happens in one transaction: the group row (UpsertGroup),
+// for one index row and marks it classified (design document "mail classification" 2-4, design 5.4). Every write
+// of the message happens in one transaction: the group rows (UpsertGroup),
 // the bounces row (only for failed / delayed notices; auto-replies, daemon
-// mail without failure evidence and ordinary mail get none; it records where
-// the diagnostic was found, the category rule and the pattern key), the
-// counters and the analysis flag of the group (groupTracker.recount: set
-// when the pattern of the bounce is not covered by the latest completed
-// report) and finally the
+// mail without failure evidence, junk and ordinary mail get none; it records
+// where the diagnostic was found, the category rule and the pattern key) and
+// the dmarc_records rows (the failing records of a DMARC report, each with
+// its group, category rule and pattern key), the counters and the analysis
+// flag of every group touched (groupTracker.recount: set when the pattern of
+// the member is not covered by the latest completed report) and finally the
 // detection outcome (is_bounce, bounce_kind, rule, the body actually used)
-// of the messages row. The order groups -> bounces -> messages also holds
+// of the messages row. The order groups -> members -> messages also holds
 // without a transaction: an interruption leaves the message unclassified,
 // so the next run does it again, and never a classified message without
 // its details. msg is updated in place. exclude lists the addresses never
@@ -123,7 +125,7 @@ func groupMessage(db *sql.DB, msg *models.Message, pm *ParsedMessage, tracker *g
 // in production; the tests also drive it with a plain database or a failing
 // wrapper to check the write order).
 func groupMessageIn(db models.Execer, msg *models.Message, pm *ParsedMessage, tracker *groupTracker, exclude ...string) error {
-	cls := Classify(pm)
+	cls := Classify(pm, mailboxOf(exclude))
 	var bounce *models.Bounce
 	var group *models.BounceGroup
 	groupKey := ""
@@ -134,11 +136,24 @@ func groupMessageIn(db models.Execer, msg *models.Message, pm *ParsedMessage, tr
 			groupKey = group.GroupKey
 		}
 	}
-	// 1. the group (descriptive columns; the counters follow the bounce).
+	var records []*models.DMARCRecord
+	var recordGroups []*reportGroup
+	if cls.Kind == bounceKindReport {
+		var groups []*models.BounceGroup
+		records, groups = dmarcRecordsFor(pm.DMARC)
+		recordGroups = distinctReportGroups(records, groups)
+	}
+	// 1. the groups (descriptive columns; the counters follow the members).
 	if err := tracker.upsert(db, group); err != nil {
 		return err
 	}
-	// 2. the bounce details, or the removal of stale ones.
+	for _, rg := range recordGroups {
+		if err := tracker.upsert(db, rg.group); err != nil {
+			return err
+		}
+	}
+	// 2. the bounce details and the DMARC records, or the removal of stale
+	// ones.
 	if bounce != nil {
 		bounce.ID = msg.ID
 		bounce.GroupKey = groupKey
@@ -148,14 +163,22 @@ func groupMessageIn(db models.Execer, msg *models.Message, pm *ParsedMessage, tr
 	} else if err := models.DeleteBounce(db, msg.ID); err != nil {
 		return err
 	}
-	patternKey := ""
-	if bounce != nil {
-		patternKey = bounce.PatternKey
-	}
-	if err := tracker.recount(db, group, patternKey); err != nil {
+	if err := models.ReplaceDMARCRecords(db, msg.ID, records); err != nil {
 		return err
 	}
-	// 3. the detection outcome; the message counts as processed only now.
+	// 3. the counters and the analysis flag of every group touched, once
+	// per group however many records of the report it received.
+	if bounce != nil {
+		if err := tracker.recount(db, group, bounce.PatternKey); err != nil {
+			return err
+		}
+	}
+	for _, rg := range recordGroups {
+		if err := tracker.recount(db, rg.group, rg.patterns...); err != nil {
+			return err
+		}
+	}
+	// 4. the detection outcome; the message counts as processed only now.
 	if err := models.UpdateMessageClassification(db, msg.ID, cls.IsBounce, cls.Kind, cls.Rule, cls.BodySource); err != nil {
 		return err
 	}
@@ -165,11 +188,51 @@ func groupMessageIn(db models.Execer, msg *models.Message, pm *ParsedMessage, tr
 }
 
 // isGroupedKind reports whether a bounce kind gets bounce details and a
-// group: only failed and delayed notices do (design 5.3 / 5.4). Auto-replies
-// and daemon mail without failure evidence ("other": success DSNs, daemon
-// mail with ordinary wording) are recorded as bounces but not grouped.
+// group: only failed and delayed notices do. Auto-replies and daemon mail
+// without failure evidence ("other": success DSNs, daemon mail with
+// ordinary wording) are recorded as notices but not grouped; a DMARC report
+// ("report") gets no bounce details, its failing records are grouped one by
+// one (dmarcRecordsFor).
 func isGroupedKind(kind string) bool {
 	return kind == bounceKindFailed || kind == bounceKindDelayed
+}
+
+// reportGroup is one distinct group of the failing records of a DMARC
+// report, with the distinct pattern keys of its records in report order.
+type reportGroup struct {
+	group    *models.BounceGroup
+	patterns []string
+}
+
+// distinctReportGroups folds the group of every record (records[i] belongs
+// to groups[i]) into the distinct groups of the report, so that a report
+// with many records of the same group writes and recounts that group once.
+func distinctReportGroups(records []*models.DMARCRecord, groups []*models.BounceGroup) []*reportGroup {
+	var out []*reportGroup
+	byKey := map[string]*reportGroup{}
+	seen := map[string]bool{}
+	for i, g := range groups {
+		rg := byKey[g.GroupKey]
+		if rg == nil {
+			rg = &reportGroup{group: g}
+			byKey[g.GroupKey] = rg
+			out = append(out, rg)
+		}
+		if key := g.GroupKey + "|" + records[i].PatternKey; !seen[key] {
+			seen[key] = true
+			rg.patterns = append(rg.patterns, records[i].PatternKey)
+		}
+	}
+	return out
+}
+
+// mailboxOf returns the monitored address among the excluded addresses
+// (the first one; "" when none was given).
+func mailboxOf(exclude []string) string {
+	if len(exclude) == 0 {
+		return ""
+	}
+	return exclude[0]
 }
 
 // countAllGroups returns the number of groups in the index regardless of

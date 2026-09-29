@@ -38,6 +38,9 @@ func indexStats(idx *sql.DB, mb *models.Mailbox) *MailboxStatsDTO {
 	if st.TargetMessages, err = mailengine.CountTargetMessages(idx); err != nil {
 		log.Printf("failed to count target messages of %s: %v", address, err)
 	}
+	if st.JunkMessages, err = mailengine.CountJunkMessages(idx); err != nil {
+		log.Printf("failed to count junk messages of %s: %v", address, err)
+	}
 	if st.Groups, err = models.CountGroups(idx, models.GroupScopeActionable); err != nil {
 		log.Printf("failed to count groups of %s: %v", address, err)
 	}

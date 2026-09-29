@@ -15,15 +15,19 @@ import (
 // storeOptions controls how storeMessage behaves for fetch vs. reindex.
 type storeOptions struct {
 	writeEML bool // write the .eml (fetch); reindex reads it instead
-	// dedupeByMessageID skips a message whose Message-ID is already indexed.
-	// A UIDVALIDITY change gives every message a new key, so this is what
-	// keeps the re-scanned window from being indexed twice (fetch only).
-	dedupeByMessageID bool
+	// reidentify moves an indexed row with the same Message-ID and a stale
+	// identity to src instead of storing the message again
+	// (models.ReidentifyMessage). A UIDVALIDITY change gives every message
+	// a new UID, so this is what keeps the re-scanned window from being
+	// indexed twice (fetch only). A message with the same Message-ID under
+	// another current UID is another message on the server and is stored.
+	reidentify bool
 }
 
-// errDuplicateMessage is returned by storeMessage when the message is already
-// indexed under another key (see storeOptions.dedupeByMessageID).
-var errDuplicateMessage = errors.New("mailengine: message already indexed")
+// errReidentified is returned by storeMessage when the message was already
+// indexed under a stale identity and that row now carries src's identity
+// (see storeOptions.reidentify); nothing was written.
+var errReidentified = errors.New("mailengine: indexed message moved to its current identity")
 
 // storeMessage writes the body section files of one message and inserts its
 // index row with classified = 0 (design 5.1). Classification, extraction
@@ -34,15 +38,6 @@ var errDuplicateMessage = errors.New("mailengine: message already indexed")
 // MessageKey lets the key be derived from the date and the identity).
 func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOptions) (*models.Message, *ParsedMessage, error) {
 	pm := ParseMessage(raw)
-	if opts.dedupeByMessageID && pm.MessageID != "" {
-		exists, err := models.MessageIDExists(db, pm.MessageID)
-		if err != nil {
-			return nil, pm, fmt.Errorf("lookup message id: %w", err)
-		}
-		if exists {
-			return nil, pm, errDuplicateMessage
-		}
-	}
 	if src.FetchedAt.IsZero() {
 		src.FetchedAt = time.Now().UTC()
 	}
@@ -51,6 +46,15 @@ func storeMessage(db *sql.DB, dir string, raw []byte, src Source, opts storeOpti
 	}
 	if src.Folder == "" {
 		src.Folder = defaultFolder
+	}
+	if opts.reidentify && pm.MessageID != "" {
+		moved, err := models.ReidentifyMessage(db, pm.MessageID, src.Folder, src.UIDValidity, src.UID, src.Size)
+		if err != nil {
+			return nil, pm, fmt.Errorf("reidentify message: %w", err)
+		}
+		if moved {
+			return nil, pm, errReidentified
+		}
 	}
 	// A missing or unparsable Date header falls back to INTERNALDATE and
 	// then to the fetch time (the same order as the message key), so the

@@ -830,9 +830,19 @@ func (m *JobManager) runFetch(ctx context.Context, job *models.Job, mb *models.M
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
 	}
-	line := fmt.Sprintf("fetched %d, skipped %d", res.Fetched, res.Skipped)
+	line := fetchLine(res)
 	progress(line)
 	return line, nil
+}
+
+// fetchLine describes a fetch outcome for the progress and the job result:
+// "fetched N", with ", reidentified R" when indexed messages took a new UID.
+func fetchLine(res *mailengine.FetchResult) string {
+	line := fmt.Sprintf("fetched %d", res.Fetched)
+	if res.Reidentified > 0 {
+		line += fmt.Sprintf(", reidentified %d", res.Reidentified)
+	}
+	return line
 }
 
 // serverRetentionApplies reports whether the cleanup of a mailbox deletes
@@ -843,9 +853,9 @@ func serverRetentionApplies(mb *models.Mailbox) bool {
 
 // runCleanup applies the retentions for one mailbox (the daily cleanup job,
 // also runnable by hand): first, for an enabled mailbox with a server
-// retention, the daemon notices classified with certain evidence
-// (mailengine.serverDeletableRules) older than the server retention are deleted from the IMAP
-// server (mailengine.DeleteFromServer; it runs before the local retention so
+// retention, the notices classified with certain evidence and the junk
+// mails (mailengine.serverDeletionRules) older than the server retention
+// are deleted from the IMAP server (mailengine.DeleteFromServer; it runs before the local retention so
 // that a row is never removed from the index while its mail is still due on
 // the server; a server retention longer than mail_keep_days is applied as
 // mail_keep_days, see effectiveServerKeepDays),
@@ -999,18 +1009,18 @@ func (m *JobManager) runSync(ctx context.Context, job *models.Job, mb *models.Ma
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
 	}
-	progress(fmt.Sprintf("fetched %d, skipped %d", fetched.Fetched, fetched.Skipped))
+	progress(fetchLine(fetched))
 	if ctx.Err() != nil {
-		return fmt.Sprintf("fetched %d, skipped %d", fetched.Fetched, fetched.Skipped), errors.New("server shutting down")
+		return fetchLine(fetched), errors.New("server shutting down")
 	}
 	progress("grouping")
 	grouped, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, false, mailengine.Progress(progress))
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
-		return fmt.Sprintf("fetched %d, skipped %d", fetched.Fetched, fetched.Skipped), fmt.Errorf("%s: %w", mb.Address, err)
+		return fetchLine(fetched), fmt.Errorf("%s: %w", mb.Address, err)
 	}
-	line := fmt.Sprintf("fetched %d, skipped %d, processed %d, bounces %d, groups %d",
-		fetched.Fetched, fetched.Skipped, grouped.Processed, grouped.Bounces, grouped.Groups)
+	line := fmt.Sprintf("%s, processed %d, bounces %d, groups %d",
+		fetchLine(fetched), grouped.Processed, grouped.Bounces, grouped.Groups)
 	progress(line)
 	// Queue the analysis when any actionable group is flagged: groups that
 	// gained messages in this run and groups whose last analysis failed.

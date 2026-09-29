@@ -14,7 +14,9 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
   times of the day (06:00, 12:00 and 18:00 by default).
 - **Bounce detection and grouping** - recognizes bounces among the fetched mail and groups them by cause, such
   as "sending IP blocked", "sender authentication failed" or "recipient address does not exist". Bounces that
-  call for the same action end up in one group even when the recipients or remote servers differ.
+  call for the same action end up in one group even when the recipients or remote servers differ. DMARC
+  aggregate reports are read as well: every record that failed DMARC is grouped by what it shows (SPF record
+  missing, DKIM verification failed, sender not authenticated) together with its sending IPs.
 - **Alerts** - only what the sending side has to act on is shown as an alert; recipient-side problems (unknown
   user, full mailbox, ...) are listed separately as excluded. Each alert can be marked open, resolved or
   ignored.
@@ -24,14 +26,18 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
 - **Mail notifications** - sends the list of alerts that need attention to the selected users, each in their
   own language (Japanese / English) and time zone. The time and the interval (daily to every 7 days) are
   configurable.
-- **Mail viewer** - browse the fetched mail by all / bounces / others (text and HTML bodies, original download).
+- **Junk detection** - typical phishing (a sender name that impersonates the monitored domain or another
+  organization, a link to an outside site that carries the monitored address, a forged From of the monitored
+  domain) and mail flagged as spam are recognized as junk. Junk is not an alert and is counted separately.
+- **Mail viewer** - browse the fetched mail by all / bounces / junk / others (text and HTML bodies, original
+  download).
 - **Automatic cleanup** - every day at a set time (2:00 by default), fetched mail past its retention (180 days by
-  default) is removed. Bounces, auto-replies and similar notices can also be deleted from the IMAP server after a
-  number of days set per mail address (60 by default for a new address, at most the mail retention; 0 never
-  deletes). Mails recognized by subject or sender name alone, automatically generated messages and ordinary mail
-  stay on the server.
-- **Users and roles** - administrators and read-only users. The UI is available in Japanese and English, with
-  light and dark themes.
+  default) is removed. Bounces, auto-replies, DMARC reports and similar notices, and junk, can also be deleted
+  from the IMAP server after a number of days set per mail address (60 by default for a new address, at most the
+  mail retention; 0 never deletes). Notices recognized by subject or sender name alone, automatically generated
+  messages and ordinary mail stay on the server.
+- **Users and roles** - administrators and members. Members can view everything and change the state of alerts.
+  The UI is available in Japanese and English, with light and dark themes.
 - **Command line** - starting and stopping, registering users and mail addresses, syncing and more can also be
   done from the command line.
 
@@ -123,7 +129,7 @@ While the server is running, command line operations are handed to it. Main comm
 | `mailcare sync --wait` | Sync every mail address now (fetch -> group -> analyze). Add `--all-time` to check every mail regardless of the period |
 | `mailcare schedule set 06:00 12:00 18:00` | Change the automatic check times |
 | `mailcare settings show` / `mailcare settings set <key> <value>` | Show / change the settings |
-| `mailcare cleanup` | Apply the retentions now: delete old notices from the IMAP server, remove old mail, temporary files, agent workspaces and job history |
+| `mailcare cleanup` | Apply the retentions now: delete old notices and junk mails from the IMAP server, remove old mail, temporary files, agent workspaces and job history |
 | `mailcare jobs list` | Show the task history |
 
 `mailcare --help` lists every command.

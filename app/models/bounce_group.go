@@ -14,7 +14,8 @@ import (
 // blacklist, the recipient domain). Actionable is false for recipient-side
 // problems the mail administrator cannot fix; those groups are kept for
 // reference but excluded from Alerts by default. Membership is recorded in
-// bounces.group_key. There is no stored title: see Label.
+// bounces.group_key and dmarc_records.group_key. There is no stored title:
+// see Label.
 type BounceGroup struct {
 	GroupKey           string       `json:"group_key"`
 	Category           string       `json:"category"`
@@ -86,19 +87,24 @@ func UpsertGroup(db Execer, g *BounceGroup) error {
 }
 
 // RefreshGroupCounters recomputes the message/recipient/IP counts and the
-// first/last seen dates of a group from its messages. It never sets the
+// first/last seen dates of a group from its members: its bounces and its
+// DMARC records (each table filtered by the group key on its own; a report
+// mail with several records of the group counts once). It never sets the
 // analysis flag itself (the grouping phase flags an actionable group that
-// received a bounce of a pattern its latest completed report did not cover,
-// see mailengine); a recipient-side group
+// received a bounce or DMARC record of a pattern its latest completed
+// report did not cover, see mailengine); a recipient-side group
 // (actionable = 0) always ends with the flag cleared.
 func RefreshGroupCounters(db Execer, groupKey string) error {
 	// MIN()/MAX() over a DATETIME column carry no declared type, so the driver
 	// returns them as strings (see ParseSQLiteTime).
 	var count, recipients, ips int
 	var firstRaw, lastRaw sql.NullString
-	if err := db.QueryRow(`SELECT COUNT(*), MIN(m.date), MAX(m.date),
-		COUNT(DISTINCT NULLIF(b.recipient, '')), COUNT(DISTINCT NULLIF(b.remote_ip, ''))
-		FROM bounces b JOIN messages m ON m.id = b.id WHERE b.group_key = ?`, groupKey).Scan(&count, &firstRaw, &lastRaw, &recipients, &ips); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT m.id), MIN(m.date), MAX(m.date),
+		COUNT(DISTINCT NULLIF(g.recipient, '')), COUNT(DISTINCT NULLIF(g.remote_ip, ''))
+		FROM (SELECT id AS message_id, recipient, remote_ip FROM bounces WHERE group_key = ?
+		      UNION ALL
+		      SELECT message_id, '', source_ip FROM dmarc_records WHERE group_key = ?) g
+		JOIN messages m ON m.id = g.message_id`, groupKey, groupKey).Scan(&count, &firstRaw, &lastRaw, &recipients, &ips); err != nil {
 		return err
 	}
 	_, err := db.Exec(
@@ -110,9 +116,12 @@ func RefreshGroupCounters(db Execer, groupKey string) error {
 	return err
 }
 
-// DeleteEmptyGroups removes groups that no longer have messages.
+// DeleteEmptyGroups removes groups that no longer have members (bounces or
+// DMARC records).
 func DeleteEmptyGroups(db Execer) error {
-	_, err := db.Exec(`DELETE FROM groups WHERE group_key NOT IN (SELECT DISTINCT group_key FROM bounces WHERE group_key <> '')`)
+	_, err := db.Exec(`DELETE FROM groups
+		WHERE NOT EXISTS (SELECT 1 FROM bounces b WHERE b.group_key = groups.group_key)
+		  AND NOT EXISTS (SELECT 1 FROM dmarc_records d WHERE d.group_key = groups.group_key)`)
 	return err
 }
 
@@ -185,10 +194,43 @@ type GroupFilter struct {
 	Actionable  *bool  // nil = all; true / false = the actionable column only (analysis, notification)
 	Scope       string // GroupScope*: the Alerts list the group belongs to (see groupScopeCondition)
 	Query       string // matched against unit, authority, recipient domain and template (LIKE)
+	Sort        string // GroupSort*: the order within a state ("" = last seen, newest first)
 }
 
-// ListGroups returns groups ordered by state (open first) then last seen desc.
-func ListGroups(db *sql.DB, f GroupFilter) ([]*BounceGroup, error) {
+// Orders of ListGroups (GroupFilter.Sort). Groups are ordered by state
+// first (open, resolved, ignored), then by the sort, then by group key, so
+// that the order is total and pages never overlap.
+const (
+	GroupSortLastSeenDesc = ""              // last seen, newest first
+	GroupSortLastSeenAsc  = "last_seen_asc" // last seen, oldest first
+	GroupSortCountDesc    = "count_desc"    // most messages first, then newest
+	GroupSortSeverity     = "severity"      // severity of the latest completed report (high, medium, low, none), then newest
+)
+
+// groupSortOrder returns the ORDER BY terms of a sort ("" for an unknown one).
+func groupSortOrder(sort string) string {
+	switch sort {
+	case GroupSortLastSeenDesc:
+		return `last_seen DESC`
+	case GroupSortLastSeenAsc:
+		return `last_seen ASC`
+	case GroupSortCountDesc:
+		return `message_count DESC, last_seen DESC`
+	case GroupSortSeverity:
+		return `CASE (SELECT r.severity FROM agent_reports r WHERE r.group_key = groups.group_key
+			AND r.status = 'completed' ORDER BY r.id DESC LIMIT 1)
+			WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END, last_seen DESC`
+	}
+	return ""
+}
+
+// ValidGroupSort reports whether s names an order of ListGroups.
+func ValidGroupSort(s string) bool {
+	return groupSortOrder(s) != ""
+}
+
+// groupWhere is the WHERE clause of a filter and its arguments.
+func groupWhere(f GroupFilter) (string, []any) {
 	var conds []string
 	var args []any
 	if f.State != "" {
@@ -216,12 +258,41 @@ func ListGroups(db *sql.DB, f GroupFilter) ([]*BounceGroup, error) {
 			` OR recipient_domain LIKE ?`+likeEscapeClause+` OR diagnostic_template LIKE ?`+likeEscapeClause+`)`)
 		args = append(args, like, like, like, like)
 	}
-	where := ""
-	if len(conds) > 0 {
-		where = " WHERE " + strings.Join(conds, " AND ")
+	if len(conds) == 0 {
+		return "", args
 	}
-	return queryGroups(db, `SELECT `+groupColumns+` FROM groups`+where+
-		` ORDER BY CASE state WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 ELSE 2 END, last_seen DESC`, args...)
+	return " WHERE " + strings.Join(conds, " AND "), args
+}
+
+// groupOrderBy is the ORDER BY clause of a filter (see the GroupSort*
+// constants; an unknown sort orders like the default).
+func groupOrderBy(f GroupFilter) string {
+	order := groupSortOrder(f.Sort)
+	if order == "" {
+		order = groupSortOrder(GroupSortLastSeenDesc)
+	}
+	return ` ORDER BY CASE state WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 ELSE 2 END, ` + order + `, group_key`
+}
+
+// ListGroups returns every group matching the filter, ordered by state
+// (open first), then by the sort of the filter, then by group key.
+func ListGroups(db *sql.DB, f GroupFilter) ([]*BounceGroup, error) {
+	where, args := groupWhere(f)
+	return queryGroups(db, `SELECT `+groupColumns+` FROM groups`+where+groupOrderBy(f), args...)
+}
+
+// ListGroupsPage returns one page (offset, limit) of the groups matching
+// the filter, in the order of ListGroups, with the number of matching
+// groups.
+func ListGroupsPage(db *sql.DB, f GroupFilter, offset, limit int) ([]*BounceGroup, int, error) {
+	where, args := groupWhere(f)
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM groups`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	groups, err := queryGroups(db, `SELECT `+groupColumns+` FROM groups`+where+groupOrderBy(f)+` LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...)
+	return groups, total, err
 }
 
 // ListGroupsNeedingAnalysis returns open, actionable groups flagged for

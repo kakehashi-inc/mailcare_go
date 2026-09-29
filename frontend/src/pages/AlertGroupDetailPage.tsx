@@ -286,23 +286,21 @@ export function AlertGroupDetailPage() {
                     { label: t('page.groupDetail.title') },
                 ]}
                 actions={
-                    isAdmin && (
-                        <div className='flex flex-wrap gap-2' role='group' aria-label={t('action.group.changeState')}>
-                            {STATES.filter(s => s !== group.state).map(s => (
-                                <Button
-                                    key={s}
-                                    size='sm'
-                                    variant={s === 'resolved' ? 'primary' : 'secondary'}
-                                    icon={s === 'open' ? 'undo' : s === 'resolved' ? 'check_circle' : 'visibility_off'}
-                                    loading={changing === s}
-                                    disabled={changing !== null}
-                                    onClick={() => void changeState(s)}
-                                >
-                                    {t(`action.group.markAs.${s}`)}
-                                </Button>
-                            ))}
-                        </div>
-                    )
+                    <div className='flex flex-wrap gap-2' role='group' aria-label={t('action.group.changeState')}>
+                        {STATES.filter(s => s !== group.state).map(s => (
+                            <Button
+                                key={s}
+                                size='sm'
+                                variant={s === 'resolved' ? 'primary' : 'secondary'}
+                                icon={s === 'open' ? 'undo' : s === 'resolved' ? 'check_circle' : 'visibility_off'}
+                                loading={changing === s}
+                                disabled={changing !== null}
+                                onClick={() => void changeState(s)}
+                            >
+                                {t(`action.group.markAs.${s}`)}
+                            </Button>
+                        ))}
+                    </div>
                 }
             />
 

@@ -209,7 +209,7 @@ func TestMailLocale(t *testing.T) {
 	}
 	for _, lang := range []string{"ja", "en"} {
 		labels, err := loadCategoryLabels(lang)
-		if err != nil || len(labels) != 13 {
+		if err != nil || len(labels) != len(KnownCategories()) {
 			t.Errorf("%s category labels: %d (err %v)", lang, len(labels), err)
 		}
 	}

@@ -428,7 +428,7 @@ func TestParseClassifyExtractSamples(t *testing.T) {
 					t.Error("skeleton HTML section kept")
 				}
 			}
-			cls := Classify(pm)
+			cls := Classify(pm, "")
 			if cls.IsBounce != s.isBounce || cls.Kind != s.kind || cls.Rule != s.rule {
 				t.Fatalf("classification = %+v, want bounce=%v kind=%s rule=%s", cls, s.isBounce, s.kind, s.rule)
 			}
@@ -569,7 +569,7 @@ func TestParsedMessageDetails(t *testing.T) {
 		if pm == nil {
 			t.Fatal("nil parsed message")
 		}
-		_ = Classify(pm)
+		_ = Classify(pm, "")
 		_ = ExtractBounce(pm, bounceKindFailed)
 	}
 }
@@ -580,19 +580,19 @@ func TestUnfoldAndClassifyText(t *testing.T) {
 	}
 	pm := &ParsedMessage{Subject: "Warning: could not send message for past 4 hours", FromAddress: "postmaster@x.example",
 		TextSections: []string{"Will keep trying until message is 5 days old"}, Headers: map[string]string{}}
-	if c := Classify(pm); c.Kind != bounceKindDelayed || c.Rule != "daemon_sender" {
+	if c := Classify(pm, ""); c.Kind != bounceKindDelayed || c.Rule != "daemon_sender" {
 		t.Errorf("delayed daemon mail classified as %+v", c)
 	}
 	pm = &ParsedMessage{Subject: "Out of Office: Re: hello", FromAddress: "someone@x.example", Headers: map[string]string{}}
-	if c := Classify(pm); c.Kind != bounceKindAutoReply {
+	if c := Classify(pm, ""); c.Kind != bounceKindAutoReply {
 		t.Errorf("out of office classified as %+v", c)
 	}
 	pm = &ParsedMessage{Subject: "hello", FromAddress: "someone@x.example", FromName: "Mail Delivery Subsystem", Headers: map[string]string{}}
-	if c := Classify(pm); c.Kind != bounceKindOther || c.Rule != "daemon_display_name" {
+	if c := Classify(pm, ""); c.Kind != bounceKindOther || c.Rule != "daemon_display_name" {
 		t.Errorf("daemon display name classified as %+v", c)
 	}
 	pm = &ParsedMessage{Subject: "配信できませんでした", FromAddress: "someone@x.example", Headers: map[string]string{}}
-	if c := Classify(pm); c.Kind != bounceKindFailed || c.Rule != "subject_pattern" {
+	if c := Classify(pm, ""); c.Kind != bounceKindFailed || c.Rule != "subject_pattern" {
 		t.Errorf("japanese subject classified as %+v", c)
 	}
 }
@@ -1449,7 +1449,7 @@ func mustOpenIndex(t *testing.T, root, address string) *sql.DB {
 	return db
 }
 
-func TestStoreDedupesByMessageID(t *testing.T) {
+func TestStoreReidentifiesStaleIdentity(t *testing.T) {
 	root := t.TempDir()
 	address := "newsletter@example.jp"
 	dir := MailboxDir(root, address)
@@ -1459,22 +1459,54 @@ func TestStoreDedupesByMessageID(t *testing.T) {
 	}
 	defer db.Close()
 	raw := readSample(t, "postfix_dsn.eml")
-	opts := storeOptions{writeEML: true, dedupeByMessageID: true}
-	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 1, UID: 1}, opts); err != nil {
+	opts := storeOptions{writeEML: true, reidentify: true}
+	first, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 1, UID: 1}, opts)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// The same message seen again after a UIDVALIDITY change has a new key
-	// but the same Message-ID: it must be skipped.
-	_, _, err = storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: 7}, opts)
-	if !errors.Is(err, errDuplicateMessage) {
-		t.Fatalf("second store err = %v, want errDuplicateMessage", err)
+	// Another UID of the same folder with the same Message-ID is another
+	// message on the server (the mail was delivered twice): it is stored.
+	second, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 1, UID: 2}, opts)
+	if err != nil {
+		t.Fatalf("copy under another UID: %v", err)
 	}
-	if total, _, _ := models.CountMessages(db); total != 1 {
-		t.Errorf("index holds %d messages, want 1", total)
+	if second.MessageKey == first.MessageKey {
+		t.Fatal("the copy got the key of the first message")
 	}
-	// Reindex does not deduplicate (files on disk are the truth).
-	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: 7}, storeOptions{}); err != nil {
-		t.Fatalf("store without dedupe: %v", err)
+	// After a UIDVALIDITY change the server numbers both anew: each row
+	// takes one of the new UIDs, nothing is stored twice.
+	for _, uid := range []uint32{7, 8} {
+		if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: uid}, opts); !errors.Is(err, errReidentified) {
+			t.Fatalf("uid %d after the UIDVALIDITY change: err = %v, want errReidentified", uid, err)
+		}
+	}
+	for _, uid := range []uint32{7, 8} {
+		if ok, err := models.MessageExists(db, 2, uid, "INBOX"); err != nil || !ok {
+			t.Errorf("uid %d is not indexed under the new UIDVALIDITY (err %v)", uid, err)
+		}
+	}
+	// A third copy under the new UIDVALIDITY finds no stale row: stored.
+	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 2, UID: 9}, opts); err != nil {
+		t.Fatalf("third copy: %v", err)
+	}
+	if total, _, _ := models.CountMessages(db); total != 3 {
+		t.Errorf("index holds %d messages, want 3", total)
+	}
+	// A row indexed from a raw file (synthetic identity, uidvalidity 0)
+	// takes the identity the server reports for it.
+	other := withNewMessageID(raw, "synthetic@example.jp")
+	if _, _, err := storeMessage(db, dir, other, Source{Folder: "INBOX", UIDValidity: 0, UID: 12345}, storeOptions{writeEML: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := storeMessage(db, dir, other, Source{Folder: "INBOX", UIDValidity: 2, UID: 10}, opts); !errors.Is(err, errReidentified) {
+		t.Fatalf("synthetic row: err = %v, want errReidentified", err)
+	}
+	if ok, _ := models.MessageExists(db, 2, 10, "INBOX"); !ok {
+		t.Error("the synthetic row did not take uid 10")
+	}
+	// Reindex stores as it is (files on disk are the truth).
+	if _, _, err := storeMessage(db, dir, raw, Source{Folder: "INBOX", UIDValidity: 3, UID: 1}, storeOptions{}); err != nil {
+		t.Fatalf("store without reidentify: %v", err)
 	}
 }
 
@@ -1781,7 +1813,9 @@ func TestCategorize(t *testing.T) {
 		})
 	}
 	for category := range categoryDefs {
-		if !seen[category] {
+		// The DMARC categories are filed by CategorizeDMARCRecord
+		// (TestCategorizeDMARCRecord).
+		if !seen[category] && categoryDefs[category].unit != unitNone {
 			t.Errorf("no test case produces category %s", category)
 		}
 	}
@@ -2033,9 +2067,9 @@ func TestHTMLToText(t *testing.T) {
 	}
 }
 
-// TestBodySelectionLayouts covers the five body layouts of design 5.2 with
-// inline messages: plain only, HTML only, plain + HTML, blank plain + HTML,
-// plain + blank HTML.
+// TestBodySelectionLayouts covers the five body layouts of design document
+// "mail classification" 2.1 with inline messages: plain only, HTML only,
+// plain + HTML, blank plain + HTML, plain + blank HTML.
 func TestBodySelectionLayouts(t *testing.T) {
 	const b = "=_layout"
 	part := func(ct, body string) string {
@@ -2221,7 +2255,7 @@ func TestCharsetDecodingFiles(t *testing.T) {
 			if row.Subject != c.subject || row.FromName != c.fromName || row.ToName != c.toName || row.ToAddress != c.to {
 				t.Errorf("index row headers = subject %q from_name %q to %q (%q)", row.Subject, row.FromName, row.ToAddress, row.ToName)
 			}
-			cls := Classify(pm)
+			cls := Classify(pm, "")
 			if cls.IsBounce != c.isBounce {
 				t.Errorf("classified as %+v, want bounce=%v", cls, c.isBounce)
 			}
@@ -2387,10 +2421,11 @@ func TestCharsetAliasesAndDetection(t *testing.T) {
 	}
 }
 
-// TestBothBodiesClassifyAndExtract covers the two-body rule of design 5.2:
-// attachments never become the body, skeleton HTML counts as no HTML, and a
-// bounce wording found only in the HTML body makes the message a bounce
-// (body_source = html) with the details extracted from the HTML text.
+// TestBothBodiesClassifyAndExtract covers the two-body rule of design
+// document "mail classification" 2.1: attachments never become the body,
+// skeleton HTML counts as no HTML, and a bounce wording found only in the
+// HTML body makes the message a bounce (body_source = html) with the
+// details extracted from the HTML text.
 func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	// multipart/mixed with an inline text body, a text/plain attachment and a PDF.
 	pm := ParseMessage(readSample(t, "attach_mixed.eml"))
@@ -2400,7 +2435,7 @@ func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	if body := pm.bodyForClassification(); !strings.Contains(body, "Please find the monthly report attached.") || strings.Contains(body, "status=bounced") {
 		t.Errorf("attach_mixed: text body = %q (attachment must not leak in)", body)
 	}
-	if c := Classify(pm); c.IsBounce || c.BodySource != bodySourceText {
+	if c := Classify(pm, ""); c.IsBounce || c.BodySource != bodySourceText {
 		t.Errorf("attach_mixed classified as %+v", c)
 	}
 
@@ -2409,7 +2444,7 @@ func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	if pm.TextCount() != 1 || pm.HTMLCount() != 0 || pm.BodySource != bodySourceText {
 		t.Errorf("html_skeleton: text_count=%d html_count=%d sections=%q body_source=%q", pm.TextCount(), pm.HTMLCount(), pm.HTMLSections, pm.BodySource)
 	}
-	if c := Classify(pm); c.IsBounce {
+	if c := Classify(pm, ""); c.IsBounce {
 		t.Errorf("html_skeleton classified as %+v", c)
 	}
 
@@ -2418,7 +2453,7 @@ func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	if pm.TextCount() != 1 || pm.HTMLCount() != 1 || pm.BodySource != bodySourceText {
 		t.Errorf("html_only_bounce_wording after parse: text_count=%d html_count=%d body_source=%q", pm.TextCount(), pm.HTMLCount(), pm.BodySource)
 	}
-	c := Classify(pm)
+	c := Classify(pm, "")
 	if !c.IsBounce || c.Kind != bounceKindFailed || c.Rule != "body_pattern" || c.BodySource != bodySourceHTML {
 		t.Fatalf("html_only_bounce_wording classified as %+v, want failed / body_pattern / html", c)
 	}
@@ -2429,7 +2464,7 @@ func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	}
 	// A text body that matches keeps body_source = text even with an HTML body.
 	pm = ParseMessage(readSample(t, "gmail_bounce.eml"))
-	if c := Classify(pm); !c.IsBounce || c.BodySource != bodySourceText {
+	if c := Classify(pm, ""); !c.IsBounce || c.BodySource != bodySourceText {
 		t.Errorf("gmail_bounce classified as %+v, want body_source text", c)
 	}
 	// Extraction completes empty fields from the HTML text.
@@ -2539,7 +2574,7 @@ func TestMultipleSections(t *testing.T) {
 				t.Errorf("text_count=%d html_count=%d (parsed %d / %d), want %d / %d", msg.TextCount, msg.HTMLCount,
 					pm.TextCount(), pm.HTMLCount(), len(c.textSections), len(c.htmlSections))
 			}
-			cls := Classify(pm)
+			cls := Classify(pm, "")
 			if !cls.IsBounce || cls.Kind != c.kind || cls.Rule != c.rule {
 				t.Fatalf("classified as %+v, want %s / %s", cls, c.kind, c.rule)
 			}
@@ -2643,7 +2678,7 @@ func readFirstSection(root, address, key, ext string) ([]byte, error) {
 func TestDiagnosticSource(t *testing.T) {
 	// The HTML body alone yields the diagnostic: its section is named.
 	pm := ParseMessage(readSample(t, "html_only_bounce_wording.eml"))
-	c := Classify(pm)
+	c := Classify(pm, "")
 	b := ExtractBounce(pm, c.Kind, "newsletter@example.jp")
 	if b.DiagnosticSource != "html:1" {
 		t.Errorf("html_only_bounce_wording: diagnostic_source = %q, want html:1", b.DiagnosticSource)

@@ -25,8 +25,9 @@ func init() {
 
 // webHandler builds the server's handler: the cookie-authenticated internal
 // API, the login endpoints, the loopback-only control endpoints and the SPA.
-// The user role is read-only: every write except the caller's own password
-// and profile needs an administrator.
+// The user role reads everything it may see and writes only the caller's own
+// password and profile and the state of alert groups; every other write
+// needs an administrator.
 func (c *core) webHandler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -57,7 +58,7 @@ func (c *core) webHandler() http.Handler {
 	// Bounce groups (alerts).
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups", c.handleListGroups)
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups/{key}", c.handleGetGroup)
-	mux.HandleFunc("PUT /api/v1/mailboxes/{id}/groups/{key}/state", c.requireAdmin(c.handleSetGroupState))
+	mux.HandleFunc("PUT /api/v1/mailboxes/{id}/groups/{key}/state", c.handleSetGroupState)
 	mux.HandleFunc("POST /api/v1/mailboxes/{id}/groups/{key}/analyze", c.requireAdmin(c.handleAnalyzeGroup))
 
 	// Messages.
@@ -67,9 +68,9 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages/{key}/raw", c.handleMessageRaw)
 
 	// Jobs.
-	mux.HandleFunc("GET /api/v1/jobs", c.handleListJobs)
+	mux.HandleFunc("GET /api/v1/jobs", c.requireAdmin(c.handleListJobs))
 	mux.HandleFunc("POST /api/v1/jobs", c.requireAdmin(c.handleCreateJob))
-	mux.HandleFunc("GET /api/v1/jobs/{id}", c.handleGetJob)
+	mux.HandleFunc("GET /api/v1/jobs/{id}", c.requireAdmin(c.handleGetJob))
 	mux.HandleFunc("DELETE /api/v1/jobs/{id}", c.requireAdmin(c.handleCancelJob))
 
 	// Settings.

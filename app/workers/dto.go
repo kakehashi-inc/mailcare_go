@@ -79,12 +79,15 @@ func toTokenDTO(t *models.Token) TokenDTO {
 // groups of the actionable Alerts list only (excluded groups are not
 // counted); Unclassified is the number of messages the grouping phase has
 // not processed yet; TargetMessages is the number of messages MailCare
-// handles as its targets (mailengine.CountTargetMessages).
+// handles as its targets (mailengine.CountTargetMessages) and JunkMessages
+// the number of junk mails (mailengine.CountJunkMessages; deleted from the
+// server like the targets, counted apart).
 type MailboxStatsDTO struct {
 	Messages       int                `json:"messages"`
 	Bounces        int                `json:"bounces"`
 	Unclassified   int                `json:"unclassified"`
 	TargetMessages int                `json:"target_messages"`
+	JunkMessages   int                `json:"junk_messages"`
 	Groups         models.GroupCounts `json:"groups"`
 }
 
@@ -381,11 +384,15 @@ type DashboardDTO struct {
 	Mailboxes    []MailboxDTO        `json:"mailboxes"`
 	Totals       DashboardTotalsDTO  `json:"totals"`
 	RecentGroups []DashboardGroupDTO `json:"recent_groups"`
-	ActiveJobs   []JobDTO            `json:"active_jobs"`
-	RecentJobs   []JobDTO            `json:"recent_jobs"`
-	NextCheckAt  *string             `json:"next_check_at"`
-	CheckTimes   []string            `json:"check_times"`
-	Agent        DashboardAgentDTO   `json:"agent"`
+	// BusyMailboxIDs are the mailboxes a sync, fetch, group, reindex,
+	// reclassify or cleanup job is queued or running for (every user).
+	BusyMailboxIDs []int64 `json:"busy_mailbox_ids"`
+	// ActiveJobs and RecentJobs are filled for administrators only.
+	ActiveJobs  []JobDTO          `json:"active_jobs"`
+	RecentJobs  []JobDTO          `json:"recent_jobs"`
+	NextCheckAt *string           `json:"next_check_at"`
+	CheckTimes  []string          `json:"check_times"`
+	Agent       DashboardAgentDTO `json:"agent"`
 }
 
 // DashboardTotalsDTO sums the per-mailbox counters. OpenGroups counts the

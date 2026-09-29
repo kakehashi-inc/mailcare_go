@@ -4,13 +4,14 @@ import (
 	"database/sql"
 )
 
-// agent_report_patterns: the bounce patterns (bounces.pattern_key) of the
-// group an analysis settled: a completed report, or a run that failed for
-// good (the group is unanalyzable as it is; a usage limit or a cancellation
-// settles nothing). A group is flagged for analysis again only when one of
-// its bounces has a pattern that the latest settling report does not list
-// (PatternCovered / GroupHasUncoveredPattern); more notices of a pattern
-// already settled only update the counters. Rows are deleted with their
+// agent_report_patterns: the patterns of the members (bounces.pattern_key,
+// dmarc_records.pattern_key) of the group an analysis settled: a completed
+// report, or a run that failed for good (the group is unanalyzable as it
+// is; a usage limit or a cancellation settles nothing). A group is flagged
+// for analysis again only when one of its members has a pattern that the
+// latest settling report does not list (PatternCovered /
+// GroupHasUncoveredPattern); more members of a pattern already settled only
+// update the counters. Rows are deleted with their
 // report (cascade).
 
 // InsertAgentReportPatterns records the pattern keys a report covered.
@@ -77,13 +78,16 @@ func PatternCovered(db Execer, groupKey, patternKey string) (bool, error) {
 	return covered, err
 }
 
-// GroupHasUncoveredPattern reports whether a bounce of the group has a
-// pattern that the latest settling report of the group did not cover (true
-// for a group with bounces that no analysis settled yet).
+// GroupHasUncoveredPattern reports whether a member (bounce or DMARC record)
+// of the group has a pattern that the latest settling report of the group
+// did not cover (true for a group with members that no analysis settled
+// yet).
 func GroupHasUncoveredPattern(db Execer, groupKey string) (bool, error) {
 	var uncovered bool
 	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM bounces b WHERE b.group_key = ? AND NOT EXISTS (
-		SELECT 1 FROM agent_report_patterns p WHERE p.pattern_key = b.pattern_key AND p.report_id = `+latestSettlingReportID+`))`,
-		groupKey, groupKey).Scan(&uncovered)
+		SELECT 1 FROM agent_report_patterns p WHERE p.pattern_key = b.pattern_key AND p.report_id = `+latestSettlingReportID+`))
+		OR EXISTS (SELECT 1 FROM dmarc_records d WHERE d.group_key = ? AND NOT EXISTS (
+		SELECT 1 FROM agent_report_patterns p WHERE p.pattern_key = d.pattern_key AND p.report_id = `+latestSettlingReportID+`))`,
+		groupKey, groupKey, groupKey, groupKey).Scan(&uncovered)
 	return uncovered, err
 }

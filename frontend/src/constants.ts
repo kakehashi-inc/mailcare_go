@@ -33,8 +33,11 @@ export const TOAST_DURATION_MS = 5000;
 // Page size of the raw mail list.
 export const MAIL_PAGE_SIZE = 50;
 
-// Number of jobs shown on the tools page and the dashboard.
-export const JOB_LIST_LIMIT = 30;
+// Page size of the alert (group) list.
+export const GROUP_PAGE_SIZE = 50;
+
+// Page size of the job history (jobs page).
+export const JOB_PAGE_SIZE = 50;
 
 // Tailwind "md" / "lg" breakpoints, used by useMediaQuery.
 export const BREAKPOINT_MD = 768;

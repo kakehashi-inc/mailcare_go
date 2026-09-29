@@ -1,21 +1,25 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { getMailbox, listGroups } from '../api/client';
+import { getMailbox, listGroups, setGroupState, ApiError } from '../api/client';
 import { GroupRow } from '../components/domain/GroupRow';
 import { MailboxSelect } from '../components/domain/MailboxSelect';
+import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { InputField, SelectField } from '../components/ui/Field';
 import { Icon } from '../components/ui/Icon';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
+import { Pagination } from '../components/ui/Pagination';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
+import { useToast } from '../components/ui/Toast';
+import { GROUP_PAGE_SIZE } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
-import { BOUNCE_CATEGORIES, type GroupScope, type GroupState } from '../types';
-import { categoryLabel } from '../utils/category';
+import { BOUNCE_CATEGORIES, type GroupDTO, type GroupScope, type GroupSort, type GroupState } from '../types';
+import { categoryLabel, groupHeadline } from '../utils/category';
 import { mailboxLabel } from '../utils/format';
 
 const STATES: GroupState[] = ['open', 'resolved', 'ignored'];
@@ -24,9 +28,19 @@ const SCOPES: { key: Exclude<GroupScope, 'all'>; icon: string }[] = [
     { key: 'excluded', icon: 'do_not_disturb_on' },
 ];
 const RESPONSIBLES = ['sender', 'recipient', 'domain', 'unknown'] as const;
-type Sort = 'last_seen_desc' | 'last_seen_asc' | 'count_desc' | 'severity';
-
-const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+/**
+ * The state changes offered on each row of an actionable-list tab (every signed-in user), labeled
+ * with the target state alone and the icon of the detail page's button (the aria-label names the
+ * action and the group).
+ */
+const ROW_ACTIONS: Record<GroupState, GroupState[]> = {
+    open: ['resolved', 'ignored'],
+    resolved: ['open'],
+    ignored: ['open'],
+};
+const STATE_ICONS: Record<GroupState, string> = { open: 'undo', resolved: 'check_circle', ignored: 'visibility_off' };
+/** Orders offered by the sort select; '' (newest first) is the server default and is left out of the URL. */
+const SORTS: readonly (GroupSort | '')[] = ['', 'last_seen_asc', 'count_desc', 'severity'];
 
 export function AlertsGroupsPage() {
     const { t } = useTranslation();
@@ -39,50 +53,87 @@ export function AlertsGroupsPage() {
     const category = params.get('category') ?? '';
     const responsible = params.get('responsible') ?? '';
     const q = params.get('q') ?? '';
+    const sort = SORTS.find(s => s !== '' && s === params.get('sort')) ?? '';
+    const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
     const [search, setSearch] = useState(q);
-    const [sort, setSort] = useState<Sort>('last_seen_desc');
+    const toast = useToast();
+    // The row whose state is being changed, and to which state.
+    const [changing, setChanging] = useState<{ key: string; state: GroupState } | null>(null);
 
     const { mailboxes } = useMailboxes();
     const mailbox = useAsync(() => getMailbox(id), [id]);
     useDocumentTitle(mailbox.data ? `${t('layout.nav.alerts')} - ${mailbox.data.address}` : t('layout.nav.alerts'));
     // Excluded groups have no states: their list is requested without one.
     const listState = scope === 'excluded' ? '' : state;
+    // The server sorts and pages the list, so that the order holds across pages.
     const groups = useAsync(
-        () => listGroups(id, { scope, state: listState, category, responsible, q }),
-        [id, scope, listState, category, responsible, q]
+        () =>
+            listGroups(id, {
+                scope,
+                state: listState,
+                category,
+                responsible,
+                q,
+                sort: sort || undefined,
+                page,
+                per_page: GROUP_PAGE_SIZE,
+            }),
+        [id, scope, listState, category, responsible, q, sort, page]
     );
 
+    // Every change of the filters, the order or the tab starts again at the first page.
     function update(patch: Record<string, string>) {
         const next = new URLSearchParams(params);
         for (const [k, v] of Object.entries(patch)) {
             if (v) next.set(k, v);
             else next.delete(k);
         }
+        if (!('page' in patch)) next.delete('page');
         setParams(next, { replace: true });
     }
 
-    const rows = useMemo(() => {
-        const list = [...(groups.data?.groups ?? [])];
-        const time = (s: string | null) => (s ? new Date(s).getTime() : 0);
-        switch (sort) {
-            case 'last_seen_asc':
-                list.sort((a, b) => time(a.last_seen) - time(b.last_seen));
-                break;
-            case 'count_desc':
-                list.sort((a, b) => b.message_count - a.message_count);
-                break;
-            case 'severity':
-                list.sort(
-                    (a, b) =>
-                        (SEVERITY_ORDER[a.report_severity] ?? 3) - (SEVERITY_ORDER[b.report_severity] ?? 3) ||
-                        time(b.last_seen) - time(a.last_seen)
-                );
-                break;
-            default:
-                list.sort((a, b) => time(b.last_seen) - time(a.last_seen));
+    // A page past the end (its last group changed state, or an old URL) moves to the last page.
+    const data = groups.data;
+    useEffect(() => {
+        if (data && data.groups.length === 0 && data.total > 0 && page > 1) {
+            update({ page: String(Math.ceil(data.total / (data.per_page || GROUP_PAGE_SIZE))) });
         }
-        return list;
-    }, [groups.data, sort]);
+        // Runs only when a new page of data arrives (update reads the current URL parameters).
+    }, [data]);
+
+    // Changes the state of one group from the list; it then moves to another tab, so the list and the
+    // tab counts are loaded again.
+    async function changeState(group: GroupDTO, next: GroupState) {
+        setChanging({ key: group.group_key, state: next });
+        try {
+            await setGroupState(id, group.group_key, next);
+            toast.success(t('result.group.stateChanged', { state: t(`value.groupState.${next}`) }));
+            await groups.reload();
+        } catch (err) {
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
+        } finally {
+            setChanging(null);
+        }
+    }
+
+    function rowActions(group: GroupDTO) {
+        if (scope !== 'actionable') return undefined;
+        const headline = groupHeadline(group, t);
+        return ROW_ACTIONS[group.state].map(next => (
+            <Button
+                key={next}
+                size='xs'
+                variant={next === 'resolved' ? 'primary' : 'secondary'}
+                icon={STATE_ICONS[next]}
+                loading={changing?.key === group.group_key && changing.state === next}
+                disabled={changing !== null}
+                onClick={() => void changeState(group, next)}
+                aria-label={t(`action.group.markAsFor.${next}`, { group: headline })}
+            >
+                {t(`value.groupState.${next}`)}
+            </Button>
+        ));
+    }
 
     const counts = groups.data?.counts;
     const filtered = Boolean(q || responsible || category);
@@ -97,19 +148,32 @@ export function AlertsGroupsPage() {
                 />
             );
         }
-        if (rows.length === 0) {
+        if (!data || data.groups.length === 0) {
             return <EmptyState title={emptyTitle} description={filtered ? t('common.emptyFiltered') : undefined} />;
         }
+        const pager = (
+            <Pagination
+                page={data.page || page}
+                perPage={data.per_page || GROUP_PAGE_SIZE}
+                total={data.total}
+                onChange={p => update({ page: String(p) })}
+            />
+        );
         return (
-            <ul className='flex flex-col gap-3' aria-live='polite'>
-                {rows.map(g => (
-                    <GroupRow
-                        key={g.group_key}
-                        group={g}
-                        to={`/alerts/${id}/groups/${encodeURIComponent(g.group_key)}`}
-                    />
-                ))}
-            </ul>
+            <div className='flex flex-col gap-4'>
+                {pager}
+                <ul className='flex flex-col gap-3' aria-live='polite'>
+                    {data.groups.map(g => (
+                        <GroupRow
+                            key={g.group_key}
+                            group={g}
+                            to={`/alerts/${id}/groups/${encodeURIComponent(g.group_key)}`}
+                            actions={rowActions(g)}
+                        />
+                    ))}
+                </ul>
+                {pager}
+            </div>
         );
     }
 
@@ -125,7 +189,11 @@ export function AlertsGroupsPage() {
                     mailboxes={mailboxes}
                     value={mailboxId}
                     onChange={v => {
-                        if (v) navigate(`/alerts/${v}?${params.toString()}`);
+                        if (!v) return;
+                        // Another mailbox keeps the filters and the order, and starts at the first page.
+                        const next = new URLSearchParams(params);
+                        next.delete('page');
+                        navigate(`/alerts/${v}?${next.toString()}`);
                     }}
                 />
                 <form
@@ -171,8 +239,8 @@ export function AlertsGroupsPage() {
                         </option>
                     ))}
                 </SelectField>
-                <SelectField label={t('common.sort')} value={sort} onChange={e => setSort(e.target.value as Sort)}>
-                    <option value='last_seen_desc'>{t('page.alerts.sortLastSeenDesc')}</option>
+                <SelectField label={t('common.sort')} value={sort} onChange={e => update({ sort: e.target.value })}>
+                    <option value=''>{t('page.alerts.sortLastSeenDesc')}</option>
                     <option value='last_seen_asc'>{t('page.alerts.sortLastSeenAsc')}</option>
                     <option value='count_desc'>{t('page.alerts.sortCountDesc')}</option>
                     <option value='severity'>{t('field.group.severity')}</option>

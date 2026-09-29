@@ -188,7 +188,8 @@ func TestCategoryGlossaryComplete(t *testing.T) {
 		if info.Description == "" || info.Unit == "" || info.Guidance == "" {
 			t.Errorf("%s: description, unit and guidance are required", name)
 		}
-		if info.Actionable && info.Authority == "" {
+		// A DMARC group is the domain of the records alone: no authority.
+		if info.Actionable && info.Authority == "" && !IsDMARCCategory(name) {
 			t.Errorf("%s: an actionable category names its authority", name)
 		}
 		if !info.Actionable && info.Authority != "" {

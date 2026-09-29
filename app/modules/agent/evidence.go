@@ -15,7 +15,9 @@ import (
 // Evidence.
 //
 // The agent does not read the mail files. MailCare hands it the evidence the
-// classification was based on, prepared from the index and the raw notices:
+// classification was based on, prepared from the index and the raw notices
+// (for a DMARC group: from the failing records of the aggregate reports, a
+// record per sample instead of a notice body):
 //
 //   - the patterns of the group (bounces sharing status code, diagnostic
 //     template, remote MTA and kind of diagnostic source, see
@@ -29,9 +31,12 @@ import (
 //     holds the diagnostic is shown, the other body is named as not used.
 //
 // The sample blocks go into the prompt; the same evidence, untruncated,
-// goes into evidence/<message_key>.txt in the workspace, which the agent may
-// read only under the conditions the prompt names (a [TRUNCATED] excerpt, a
-// value marked (not found), a contradiction with the category). Every value
+// goes into evidence/<message_key>.txt in the workspace (for a DMARC record
+// the same capped block as in the prompt, in
+// evidence/<message_key>-dmarc-<record id>.txt, see evidenceFileName), which
+// the agent may read only under the conditions the prompt names (a
+// [TRUNCATED] excerpt, a value marked (not found), a contradiction with the
+// category). Every value
 // taken from a notice is folded onto one line, and every body line is
 // prefixed with "| ", so that text from a notice can never open a line or a
 // section of the prompt.
@@ -52,9 +57,13 @@ type Pattern struct {
 	// previous report did not cover.
 	New    bool
 	Sample *Sample // nil when the pattern got no sample
+	// SourceIPs are the sending IPs of the DMARC records of the pattern
+	// (sorted; empty for bounces).
+	SourceIPs []string
 
 	newest     *models.GroupBounce
 	recipients map[string]bool
+	sources    map[string]bool
 }
 
 // Sample is the evidence of one sample notice.
@@ -63,7 +72,7 @@ type Sample struct {
 	Pattern    *Pattern
 	MessageKey string
 	// FileName is the evidence file relative to the workspace
-	// ("evidence/<key>.txt", slash-separated).
+	// ("evidence/<key>.txt", slash-separated; see evidenceFileName).
 	FileName string
 	Prompt   string // the block for the EVIDENCE section of the prompt
 	File     string // the content of the evidence file
@@ -73,7 +82,7 @@ type Sample struct {
 type Evidence struct {
 	Patterns []*Pattern // most frequent first
 	Samples  []*Sample  // in pattern order
-	Messages int        // bounces of the group
+	Messages int        // members of the group (bounces or DMARC records)
 	// Update is true when the run updates a previous report: some patterns
 	// are covered by it, the others (New) appeared since, and only those
 	// get samples.
@@ -85,7 +94,7 @@ type EvidenceInput struct {
 	MailsRoot string
 	Address   string
 	Group     *models.BounceGroup
-	Bounces   []*models.GroupBounce // every bounce of the group, newest first
+	Bounces   []*models.GroupBounce // every member of the group (bounces, DMARC records), newest first
 	// Covered holds the pattern keys the previous completed report covered;
 	// nil (or covering none or all of the patterns) means a full analysis.
 	Covered map[string]bool
@@ -108,7 +117,7 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 			p = &Pattern{
 				Key: b.PatternKey, StatusCode: b.StatusCode, DiagnosticTemplate: b.DiagnosticTemplate,
 				RemoteMTA: b.RemoteMTA, SourceKind: mailengine.SourceKind(b.DiagnosticSource),
-				FirstSeen: b.Date, LastSeen: b.Date, newest: b, recipients: map[string]bool{},
+				FirstSeen: b.Date, LastSeen: b.Date, newest: b, recipients: map[string]bool{}, sources: map[string]bool{},
 			}
 			byKey[b.PatternKey] = p
 			ev.Patterns = append(ev.Patterns, p)
@@ -116,6 +125,9 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 		p.Messages++
 		if b.Recipient != "" {
 			p.recipients[strings.ToLower(b.Recipient)] = true
+		}
+		if b.DMARC != nil && b.DMARC.SourceIP != "" {
+			p.sources[b.DMARC.SourceIP] = true
 		}
 		if b.Date.Before(p.FirstSeen) {
 			p.FirstSeen = b.Date
@@ -134,6 +146,10 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 	for i, p := range ev.Patterns {
 		p.ID = fmt.Sprintf("P%d", i+1)
 		p.Recipients = len(p.recipients)
+		for ip := range p.sources {
+			p.SourceIPs = append(p.SourceIPs, ip)
+		}
+		sort.Strings(p.SourceIPs)
 		if in.Covered != nil && !in.Covered[p.Key] {
 			p.New = true
 			newCount++
@@ -154,13 +170,24 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 		}
 		s := &Sample{
 			ID: fmt.Sprintf("S%d", len(ev.Samples)+1), Pattern: p, MessageKey: p.newest.MessageKey,
-			FileName: EvidenceDirName + "/" + p.newest.MessageKey + ".txt",
+			FileName: evidenceFileName(p.newest),
 		}
 		buildSample(s, in, p.newest)
 		p.Sample = s
 		ev.Samples = append(ev.Samples, s)
 	}
 	return ev
+}
+
+// evidenceFileName is the evidence file of a sample, relative to the
+// workspace: evidence/<message_key>.txt for a bounce (one per message), and
+// evidence/<message_key>-dmarc-<record id>.txt for a DMARC record (a report
+// mail can hold samples of several patterns of the same group).
+func evidenceFileName(b *models.GroupBounce) string {
+	if b.DMARC != nil {
+		return fmt.Sprintf("%s/%s-dmarc-%d.txt", EvidenceDirName, b.MessageKey, b.DMARC.ID)
+	}
+	return EvidenceDirName + "/" + b.MessageKey + ".txt"
 }
 
 // PatternKeys returns the keys of every pattern (what a completed report
@@ -177,6 +204,10 @@ func (ev *Evidence) PatternKeys() []string {
 // buildSample reads the notice of a sample and renders its prompt block and
 // its evidence file.
 func buildSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
+	if b.DMARC != nil {
+		buildDMARCSample(s, in, b)
+		return
+	}
 	var head strings.Builder
 	head.WriteString(fmt.Sprintf("[%s] pattern %s, message %s, %s\n", s.ID, s.Pattern.ID, b.MessageKey, formatTime(models.NullTime(b.Date))))
 	head.WriteString("Classification: category " + orPlaceholder(foldLine(in.Group.Category), "(not classified)") +
@@ -256,6 +287,31 @@ func buildSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
 	s.Prompt, s.File = prompt.String(), file.String()
 }
 
+// buildDMARCSample renders a sample that is a failing record of a DMARC
+// aggregate report: the report (who reported, the period, the published
+// policy) and every field of the record. The report mail has no body worth
+// reading, so the prompt block and the evidence file are the same.
+func buildDMARCSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
+	r := b.DMARC
+	// Every value comes from the report, which anybody can send: folded
+	// onto one line, neutralized and capped like a notice line.
+	v := func(s string) string { return orNotFound(truncateLine(sanitize(foldLine(s)), maxExcerptLineRunes)) }
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("[%s] pattern %s, DMARC report mail %s, %s\n", s.ID, s.Pattern.ID, b.MessageKey, formatTime(models.NullTime(b.Date))))
+	out.WriteString("Classification: category " + orPlaceholder(foldLine(in.Group.Category), "(not classified)") +
+		", rule " + orPlaceholder(foldLine(b.CategoryRule), "(not recorded)") + "\n")
+	out.WriteString("Report: reported by " + v(r.ReportOrg) + "; report ID " + v(r.ReportID) +
+		"; period " + orNotFound(formatTime(r.BeginAt)) + " to " + orNotFound(formatTime(r.EndAt)) +
+		"; published policy " + v(r.PolicyDomain) + " p=" + v(r.Policy) + "\n")
+	out.WriteString("Record: source IP " + v(r.SourceIP) + "; messages " + fmt.Sprint(r.MessageCount) +
+		"; header_from " + v(r.HeaderFrom) + "; envelope_from " + v(r.EnvelopeFrom) +
+		"; disposition " + v(r.Disposition) + "\n")
+	out.WriteString("Policy evaluated (aligned results): dkim " + v(r.DKIMResult) + "; spf " + v(r.SPFResult) + "\n")
+	out.WriteString("Auth results: DKIM " + v(r.DKIMAuth) + "; SPF " + v(r.SPFAuth) + "\n")
+	s.Prompt = out.String()
+	s.File = out.String()
+}
+
 const (
 	// maxExcerptLineRunes caps one line of a prompt excerpt.
 	maxExcerptLineRunes = 300
@@ -272,6 +328,8 @@ func describeSource(source string) string {
 		return "the delivery-status part (Diagnostic-Code)"
 	case source == "":
 		return "(not found: the notice carries no diagnostic)"
+	case source == mailengine.DiagnosticSourceDMARC:
+		return "a record of a DMARC aggregate report"
 	}
 	kind, n, ok := mailengine.ParseSectionRef(source)
 	if !ok {

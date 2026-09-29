@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -179,8 +181,8 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run 1: %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if res.Fetched != len(recent) || res.Skipped != 0 {
-		t.Fatalf("run 1 fetched %d skipped %d, want %d / 0\n%s", res.Fetched, res.Skipped, len(recent), strings.Join(lines, "\n"))
+	if res.Fetched != len(recent) || res.Reidentified != 0 {
+		t.Fatalf("run 1 fetched %d reidentified %d, want %d / 0\n%s", res.Fetched, res.Reidentified, len(recent), strings.Join(lines, "\n"))
 	}
 	if res.UIDValidity == 0 {
 		t.Error("run 1 reported no UIDVALIDITY")
@@ -227,7 +229,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run 2: %v", err)
 	}
-	if res.Fetched != 0 || res.Skipped != 0 {
+	if res.Fetched != 0 || res.Reidentified != 0 {
 		t.Errorf("run 2 = %+v, want nothing fetched", res)
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "recent window, 30 days") {
@@ -252,8 +254,8 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run 3: %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if res.Fetched != 3 || res.Skipped != 0 {
-		t.Fatalf("run 3 = %+v, want 3 fetched / 0 skipped\n%s", res, strings.Join(lines, "\n"))
+	if res.Fetched != 3 || res.Reidentified != 0 {
+		t.Fatalf("run 3 = %+v, want 3 fetched / 0 reidentified\n%s", res, strings.Join(lines, "\n"))
 	}
 	{
 		idx, err := models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
@@ -312,7 +314,8 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	}
 
 	// Run 4: the folder is re-created, which changes UIDVALIDITY. The same
-	// messages come back with new UIDs and must be recognised by Message-ID.
+	// messages come back with new UIDs: they are recognised by Message-ID
+	// and their rows take the new identity instead of being stored twice.
 	if err := srv.user.Delete(memFolder); err != nil {
 		t.Fatal(err)
 	}
@@ -330,8 +333,22 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	if res.UIDValidity == firstValidity {
 		t.Skip("memserver kept the same UIDVALIDITY after re-creating the folder")
 	}
-	if res.Fetched != 0 || res.Skipped != 2 {
-		t.Errorf("run 4 = %+v, want 0 fetched / 2 skipped duplicates\n%s", res, strings.Join(lines, "\n"))
+	if res.Fetched != 0 || res.Reidentified != 2 {
+		t.Errorf("run 4 = %+v, want 0 fetched / 2 reidentified\n%s", res, strings.Join(lines, "\n"))
+	}
+	{
+		idx := mustOpenIndex(t, root, mb.Address)
+		for _, name := range []string{"gmail_bounce.eml", "exim_bounce.eml"} {
+			id := ParseMessage(readSample(t, name)).MessageID
+			var validity uint32
+			if err := idx.QueryRow(`SELECT uidvalidity FROM messages WHERE message_id = ?`, id).Scan(&validity); err != nil || validity != res.UIDValidity {
+				t.Errorf("run 4: %s has uidvalidity %d (err %v), want %d", name, validity, err, res.UIDValidity)
+			}
+		}
+	}
+	// Run 5: nothing is new under the new UIDVALIDITY any more.
+	if res, err = FetchMailbox(ctx, root, mb, memPassword, FetchOptions{}, nil); err != nil || res.Fetched != 0 || res.Reidentified != 0 {
+		t.Errorf("run 5 = %+v (err %v), want nothing fetched or reidentified", res, err)
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "uidvalidity changed") {
 		t.Errorf("UIDVALIDITY change not reported:\n%s", strings.Join(lines, "\n"))
@@ -410,6 +427,64 @@ func TestFetchNotBeforeBoundsWindow(t *testing.T) {
 	}
 	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "searching the whole folder (all time)") || !strings.Contains(joined, "found 5 messages, 1 new") {
 		t.Errorf("all-time run progress:\n%s", joined)
+	}
+}
+
+// TestFetchIndexesEveryCopy: the server can hold the same mail (same
+// Message-ID) under several UIDs, for instance a report its sender delivered
+// again. Every UID is a message of its own: each is downloaded once and
+// indexed with its own raw file, a later run downloads none of them again,
+// and a reindex from the raw files rebuilds the same rows with the same
+// identities.
+func TestFetchIndexesEveryCopy(t *testing.T) {
+	srv := startMemIMAP(t)
+	ctx := context.Background()
+	for range 3 {
+		srv.appendSample(t, "postfix_dsn.eml", 5)
+	}
+	srv.appendSample(t, "gmail_bounce.eml", 5)
+	root := t.TempDir()
+	mb := srv.mailbox()
+	res, err := FetchMailbox(ctx, root, mb, memPassword, FetchOptions{}, nil)
+	if err != nil || res.Fetched != 4 || res.Reidentified != 0 {
+		t.Fatalf("run 1 = %+v (err %v), want 4 fetched", res, err)
+	}
+	assertIndexState(t, root, mb.Address, 4, 0, 4, 0, "copies fetched")
+	res, err = FetchMailbox(ctx, root, mb, memPassword, FetchOptions{AllTime: true}, nil)
+	if err != nil || res.Fetched != 0 || res.Reidentified != 0 {
+		t.Errorf("run 2 = %+v (err %v), want nothing fetched", res, err)
+	}
+
+	identities := func(label string) map[string]string {
+		idx, err := models.OpenMailIndex(MailboxIndexPath(root, mb.Address))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer idx.Close()
+		msgs, err := models.ListAllMessages(idx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, m := range msgs {
+			out[m.MessageKey] = fmt.Sprintf("%s/%d/%d/%s", m.Folder, m.UIDValidity, m.UID, m.MessageID)
+		}
+		if len(out) != 4 {
+			t.Errorf("%s: %d rows, want 4", label, len(out))
+		}
+		return out
+	}
+	before := identities("before reindex")
+	rres, err := Reindex(ctx, root, mb.Address, nil)
+	if err != nil || rres.Messages != 4 || rres.Skipped != 0 {
+		t.Fatalf("reindex = %+v (err %v), want 4 messages", rres, err)
+	}
+	if after := identities("after reindex"); !reflect.DeepEqual(before, after) {
+		t.Errorf("reindex changed the rows:\nbefore %v\nafter  %v", before, after)
+	}
+	res, err = FetchMailbox(ctx, root, mb, memPassword, FetchOptions{AllTime: true}, nil)
+	if err != nil || res.Fetched != 0 || res.Reidentified != 0 {
+		t.Errorf("run after reindex = %+v (err %v), want nothing fetched", res, err)
 	}
 }
 

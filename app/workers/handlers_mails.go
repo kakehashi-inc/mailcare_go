@@ -89,7 +89,7 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	switch kind {
 	case "", "all":
 		kind = models.MessageKindAll
-	case models.MessageKindBounce, models.MessageKindOther:
+	case models.MessageKindBounce, models.MessageKindJunk, models.MessageKindOther:
 	default:
 		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return

@@ -19,7 +19,7 @@
 // ended, so the agent never finds a copy of it to read again.
 //
 //	<address>/<group_key>/<report_id>/AGENTS.md              copied from templates/agent/<provider>/ (if present)
-//	<address>/<group_key>/<report_id>/evidence/<key>.txt     full evidence of one sample notice (see evidence.go)
+//	<address>/<group_key>/<report_id>/evidence/<key>.txt     full evidence of one sample notice; <key>-dmarc-<id>.txt for a DMARC record (see evidence.go)
 //	<address>/<group_key>/<report_id>/PROMPT.md              the prompt fed to the CLI (written after the run)
 //	<address>/<group_key>/<report_id>/RESULT.log             verdict + full CLI transcript of the run
 //	<address>/<group_key>/<report_id>/REPORT.md              the extracted report (Markdown; successful runs only)

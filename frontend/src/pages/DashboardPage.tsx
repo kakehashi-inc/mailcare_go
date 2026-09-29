@@ -19,11 +19,8 @@ import { DASHBOARD_REFRESH_MS, JOB_POLL_INTERVAL_MS } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { usePolling } from '../hooks/usePolling';
-import type { JobKind, MailboxDTO } from '../types';
+import type { MailboxDTO } from '../types';
 import { formatNumber } from '../utils/format';
-
-/** Job kinds that read or rewrite a mailbox's mails, shown as "syncing" on its card. */
-const MAILBOX_JOBS: readonly JobKind[] = ['sync', 'fetch', 'group', 'reindex', 'reclassify', 'cleanup'];
 
 export function DashboardPage() {
     const { t } = useTranslation();
@@ -31,12 +28,11 @@ export function DashboardPage() {
     const { isAdmin } = useAuth();
     const { data, error, loading, reload } = useAsync(getDashboard, []);
 
-    const hasActive = (data?.active_jobs.length ?? 0) > 0;
-    // A mailbox is busy while a job that touches its mails (for it or for all mailboxes) is queued or running.
-    const syncActive = (mb: MailboxDTO) =>
-        (data?.active_jobs ?? []).some(
-            j => MAILBOX_JOBS.includes(j.kind) && (j.mailbox_id === null || j.mailbox_id === mb.id)
-        );
+    // A mailbox is busy while a job that touches its mails (for it or for all mailboxes) is queued or
+    // running; the server tells every user which ones (the jobs themselves are for administrators only).
+    const busy = new Set(data?.busy_mailbox_ids ?? []);
+    const hasActive = busy.size > 0 || (data?.active_jobs.length ?? 0) > 0;
+    const syncActive = (mb: MailboxDTO) => busy.has(mb.id);
     usePolling(reload, !loading, hasActive ? JOB_POLL_INTERVAL_MS : DASHBOARD_REFRESH_MS);
 
     if (loading) return <LoadingBlock />;
@@ -300,27 +296,29 @@ export function DashboardPage() {
                         )}
                     </Card>
 
-                    <Card>
-                        <CardHeader
-                            title={t('page.dashboard.activeJobs')}
-                            actions={
-                                <LinkButton to='/tools' size='sm' icon='list'>
-                                    {t('page.dashboard.allJobs')}
-                                </LinkButton>
-                            }
-                        />
-                        <JobList jobs={data.active_jobs} emptyTitle={t('page.dashboard.noActiveJobs')} />
-                        {data.recent_jobs.length > 0 && (
-                            <details className='mt-4'>
-                                <summary className='cursor-pointer text-sm font-medium text-muted hover:text-ink'>
-                                    {t('page.dashboard.recentJobs')}
-                                </summary>
-                                <div className='mt-2'>
-                                    <JobList jobs={data.recent_jobs} />
-                                </div>
-                            </details>
-                        )}
-                    </Card>
+                    {isAdmin && (
+                        <Card>
+                            <CardHeader
+                                title={t('page.dashboard.activeJobs')}
+                                actions={
+                                    <LinkButton to='/jobs' size='sm' icon='list'>
+                                        {t('page.dashboard.allJobs')}
+                                    </LinkButton>
+                                }
+                            />
+                            <JobList jobs={data.active_jobs} emptyTitle={t('page.dashboard.noActiveJobs')} />
+                            {data.recent_jobs.length > 0 && (
+                                <details className='mt-4'>
+                                    <summary className='cursor-pointer text-sm font-medium text-muted hover:text-ink'>
+                                        {t('page.dashboard.recentJobs')}
+                                    </summary>
+                                    <div className='mt-2'>
+                                        <JobList jobs={data.recent_jobs} />
+                                    </div>
+                                </details>
+                            )}
+                        </Card>
+                    )}
                 </aside>
             </div>
         </PageContainer>

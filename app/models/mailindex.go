@@ -19,8 +19,9 @@ import (
 //
 // The index holds everything MailCare knows about the fetched mail of one
 // address: the parsed headers and body layout of every message, the bounce
-// details extracted from the daemon notices, the groups those bounces are
-// bundled into and the reports the agent produced. Apart from the group
+// details extracted from the daemon notices, the failing records of the
+// DMARC aggregate reports, the groups those bounces and records are bundled
+// into and the reports the agent produced. Apart from the group
 // states and the reports (carried over by reindex) everything can be rebuilt
 // from the raw .eml files.
 //
@@ -33,9 +34,10 @@ import (
 // Tables (one model file per table):
 //   messages      app/models/message.go       every fetched mail (headers, body layout, detection outcome)
 //   bounces       app/models/bounce.go        details extracted from a bounce message (1:1 with its message row)
-//   groups        app/models/bounce_group.go  bounces bundled by the unit an administrator acts on
+//   dmarc_records app/models/dmarc_record.go  failing records of a DMARC aggregate report (1:N with its message row)
+//   groups        app/models/bounce_group.go  bounces and DMARC records bundled by the unit an administrator acts on
 //   agent_reports app/models/agent_report.go  analysis produced by an agent CLI
-//   agent_report_patterns app/models/agent_report_pattern.go  bounce patterns a completed report covered
+//   agent_report_patterns app/models/agent_report_pattern.go  member patterns (bounces, DMARC records) a settling report covered
 
 // OpenMailIndex opens (creating when absent) the per-mailbox index at path
 // and applies its pending migrations. An index created before the migrations
@@ -58,10 +60,10 @@ func OpenMailIndex(path string) (*sql.DB, error) {
 }
 
 // ClearMailClassification resets the per-message detection outcome (is_bounce,
-// bounce_kind, rule, body_source, classified) and removes every bounces row,
-// but keeps the messages, the groups and the agent reports. Both statements
-// run in one transaction, so the index never holds bounce details of
-// messages that count as unclassified. Reclassify recomputes the groups
+// bounce_kind, rule, body_source, classified) and removes every bounces and
+// dmarc_records row, but keeps the messages, the groups and the agent
+// reports. The statements run in one transaction, so the index never holds
+// bounce details of messages that count as unclassified. Reclassify recomputes the groups
 // afterwards (group keys are deterministic, so a group that comes back keeps
 // its state and reports) and DeleteEmptyGroups drops the groups that vanished
 // together with their reports (cascade).
@@ -72,6 +74,9 @@ func ClearMailClassification(db *sql.DB) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`DELETE FROM bounces`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM dmarc_records`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE messages SET is_bounce = 0, bounce_kind = '', rule = '', body_source = '', classified = 0`); err != nil {

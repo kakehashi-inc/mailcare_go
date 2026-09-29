@@ -2,6 +2,7 @@ package models
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 )
@@ -33,7 +34,7 @@ type Message struct {
 	BodySource  string       `json:"body_source"` // the body used for detection: "text" | "html" | "" (none)
 	Classified  bool         `json:"classified"`  // false until the grouping phase processed the message
 	IsBounce    bool         `json:"is_bounce"`
-	BounceKind  string       `json:"bounce_kind"` // failed | delayed | auto_reply | other | ""
+	BounceKind  string       `json:"bounce_kind"` // failed | delayed | auto_reply | other | report | junk | ""
 	Rule        string       `json:"rule"`        // name of the detection rule that matched
 	FetchedAt   time.Time    `json:"fetched_at"`
 	// ServerDeletedAt is when MailCare deleted the message from the IMAP
@@ -90,7 +91,8 @@ func InsertMessage(db *sql.DB, m *Message) error {
 // UpdateMessageClassification stores the detection outcome of a message
 // (is_bounce, kind, the rule that matched, the body actually used) and marks
 // it as classified. The bounce details are stored separately (UpsertBounce)
-// or removed (DeleteBounce) by the caller in the same transaction.
+// or removed (DeleteBounce), and the DMARC records replaced
+// (ReplaceDMARCRecords), by the caller in the same transaction.
 func UpdateMessageClassification(db Execer, id int64, isBounce bool, bounceKind, rule, bodySource string) error {
 	_, err := db.Exec(`UPDATE messages SET is_bounce = ?, bounce_kind = ?, rule = ?, body_source = ?, classified = 1 WHERE id = ?`,
 		boolToInt(isBounce), bounceKind, rule, bodySource, id)
@@ -123,15 +125,40 @@ func MessageExists(db *sql.DB, uidValidity, uid uint32, folder string) (bool, er
 	return n > 0, err
 }
 
-// MessageIDExists reports whether a message with the given Message-ID header is
-// indexed (used to skip duplicates after a UIDVALIDITY change).
-func MessageIDExists(db *sql.DB, messageID string) (bool, error) {
+// ReidentifyMessage moves an indexed message whose IMAP identity is stale to
+// the identity the server gives it now (folder, uidValidity, uid), and
+// reports whether one was moved. A stale row has the same Message-ID, is
+// still on the server as far as MailCare knows (server_deleted_at NULL) and
+// was indexed either in the folder under another UIDVALIDITY (the folder was
+// re-created and numbered its mail anew) or with a synthetic identity
+// (uidvalidity 0: indexed from a raw file the fetch never saw). A row whose
+// size equals size is preferred (the same copy when the server holds several
+// with that Message-ID), then the oldest. Rows already indexed under the
+// current identity of the folder are never moved: a message with the same
+// Message-ID under another UID of that folder is another message on the
+// server and is indexed as its own row. The message key, the fetch facts and
+// the files stay as they are.
+func ReidentifyMessage(db *sql.DB, messageID, folder string, uidValidity, uid uint32, size int64) (bool, error) {
 	if messageID == "" {
 		return false, nil
 	}
-	var n int
-	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE message_id = ?`, messageID).Scan(&n)
-	return n > 0, err
+	var id int64
+	err := db.QueryRow(`SELECT id FROM messages
+		WHERE message_id = ? AND server_deleted_at IS NULL
+		  AND ((folder = ? AND uidvalidity <> ?) OR uidvalidity = 0)
+		ORDER BY (size = ?) DESC, date ASC, id ASC LIMIT 1`,
+		messageID, folder, uidValidity, size).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := db.Exec(`UPDATE messages SET folder = ?, uidvalidity = ?, uid = ? WHERE id = ?`,
+		folder, uidValidity, uid, id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // MaxUIDForValidity returns the highest indexed UID for the given UIDVALIDITY
@@ -151,20 +178,22 @@ func MaxUIDForValidity(db *sql.DB, uidValidity uint32, folder string) (uint32, e
 // ExpiredMessage is what the mail retention (mailengine.PruneMailbox) needs
 // of a message older than the retention: its id, the key its files are
 // named after, how many body section files of each kind exist and the
-// group of its bounce ("" when the message is not a grouped bounce).
+// groups it is a member of (the group of its bounce, or the groups of the
+// records of a DMARC report; none for any other message).
 type ExpiredMessage struct {
 	ID         int64
 	MessageKey string
 	TextCount  int
 	HTMLCount  int
-	GroupKey   string
+	GroupKeys  []string
 }
 
 // ListMessagesOlderThan returns the messages whose date is before cutoff,
 // oldest first.
 func ListMessagesOlderThan(db *sql.DB, cutoff time.Time) ([]ExpiredMessage, error) {
-	rows, err := db.Query(`SELECT m.id, m.message_key, m.text_count, m.html_count, COALESCE(b.group_key, '')`+
-		messageFrom+` WHERE m.date < ? ORDER BY m.date ASC, m.id ASC`, cutoff.UTC())
+	rows, err := db.Query(`SELECT m.id, m.message_key, m.text_count, m.html_count, COALESCE(b.group_key, ''),
+		COALESCE((SELECT GROUP_CONCAT(DISTINCT d.group_key) FROM dmarc_records d WHERE d.message_id = m.id), '')
+		`+messageFrom+` WHERE m.date < ? ORDER BY m.date ASC, m.id ASC`, cutoff.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -172,16 +201,24 @@ func ListMessagesOlderThan(db *sql.DB, cutoff time.Time) ([]ExpiredMessage, erro
 	var out []ExpiredMessage
 	for rows.Next() {
 		var m ExpiredMessage
-		if err := rows.Scan(&m.ID, &m.MessageKey, &m.TextCount, &m.HTMLCount, &m.GroupKey); err != nil {
+		var bounceKey, recordKeys string
+		if err := rows.Scan(&m.ID, &m.MessageKey, &m.TextCount, &m.HTMLCount, &bounceKey, &recordKeys); err != nil {
 			return nil, err
+		}
+		if bounceKey != "" {
+			m.GroupKeys = append(m.GroupKeys, bounceKey)
+		}
+		if recordKeys != "" {
+			m.GroupKeys = append(m.GroupKeys, strings.Split(recordKeys, ",")...)
 		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
 }
 
-// DeleteMessage removes a message row; its bounces row goes with it (ON
-// DELETE CASCADE). The files of the message are the caller's business.
+// DeleteMessage removes a message row; its bounces row and its
+// dmarc_records rows go with it (ON DELETE CASCADE). The files of the
+// message are the caller's business.
 func DeleteMessage(db *sql.DB, id int64) error {
 	_, err := db.Exec(`DELETE FROM messages WHERE id = ?`, id)
 	return err
@@ -199,13 +236,13 @@ type ServerDeletionCandidate struct {
 
 // ListServerDeletionCandidates returns the messages of a folder that are
 // still on the IMAP server (server_deleted_at NULL), dated before cutoff and
-// classified as a daemon notice (classified = 1, is_bounce = 1: failures,
-// delays, auto-replies and other daemon mail, whatever the state of their
-// group) by one of rules, oldest first. The messages not classified yet,
-// the ordinary mail (is_bounce = 0) and the ones matched by another rule
-// are left out; no rule means no candidate. Messages with a synthetic
-// identity (uidvalidity 0: indexed from a raw file the fetch never saw) are
-// never candidates.
+// classified (classified = 1) by one of rules, oldest first: the rules name
+// what may be deleted (the notices with certain evidence and the junk mail,
+// whatever the state of their group). The messages not classified yet and
+// the ones matched by another rule (or by none: ordinary mail) are left
+// out; no rule means no candidate. Messages with a synthetic identity
+// (uidvalidity 0: indexed from a raw file the fetch never saw) are never
+// candidates.
 func ListServerDeletionCandidates(db *sql.DB, folder string, cutoff time.Time, rules []string) ([]ServerDeletionCandidate, error) {
 	if len(rules) == 0 {
 		return nil, nil
@@ -216,7 +253,7 @@ func ListServerDeletionCandidates(db *sql.DB, folder string, cutoff time.Time, r
 	}
 	rows, err := db.Query(`SELECT m.id, m.message_key, m.message_id, m.uidvalidity, m.uid
 		FROM messages m
-		WHERE m.classified = 1 AND m.is_bounce = 1
+		WHERE m.classified = 1
 		  AND m.server_deleted_at IS NULL AND m.folder = ?
 		  AND m.uidvalidity <> 0 AND m.date < ?
 		  AND m.rule IN (?`+strings.Repeat(", ?", len(rules)-1)+`)
@@ -236,9 +273,9 @@ func ListServerDeletionCandidates(db *sql.DB, folder string, cutoff time.Time, r
 	return out, rows.Err()
 }
 
-// CountClassifiedByRules returns how many messages are classified as a
-// daemon notice (classified = 1, is_bounce = 1) by one of rules, whether or
-// not they are still on the IMAP server. No rule counts nothing.
+// CountClassifiedByRules returns how many messages are classified
+// (classified = 1) by one of rules, whether or not they are still on the
+// IMAP server. No rule counts nothing.
 func CountClassifiedByRules(db *sql.DB, rules []string) (int, error) {
 	if len(rules) == 0 {
 		return 0, nil
@@ -249,7 +286,7 @@ func CountClassifiedByRules(db *sql.DB, rules []string) (int, error) {
 	}
 	var n int
 	err := db.QueryRow(`SELECT COUNT(*) FROM messages
-		WHERE classified = 1 AND is_bounce = 1
+		WHERE classified = 1
 		  AND rule IN (?`+strings.Repeat(", ?", len(rules)-1)+`)`, args...).Scan(&n)
 	return n, err
 }
@@ -301,9 +338,14 @@ func ListMessageSources(db *sql.DB) (map[string]MessageSource, error) {
 // Message kinds of MessageFilter.Kind.
 const (
 	MessageKindAll    = ""       // every message
-	MessageKindBounce = "bounce" // detected as a daemon notice (is_bounce = 1; auto-replies included)
-	MessageKindOther  = "other"  // everything else (is_bounce = 0)
+	MessageKindBounce = "bounce" // detected as a daemon notice (is_bounce = 1; auto-replies and DMARC reports included)
+	MessageKindJunk   = "junk"   // detected as junk (bounce_kind = junk: phishing, spam)
+	MessageKindOther  = "other"  // everything else (is_bounce = 0, not junk)
 )
+
+// BounceKindJunk is messages.bounce_kind of junk mail (same literal as
+// mailengine's; models must not import mailengine).
+const BounceKindJunk = "junk"
 
 // MessageFilter narrows ListMessages.
 type MessageFilter struct {
@@ -319,6 +361,7 @@ type MessageFilter struct {
 type MessageKindCounts struct {
 	All    int `json:"all"`
 	Bounce int `json:"bounce"`
+	Junk   int `json:"junk"`
 	Other  int `json:"other"`
 }
 
@@ -328,8 +371,9 @@ func CountMessagesByKind(db *sql.DB, f MessageFilter) (MessageKindCounts, error)
 	f.Kind = MessageKindAll
 	where, args := messageWhere(f)
 	var c MessageKindCounts
-	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(m.is_bounce), 0)`+messageFrom+where, args...).Scan(&c.All, &c.Bounce)
-	c.Other = c.All - c.Bounce
+	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(m.is_bounce), 0), COALESCE(SUM(m.bounce_kind = ?), 0)`+
+		messageFrom+where, append([]any{BounceKindJunk}, args...)...).Scan(&c.All, &c.Bounce, &c.Junk)
+	c.Other = c.All - c.Bounce - c.Junk
 	return c, err
 }
 
@@ -383,12 +427,19 @@ func messageWhere(f MessageFilter) (string, []any) {
 	switch f.Kind {
 	case MessageKindBounce:
 		conds = append(conds, `m.is_bounce = 1`)
+	case MessageKindJunk:
+		conds = append(conds, `m.bounce_kind = ?`)
+		args = append(args, BounceKindJunk)
 	case MessageKindOther:
-		conds = append(conds, `m.is_bounce = 0`)
+		conds = append(conds, `m.is_bounce = 0 AND m.bounce_kind <> ?`)
+		args = append(args, BounceKindJunk)
 	}
 	if f.GroupKey != "" {
-		conds = append(conds, `b.group_key = ?`)
-		args = append(args, f.GroupKey)
+		// The members of a group: the mails of its bounces and the report
+		// mails of its DMARC records, each table searched by its group index.
+		conds = append(conds, `(m.id IN (SELECT id FROM bounces WHERE group_key = ?)
+		  OR m.id IN (SELECT message_id FROM dmarc_records WHERE group_key = ?))`)
+		args = append(args, f.GroupKey, f.GroupKey)
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		like := likeContains(q)

@@ -317,8 +317,12 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 		t.Errorf("POST sync job as admin: status %d, body %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, h, http.MethodGet, "/api/v1/jobs", nil, user)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("GET /api/v1/jobs as user: status %d, want 403", rec.Code)
+	}
+	rec = do(t, h, http.MethodGet, "/api/v1/jobs", nil, admin)
 	if rec.Code != http.StatusOK {
-		t.Errorf("GET /api/v1/jobs as user: status %d", rec.Code)
+		t.Errorf("GET /api/v1/jobs as admin: status %d", rec.Code)
 	}
 	// The last administrator can neither be demoted nor deleted.
 	var users struct {

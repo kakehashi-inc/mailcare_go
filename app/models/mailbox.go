@@ -30,8 +30,8 @@ type Mailbox struct {
 	InitialDays     int    `json:"initial_days"`
 	RecentDays      int    `json:"recent_days"`
 	// ServerKeepDays is how many days (counted from the mail's date) a
-	// daemon notice classified with certain evidence (see
-	// mailengine.serverDeletableRules) stays on the
+	// notice classified with certain evidence or a junk mail (see
+	// mailengine.serverDeletionRules) stays on the
 	// IMAP server before the daily cleanup deletes it there (it cannot be
 	// set above mail_keep_days, and the cleanup applies mail_keep_days when
 	// the mail retention was shortened later); 0 keeps every mail on the

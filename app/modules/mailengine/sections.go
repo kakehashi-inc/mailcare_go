@@ -9,8 +9,12 @@ import (
 // DiagnosticSourceDSN for the delivery-status part, a section reference
 // ("text:2", "html:1") for a body section, "" when the notice carried no
 // diagnostic. The section reference uses the numbering of the section files
-// (<key>-2.txt is "text:2").
-const DiagnosticSourceDSN = "dsn"
+// (<key>-2.txt is "text:2"). DiagnosticSourceDMARC marks a record of a DMARC
+// aggregate report (dmarc_records) in the same places (patterns, evidence).
+const (
+	DiagnosticSourceDSN   = "dsn"
+	DiagnosticSourceDMARC = "dmarc"
+)
 
 // SectionRef renders a section reference ("text:2").
 func SectionRef(kind string, n int) string {
@@ -33,13 +37,13 @@ func ParseSectionRef(ref string) (kind string, n int, ok bool) {
 }
 
 // SourceKind reduces a diagnostic source to its kind: DiagnosticSourceDSN,
-// "text", "html" or "".
+// DiagnosticSourceDMARC, "text", "html" or "".
 func SourceKind(source string) string {
 	if kind, _, ok := ParseSectionRef(source); ok {
 		return kind
 	}
-	if source == DiagnosticSourceDSN {
-		return DiagnosticSourceDSN
+	if source == DiagnosticSourceDSN || source == DiagnosticSourceDMARC {
+		return source
 	}
 	return ""
 }

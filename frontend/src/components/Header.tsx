@@ -22,8 +22,8 @@ const MENU_ITEM_CLASS =
     'flex min-h-tap w-full items-center gap-2 px-4 text-left text-base hover:bg-well focus:bg-well focus:outline-none';
 
 /**
- * Site header: brand + version, primary navigation (settings is a plain
- * admin-only link to the menu page) and a user menu (profile, logout) opened
+ * Site header: brand + version, primary navigation (tools, jobs and settings
+ * are admin-only; settings is a plain link to the menu page) and a user menu (profile, logout) opened
  * from the user name on every width. Below the lg breakpoint the navigation
  * folds into a hamburger drawer.
  */
@@ -59,10 +59,16 @@ export function Header() {
         };
     }, [drawerOpen]);
 
+    // Tools and jobs are for administrators only (direct URLs show the "admins only" screen).
     const primary: NavEntry[] = [
         { to: '/alerts', label: t('layout.nav.alerts'), icon: 'notifications' },
         { to: '/mails', label: t('layout.nav.mails'), icon: 'mail' },
-        { to: '/tools', label: t('layout.nav.tools'), icon: 'build' },
+        ...(isAdmin
+            ? [
+                  { to: '/tools', label: t('layout.nav.tools'), icon: 'build' },
+                  { to: '/jobs', label: t('layout.nav.jobs'), icon: 'work_history' },
+              ]
+            : []),
     ];
     // Settings is a plain link to the menu page (administrators only; direct URLs show the "admins only" screen).
     const settingsActive = location.pathname.startsWith('/settings') && location.pathname !== '/settings/profile';

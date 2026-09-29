@@ -9,9 +9,12 @@ import type {
     GroupListResponse,
     GroupResponse,
     GroupScope,
+    GroupSort,
     GroupState,
     Health,
     JobDTO,
+    JobHistoryParams,
+    JobHistoryResponse,
     JobInput,
     JobSubmitResult,
     LoginInput,
@@ -268,6 +271,10 @@ export interface GroupListParams {
     category?: string;
     responsible?: string;
     q?: string;
+    /** Order within a state; omitted = last seen, newest first. */
+    sort?: GroupSort;
+    page?: number;
+    per_page?: number;
 }
 
 export function listGroups(mailboxId: number, params: GroupListParams = {}): Promise<GroupListResponse> {
@@ -325,9 +332,15 @@ export function messageRawUrl(mailboxId: number, key: string): string {
 
 // --- Jobs ---
 
-export async function listJobs(limit?: number): Promise<JobDTO[]> {
-    const r = await request<{ jobs: JobDTO[] }>(api(`/jobs${query({ limit })}`));
+/** Every queued and running job, oldest first. */
+export async function listActiveJobs(): Promise<JobDTO[]> {
+    const r = await request<{ jobs: JobDTO[] }>(api(`/jobs${query({ state: 'active' })}`));
     return r.jobs ?? [];
+}
+
+/** One page of the finished jobs, the most recently finished first. */
+export function listFinishedJobs(params: JobHistoryParams = {}): Promise<JobHistoryResponse> {
+    return request<JobHistoryResponse>(api(`/jobs${query({ state: 'finished', ...params })}`));
 }
 
 export function createJob(input: JobInput): Promise<JobSubmitResult> {

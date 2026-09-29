@@ -166,6 +166,13 @@ export function ReportStatusBadge({ status }: { status: ReportStatus | string })
 
 export function BounceKindBadge({ kind, isBounce }: { kind: string; isBounce: boolean }) {
     const { t } = useTranslation();
+    if (kind === 'junk') {
+        return (
+            <Badge tone='warning' icon='block'>
+                {t('value.bounceKind.junk')}
+            </Badge>
+        );
+    }
     if (!isBounce) {
         return (
             <Badge tone='neutral' icon='mail'>
@@ -173,10 +180,16 @@ export function BounceKindBadge({ kind, isBounce }: { kind: string; isBounce: bo
             </Badge>
         );
     }
-    const known = ['failed', 'delayed', 'auto_reply', 'other'] as const;
+    const known = ['failed', 'delayed', 'auto_reply', 'report', 'other'] as const;
     const key = (known as readonly string[]).includes(kind) ? (kind as (typeof known)[number]) : 'other';
     const tone: BadgeTone =
-        key === 'failed' ? 'danger' : key === 'delayed' ? 'warning' : key === 'auto_reply' ? 'info' : 'neutral';
+        key === 'failed'
+            ? 'danger'
+            : key === 'delayed'
+              ? 'warning'
+              : key === 'auto_reply' || key === 'report'
+                ? 'info'
+                : 'neutral';
     const icon =
         key === 'failed'
             ? 'report'
@@ -184,7 +197,9 @@ export function BounceKindBadge({ kind, isBounce }: { kind: string; isBounce: bo
               ? 'hourglass_top'
               : key === 'auto_reply'
                 ? 'reply'
-                : 'help_outline';
+                : key === 'report'
+                  ? 'summarize'
+                  : 'help_outline';
     return (
         <Badge tone={tone} icon={icon}>
             {t(`value.bounceKind.${key}`)}

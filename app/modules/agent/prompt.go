@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/mailengine"
 )
 
 // PromptInput is everything BuildPrompt needs; run.go assembles it from the
@@ -174,7 +175,11 @@ func BuildPrompt(in PromptInput) string {
 
 	info, _ := categoryInfoFor(g.Category)
 	b.WriteString("=== TASK ===\n")
-	b.WriteString("MailCare has bundled bounce (mail delivery failure) notices received by one mailbox into a group by the unit the sending-side mail administrator acts on: the group's category, action unit and authority are given under GROUP SUMMARY. Using the evidence below, confirm or correct the cause, and judge who has to act.\n")
+	if IsDMARCCategory(g.Category) {
+		b.WriteString("MailCare has bundled records of DMARC aggregate reports received by one mailbox into a group: every record is mail that a receiver saw with the domain named under GROUP SUMMARY in From and that failed DMARC (neither DKIM nor SPF passed with alignment). Whether a sending IP is a server of the domain owner, a forwarder or somebody using the domain without authorization cannot be told mechanically; judge it for every sending IP from the evidence below (host names, identifiers, results, volume) and your knowledge, say how certain the judgement is, and judge who has to act.\n")
+	} else {
+		b.WriteString("MailCare has bundled bounce (mail delivery failure) notices received by one mailbox into a group by the unit the sending-side mail administrator acts on: the group's category, action unit and authority are given under GROUP SUMMARY. Using the evidence below, confirm or correct the cause, and judge who has to act.\n")
+	}
 	if g.Actionable {
 		b.WriteString("This group is ACTIONABLE by the sending-side mail administrator. Write the recommended actions as the steps that administrator takes for the action unit named in GROUP SUMMARY, not generic advice: " + info.Guidance + ".\n")
 	} else {
@@ -208,7 +213,7 @@ func BuildPrompt(in PromptInput) string {
 	if update {
 		writePreviousReport(&b, in.Previous)
 	}
-	writePatterns(&b, ev, update)
+	writePatterns(&b, ev, update, IsDMARCCategory(g.Category))
 	writeEvidence(&b, ev)
 	writeEvidenceRules(&b)
 	writeParties(&b, lang)
@@ -261,10 +266,16 @@ func writePreviousReport(b *strings.Builder, r *models.AgentReport) {
 }
 
 // writePatterns writes the PATTERNS section: every pattern with its counts
-// (at most MaxPromptPatterns; the rest is counted).
-func writePatterns(b *strings.Builder, ev *Evidence, update bool) {
-	b.WriteString("=== PATTERNS (every bounce of the group, most frequent first, read-only) ===\n")
-	b.WriteString(fmt.Sprintf("Messages: %d in %d patterns. A pattern is the bounces that share status code, diagnostic template, remote MTA and where the diagnostic was found; the counts cover every message, so other messages of a pattern need no checking.\n", ev.Messages, len(ev.Patterns)))
+// (at most MaxPromptPatterns; the rest is counted). dmarc is true for a
+// group of DMARC records (IsDMARCCategory).
+func writePatterns(b *strings.Builder, ev *Evidence, update, dmarc bool) {
+	if dmarc {
+		b.WriteString("=== PATTERNS (every DMARC record of the group, most frequent first, read-only) ===\n")
+		b.WriteString(fmt.Sprintf("Records: %d in %d patterns. A pattern is the records that share the aligned DKIM and SPF results and the disposition; the counts cover every record, so other records of a pattern need no checking.\n", ev.Messages, len(ev.Patterns)))
+	} else {
+		b.WriteString("=== PATTERNS (every bounce of the group, most frequent first, read-only) ===\n")
+		b.WriteString(fmt.Sprintf("Messages: %d in %d patterns. A pattern is the bounces that share status code, diagnostic template, remote MTA and where the diagnostic was found; the counts cover every message, so other messages of a pattern need no checking.\n", ev.Messages, len(ev.Patterns)))
+	}
 	if len(ev.Patterns) == 0 {
 		b.WriteString("(none)\n\n")
 		return
@@ -282,10 +293,23 @@ func writePatterns(b *strings.Builder, ev *Evidence, update bool) {
 				line += " [covered]"
 			}
 		}
-		line += fmt.Sprintf(": %d messages, %d recipients, %s to %s", p.Messages, p.Recipients,
-			formatTime(models.NullTime(p.FirstSeen)), formatTime(models.NullTime(p.LastSeen)))
-		line += "; status " + orNotFound(foldLine(p.StatusCode))
-		line += "; remote MTA " + orNotFound(sanitize(foldLine(p.RemoteMTA)))
+		if p.SourceKind == mailengine.DiagnosticSourceDMARC {
+			line += fmt.Sprintf(": %d DMARC records, %s to %s", p.Messages,
+				formatTime(models.NullTime(p.FirstSeen)), formatTime(models.NullTime(p.LastSeen)))
+			folded := make([]string, 0, len(p.SourceIPs))
+			for _, ip := range p.SourceIPs {
+				folded = append(folded, sanitize(foldLine(ip)))
+			}
+			if len(folded) > MaxPromptListItems {
+				folded = append(folded[:MaxPromptListItems], fmt.Sprintf("... (%d more)", len(p.SourceIPs)-MaxPromptListItems))
+			}
+			line += fmt.Sprintf("; sending IPs (%d): %s", len(p.SourceIPs), orNotFound(strings.Join(folded, ", ")))
+		} else {
+			line += fmt.Sprintf(": %d messages, %d recipients, %s to %s", p.Messages, p.Recipients,
+				formatTime(models.NullTime(p.FirstSeen)), formatTime(models.NullTime(p.LastSeen)))
+			line += "; status " + orNotFound(foldLine(p.StatusCode))
+			line += "; remote MTA " + orNotFound(sanitize(foldLine(p.RemoteMTA)))
+		}
 		line += "; diagnostic from " + orPlaceholder(p.SourceKind, "(none)")
 		line += "; template: " + orNotFound(sanitize(foldLine(p.DiagnosticTemplate)))
 		if p.Sample != nil {
@@ -300,7 +324,11 @@ func writePatterns(b *strings.Builder, ev *Evidence, update bool) {
 		for _, p := range rest {
 			messages += p.Messages
 		}
-		b.WriteString(fmt.Sprintf("... (%d more patterns, %d messages)\n", len(rest), messages))
+		unit := "messages"
+		if dmarc {
+			unit = "records"
+		}
+		b.WriteString(fmt.Sprintf("... (%d more patterns, %d %s)\n", len(rest), messages, unit))
 	}
 	b.WriteString("\n")
 }
@@ -308,7 +336,7 @@ func writePatterns(b *strings.Builder, ev *Evidence, update bool) {
 // writeEvidence writes the EVIDENCE section: the sample blocks.
 func writeEvidence(b *strings.Builder, ev *Evidence) {
 	b.WriteString("=== EVIDENCE (one sample notice per pattern, read-only) ===\n")
-	b.WriteString("Each sample shows what the classification was based on: the delivery-status fields, the headers of the returned message and an excerpt of the body section that holds the diagnostic. Lines starting with \"| \" are body text of the notice. (not found) marks a value the notice does not carry; [TRUNCATED] marks an excerpt that continues in the named evidence file.\n")
+	b.WriteString("Each sample shows what the classification was based on: for a bounce, the delivery-status fields, the headers of the returned message and an excerpt of the body section that holds the diagnostic; for a DMARC record, the report and every field of the record. Lines starting with \"| \" are body text of the notice. (not found) marks a value the notice does not carry; [TRUNCATED] marks an excerpt that continues in the named evidence file.\n")
 	if len(ev.Samples) == 0 {
 		b.WriteString("(none)\n\n")
 		return

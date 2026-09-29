@@ -21,6 +21,7 @@ import { SettingsProfilePage } from './pages/SettingsProfilePage';
 import { SettingsTokensPage } from './pages/SettingsTokensPage';
 import { SettingsUsersPage } from './pages/SettingsUsersPage';
 import { SetupPage } from './pages/SetupPage';
+import { JobsPage } from './pages/JobsPage';
 import { ToolsPage } from './pages/ToolsPage';
 
 // Client-side routes. The server falls back to index.html for any path it
@@ -60,7 +61,22 @@ export default function App() {
                         <Route path='/mails' element={<MailsIndexPage />} />
                         <Route path='/mails/:mailboxId' element={<MailsListPage />} />
                         <Route path='/mails/:mailboxId/:messageKey' element={<MailDetailPage />} />
-                        <Route path='/tools' element={<ToolsPage />} />
+                        <Route
+                            path='/tools'
+                            element={
+                                <RequireAdmin>
+                                    <ToolsPage />
+                                </RequireAdmin>
+                            }
+                        />
+                        <Route
+                            path='/jobs'
+                            element={
+                                <RequireAdmin>
+                                    <JobsPage />
+                                </RequireAdmin>
+                            }
+                        />
                         <Route
                             path='/settings'
                             element={

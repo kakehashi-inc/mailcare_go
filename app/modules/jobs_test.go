@@ -1206,7 +1206,7 @@ func TestFetchJobKeepsExpiredMail(t *testing.T) {
 	}
 	var lines []string
 	result, err := jm.RunJob(context.Background(), mailboxJob(JobKindFetch, mb, ""), func(m string) { lines = append(lines, m) })
-	if err != nil || result != "fetched 2, skipped 0" {
+	if err != nil || result != "fetched 2" {
 		t.Fatalf("fetch: %q, %v\n%s", result, err, strings.Join(lines, "\n"))
 	}
 	joined := strings.Join(lines, "\n")

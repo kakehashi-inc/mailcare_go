@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-29
+
+### Added
+
+- A Jobs page for administrators. "Active" lists the queued and running jobs, refreshes itself and lets a queued job be canceled; "History" lists the finished jobs, can be narrowed to done, error or canceled jobs and is paged 50 jobs at a time.
+- Alerts can be marked as resolved or ignored, or reopened, directly from the alert list without opening their detail.
+
+### Changed
+
+- Members can now change the state of alerts. Running an analysis remains for administrators.
+- The Tools page, the job history (moved from the Tools page to the Jobs page) and the jobs on the dashboard are now for administrators only. Members still see on the dashboard which mail addresses are being synced.
+- The alert list is paged 50 alerts at a time. The chosen order applies to all alerts, and the order and the page are kept in the URL.
+- The mail list and the job history show the page navigation above the list as well as below it. The page navigation uses icon buttons and can jump to the first and the last page.
+- Secondary buttons such as "Ignore" have a visible border and background, so they are easier to recognize as buttons.
+- Alerts without recipients, such as DMARC alerts, no longer show a recipient count of 0 in the alert list and in the notification mail.
+
+## [0.1.4] - 2026-09-29
+
+### Added
+
+- DMARC aggregate reports are now recognized. They count as target mails, and every record that failed DMARC appears as an alert, grouped by what it shows (SPF record missing, DKIM verification failed, sender not authenticated) with its sending IPs.
+- Typical phishing (a sender name that impersonates the monitored domain or another organization, a link to an outside site that carries the monitored address, a forged From of the monitored domain) and mail flagged as spam are now recognized as junk. Junk is not an alert and is deleted from the server after the retention like the target mails.
+- The Mails page now shows the number of junk mails on each mail address card, and the mail list has a Junk tab.
+
+### Changed
+
+- Automatic replies marked as sent by a machine (for example Exchange automatic replies) now count as target mails and are deleted from the server after the retention.
+- The "Excluded (recipient-side problems)" list of the Alerts page is now labeled "Excluded".
+- Mails fetched before this update, except delivery failures and delays, are classified again by the next sync or "Group only" run. Run "Reclassify" on the Tools page to apply the new rules to all mails.
+
+### Fixed
+
+- Mails delivered more than once with the same Message-ID (for example a report its sender sent again) are now each fetched and shown, instead of all but one being skipped. Run "Sync all" or "Fetch only" on the Tools page with the fetch period "all time" to fetch the ones skipped before.
+
 ## [0.1.3] - 2026-09-29
 
 ### Added

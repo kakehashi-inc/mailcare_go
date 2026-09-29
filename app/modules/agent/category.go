@@ -18,7 +18,21 @@ const (
 	CategoryMailboxDisabled = "mailbox_disabled"
 	CategoryDomainNotFound  = "domain_not_found"
 	CategoryDeliveryDelay   = "delivery_delay"
+	// DMARC categories: records of DMARC aggregate reports that failed DMARC.
+	CategoryDMARCSPFMissing       = "dmarc_spf_missing"
+	CategoryDMARCDKIMFailed       = "dmarc_dkim_failed"
+	CategoryDMARCNotAuthenticated = "dmarc_not_authenticated"
 )
+
+// IsDMARCCategory reports whether a group bundles records of DMARC aggregate
+// reports instead of bounce notices.
+func IsDMARCCategory(category string) bool {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case CategoryDMARCSPFMissing, CategoryDMARCDKIMFailed, CategoryDMARCNotAuthenticated:
+		return true
+	}
+	return false
+}
 
 // CategoryInfo is the English glossary entry of one group category as the
 // prompt explains it to the agent.
@@ -127,6 +141,24 @@ var CategoryGlossary = map[string]CategoryInfo{
 		Unit:        "the recipient domain that is slow or unreachable",
 		Guidance:    "say whether the delay looks temporary and what to tell the recipient domain administrator if it persists; nothing on the sending side's mail server needs to change unless the notices show otherwise",
 		Actionable:  false,
+	},
+	CategoryDMARCSPFMissing: {
+		Description: "Receivers report mail with the domain in From that failed DMARC: an SPF domain aligned with it (same organizational domain, e.g. the HELO name of a server) publishes no usable SPF record (none, neutral, temperror, permerror) and no DKIM signature of the domain verified.",
+		Unit:        "the domain in From of the failing mail (the domain whose DNS records and senders are checked)",
+		Guidance:    "for each sending IP in the records, say whether it looks like a server of the domain owner (its host name, the SPF domain it used) or not; for the servers of the domain give the SPF record to publish for the aligned SPF domain (and the DKIM signing to set up) and how to verify with the next reports; for sources that do not belong to the domain owner say so",
+		Actionable:  true,
+	},
+	CategoryDMARCDKIMFailed: {
+		Description: "Receivers report mail with the domain in From that failed DMARC: the mail carried a DKIM signature of the domain that did not verify, and SPF did not pass with alignment. Typical causes are a forwarder or a security gateway on the receiving side that changed the mail, or a wrong DKIM key or setup on the sending side; the report alone does not tell which.",
+		Unit:        "the domain in From of the failing mail",
+		Guidance:    "for each sending IP in the records, say whether it looks like a forwarder or security gateway of the receiving side (e.g. a known mail security service) or a server of the domain owner; for forwarders say that the sending side cannot fix the breakage and what the receiving side can do (e.g. ARC); for servers of the domain give the DKIM key or signing fix and the SPF entry to add, and how to verify with the next reports",
+		Actionable:  true,
+	},
+	CategoryDMARCNotAuthenticated: {
+		Description: "Receivers report mail with the domain in From that failed DMARC: no DKIM signature of the domain, and SPF either checked another domain or does not authorize the sending IP for the domain (or an identifier passed but strict alignment failed). It is either a legitimate sender of the domain that is not set up (e.g. a service missing from the SPF record) or somebody using the domain without authorization (spoofing, phishing); the report alone does not tell which.",
+		Unit:        "the domain in From of the failing mail",
+		Guidance:    "for each sending IP in the records, say whether it looks like a legitimate sending service of the domain owner (its host name, the envelope domain, the volume) or an unauthorized sender; for legitimate services give the SPF entry and DKIM signing to set up; for unauthorized senders say whether the published policy (p=) already makes receivers reject or quarantine the mail and whether it should be tightened",
+		Actionable:  true,
 	},
 }
 

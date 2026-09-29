@@ -22,8 +22,8 @@ import { useMailboxes } from '../hooks/useMailboxes';
 import type { MessageDTO, MessageKind } from '../types';
 import { formatBytes, mailboxLabel } from '../utils/format';
 
-const KINDS: MessageKind[] = ['all', 'bounce', 'other'];
-const KIND_ICONS: Record<MessageKind, string> = { all: 'inbox', bounce: 'report', other: 'mail' };
+const KINDS: MessageKind[] = ['all', 'bounce', 'junk', 'other'];
+const KIND_ICONS: Record<MessageKind, string> = { all: 'inbox', bounce: 'report', junk: 'block', other: 'mail' };
 
 export function MailsListPage() {
     const { t } = useTranslation();
@@ -33,7 +33,7 @@ export function MailsListPage() {
     const [params, setParams] = useSearchParams();
     const q = params.get('q') ?? '';
     const kindParam = params.get('kind');
-    const kind: MessageKind = kindParam === 'bounce' || kindParam === 'other' ? kindParam : 'all';
+    const kind: MessageKind = KINDS.find(k => k !== 'all' && k === kindParam) ?? 'all';
     const group = params.get('group') ?? '';
     const page = Math.max(1, Number(params.get('page') ?? '1') || 1);
     const [search, setSearch] = useState(q);
@@ -175,6 +175,14 @@ export function MailsListPage() {
                     />
                 ) : (
                     <>
+                        {data.total > 0 && (
+                            <Pagination
+                                page={data.page || page}
+                                perPage={data.per_page || MAIL_PAGE_SIZE}
+                                total={data.total}
+                                onChange={p => update({ page: String(p) })}
+                            />
+                        )}
                         <Table
                             columns={columns}
                             rows={data.messages}

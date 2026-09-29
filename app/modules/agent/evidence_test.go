@@ -204,3 +204,59 @@ func TestExcerptWindow(t *testing.T) {
 		t.Errorf("cleanBodyLines = %q", got)
 	}
 }
+
+// TestBuildEvidenceDMARC: the members of a DMARC group are records, not
+// notices: the pattern lists the sending IPs, the sample shows the report
+// and the record without reading the mail, and the prompt explains the task
+// for DMARC records.
+func TestBuildEvidenceDMARC(t *testing.T) {
+	stubNotices(t, map[string]string{})
+	group := &models.BounceGroup{GroupKey: testGroupKey, Category: CategoryDMARCSPFMissing, UnitValue: "example.jp", Actionable: true}
+	record := func(key, ip string, day int) *models.GroupBounce {
+		r := &models.DMARCRecord{GroupKey: testGroupKey, CategoryRule: "dmarc_spf_missing", PatternKey: "pd",
+			DiagnosticTemplate: "dmarc fail: dkim none; spf aligned none; disposition reject", ReportOrg: "google.com",
+			ReportID: "r-1", PolicyDomain: "example.jp", Policy: "reject", HeaderFrom: "example.jp", SourceIP: ip,
+			MessageCount: 3, Disposition: "reject", DKIMResult: "fail", SPFResult: "fail", DKIMAuth: "none", SPFAuth: "mail.example.jp none"}
+		return &models.GroupBounce{
+			Bounce: models.Bounce{GroupKey: testGroupKey, CategoryRule: r.CategoryRule, PatternKey: r.PatternKey,
+				DiagnosticTemplate: r.DiagnosticTemplate, Diagnostic: r.Summary(), DiagnosticSource: "dmarc", RemoteIP: ip},
+			MessageKey: key, Date: time.Date(2026, 9, day, 12, 0, 0, 0, time.UTC), DMARC: r,
+		}
+	}
+	ev := BuildEvidence(EvidenceInput{Group: group, Bounces: []*models.GroupBounce{
+		record("k2", "192.0.2.10", 2), record("k1", "2001:db8::10", 1),
+	}})
+	if len(ev.Patterns) != 1 || len(ev.Samples) != 1 {
+		t.Fatalf("patterns %d, samples %d, want 1 / 1", len(ev.Patterns), len(ev.Samples))
+	}
+	if got := ev.Patterns[0].SourceIPs; len(got) != 2 {
+		t.Errorf("sending IPs = %v", got)
+	}
+	sample := ev.Samples[0].Prompt
+	for _, want := range []string{"DMARC report mail k2", "reported by google.com", "Record: source IP 192.0.2.10",
+		"envelope_from (not found)", "Auth results: DKIM none; SPF mail.example.jp none"} {
+		if !strings.Contains(sample, want) {
+			t.Errorf("sample lacks %q:\n%s", want, sample)
+		}
+	}
+	prompt := BuildPrompt(PromptInput{Address: "dmarc@example.jp", Language: "en", Group: group, Evidence: ev})
+	for _, want := range []string{"records of DMARC aggregate reports", "every DMARC record of the group", "Records: 2 in 1 patterns",
+		"2 DMARC records", "sending IPs (2): 192.0.2.10, 2001:db8::10"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+}
+
+// TestEvidenceFileNameDMARC: two records of one report mail in the same
+// group get evidence files of their own.
+func TestEvidenceFileNameDMARC(t *testing.T) {
+	a := &models.GroupBounce{MessageKey: "k1", DMARC: &models.DMARCRecord{ID: 7}}
+	b := &models.GroupBounce{MessageKey: "k1", DMARC: &models.DMARCRecord{ID: 8}}
+	if evidenceFileName(a) == evidenceFileName(b) {
+		t.Errorf("both records use %s", evidenceFileName(a))
+	}
+	if got := evidenceFileName(&models.GroupBounce{MessageKey: "k2"}); got != EvidenceDirName+"/k2.txt" {
+		t.Errorf("bounce evidence file = %s", got)
+	}
+}

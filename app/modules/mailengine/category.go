@@ -30,6 +30,7 @@ const (
 	unitReportingMTA                     // our MTA that produced the notice, else the sending domain
 	unitRecipientAddress                 // the failed recipient address, else its domain
 	unitRecipientDomain                  // the failed recipient's domain
+	unitNone                             // set by the categorizer itself (the DMARC categories)
 )
 
 // authorityKind names where a category takes its authority from.
@@ -51,7 +52,7 @@ type categoryDef struct {
 	authority   authorityKind
 }
 
-// categoryDefs is the category table of design 5.4.
+// categoryDefs is the category table of design document "mail classification" (4.1 and 4.2).
 var categoryDefs = map[string]categoryDef{
 	categoryIPBlocked:       {true, responsibleSender, unitSendingIP, authorityBlacklist},
 	categoryRateLimited:     {true, responsibleSender, unitSendingIP, authorityRecipientDomain},
@@ -66,6 +67,11 @@ var categoryDefs = map[string]categoryDef{
 	categoryMailboxDisabled: {false, responsibleRecipient, unitRecipientAddress, authorityNone},
 	categoryDomainNotFound:  {false, responsibleDomain, unitRecipientDomain, authorityNone},
 	categoryDeliveryDelay:   {false, responsibleDomain, unitRecipientDomain, authorityNone},
+	// DMARC categories: filed by CategorizeDMARCRecord, which sets the unit
+	// itself (the domain of the record; no authority).
+	categoryDMARCSPFMissing:       {true, responsibleSender, unitNone, authorityNone},
+	categoryDMARCDKIMFailed:       {true, responsibleUnknown, unitNone, authorityNone},
+	categoryDMARCNotAuthenticated: {true, responsibleUnknown, unitNone, authorityNone},
 }
 
 // categoryFacts is what the rules look at: the bounce row plus a few values
@@ -372,7 +378,7 @@ func newCategoryFacts(b *models.Bounce, kind string) *categoryFacts {
 }
 
 // senderRejection reports whether the diagnostic refuses the sender address
-// itself (design 5.4 sender_blocked): explicit "sender ... rejected" wording,
+// itself (design document "mail classification" 4.1, sender_blocked): explicit "sender ... rejected" wording,
 // or a policy status that quotes the original sender's address.
 func (f *categoryFacts) senderRejection() bool {
 	if senderBlockedRe.MatchString(f.text) {
@@ -382,7 +388,7 @@ func (f *categoryFacts) senderRejection() bool {
 }
 
 // unit resolves the unit_value of a category, lower-cased, with the fallbacks
-// of design 5.4.
+// of design document "mail classification" 4.1.
 func (f *categoryFacts) unit(kind unitKind) string {
 	b := f.bounce
 	var candidates []string

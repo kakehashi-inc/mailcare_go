@@ -76,7 +76,7 @@ type MailboxAddCmd struct {
 	InitialDays int    `help:"Days to look back on the first check (default: ${default_initial_days})" name:"initial-days" default:"0"`
 	RecentDays  int    `help:"Days to look back on later checks (default: ${default_recent_days})" name:"recent-days" default:"0"`
 	// ServerKeepDays: -1 = the default.
-	ServerKeepDays int    `help:"Days (from the mail's date) a classified daemon notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never (default: ${default_server_keep_days}, or mail_keep_days when shorter)" name:"server-keep-days" default:"-1"`
+	ServerKeepDays int    `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never (default: ${default_server_keep_days}, or mail_keep_days when shorter)" name:"server-keep-days" default:"-1"`
 	DisplayName    string `help:"Display name" name:"display-name"`
 	Disabled       bool   `help:"Register as disabled (not checked automatically)"`
 }
@@ -207,7 +207,7 @@ type MailboxUpdateCmd struct {
 	InitialDays int    `help:"Days to look back on the first check" name:"initial-days" default:"0"`
 	RecentDays  int    `help:"Days to look back on later checks" name:"recent-days" default:"0"`
 	// ServerKeepDays: -1 = unchanged.
-	ServerKeepDays int    `help:"Days (from the mail's date) a classified daemon notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never" name:"server-keep-days" default:"-1"`
+	ServerKeepDays int    `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never" name:"server-keep-days" default:"-1"`
 	DisplayName    string `help:"Display name" name:"display-name"`
 	Enabled        bool   `help:"Enable the mailbox"`
 	Disabled       bool   `help:"Disable the mailbox"`

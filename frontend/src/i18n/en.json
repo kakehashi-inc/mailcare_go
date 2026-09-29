@@ -14,6 +14,7 @@
             "alerts": "Alerts",
             "mails": "Mails",
             "tools": "Tools",
+            "jobs": "Jobs",
             "settings": "Settings",
             "settingsGeneral": "General",
             "settingsNotifications": "Notifications",
@@ -82,8 +83,10 @@
         },
         "pagination": {
             "label": "Pagination",
-            "prev": "Previous",
-            "next": "Next",
+            "first": "First page",
+            "prev": "Previous page",
+            "next": "Next page",
+            "last": "Last page",
             "page": "Page {{page}} of {{pages}}",
             "range": "{{from}}-{{to}} of {{total}}"
         },
@@ -202,11 +205,11 @@
             "smtpNotConfigured": "Set the SMTP server and the sender address first.",
             "testSent": "Test mail sent to {{to}}.",
             "testFailed": "The test mail could not be sent ({{detail}}).",
-            "sendQueued": "Notification mail queued. The result appears in the job history on the Tools page.",
+            "sendQueued": "Notification mail queued. The result appears on the Jobs page.",
             "sendAlreadyQueued": "A notification mail is already queued."
         },
         "job": {
-            "queued": "{{tool}} queued.",
+            "queued": "{{tool}} queued. Follow it on the Jobs page.",
             "alreadyActive": "The same job is already queued or running.",
             "canceled": "Job canceled.",
             "notQueued": "This job has already started and cannot be canceled."
@@ -270,6 +273,11 @@
                 "resolved": "Mark resolved",
                 "ignored": "Ignore"
             },
+            "markAsFor": {
+                "open": "Reopen \"{{group}}\"",
+                "resolved": "Mark \"{{group}}\" resolved",
+                "ignored": "Ignore \"{{group}}\""
+            },
             "copyAll": "Copy all {{what}}",
             "copyValue": "Copy {{value}}",
             "copyUnit": "Copy action unit \"{{value}}\""
@@ -311,7 +319,7 @@
         },
         "groupScope": {
             "actionable": "Actionable",
-            "excluded": "Excluded (recipient-side problems)"
+            "excluded": "Excluded"
         },
         "severity": {
             "high": "Severity: high",
@@ -363,7 +371,9 @@
             "failed": "Delivery failed",
             "delayed": "Delivery delayed",
             "auto_reply": "Auto reply",
-            "other": "Other notice"
+            "other": "Other notice",
+            "report": "DMARC report",
+            "junk": "Junk mail"
         },
         "connectionSecurity": {
             "ssl": "SSL/TLS",
@@ -416,6 +426,18 @@
                 "label": "Unknown failure",
                 "description": "A delivery failure that matches no known pattern. Read the diagnostic and the source messages, and use the analysis report if needed."
             },
+            "dmarc_spf_missing": {
+                "label": "SPF record missing",
+                "description": "Mail with this domain in From failed DMARC because the domain it was checked against (such as the sending server's host name) has no usable SPF record. If the source is a server of the domain, publish an SPF record and set up DKIM signing."
+            },
+            "dmarc_dkim_failed": {
+                "label": "DKIM verification failed",
+                "description": "Mail signed with this domain's DKIM key failed verification and DMARC. Either a forwarder on the receiving side changed the mail or the sending side's DKIM setup is wrong. Check the sending IPs."
+            },
+            "dmarc_not_authenticated": {
+                "label": "Sender not authenticated",
+                "description": "Mail with this domain in From came from sources with neither a DKIM signature of the domain nor SPF authorization, and failed DMARC. Check the sending IPs to tell a legitimate service missing from SPF from spoofing."
+            },
             "user_unknown": {
                 "label": "Recipient does not exist",
                 "description": "The recipient address does not exist. Remove it from the list or ask the recipient for the correct address."
@@ -455,7 +477,7 @@
             "username": "Username",
             "usernameHint": "The ID used to log in.",
             "role": "Role",
-            "roleHint": "Administrators manage settings, users and mailboxes, and can reindex and reclassify.",
+            "roleHint": "Administrators manage settings, users and mailboxes, run tools and analyses, and see the jobs.",
             "email": "Email address",
             "emailHint": "Recipient of notification mails (optional). Once set, it can also be used to log in. Users without one are never notified.",
             "language": "Language",
@@ -495,13 +517,14 @@
             "recentDaysHint": "Days to look back on later syncs (default 10)",
             "fetchDays": "Fetch days",
             "serverKeepDays": "Retention",
-            "serverKeepDaysHint": "Bounces and other notices older than this many days (from the mail's date) are deleted from the server. 0 never deletes them on the server.",
+            "serverKeepDaysHint": "Bounces and other notices, and junk mails, older than this many days (from the mail's date) are deleted from the server. 0 never deletes them on the server.",
             "serverKeepDaysMax": "At most the mail retention of the general settings ({{max}} days).",
             "lastChecked": "Last synced",
             "openGroups": "Open groups",
             "bounces": "Bounces",
             "messages": "Fetched mails",
             "targetMessages": "Target mails",
+            "junkMessages": "Junk mails",
             "unclassified": "Awaiting grouping"
         },
         "mail": {
@@ -704,6 +727,7 @@
             "kind": {
                 "all": "All",
                 "bounce": "Bounces",
+                "junk": "Junk",
                 "other": "Others"
             },
             "searchPlaceholder": "Search subject, sender or recipient",
@@ -730,9 +754,6 @@
         },
         "tools": {
             "description": "Run fetch, grouping and analysis separately or together, rebuild the index, redo the classification, or apply the retentions with a cleanup.",
-            "adminOnlyTitle": "Only administrators can run tools",
-            "adminOnly": "Members can view the job history.",
-            "readOnly": "Only administrators can run this",
             "allNote": "With \"All\", one job is expanded per mailbox and they run in parallel within the worker limit.",
             "analyzeScope": "Analysis scope",
             "scopeNeeds": "Awaiting analysis only",
@@ -743,8 +764,6 @@
             "confirmTitle": "Run {{tool}}?",
             "confirmMessage": "Target: {{target}}. {{tool}} runs in the background.",
             "confirmAllTime": "Fetch period: all time",
-            "jobs": "Job history",
-            "jobsHint": "Active jobs refresh automatically. Jobs queued for \"All\" appear as one child job per mailbox.",
             "tool": {
                 "sync": {
                     "title": "Sync all (fetch, group, analyze)",
@@ -773,9 +792,23 @@
                 },
                 "cleanup": {
                     "title": "Cleanup",
-                    "description": "Deletes the bounces and other notices past the retention of their mail address (except those recognized by subject or sender name alone, and automatically generated messages) from the IMAP server, then removes the mails past the mail retention (original, body sections and index row), the temporary files left by interrupted writes, the old agent workspaces and the jobs finished more than 30 days ago. The server runs this automatically every day at the cleanup time.",
+                    "description": "Deletes the bounces and other notices past the retention of their mail address (except those recognized by subject or sender name alone, and automatically generated messages) and the junk mails from the IMAP server, then removes the mails past the mail retention (original, body sections and index row), the temporary files left by interrupted writes, the old agent workspaces and the jobs finished more than 30 days ago. The server runs this automatically every day at the cleanup time.",
                     "warning": "Mails deleted from the IMAP server cannot be restored. A bounce group left without mails is removed together with its analysis report."
                 }
+            }
+        },
+        "jobs": {
+            "description": "Background processing such as fetching, grouping and analysis. Active jobs refresh automatically. Jobs queued for \"All\" appear as one child job per mailbox.",
+            "active": "Active",
+            "activeEmpty": "No active jobs.",
+            "history": "History",
+            "historyTabs": "Job status",
+            "historyEmpty": "No matching jobs.",
+            "filter": {
+                "all": "All",
+                "done": "Done",
+                "error": "Error",
+                "canceled": "Canceled"
             }
         },
         "settings": {
@@ -814,7 +847,7 @@
             "sectionRange": "Fetch range",
             "sectionRangeHint": "The first check looks back the initial fetch days; later checks look back the regular fetch days. \"All time\" on the Tools page checks every mail regardless of the period.",
             "sectionServerKeep": "Deleting mails on the server",
-            "sectionServerKeepHint": "The daily cleanup deletes bounces, auto-replies and similar notices from the IMAP server for good. Mails recognized by subject or sender name alone, automatically generated messages and ordinary mail are not deleted. Deleted mails cannot be restored. MailCare keeps its own copy until the mail retention."
+            "sectionServerKeepHint": "The daily cleanup deletes bounces, auto-replies, DMARC reports and similar notices, and junk mails, from the IMAP server for good. Notices recognized by subject or sender name alone, automatically generated messages and ordinary mail are not deleted. Deleted mails cannot be restored. MailCare keeps its own copy until the mail retention."
         },
         "notifications": {
             "description": "Sends a digest of the alerts that need attention to the selected users by mail.",

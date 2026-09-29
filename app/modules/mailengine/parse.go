@@ -53,6 +53,9 @@ type ParsedMessage struct {
 
 	DeliveryStatus  *DeliveryStatus
 	OriginalMessage *OriginalMessage
+	// DMARC is the DMARC aggregate report found in an attachment (the first
+	// one; nil when the mail carries none, dmarc.go).
+	DMARC *DMARCReport
 
 	// ParseError records why the MIME parser gave up; the fields above hold
 	// whatever could still be read.
@@ -374,7 +377,16 @@ func (pm *ParsedMessage) walk(e *message.Entity, inOriginal bool) error {
 		body, _ := readWhole(e.Body)
 		pm.addHTMLSection(normalizeText(decodeBodyBytes(body, ctParams["charset"], true)))
 	default:
-		_, _ = io.Copy(io.Discard, e.Body)
+		// Any other part (not text/plain, text/html, the delivery-status or
+		// an embedded message) may be the attachment of a DMARC aggregate
+		// report (zip, gzip or XML, whatever other type the reporter
+		// declared); the document is recognized by its content.
+		if inOriginal || pm.DMARC != nil {
+			_, _ = io.Copy(io.Discard, e.Body)
+			return nil
+		}
+		body, _ := readWhole(e.Body)
+		pm.DMARC = parseDMARCAttachment(body)
 	}
 	return nil
 }
@@ -800,7 +812,7 @@ func canonicalHeaderKey(k string) string {
 }
 
 // htmlToText renders an HTML body as plain text for the classifier and the
-// extractor when a message has no usable text/plain part (design 5.2):
+// extractor when a message has no usable text/plain part (design document "mail classification" 2.1):
 // comments, script, style and head are dropped, block-level tags become
 // line breaks, table cells a space, every other tag disappears, character
 // references (&nbsp; &amp; &lt; &#39; ...) are decoded and whitespace is
@@ -844,7 +856,7 @@ var (
 // bodyForClassification returns the primary body the classifier and the
 // extractor look at first: every text section joined, else every HTML
 // section rendered as text and joined, else "". secondaryBody is the other
-// one (design 5.2: both bodies are consulted, the primary first).
+// one (design document "mail classification" 2.1: both bodies are consulted, the primary first).
 func (pm *ParsedMessage) bodyForClassification() string {
 	switch pm.primarySource() {
 	case bodySourceText:
