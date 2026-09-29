@@ -7,6 +7,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
+	"mailcare/app/modules/mailengine"
 )
 
 // mailboxStats opens the index of a mailbox and counts its contents. An index
@@ -19,19 +20,23 @@ func (c *core) mailboxStats(r *http.Request, mb *models.Mailbox) *MailboxStatsDT
 		return &MailboxStatsDTO{}
 	}
 	defer idx.Close()
-	return indexStats(idx, mb.Address)
+	return indexStats(idx, mb)
 }
 
 // indexStats counts the contents of an open index. Group counts cover the
 // actionable groups; the excluded (recipient-side) groups are counted apart.
-func indexStats(idx *sql.DB, address string) *MailboxStatsDTO {
+func indexStats(idx *sql.DB, mb *models.Mailbox) *MailboxStatsDTO {
 	st := &MailboxStatsDTO{}
+	address := mb.Address
 	var err error
 	if st.Messages, st.Bounces, err = models.CountMessages(idx); err != nil {
 		log.Printf("failed to count messages of %s: %v", address, err)
 	}
 	if st.Unclassified, err = models.CountUnclassifiedMessages(idx); err != nil {
 		log.Printf("failed to count unclassified messages of %s: %v", address, err)
+	}
+	if st.TargetMessages, err = mailengine.CountTargetMessages(idx); err != nil {
+		log.Printf("failed to count target messages of %s: %v", address, err)
 	}
 	if st.Groups, err = models.CountGroups(idx, models.GroupScopeActionable); err != nil {
 		log.Printf("failed to count groups of %s: %v", address, err)

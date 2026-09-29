@@ -2,6 +2,7 @@ package mailengine
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,6 +28,14 @@ type ServerDeleteResult struct {
 // automatically generated messages (auto_generated) are left on the server:
 // a person's mail can look like them.
 var serverDeletableRules = []string{ruleDSNReport, ruleDaemonSender, ruleAutoReply, ruleBodyPattern}
+
+// CountTargetMessages returns how many messages of an index MailCare
+// handles as its targets: the daemon notices classified with certain
+// evidence (serverDeletableRules, the same messages the cleanup applies the
+// server retention to), whether or not they are still on the IMAP server.
+func CountTargetMessages(db *sql.DB) (int, error) {
+	return models.CountClassifiedByRules(db, serverDeletableRules)
+}
 
 // ErrOtherDeletedFlags is returned by DeleteFromServer on a server without
 // UID EXPUNGE when messages other than the ones to delete carry \Deleted

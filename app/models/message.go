@@ -236,6 +236,24 @@ func ListServerDeletionCandidates(db *sql.DB, folder string, cutoff time.Time, r
 	return out, rows.Err()
 }
 
+// CountClassifiedByRules returns how many messages are classified as a
+// daemon notice (classified = 1, is_bounce = 1) by one of rules, whether or
+// not they are still on the IMAP server. No rule counts nothing.
+func CountClassifiedByRules(db *sql.DB, rules []string) (int, error) {
+	if len(rules) == 0 {
+		return 0, nil
+	}
+	args := make([]any, 0, len(rules))
+	for _, r := range rules {
+		args = append(args, r)
+	}
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM messages
+		WHERE classified = 1 AND is_bounce = 1
+		  AND rule IN (?`+strings.Repeat(", ?", len(rules)-1)+`)`, args...).Scan(&n)
+	return n, err
+}
+
 // MarkServerDeleted records that the messages were deleted from (or are no
 // longer on) the IMAP server.
 func MarkServerDeleted(db *sql.DB, ids []int64, at time.Time) error {

@@ -41,6 +41,7 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
             {mailboxes.map(mb => {
                 const open = mb.stats?.groups.open;
                 const messages = mb.stats?.messages;
+                const targetMessages = mb.stats?.target_messages;
                 const value = highlight === 'open' ? open : messages;
                 return (
                     <li key={mb.id}>
@@ -63,17 +64,25 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                                 {!mb.enabled && <span className='text-sm text-muted'>{t('common.disabled')}</span>}
                             </div>
                             <div className='mt-auto flex items-end justify-between gap-3'>
-                                <div>
-                                    <p className='text-sm text-muted'>
-                                        {highlight === 'open'
-                                            ? t('field.mailbox.openGroups')
-                                            : t('field.mailbox.messages')}
-                                    </p>
-                                    <p
-                                        className={`text-2xl font-bold ${highlight === 'open' && value ? 'text-danger' : 'text-ink'}`}
-                                    >
-                                        {value ?? '-'}
-                                    </p>
+                                <div className='flex flex-wrap gap-x-6 gap-y-2'>
+                                    <div>
+                                        <p className='text-sm text-muted'>
+                                            {highlight === 'open'
+                                                ? t('field.mailbox.openGroups')
+                                                : t('field.mailbox.messages')}
+                                        </p>
+                                        <p
+                                            className={`text-2xl font-bold ${highlight === 'open' && value ? 'text-danger' : 'text-ink'}`}
+                                        >
+                                            {value ?? '-'}
+                                        </p>
+                                    </div>
+                                    {highlight === 'messages' && (
+                                        <div>
+                                            <p className='text-sm text-muted'>{t('field.mailbox.targetMessages')}</p>
+                                            <p className='text-2xl font-bold text-ink'>{targetMessages ?? '-'}</p>
+                                        </div>
+                                    )}
                                 </div>
                                 <p className='text-right text-sm text-muted'>
                                     {t('field.mailbox.lastChecked')}

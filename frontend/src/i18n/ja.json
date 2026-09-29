@@ -500,6 +500,7 @@
             "openGroups": "未対応グループ",
             "bounces": "バウンス",
             "messages": "取得メール",
+            "targetMessages": "処理対象",
             "unclassified": "纏め待ち"
         },
         "mail": {

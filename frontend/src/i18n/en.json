@@ -501,6 +501,7 @@
             "openGroups": "Open groups",
             "bounces": "Bounces",
             "messages": "Fetched mails",
+            "targetMessages": "Target mails",
             "unclassified": "Awaiting grouping"
         },
         "mail": {

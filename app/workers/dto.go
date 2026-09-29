@@ -78,12 +78,14 @@ func toTokenDTO(t *models.Token) TokenDTO {
 // MailboxStatsDTO summarizes the index of a mailbox. Groups counts the
 // groups of the actionable Alerts list only (excluded groups are not
 // counted); Unclassified is the number of messages the grouping phase has
-// not processed yet.
+// not processed yet; TargetMessages is the number of messages MailCare
+// handles as its targets (mailengine.CountTargetMessages).
 type MailboxStatsDTO struct {
-	Messages     int                `json:"messages"`
-	Bounces      int                `json:"bounces"`
-	Unclassified int                `json:"unclassified"`
-	Groups       models.GroupCounts `json:"groups"`
+	Messages       int                `json:"messages"`
+	Bounces        int                `json:"bounces"`
+	Unclassified   int                `json:"unclassified"`
+	TargetMessages int                `json:"target_messages"`
+	Groups         models.GroupCounts `json:"groups"`
 }
 
 // MailboxDTO is a mailbox without its password. The connection settings

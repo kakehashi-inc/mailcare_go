@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-29
+
+### Added
+
+- The mail address cards of the Mails page now show the number of target mails (the bounces and other notices MailCare handles) next to the number of fetched mails.
+
 ## [0.1.2] - 2026-09-29
 
 ### Added

@@ -57,7 +57,7 @@ func (c *core) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			dto.Mailboxes = append(dto.Mailboxes, mdto)
 			continue
 		}
-		mdto.Stats = indexStats(idx, mb.Address)
+		mdto.Stats = indexStats(idx, mb)
 		dto.Totals.Messages += mdto.Stats.Messages
 		dto.Totals.Bounces += mdto.Stats.Bounces
 		dto.Totals.Unclassified += mdto.Stats.Unclassified

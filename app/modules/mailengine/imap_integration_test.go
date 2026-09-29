@@ -546,6 +546,10 @@ func TestDeleteFromServer(t *testing.T) {
 			t.Errorf("%s: rule %q, is_bounce %v, %v (want %s)", id, rule, isBounce, err, want)
 		}
 	}
+	// The target messages are the same messages whatever their date.
+	if n, err := CountTargetMessages(db); err != nil || n != len(due) {
+		t.Errorf("target messages: %d %v, want %d", n, err, len(due))
+	}
 	// A message not classified yet is never due.
 	if _, err := db.Exec(`UPDATE messages SET classified = 0 WHERE id = ?`, due[len(due)-1].ID); err != nil {
 		t.Fatal(err)
@@ -602,6 +606,10 @@ func TestDeleteFromServer(t *testing.T) {
 	db, err = models.OpenMailIndex(indexPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The messages deleted from the server are still target messages.
+	if n, err := CountTargetMessages(db); err != nil || n != len(due) {
+		t.Errorf("target messages after the deletion: %d %v, want %d", n, err, len(due))
 	}
 	for _, c := range due {
 		m, err := models.GetMessageByKey(db, c.MessageKey)

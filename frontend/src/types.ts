@@ -95,6 +95,8 @@ export interface MailboxStats {
     bounces: number;
     /** Mails fetched but not grouped yet. */
     unclassified: number;
+    /** Mails MailCare handles as its targets: notices classified with certain evidence (deleted from the IMAP server or not). */
+    target_messages: number;
     /** Counts of the actionable Alerts list only (excluded groups are not counted). */
     groups: { open: number; resolved: number; ignored: number };
 }
