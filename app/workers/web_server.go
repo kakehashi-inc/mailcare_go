@@ -60,6 +60,8 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups/{key}", c.handleGetGroup)
 	mux.HandleFunc("PUT /api/v1/mailboxes/{id}/groups/{key}/state", c.handleSetGroupState)
 	mux.HandleFunc("POST /api/v1/mailboxes/{id}/groups/{key}/analyze", c.requireAdmin(c.handleAnalyzeGroup))
+	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups/{key}/report", c.handleGroupReport)
+	mux.HandleFunc("GET /api/v1/mailboxes/{id}/groups/{key}/export", c.handleExportGroup)
 
 	// Messages.
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}/messages", c.handleListMessages)

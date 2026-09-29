@@ -14,22 +14,22 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules/mailengine"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 )
 
 // ErrMailboxBusy is returned when a mailbox cannot be renamed or deleted
 // because one of its jobs is running (the HTTP layer answers 409).
-var ErrMailboxBusy = message.New("result.mailbox.busy", "a job is running for this mailbox")
+var ErrMailboxBusy = wording.New("result.mailbox.busy", "a job is running for this mailbox")
 
 // ErrPasswordRequired is returned when the connection settings of a mailbox
 // (host, port, security, username) differ from the stored ones and no
 // password was given: the stored password belongs to the stored connection
 // and is never carried over to, or tried against, another one.
-var ErrPasswordRequired = message.New("validation.connection.passwordRequiredOnChange", "imap_password is required when the connection settings change")
+var ErrPasswordRequired = wording.New("validation.connection.passwordRequiredOnChange", "imap_password is required when the connection settings change")
 
 // errIMAPPasswordRequired is returned when a password is needed and none is
 // given or stored.
-var errIMAPPasswordRequired = message.New("validation.connection.passwordRequired", "imap_password is required")
+var errIMAPPasswordRequired = wording.New("validation.connection.passwordRequired", "imap_password is required")
 
 // MailboxInput is the editable part of a mailbox as received from the Web UI
 // or assembled by the CLI. Pointer / zero-valued optional fields fall back to
@@ -72,7 +72,7 @@ func MailboxInputFrom(mb *models.Mailbox) *MailboxInput {
 func ValidateMailboxInput(in *MailboxInput) error {
 	in.Address = strings.ToLower(strings.TrimSpace(in.Address))
 	if in.Address == "" {
-		return message.New("validation.mailbox.addressRequired", "address is required")
+		return wording.New("validation.mailbox.addressRequired", "address is required")
 	}
 	if len(in.Address) > MaxEmailLength || strings.ContainsAny(in.Address, " \t\r\n<>\"") {
 		return errAddressInvalid
@@ -82,21 +82,21 @@ func ValidateMailboxInput(in *MailboxInput) error {
 	}
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
 	if utf8.RuneCountInString(in.DisplayName) > MaxDisplayNameLength {
-		return message.New("validation.common.displayNameTooLong", fmt.Sprintf("display_name must be %d characters or fewer", MaxDisplayNameLength)).
+		return wording.New("validation.common.displayNameTooLong", fmt.Sprintf("display_name must be %d characters or fewer", MaxDisplayNameLength)).
 			With("max", MaxDisplayNameLength)
 	}
 	in.ImapHost = strings.TrimSpace(in.ImapHost)
 	if in.ImapHost == "" {
-		return message.New("validation.connection.hostRequired", "imap_host is required")
+		return wording.New("validation.connection.hostRequired", "imap_host is required")
 	}
 	if !validIMAPHost(in.ImapHost) {
-		return message.New("validation.connection.hostInvalid", "imap_host is not a valid host name")
+		return wording.New("validation.connection.hostInvalid", "imap_host is not a valid host name")
 	}
 	if in.ImapPort == 0 {
 		in.ImapPort = DefaultIMAPPort
 	}
 	if in.ImapPort < 1 || in.ImapPort > 65535 {
-		return message.New("validation.common.numberOutOfRange", "imap_port must be between 1 and 65535").With("min", 1).With("max", 65535)
+		return wording.New("validation.common.numberOutOfRange", "imap_port must be between 1 and 65535").With("min", 1).With("max", 65535)
 	}
 	in.ImapSecurity = strings.ToLower(strings.TrimSpace(in.ImapSecurity))
 	if in.ImapSecurity == "" {
@@ -105,18 +105,18 @@ func ValidateMailboxInput(in *MailboxInput) error {
 	switch in.ImapSecurity {
 	case IMAPSecuritySSL, IMAPSecurityStartTLS, IMAPSecurityNone:
 	default:
-		return message.New("system.invalidRequest", fmt.Sprintf("imap_security must be %s, %s or %s", IMAPSecuritySSL, IMAPSecurityStartTLS, IMAPSecurityNone))
+		return wording.New("system.invalidRequest", fmt.Sprintf("imap_security must be %s, %s or %s", IMAPSecuritySSL, IMAPSecurityStartTLS, IMAPSecurityNone))
 	}
 	in.ImapUsername = strings.TrimSpace(in.ImapUsername)
 	if in.ImapUsername == "" {
-		return message.New("validation.connection.usernameRequired", "imap_username is required")
+		return wording.New("validation.connection.usernameRequired", "imap_username is required")
 	}
 	in.Folder = strings.TrimSpace(in.Folder)
 	if in.Folder == "" {
 		in.Folder = "INBOX"
 	}
 	if strings.ContainsAny(in.Folder, "\r\n") {
-		return message.New("validation.mailbox.folderInvalid", "folder is not a valid folder name")
+		return wording.New("validation.mailbox.folderInvalid", "folder is not a valid folder name")
 	}
 	if in.Enabled == nil {
 		t := true
@@ -129,20 +129,20 @@ func ValidateMailboxInput(in *MailboxInput) error {
 		in.RecentDays = DefaultRecentDays
 	}
 	if in.InitialDays < 1 || in.InitialDays > 3650 {
-		return message.New("validation.common.numberOutOfRange", "initial_days must be between 1 and 3650").With("min", 1).With("max", 3650)
+		return wording.New("validation.common.numberOutOfRange", "initial_days must be between 1 and 3650").With("min", 1).With("max", 3650)
 	}
 	if in.RecentDays < 1 || in.RecentDays > 3650 {
-		return message.New("validation.common.numberOutOfRange", "recent_days must be between 1 and 3650").With("min", 1).With("max", 3650)
+		return wording.New("validation.common.numberOutOfRange", "recent_days must be between 1 and 3650").With("min", 1).With("max", 3650)
 	}
 	if in.ServerKeepDays != nil && (*in.ServerKeepDays < 0 || *in.ServerKeepDays > MaxServerKeepDays) {
-		return message.New("validation.common.numberOutOfRange",
+		return wording.New("validation.common.numberOutOfRange",
 			fmt.Sprintf("server_keep_days must be between 0 and %d (0 = keep the mails on the server)", MaxServerKeepDays)).
 			With("min", 0).With("max", MaxServerKeepDays)
 	}
 	return nil
 }
 
-var errAddressInvalid = message.New("validation.common.emailFormat", "address is not a valid mail address")
+var errAddressInvalid = wording.New("validation.common.emailFormat", "address is not a valid mail address")
 
 // checkServerKeepDays bounds the server retention by the mail retention
 // (mail_keep_days): a mail past the mail retention loses its index row, so
@@ -165,7 +165,7 @@ func checkServerKeepDays(db *sql.DB, in *MailboxInput, stored *int) error {
 	if *in.ServerKeepDays <= mailKeep || (stored != nil && *in.ServerKeepDays == *stored) {
 		return nil
 	}
-	return message.New("validation.mailbox.serverKeepDaysOverMailKeep",
+	return wording.New("validation.mailbox.serverKeepDaysOverMailKeep",
 		fmt.Sprintf("server_keep_days must not exceed mail_keep_days (%d days)", mailKeep)).With("max", mailKeep)
 }
 
@@ -231,7 +231,7 @@ func checkAddressAvailable(db *sql.DB, address string, excludeID int64) error {
 	if taken, err := addressTaken(db, address, excludeID); err != nil {
 		return err
 	} else if taken {
-		return message.New("validation.mailbox.addressTaken", fmt.Sprintf("mailbox %q already exists", address))
+		return wording.New("validation.mailbox.addressTaken", fmt.Sprintf("mailbox %q already exists", address))
 	}
 	mailboxes, err := models.ListMailboxes(db)
 	if err != nil {
@@ -243,7 +243,7 @@ func checkAddressAvailable(db *sql.DB, address string, excludeID int64) error {
 			continue
 		}
 		if mailengine.SanitizeAddress(other.Address) == name {
-			return message.New("validation.mailbox.addressConflicts",
+			return wording.New("validation.mailbox.addressConflicts",
 				fmt.Sprintf("mailbox %q conflicts with %q (same data directory name)", address, other.Address)).
 				With("other", other.Address)
 		}
@@ -368,7 +368,7 @@ func renameMailboxData(mailsRoot, agentRoot, oldAddress, newAddress string) erro
 			continue
 		}
 		if _, err := os.Stat(p[1]); err == nil {
-			return message.New("result.mailbox.dataExists", fmt.Sprintf("%s already exists", p[1]))
+			return wording.New("result.mailbox.dataExists", fmt.Sprintf("%s already exists", p[1]))
 		}
 		moves = append(moves, p)
 	}
@@ -452,7 +452,7 @@ func TestMailboxConnection(ctx context.Context, db *sql.DB, key []byte, in *Mail
 		}
 		stored, err := models.GetMailboxByID(db, in.ID)
 		if err == sql.ErrNoRows {
-			return message.New("system.notFound", "mailbox not found")
+			return wording.New("system.notFound", "mailbox not found")
 		}
 		if err != nil {
 			return err
@@ -476,7 +476,7 @@ func TestMailboxConnection(ctx context.Context, db *sql.DB, key []byte, in *Mail
 	if err := mailengine.TestConnection(ctx, mb, password); err != nil {
 		// The server's own words are the useful part; the Web UI shows them
 		// as the detail of its message.
-		return message.New("result.mailbox.testFailed", err.Error()).With("detail", err.Error())
+		return wording.New("result.mailbox.testFailed", err.Error()).With("detail", err.Error())
 	}
 	return nil
 }

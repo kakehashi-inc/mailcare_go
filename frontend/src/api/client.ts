@@ -301,6 +301,16 @@ export function analyzeGroup(mailboxId: number, key: string): Promise<JobSubmitR
     );
 }
 
+/** URL of the PDF report of a group (overview and statistics, in the signed-in user's language and time zone). */
+export function groupReportUrl(mailboxId: number, key: string): string {
+    return api(`/mailboxes/${mailboxId}/groups/${encodeURIComponent(key)}/report`);
+}
+
+/** URL of the ZIP export of a group (report.json, README.md, and the files and index rows of every member mail). */
+export function groupExportUrl(mailboxId: number, key: string): string {
+    return api(`/mailboxes/${mailboxId}/groups/${encodeURIComponent(key)}/export`);
+}
+
 // --- Messages (mails) ---
 
 export interface MessageListParams {

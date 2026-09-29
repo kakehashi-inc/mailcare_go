@@ -280,7 +280,9 @@
             },
             "copyAll": "Copy all {{what}}",
             "copyValue": "Copy {{value}}",
-            "copyUnit": "Copy action unit \"{{value}}\""
+            "copyUnit": "Copy action unit \"{{value}}\"",
+            "showReport": "Show report",
+            "download": "Download"
         },
         "report": {
             "analyze": "Analyze",
@@ -720,6 +722,10 @@
                 "excludedMoveHint": "Marking it resolved or ignored moves it to the actionable list.",
                 "excludedReturnHint": "Reopening it moves it back to the excluded list."
             }
+        },
+        "groupReport": {
+            "title": "Group report",
+            "generatedAt": "Generated"
         },
         "mails": {
             "chooseMailbox": "Choose the mailbox whose messages you want to browse.",

@@ -3,12 +3,14 @@ module mailcare
 go 1.26.5
 
 require (
+	codeberg.org/go-pdf/fpdf v0.12.0
 	github.com/alecthomas/kong v1.16.0
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-message v0.18.2
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/pressly/goose/v3 v3.27.3
 	golang.org/x/crypto v0.57.0
+	golang.org/x/image v0.46.0
 	golang.org/x/net v0.58.0
 	golang.org/x/term v0.46.0
 	golang.org/x/text v0.42.0

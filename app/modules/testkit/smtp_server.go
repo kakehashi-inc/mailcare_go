@@ -1,9 +1,10 @@
-// Package smtptest is a minimal fake SMTP server for tests: it listens on a
+// Package testkit holds helpers for the tests of app/modules and
+// app/workers; it is not part of the application.
+//
+// Server (this file) is a minimal fake SMTP server: it listens on a
 // loopback port, speaks EHLO / AUTH PLAIN / AUTH LOGIN / MAIL / RCPT / DATA /
-// RSET / NOOP / QUIT over plaintext and records every accepted message. It
-// is used by the tests of app/modules and app/workers; it is not part of the
-// application.
-package smtptest
+// RSET / NOOP / QUIT over plaintext and records every accepted message.
+package testkit
 
 import (
 	"bufio"
@@ -124,7 +125,7 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		return strings.TrimRight(line, "\r\n"), true
 	}
-	reply("220 smtptest ESMTP")
+	reply("220 testkit ESMTP")
 	var msg Message
 	authed := ""
 	authMech := ""
@@ -137,11 +138,11 @@ func (s *Server) handle(conn net.Conn) {
 		switch {
 		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
 			if s.Mechanisms != "" {
-				reply("250-smtptest")
+				reply("250-testkit")
 				reply("250-AUTH " + s.Mechanisms)
 				reply("250 8BITMIME")
 			} else {
-				reply("250-smtptest")
+				reply("250-testkit")
 				reply("250 8BITMIME")
 			}
 		case strings.HasPrefix(cmd, "AUTH PLAIN"):

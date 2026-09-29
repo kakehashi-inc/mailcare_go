@@ -393,6 +393,13 @@ func ListMessages(db *sql.DB, f MessageFilter) ([]*Message, int, error) {
 	return out, total, err
 }
 
+// ListGroupMessages returns every member message of a group (the mails of
+// its bounces and the report mails of its DMARC records), newest first.
+func ListGroupMessages(db *sql.DB, groupKey string) ([]*Message, error) {
+	where, args := messageWhere(MessageFilter{GroupKey: groupKey})
+	return queryMessages(db, `SELECT `+messageColumns+messageFrom+where+` ORDER BY m.date DESC, m.id DESC`, args...)
+}
+
 // ListAllMessages returns every message oldest first.
 func ListAllMessages(db *sql.DB) ([]*Message, error) {
 	return queryMessages(db, `SELECT `+messageColumns+messageFrom+` ORDER BY m.date ASC, m.id ASC`)

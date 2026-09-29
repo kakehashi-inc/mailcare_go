@@ -13,7 +13,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
 
-	"mailcare/app/migrations"
+	"mailcare/app/modules/dbschema"
 )
 
 // ResolveDBPath returns the path to the database (<data>/DBFileName).
@@ -93,10 +93,10 @@ func DataDirPermissionWarning(dir string) string {
 var LogMigrations bool
 
 // runMigrations applies the pending migrations of the master database
-// (app/migrations/master) and logs each applied file when LogMigrations is
+// (embedded/migrations/master) and logs each applied file when LogMigrations is
 // set.
 func runMigrations(db *sql.DB) error {
-	applied, err := migrations.Apply(context.Background(), db, migrations.Master())
+	applied, err := dbschema.Apply(context.Background(), db, dbschema.Master())
 	if err != nil {
 		return fmt.Errorf("migrate the database: %w", err)
 	}

@@ -47,7 +47,7 @@ func samplePromptInput(t *testing.T) PromptInput {
 	}
 	return PromptInput{
 		Address:     addr,
-		TemplatesFS: os.DirFS(filepath.Join("..", "..", "..")),
+		TemplatesFS: os.DirFS(filepath.Join("..", "..", "..", "embedded")),
 		Group:       group,
 		Stats:       &models.GroupBounceStats{Recipients: recipients, RemoteIPs: []string{"192.0.2.10"}, RemoteMTAs: []string{"mx.example.net"}},
 		Evidence:    BuildEvidence(EvidenceInput{Address: addr, Group: group, Bounces: bounces}),

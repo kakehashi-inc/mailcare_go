@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 	"mime"
 	"net"
 	"net/smtp"
@@ -36,7 +36,7 @@ type SMTPConfig struct {
 const SMTPFromName = "MailCare"
 
 // ErrSMTPNotConfigured is returned when the host or the sender is missing.
-var ErrSMTPNotConfigured = message.New("result.notification.smtpNotConfigured", "SMTP host or sender address is not set")
+var ErrSMTPNotConfigured = wording.New("result.notification.smtpNotConfigured", "SMTP host or sender address is not set")
 
 // ValidateSMTPSecurity checks a security mode (the values are shared with IMAP).
 func ValidateSMTPSecurity(s string) error {
@@ -44,7 +44,7 @@ func ValidateSMTPSecurity(s string) error {
 	case IMAPSecuritySSL, IMAPSecurityStartTLS, IMAPSecurityNone:
 		return nil
 	}
-	return message.New("system.invalidRequest", fmt.Sprintf("smtp_security must be %s, %s or %s", IMAPSecuritySSL, IMAPSecurityStartTLS, IMAPSecurityNone))
+	return wording.New("system.invalidRequest", fmt.Sprintf("smtp_security must be %s, %s or %s", IMAPSecuritySSL, IMAPSecurityStartTLS, IMAPSecurityNone))
 }
 
 // Configured reports whether the host and the sender address are set.

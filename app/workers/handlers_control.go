@@ -12,7 +12,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 )
 
 // Control endpoints: reachable from loopback only (see webMiddleware), used
@@ -63,7 +63,7 @@ func (c *core) handleControlCreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	job, created, err := c.jm.Enqueue(body.Kind, body.MailboxID, body.Target, modules.RequestedByCLI)
 	if err != nil {
-		if _, ok := message.As(err); !ok {
+		if _, ok := wording.As(err); !ok {
 			log.Printf("control: failed to queue a job: %v", err)
 		}
 		writeControlError(w, http.StatusBadRequest, err.Error())

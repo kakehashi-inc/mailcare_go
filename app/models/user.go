@@ -2,7 +2,7 @@ package models
 
 import (
 	"database/sql"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 	"time"
 )
 
@@ -12,7 +12,7 @@ import (
 // the same statement (SQLite runs each statement atomically, so concurrent
 // writers, including the CLI in another process, cannot both pass), and rows
 // that shared an address before the rule existed can keep it.
-var ErrEmailTaken = message.New("validation.user.emailTaken", "email address is already used by another user")
+var ErrEmailTaken = wording.New("validation.user.emailTaken", "email address is already used by another user")
 
 // User is a row of the users table: a person who can log in to the Web UI.
 type User struct {

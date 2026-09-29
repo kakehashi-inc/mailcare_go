@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -20,7 +19,7 @@ import (
 	"mailcare/app/models"
 	"mailcare/app/modules/agent"
 	"mailcare/app/modules/mailengine"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 )
 
 // Notification mails (the system design document (Documents) 7.4).
@@ -35,7 +34,7 @@ import (
 // the last mail has elapsed.
 
 const (
-	// The mail templates inside TemplatesFS are
+	// The mail templates inside EmbeddedFS are
 	// templates/mail/<kind>_<language>.txt (mailTemplatePath). All
 	// user-facing text of the mails lives there, never in Go source; the
 	// category names come from the Web UI's language files
@@ -93,11 +92,11 @@ func (l MailLocale) key() string {
 }
 
 // mailTemplatePath returns the template file of a kind for a language, or
-// the Japanese one when TemplatesFS has none for the language.
+// the Japanese one when EmbeddedFS has none for the language.
 func mailTemplatePath(kind, language string) string {
 	path := "templates/mail/" + kind + "_" + language + ".txt"
-	if TemplatesFS != nil && language != models.DefaultLanguage {
-		if _, err := fs.Stat(TemplatesFS, path); err == nil {
+	if EmbeddedFS != nil && language != models.DefaultLanguage {
+		if _, err := fs.Stat(EmbeddedFS, path); err == nil {
 			return path
 		}
 	}
@@ -194,7 +193,7 @@ func FormatNotifyUserIDs(ids []int64) string {
 func ValidateNotifyTime(s string) (string, error) {
 	times, err := ParseCheckTimes([]string{s})
 	if err != nil || len(times) != 1 {
-		return "", message.New("validation.common.timeFormat", fmt.Sprintf("invalid notify_time %q (use one HH:MM time, 00:00-23:59)", strings.TrimSpace(s)))
+		return "", wording.New("validation.common.timeFormat", fmt.Sprintf("invalid notify_time %q (use one HH:MM time, 00:00-23:59)", strings.TrimSpace(s)))
 	}
 	return times[0], nil
 }
@@ -202,7 +201,7 @@ func ValidateNotifyTime(s string) (string, error) {
 // ValidateNotifyInterval checks the interval in days.
 func ValidateNotifyInterval(n int) error {
 	if n < MinNotifyIntervalDays || n > MaxNotifyIntervalDays {
-		return message.New("validation.common.numberOutOfRange",
+		return wording.New("validation.common.numberOutOfRange",
 			fmt.Sprintf("notify_interval_days must be between %d and %d", MinNotifyIntervalDays, MaxNotifyIntervalDays)).
 			With("min", MinNotifyIntervalDays).With("max", MaxNotifyIntervalDays)
 	}
@@ -213,20 +212,20 @@ func ValidateNotifyInterval(n int) error {
 // returns the deduplicated, sorted list.
 func ValidateNotifyUserIDs(db *sql.DB, ids []int64) ([]int64, error) {
 	if len(ids) > notifyMaxRecipients {
-		return nil, message.New("validation.notification.recipientsTooMany", fmt.Sprintf("at most %d recipients can be selected", notifyMaxRecipients)).
+		return nil, wording.New("validation.notification.recipientsTooMany", fmt.Sprintf("at most %d recipients can be selected", notifyMaxRecipients)).
 			With("max", notifyMaxRecipients)
 	}
 	seen := map[int64]bool{}
 	var out []int64
 	for _, id := range ids {
 		if id <= 0 {
-			return nil, message.New("validation.notification.recipientNotFound", fmt.Sprintf("invalid user id %d", id))
+			return nil, wording.New("validation.notification.recipientNotFound", fmt.Sprintf("invalid user id %d", id))
 		}
 		if seen[id] {
 			continue
 		}
 		if _, err := models.GetUserByID(db, id); err == sql.ErrNoRows {
-			return nil, message.New("validation.notification.recipientNotFound", fmt.Sprintf("user %d not found", id))
+			return nil, wording.New("validation.notification.recipientNotFound", fmt.Sprintf("user %d not found", id))
 		} else if err != nil {
 			return nil, err
 		}
@@ -246,10 +245,10 @@ func NormalizePublicBaseURL(s string) (string, error) {
 	}
 	u, err := url.Parse(s)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", message.New("validation.common.urlFormat", "public_base_url must be an absolute http or https URL")
+		return "", wording.New("validation.common.urlFormat", "public_base_url must be an absolute http or https URL")
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
-		return "", message.New("validation.notification.publicUrlQuery", "public_base_url must not carry a query or fragment")
+		return "", wording.New("validation.notification.publicUrlQuery", "public_base_url must not carry a query or fragment")
 	}
 	return s, nil
 }
@@ -286,7 +285,7 @@ func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 	if in.SMTPHost != nil {
 		host := strings.TrimSpace(*in.SMTPHost)
 		if strings.ContainsAny(host, " /\\@") {
-			return message.New("validation.connection.hostInvalid", "smtp_host must be a host name or IP address")
+			return wording.New("validation.connection.hostInvalid", "smtp_host must be a host name or IP address")
 		}
 		writes = append(writes, write{SettingSMTPHost, host, host == ""})
 	}
@@ -726,12 +725,12 @@ func firstParagraph(markdown string) string {
 	return strings.Join(lines, " ")
 }
 
-// mailTemplate parses one template file of TemplatesFS.
+// mailTemplate parses one template file of EmbeddedFS.
 func mailTemplate(name string) (*template.Template, error) {
-	if TemplatesFS == nil {
+	if EmbeddedFS == nil {
 		return nil, errors.New("mail templates are not available")
 	}
-	tpl, err := template.ParseFS(TemplatesFS, name)
+	tpl, err := template.ParseFS(EmbeddedFS, name)
 	if err != nil {
 		return nil, fmt.Errorf("mail template %s: %w", name, err)
 	}
@@ -758,35 +757,15 @@ func renderSubjectAndBody(name string, data any) (subject, body string, err erro
 }
 
 // loadCategoryLabels reads the category names of a language
-// (value.category.<category>.label) from the Web UI's language file,
-// frontend/src/i18n/<language>.json, or from the Japanese one when there is
-// no file for the language.
+// (value.category.<category>.label) from the Web UI's language file
+// (LoadLanguageFile: the Japanese one when there is no file for the
+// language).
 func loadCategoryLabels(language string) (map[string]string, error) {
-	if TemplatesFS == nil {
-		return nil, errors.New("mail templates are not available")
-	}
-	data, err := fs.ReadFile(TemplatesFS, "frontend/src/i18n/"+language+".json")
-	if errors.Is(err, fs.ErrNotExist) && language != models.DefaultLanguage {
-		data, err = fs.ReadFile(TemplatesFS, "frontend/src/i18n/"+models.DefaultLanguage+".json")
-	}
+	f, err := LoadLanguageFile(language)
 	if err != nil {
 		return nil, fmt.Errorf("category labels: %w", err)
 	}
-	var file struct {
-		Value struct {
-			Category map[string]struct {
-				Label string `json:"label"`
-			} `json:"category"`
-		} `json:"value"`
-	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("category labels: %w", err)
-	}
-	labels := make(map[string]string, len(file.Value.Category))
-	for key, c := range file.Value.Category {
-		labels[key] = c.Label
-	}
-	return labels, nil
+	return f.categoryLabels(), nil
 }
 
 // --- Sending ---
@@ -795,9 +774,9 @@ func loadCategoryLabels(language string) (map[string]string, error) {
 // SMTPConfigForTest when a password is stored, the request changes the
 // connection settings (host, port, security, username) and gives no
 // password of its own.
-var ErrSMTPPasswordRequired = message.New("validation.connection.passwordRequiredOnChange", "smtp_password is required when the connection settings change")
+var ErrSMTPPasswordRequired = wording.New("validation.connection.passwordRequiredOnChange", "smtp_password is required when the connection settings change")
 
-var errSMTPPortInvalid = message.New("validation.common.numberOutOfRange", "smtp_port must be between 1 and 65535").With("min", 1).With("max", 65535)
+var errSMTPPortInvalid = wording.New("validation.common.numberOutOfRange", "smtp_port must be between 1 and 65535").With("min", 1).With("max", 65535)
 
 // SMTPTestInput carries the connection values a test mail may try instead of
 // the saved ones; nil fields (and an empty password) mean the saved values.
@@ -879,7 +858,7 @@ func TestSMTP(ctx context.Context, cfg SMTPConfig, to string, loc MailLocale) er
 		return err
 	}
 	if to == "" {
-		return message.New("validation.notification.testRecipientRequired", "recipient address is required")
+		return wording.New("validation.notification.testRecipientRequired", "recipient address is required")
 	}
 	if !cfg.Configured() {
 		return ErrSMTPNotConfigured
@@ -898,7 +877,7 @@ func TestSMTP(ctx context.Context, cfg SMTPConfig, to string, loc MailLocale) er
 	if err := SendMail(ctx, cfg, cfg.From, []string{to}, subject, body); err != nil {
 		// The server's own words are the useful part; the Web UI shows them
 		// as the detail of its message.
-		return message.New("result.notification.testFailed", err.Error()).With("detail", err.Error())
+		return wording.New("result.notification.testFailed", err.Error()).With("detail", err.Error())
 	}
 	return nil
 }

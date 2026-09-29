@@ -1,5 +1,6 @@
-// Package message is a message shown to a person: an error, a warning or a
-// piece of information produced by the server.
+// Package wording holds the wording shown to a person. Message is one
+// message: an error, a warning or a piece of information produced by the
+// server.
 //
 // The same message serves two audiences. The CLI prints Text, English
 // written for server administrators. The Web API returns only Key (a full
@@ -9,7 +10,7 @@
 //
 // A Message is also an error, so a function can return one where something
 // went wrong; the caller then shows it like any other message.
-package message
+package wording
 
 import (
 	"errors"

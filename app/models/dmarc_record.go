@@ -75,6 +75,27 @@ func DeleteDMARCRecords(db Execer, messageID int64) error {
 	return err
 }
 
+// ListDMARCRecordsByGroup returns the dmarc_records rows of a group, in
+// record id order.
+func ListDMARCRecordsByGroup(db *sql.DB, groupKey string) ([]*DMARCRecord, error) {
+	rows, err := db.Query(`SELECT `+dmarcRecordColumns+` FROM dmarc_records WHERE group_key = ? ORDER BY id`, groupKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*DMARCRecord
+	for rows.Next() {
+		r := &DMARCRecord{}
+		if err := rows.Scan(&r.ID, &r.MessageID, &r.GroupKey, &r.CategoryRule, &r.DiagnosticTemplate, &r.PatternKey,
+			&r.ReportOrg, &r.ReportID, &r.BeginAt, &r.EndAt, &r.PolicyDomain, &r.Policy, &r.HeaderFrom, &r.EnvelopeFrom,
+			&r.SourceIP, &r.MessageCount, &r.Disposition, &r.DKIMResult, &r.SPFResult, &r.DKIMAuth, &r.SPFAuth); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // groupDMARCRecords returns the records of a group as GroupBounce entries
 // (the form the agent evidence takes): the pattern, the rule, the sending IP
 // and the report mail's key and date, with the record itself in DMARC and

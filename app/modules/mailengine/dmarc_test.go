@@ -256,6 +256,17 @@ func TestGroupDMARCReport(t *testing.T) {
 	if err != nil || total != 1 || len(list) != 1 || list[0].BounceKind != bounceKindReport {
 		t.Errorf("group messages = %+v (total %d, err %v)", list, total, err)
 	}
+	// The group export reads the index rows of the group.
+	if all, err := models.ListGroupMessages(db, notAuth); err != nil || len(all) != 1 || all[0].ID != msg.ID {
+		t.Errorf("ListGroupMessages = %+v (err %v), want the report mail", all, err)
+	}
+	if rows, err := models.ListDMARCRecordsByGroup(db, notAuth); err != nil || len(rows) != 2 ||
+		rows[0].MessageID != msg.ID || rows[0].GroupKey != notAuth || rows[0].PatternKey == "" {
+		t.Errorf("ListDMARCRecordsByGroup = %+v (err %v), want the 2 records of the group", rows, err)
+	}
+	if rows, err := models.ListBouncesByGroup(db, notAuth); err != nil || len(rows) != 0 {
+		t.Errorf("ListBouncesByGroup = %+v (err %v), want none for a DMARC group", rows, err)
+	}
 	if n, _ := CountTargetMessages(db); n != 1 {
 		t.Errorf("target messages = %d, want the report", n)
 	}

@@ -411,3 +411,107 @@ type DashboardAgentDTO struct {
 	Enabled   bool   `json:"enabled"`
 	Available bool   `json:"available"`
 }
+
+// GroupExportDTO is report.json of a group export (GET
+// .../groups/{key}/export): the overview and the statistics the group
+// detail and its printable report show, and the index rows of every member
+// message with the archive paths of its files.
+type GroupExportDTO struct {
+	ExportedAt string                   `json:"exported_at"`
+	Mailbox    GroupExportMailboxDTO    `json:"mailbox"`
+	Group      GroupDTO                 `json:"group"`
+	Stats      *models.GroupBounceStats `json:"stats"`
+	Messages   []GroupExportMessageDTO  `json:"messages"`
+}
+
+// GroupExportMailboxDTO names the mailbox of an exported group.
+type GroupExportMailboxDTO struct {
+	ID          int64  `json:"id"`
+	Address     string `json:"address"`
+	DisplayName string `json:"display_name"`
+}
+
+// GroupExportMessageDTO is one member message of an exported group: its
+// messages row, its bounces row (null for a DMARC report mail), the
+// dmarc_records rows of the group it carries (empty for a bounce) and the
+// paths of its files inside the archive (the raw .eml, the decoded header
+// list and the body sections that exist).
+type GroupExportMessageDTO struct {
+	Message      MessageDTO       `json:"message"`
+	Bounce       *BounceRecordDTO `json:"bounce"`
+	DMARCRecords []DMARCRecordDTO `json:"dmarc_records"`
+	Files        []string         `json:"files"`
+}
+
+// BounceRecordDTO is a bounces row with every column.
+type BounceRecordDTO struct {
+	ID                 int64   `json:"id"`
+	GroupKey           string  `json:"group_key"`
+	Recipient          string  `json:"recipient"`
+	RecipientDomain    string  `json:"recipient_domain"`
+	Action             string  `json:"action"`
+	StatusCode         string  `json:"status_code"`
+	SMTPCode           string  `json:"smtp_code"`
+	Diagnostic         string  `json:"diagnostic"`
+	DiagnosticTemplate string  `json:"diagnostic_template"`
+	DiagnosticSource   string  `json:"diagnostic_source"`
+	CategoryRule       string  `json:"category_rule"`
+	PatternKey         string  `json:"pattern_key"`
+	RemoteMTA          string  `json:"remote_mta"`
+	RemoteIP           string  `json:"remote_ip"`
+	ReportingMTA       string  `json:"reporting_mta"`
+	OriginalMessageID  string  `json:"original_message_id"`
+	OriginalSubject    string  `json:"original_subject"`
+	OriginalFrom       string  `json:"original_from"`
+	OriginalDate       *string `json:"original_date"`
+}
+
+func toBounceRecordDTO(b *models.Bounce) *BounceRecordDTO {
+	if b == nil {
+		return nil
+	}
+	return &BounceRecordDTO{
+		ID: b.ID, GroupKey: b.GroupKey, Recipient: b.Recipient, RecipientDomain: b.RecipientDomain, Action: b.Action,
+		StatusCode: b.StatusCode, SMTPCode: b.SMTPCode, Diagnostic: b.Diagnostic, DiagnosticTemplate: b.DiagnosticTemplate,
+		DiagnosticSource: b.DiagnosticSource, CategoryRule: b.CategoryRule, PatternKey: b.PatternKey,
+		RemoteMTA: b.RemoteMTA, RemoteIP: b.RemoteIP, ReportingMTA: b.ReportingMTA,
+		OriginalMessageID: b.OriginalMessageID, OriginalSubject: b.OriginalSubject, OriginalFrom: b.OriginalFrom,
+		OriginalDate: nullTimeString(b.OriginalDate),
+	}
+}
+
+// DMARCRecordDTO is a dmarc_records row with every column.
+type DMARCRecordDTO struct {
+	ID                 int64   `json:"id"`
+	MessageID          int64   `json:"message_id"`
+	GroupKey           string  `json:"group_key"`
+	CategoryRule       string  `json:"category_rule"`
+	DiagnosticTemplate string  `json:"diagnostic_template"`
+	PatternKey         string  `json:"pattern_key"`
+	ReportOrg          string  `json:"report_org"`
+	ReportID           string  `json:"report_id"`
+	BeginAt            *string `json:"begin_at"`
+	EndAt              *string `json:"end_at"`
+	PolicyDomain       string  `json:"policy_domain"`
+	Policy             string  `json:"policy"`
+	HeaderFrom         string  `json:"header_from"`
+	EnvelopeFrom       string  `json:"envelope_from"`
+	SourceIP           string  `json:"source_ip"`
+	MessageCount       int     `json:"message_count"`
+	Disposition        string  `json:"disposition"`
+	DKIMResult         string  `json:"dkim_result"`
+	SPFResult          string  `json:"spf_result"`
+	DKIMAuth           string  `json:"dkim_auth"`
+	SPFAuth            string  `json:"spf_auth"`
+}
+
+func toDMARCRecordDTO(r *models.DMARCRecord) DMARCRecordDTO {
+	return DMARCRecordDTO{
+		ID: r.ID, MessageID: r.MessageID, GroupKey: r.GroupKey, CategoryRule: r.CategoryRule,
+		DiagnosticTemplate: r.DiagnosticTemplate, PatternKey: r.PatternKey, ReportOrg: r.ReportOrg, ReportID: r.ReportID,
+		BeginAt: nullTimeString(r.BeginAt), EndAt: nullTimeString(r.EndAt), PolicyDomain: r.PolicyDomain,
+		Policy: r.Policy, HeaderFrom: r.HeaderFrom, EnvelopeFrom: r.EnvelopeFrom, SourceIP: r.SourceIP,
+		MessageCount: r.MessageCount, Disposition: r.Disposition, DKIMResult: r.DKIMResult, SPFResult: r.SPFResult,
+		DKIMAuth: r.DKIMAuth, SPFAuth: r.SPFAuth,
+	}
+}

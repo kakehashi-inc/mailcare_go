@@ -2,7 +2,7 @@ package agent
 
 import (
 	"fmt"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 	"regexp"
 	"strings"
 )
@@ -42,7 +42,7 @@ func ValidateModel(model string) error {
 		return nil
 	}
 	if len(model) > MaxModelLength || !modelRe.MatchString(model) {
-		return message.New("validation.agent.modelInvalid",
+		return wording.New("validation.agent.modelInvalid",
 			fmt.Sprintf("agent model must be at most %d characters of letters, digits and . _ : / @ + - (starting with a letter or digit)", MaxModelLength)).
 			With("max", MaxModelLength)
 	}

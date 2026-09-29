@@ -2,13 +2,19 @@ package main
 
 import "embed"
 
-//go:embed all:frontend/dist
+// Everything built into the binary is embedded here, from two places only:
+//
+//   - frontend: the built SPA (frontend/dist) and the language files of the
+//     Web UI (frontend/src/i18n/*.json; the server words the notification
+//     mail's category names and the PDF reports with them).
+//   - embedded/: every other file the binary carries (templates/, fonts/,
+//     migrations/; see modules.EmbeddedFS).
+//
+// main passes them to the packages that read them (modules.FrontendFS,
+// modules.EmbeddedFS, dbschema.FS); no other package embeds files.
+
+//go:embed all:frontend/dist frontend/src/i18n/*.json
 var frontendFS embed.FS
 
-// templates/agent/<provider>/** are the agent workspace skeletons,
-// templates/mail/*.txt the notification mail templates and
-// frontend/src/i18n/*.json the language files of the Web UI (the mails take
-// the category names from them).
-//
-//go:embed all:templates frontend/src/i18n/*.json
-var templatesFS embed.FS
+//go:embed all:embedded
+var embeddedFS embed.FS

@@ -279,7 +279,9 @@
             },
             "copyAll": "{{what}}をすべてコピー",
             "copyValue": "{{value}}をコピー",
-            "copyUnit": "対応単位「{{value}}」をコピー"
+            "copyUnit": "対応単位「{{value}}」をコピー",
+            "showReport": "レポート表示",
+            "download": "ダウンロード"
         },
         "report": {
             "analyze": "解析",
@@ -719,6 +721,10 @@
                 "excludedMoveHint": "「対応済にする」または「無視する」を選ぶと、対応対象の一覧に移ります。",
                 "excludedReturnHint": "「未対応に戻す」を選ぶと、対象外の一覧に戻ります。"
             }
+        },
+        "groupReport": {
+            "title": "グループレポート",
+            "generatedAt": "出力日時"
         },
         "mails": {
             "chooseMailbox": "メールを閲覧するメールアドレスを選択してください。",

@@ -188,7 +188,7 @@ func newCLIJobManager(db *sql.DB) (*JobManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewJobManager(db, key, mailsRoot, agentRoot, TemplatesFS), nil
+	return NewJobManager(db, key, mailsRoot, agentRoot, EmbeddedFS), nil
 }
 
 // findMailbox resolves a mailbox by address (case-insensitive).

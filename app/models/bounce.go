@@ -80,6 +80,25 @@ func GetBounceByMessageID(db *sql.DB, messageID int64) (*Bounce, error) {
 	return scanBounce(db.QueryRow(`SELECT `+bounceColumns+` FROM bounces WHERE id = ?`, messageID))
 }
 
+// ListBouncesByGroup returns the bounces rows of a group, in message id
+// order.
+func ListBouncesByGroup(db *sql.DB, groupKey string) ([]*Bounce, error) {
+	rows, err := db.Query(`SELECT `+bounceColumns+` FROM bounces WHERE group_key = ? ORDER BY id`, groupKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Bounce
+	for rows.Next() {
+		b, err := scanBounce(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 func scanBounce(s rowScanner) (*Bounce, error) {
 	b := &Bounce{}
 	if err := s.Scan(&b.ID, &b.GroupKey, &b.Recipient, &b.RecipientDomain, &b.Action, &b.StatusCode, &b.SMTPCode,

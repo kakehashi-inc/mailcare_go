@@ -2,13 +2,12 @@ package workers
 
 import (
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
-	"mailcare/app/modules/smtptest"
+	"mailcare/app/modules/testkit"
 )
 
 func TestDuplicateEmailAndUsernameRejected(t *testing.T) {
@@ -209,7 +208,6 @@ func TestSetupAcceptsProfileFields(t *testing.T) {
 }
 
 func TestNotificationSettingsEndpoints(t *testing.T) {
-	modules.TemplatesFS = os.DirFS("../..")
 	s := newSeededCore(t)
 	// Admin only.
 	for _, req := range []struct{ method, path string }{
@@ -249,7 +247,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 			bobID = r.ID
 		}
 	}
-	srv, err := smtptest.Start()
+	srv, err := testkit.Start()
 	if err != nil {
 		t.Fatal(err)
 	}

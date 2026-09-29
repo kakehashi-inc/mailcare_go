@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 )
 
 var identifierRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -17,13 +17,13 @@ var identifierRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // ValidateIdentifier checks an identifier against the allowed character set.
 func ValidateIdentifier(id string) error {
 	if id == "" {
-		return message.New("validation.token.identifierInvalid", "identifier must not be empty").With("max", 64)
+		return wording.New("validation.token.identifierInvalid", "identifier must not be empty").With("max", 64)
 	}
 	if len(id) > 64 {
-		return message.New("validation.token.identifierInvalid", "identifier must be 64 characters or fewer").With("max", 64)
+		return wording.New("validation.token.identifierInvalid", "identifier must be 64 characters or fewer").With("max", 64)
 	}
 	if !identifierRe.MatchString(id) {
-		return message.New("validation.token.identifierInvalid", "identifier may only contain [A-Za-z0-9_-]").With("max", 64)
+		return wording.New("validation.token.identifierInvalid", "identifier may only contain [A-Za-z0-9_-]").With("max", 64)
 	}
 	return nil
 }
@@ -94,7 +94,7 @@ func ParseExpiry(s string) (sql.NullTime, error) {
 			return sql.NullTime{Time: t.UTC(), Valid: true}, nil
 		}
 	}
-	return sql.NullTime{}, message.New("validation.token.expiresInvalid", fmt.Sprintf("invalid expiry %q (use a duration like 720h or an RFC3339 timestamp)", s))
+	return sql.NullTime{}, wording.New("validation.token.expiresInvalid", fmt.Sprintf("invalid expiry %q (use a duration like 720h or an RFC3339 timestamp)", s))
 }
 
 // CreateToken creates a token, allocating an identifier from name when empty,
@@ -102,7 +102,7 @@ func ParseExpiry(s string) (sql.NullTime, error) {
 func CreateToken(db *sql.DB, name, identifier string, expiresAt sql.NullTime, makeDefault bool) (*models.Token, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, message.New("validation.token.nameRequired", "name is required")
+		return nil, wording.New("validation.token.nameRequired", "name is required")
 	}
 
 	if identifier == "" {
@@ -116,7 +116,7 @@ func CreateToken(db *sql.DB, name, identifier string, expiresAt sql.NullTime, ma
 			return nil, err
 		}
 		if _, err := models.GetTokenByIdentifier(db, identifier); err == nil {
-			return nil, message.New("validation.token.identifierTaken", fmt.Sprintf("identifier %q already exists", identifier))
+			return nil, wording.New("validation.token.identifierTaken", fmt.Sprintf("identifier %q already exists", identifier))
 		} else if err != sql.ErrNoRows {
 			return nil, err
 		}

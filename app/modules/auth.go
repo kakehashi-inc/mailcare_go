@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"mailcare/app/models"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 )
 
 // bcryptCost is the work factor for password hashes.
@@ -27,7 +27,7 @@ const dummyPasswordHash = "$2a$12$hU6M9KWBs4epQ45MC43i2.C7ThAbeorfWt51.wt5qKZoPk
 
 // ErrInvalidCredentials is returned by the login helpers for any wrong
 // username, password or token so that callers cannot tell them apart.
-var ErrInvalidCredentials = message.New("result.session.loginFailed", "invalid credentials")
+var ErrInvalidCredentials = wording.New("result.session.loginFailed", "invalid credentials")
 
 var (
 	usernameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
@@ -44,7 +44,7 @@ const MaxEmailLength = 254
 // ValidateUsername checks the character set and length of a username.
 func ValidateUsername(username string) error {
 	if !usernameRe.MatchString(username) {
-		return message.New("validation.user.usernameInvalid", "username must be 1-64 characters of [A-Za-z0-9_.-]")
+		return wording.New("validation.user.usernameInvalid", "username must be 1-64 characters of [A-Za-z0-9_.-]")
 	}
 	return nil
 }
@@ -52,7 +52,7 @@ func ValidateUsername(username string) error {
 // ValidateRole checks that role is admin or user.
 func ValidateRole(role string) error {
 	if role != RoleAdmin && role != RoleUser {
-		return message.New("system.invalidRequest", fmt.Sprintf("role must be %q or %q", RoleAdmin, RoleUser))
+		return wording.New("system.invalidRequest", fmt.Sprintf("role must be %q or %q", RoleAdmin, RoleUser))
 	}
 	return nil
 }
@@ -62,11 +62,11 @@ func ValidateRole(role string) error {
 // silently ignored).
 func ValidatePassword(password string) error {
 	if utf8.RuneCountInString(password) < PasswordMinLength {
-		return message.New("validation.user.passwordTooShort", fmt.Sprintf("password must be at least %d characters", PasswordMinLength)).
+		return wording.New("validation.user.passwordTooShort", fmt.Sprintf("password must be at least %d characters", PasswordMinLength)).
 			With("min", PasswordMinLength)
 	}
 	if len(password) > 72 {
-		return message.New("validation.user.passwordTooLong", "password must be 72 bytes or fewer (bcrypt limit)").With("max", 72)
+		return wording.New("validation.user.passwordTooLong", "password must be 72 bytes or fewer (bcrypt limit)").With("max", 72)
 	}
 	return nil
 }
@@ -89,11 +89,11 @@ func NormalizeEmail(email string) (string, error) {
 		return "", nil
 	}
 	if len(email) > MaxEmailLength {
-		return "", message.New("validation.user.emailTooLong", fmt.Sprintf("email must be %d characters or fewer", MaxEmailLength)).
+		return "", wording.New("validation.user.emailTooLong", fmt.Sprintf("email must be %d characters or fewer", MaxEmailLength)).
 			With("max", MaxEmailLength)
 	}
 	if !emailRe.MatchString(email) {
-		return "", message.New("validation.common.emailFormat", fmt.Sprintf("invalid email address %q", email))
+		return "", wording.New("validation.common.emailFormat", fmt.Sprintf("invalid email address %q", email))
 	}
 	return email, nil
 }
@@ -108,7 +108,7 @@ func NormalizeTimezone(tz string) (string, error) {
 		return models.DefaultTimezone, nil
 	}
 	if _, err := time.LoadLocation(tz); err != nil || tz == "Local" {
-		return "", message.New("validation.user.timezoneInvalid", fmt.Sprintf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz))
+		return "", wording.New("validation.user.timezoneInvalid", fmt.Sprintf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz))
 	}
 	return tz, nil
 }
@@ -147,7 +147,7 @@ func NormalizeLanguage(lang string) (string, error) {
 		return models.DefaultLanguage, nil
 	}
 	if !slices.Contains(KnownLanguages, lang) {
-		return "", message.New("validation.user.languageInvalid", fmt.Sprintf("invalid language %q (use %s)", lang, strings.Join(KnownLanguages, " or ")))
+		return "", wording.New("validation.user.languageInvalid", fmt.Sprintf("invalid language %q (use %s)", lang, strings.Join(KnownLanguages, " or ")))
 	}
 	return lang, nil
 }
@@ -160,7 +160,7 @@ func NormalizeTheme(theme string) (string, error) {
 		return models.DefaultTheme, nil
 	}
 	if !slices.Contains(KnownThemes, theme) {
-		return "", message.New("validation.user.themeInvalid", fmt.Sprintf("invalid theme %q (use %s)", theme, strings.Join(KnownThemes, ", ")))
+		return "", wording.New("validation.user.themeInvalid", fmt.Sprintf("invalid theme %q (use %s)", theme, strings.Join(KnownThemes, ", ")))
 	}
 	return theme, nil
 }
@@ -291,11 +291,11 @@ func ApplyProfile(u *models.User, in ProfileInput) (displayName, email, language
 // MaxDisplayNameLength bounds a display name (users and mailboxes).
 const MaxDisplayNameLength = 128
 
-var errDisplayNameTooLong = message.New("validation.common.displayNameTooLong",
+var errDisplayNameTooLong = wording.New("validation.common.displayNameTooLong",
 	fmt.Sprintf("display name must be %d characters or fewer", MaxDisplayNameLength)).With("max", MaxDisplayNameLength)
 
 func usernameTaken(username string) error {
-	return message.New("validation.user.usernameTaken", fmt.Sprintf("user %q already exists", username))
+	return wording.New("validation.user.usernameTaken", fmt.Sprintf("user %q already exists", username))
 }
 
 // UpdateProfile validates and stores the profile fields of a user.

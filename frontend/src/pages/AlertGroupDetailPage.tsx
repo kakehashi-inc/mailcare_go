@@ -1,7 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
-import { analyzeGroup, getGroup, getJob, getMailbox, setGroupState, ApiError } from '../api/client';
+import {
+    analyzeGroup,
+    getGroup,
+    getJob,
+    getMailbox,
+    groupExportUrl,
+    groupReportUrl,
+    setGroupState,
+    ApiError,
+} from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { JobProgressLog } from '../components/domain/JobProgressLog';
 import {
@@ -17,7 +26,7 @@ import {
 } from '../components/domain/StatusBadges';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
-import { Button } from '../components/ui/Button';
+import { AnchorButton, Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { CopyButton } from '../components/ui/CopyButton';
 import { DateTime } from '../components/ui/DateTime';
@@ -382,6 +391,14 @@ export function AlertGroupDetailPage() {
                                 },
                             ]}
                         />
+                        <div className='mt-5 flex flex-wrap gap-2 border-t border-line pt-4'>
+                            <AnchorButton href={groupReportUrl(id, groupKey)} download size='sm' icon='picture_as_pdf'>
+                                {t('action.group.showReport')}
+                            </AnchorButton>
+                            <AnchorButton href={groupExportUrl(id, groupKey)} download size='sm' icon='download'>
+                                {t('action.group.download')}
+                            </AnchorButton>
+                        </div>
                     </Card>
 
                     <Card>

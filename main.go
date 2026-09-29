@@ -3,11 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strconv"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
+	"mailcare/app/modules/dbschema"
 	_ "mailcare/app/workers" // registers modules.StartServer via init()
 
 	"github.com/alecthomas/kong"
@@ -49,9 +51,14 @@ func (v *VersionCmd) Run() error {
 }
 
 func main() {
-	// Wire binary-embedded assets into the modules package.
+	// Wire the binary-embedded files (embed.go) into the packages that read them.
+	embedded, subErr := fs.Sub(embeddedFS, "embedded")
+	if subErr != nil {
+		panic(subErr) // the directory is embedded at build time
+	}
 	modules.FrontendFS = frontendFS
-	modules.TemplatesFS = templatesFS
+	modules.EmbeddedFS = embedded
+	dbschema.FS = embedded
 	modules.AppVersion = version
 
 	var cli CLI

@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
 import { Spinner } from './Spinner';
@@ -82,6 +82,30 @@ export function LinkButton({
             {icon && <Icon name={icon} className='text-[20px]' />}
             {children}
         </Link>
+    );
+}
+
+interface AnchorButtonProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
+    href: string;
+    variant?: ButtonVariant;
+    size?: ButtonSize;
+    icon?: string;
+}
+
+/** A plain link styled as a button, for what the router does not serve: downloads and new tabs. */
+export function AnchorButton({
+    variant = 'secondary',
+    size = 'md',
+    icon,
+    className = '',
+    children,
+    ...rest
+}: AnchorButtonProps) {
+    return (
+        <a {...rest} className={`${BASE} ${VARIANT[variant]} ${SIZE[size]} ${className}`}>
+            {icon && <Icon name={icon} className={size === 'xs' ? 'text-[16px]' : 'text-[20px]'} />}
+            {children}
+        </a>
     );
 }
 

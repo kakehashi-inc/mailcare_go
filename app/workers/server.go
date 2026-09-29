@@ -21,7 +21,7 @@ import (
 	"mailcare/app/models"
 	"mailcare/app/modules"
 	"mailcare/app/modules/mailengine"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 )
 
 func init() {
@@ -72,7 +72,7 @@ func newCore(db *sql.DB, key []byte, spaFS fs.FS, dataDir, webListen string, web
 	}
 	c.mailsRoot = dataDir + string(os.PathSeparator) + modules.MailsDirName
 	c.agentRoot = dataDir + string(os.PathSeparator) + modules.AgentDirName
-	c.jm = modules.NewJobManager(db, key, c.mailsRoot, c.agentRoot, modules.TemplatesFS)
+	c.jm = modules.NewJobManager(db, key, c.mailsRoot, c.agentRoot, modules.EmbeddedFS)
 	c.sched = modules.NewScheduler(db, c.jm)
 	return c
 }
@@ -296,11 +296,11 @@ func writeError(w http.ResponseWriter, status int, key string) {
 	writeJSON(w, status, apiMessage{Key: key})
 }
 
-// writeErrorMessage answers err: a message (package message) with its key
+// writeErrorMessage answers err: a message (package wording) with its key
 // and parameters, 404 for system.notFound, 409 for result.mailbox.busy and 400 otherwise;
 // any other error is logged with the request and answered as internal.
 func writeErrorMessage(w http.ResponseWriter, r *http.Request, err error) {
-	m, ok := message.As(err)
+	m, ok := wording.As(err)
 	if !ok {
 		writeInternalError(w, r.Method+" "+r.URL.Path, err)
 		return

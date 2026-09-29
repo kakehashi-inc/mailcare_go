@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-30
+
+### Added
+
+- The overview card of an alert has a "Show report" button. It downloads a PDF report of the overview and the statistics, written in your language and time zone.
+- The overview card of an alert has a "Download" button. It downloads a ZIP with the report contents as JSON, the index records of every source mail, the source mails themselves (original message, headers, text and HTML bodies), and a README describing the files and the JSON format, handy for AI agents and other tools.
+
 ## [0.2.0] - 2026-09-29
 
 ### Added

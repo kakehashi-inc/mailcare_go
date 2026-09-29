@@ -19,7 +19,7 @@ import (
 )
 
 // newTestCore builds a core backed by an in-memory SPA build and a temporary
-// data directory (database migrated from the repository's app/migrations,
+// data directory (database migrated from the repository's embedded/migrations,
 // fresh master key). No listener, job worker or scheduler is started.
 func newTestCore(t *testing.T) *core {
 	t.Helper()

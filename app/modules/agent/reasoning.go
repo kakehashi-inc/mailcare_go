@@ -2,7 +2,7 @@ package agent
 
 import (
 	"fmt"
-	"mailcare/app/modules/message"
+	"mailcare/app/modules/wording"
 	"regexp"
 	"slices"
 	"sort"
@@ -47,7 +47,7 @@ func ValidateReasoningEffort(level string) error {
 		return nil
 	}
 	if len(level) > MaxReasoningEffortLength || !reasoningRe.MatchString(level) {
-		return message.New("validation.agent.reasoningInvalid", fmt.Sprintf("agent reasoning effort must be at most %d lower-case letters", MaxReasoningEffortLength))
+		return wording.New("validation.agent.reasoningInvalid", fmt.Sprintf("agent reasoning effort must be at most %d lower-case letters", MaxReasoningEffortLength))
 	}
 	return nil
 }
@@ -69,11 +69,11 @@ func CheckReasoningEffort(provider, model, level string) error {
 	}
 	p, ok := lookupProvider(provider)
 	if !ok {
-		return message.New("validation.agent.providerUnknown", fmt.Sprintf("unknown agent provider %q", provider))
+		return wording.New("validation.agent.providerUnknown", fmt.Sprintf("unknown agent provider %q", provider))
 	}
 	s, ok := p.(ReasoningSelector)
 	if !ok {
-		return message.New("validation.agent.reasoningUnsupported", fmt.Sprintf("agent provider %q does not accept a reasoning effort", p.Name()))
+		return wording.New("validation.agent.reasoningUnsupported", fmt.Sprintf("agent provider %q does not accept a reasoning effort", p.Name()))
 	}
 	known := s.ReasoningLevels()
 	var accepted []string
@@ -91,10 +91,10 @@ func CheckReasoningEffort(provider, model, level string) error {
 		return nil
 	}
 	if model == "" {
-		return message.New("validation.agent.reasoningInvalid",
+		return wording.New("validation.agent.reasoningInvalid",
 			fmt.Sprintf("agent reasoning effort %q is not accepted by any known model (accepted: %s)", level, strings.Join(accepted, ", ")))
 	}
-	return message.New("validation.agent.reasoningInvalid",
+	return wording.New("validation.agent.reasoningInvalid",
 		fmt.Sprintf("agent reasoning effort %q is not accepted by model %q (accepted: %s)", level, model, strings.Join(accepted, ", ")))
 }
 

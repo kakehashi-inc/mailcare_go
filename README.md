@@ -20,6 +20,8 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
 - **Alerts** - only what the sending side has to act on is shown as an alert; recipient-side problems (unknown
   user, full mailbox, ...) are listed separately as excluded. Each alert can be marked open, resolved or
   ignored.
+  The overview and statistics of an alert can be downloaded as a PDF report, and as a ZIP together with its
+  source mails (raw message, headers, bodies and their index records) and a README.md describing the format.
 - **AI cause analysis** - an AI agent (Codex CLI) writes a cause analysis and recommended actions for each
   alert, automatically for new alerts and when a new kind of notice arrives for an existing one. Reports whose
   cause could not be established are marked "Needs review".
@@ -133,6 +135,12 @@ While the server is running, command line operations are handed to it. Main comm
 | `mailcare jobs list` | Show the task history |
 
 `mailcare --help` lists every command.
+
+### 1.7 Bundled fonts
+
+The PDF reports use BIZ UDPGothic (Copyright 2022 The BIZ UDGothic Project Authors,
+[SIL Open Font License 1.1](embedded/fonts/OFL.txt)) and Go Mono (BSD license), both built
+into the executable.
 
 ## 2. Developer reference
 

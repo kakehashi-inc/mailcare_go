@@ -3,13 +3,12 @@ package modules
 import (
 	"context"
 	"mime"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"mailcare/app/models"
-	"mailcare/app/modules/smtptest"
+	"mailcare/app/modules/testkit"
 )
 
 // decodeSubject extracts and RFC 2047-decodes the Subject header.
@@ -29,9 +28,9 @@ func decodeSubject(t *testing.T, raw string) string {
 	return ""
 }
 
-func startFakeSMTP(t *testing.T) *smtptest.Server {
+func startFakeSMTP(t *testing.T) *testkit.Server {
 	t.Helper()
-	srv, err := smtptest.Start()
+	srv, err := testkit.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +144,6 @@ func TestBuildMessageEncodings(t *testing.T) {
 }
 
 func TestTestSMTPSendsTheTestTemplate(t *testing.T) {
-	TemplatesFS = os.DirFS("../..")
 	srv := startFakeSMTP(t)
 	cfg := SMTPConfig{Host: srv.Host(), Port: srv.Port(), Security: IMAPSecurityNone, From: "mc@example.test"}
 	if err := TestSMTP(context.Background(), cfg, "Admin@Example.test", DefaultMailLocale()); err != nil {
@@ -200,7 +198,6 @@ func TestMailLocale(t *testing.T) {
 	if l := MailLocaleFor(&models.User{Language: "en", Timezone: "Not/AZone"}); l.Location != time.Local {
 		t.Errorf("unknown zone must fall back to the server time: %+v", l)
 	}
-	TemplatesFS = os.DirFS("../..")
 	if got := mailTemplatePath("notification", "en"); got != "templates/mail/notification_en.txt" {
 		t.Errorf("english template = %q", got)
 	}

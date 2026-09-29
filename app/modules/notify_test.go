@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,13 +12,6 @@ import (
 	"mailcare/app/models"
 	"mailcare/app/modules/mailengine"
 )
-
-// newNotifyTestDB is newTestDB with the mail templates wired in.
-func newNotifyTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	TemplatesFS = os.DirFS("../..")
-	return newTestDB(t)
-}
 
 func TestNotifyDueAndNextNotifyAt(t *testing.T) {
 	s := &NotificationSettings{Enabled: true, Time: "09:00", IntervalDays: 1}
@@ -98,7 +90,7 @@ func TestNotifyDueAndNextNotifyAt(t *testing.T) {
 }
 
 func TestNotificationSettingsSaveAndResolve(t *testing.T) {
-	db := newNotifyTestDB(t)
+	db := newTestDB(t)
 	key, err := LoadSecretKey(db)
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +227,7 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 }
 
 func TestApplySettingValidatesKeys(t *testing.T) {
-	db := newNotifyTestDB(t)
+	db := newTestDB(t)
 	admin, err := CreateUserFrom(db, NewUser{Username: "admin", Password: "password123", Role: RoleAdmin})
 	if err != nil {
 		t.Fatal(err)
@@ -374,7 +366,7 @@ func seedNotifiableIndex(t *testing.T, jm *JobManager, mb *models.Mailbox, mails
 }
 
 func TestSendNotificationEndToEnd(t *testing.T) {
-	db := newNotifyTestDB(t)
+	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
 	if err := SetAgentEnabled(db, false); err != nil {
 		t.Fatal(err)
@@ -548,7 +540,7 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 }
 
 func TestNotifyJobRunsThroughTheManager(t *testing.T) {
-	db := newNotifyTestDB(t)
+	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
 	if err := SetAgentEnabled(db, false); err != nil {
 		t.Fatal(err)
@@ -625,7 +617,7 @@ func TestNotifyJobRunsThroughTheManager(t *testing.T) {
 }
 
 func TestSchedulerQueuesNotifyJob(t *testing.T) {
-	db := newNotifyTestDB(t)
+	db := newTestDB(t)
 	if err := SaveCheckTimes(db, []string{}); err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +685,7 @@ func TestSchedulerQueuesNotifyJob(t *testing.T) {
 }
 
 func TestSMTPConfigForTestGuardsTheStoredPassword(t *testing.T) {
-	db := newNotifyTestDB(t)
+	db := newTestDB(t)
 	key, err := LoadSecretKey(db)
 	if err != nil {
 		t.Fatal(err)

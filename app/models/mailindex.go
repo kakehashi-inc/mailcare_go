@@ -12,7 +12,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
 
-	"mailcare/app/migrations"
+	"mailcare/app/modules/dbschema"
 )
 
 // Per-mailbox index database (data/mails/<address>.sqlite).
@@ -26,10 +26,10 @@ import (
 // from the raw .eml files.
 //
 // The schema is managed by goose migrations like the master database's:
-// app/migrations/index/*.sql, applied by OpenMailIndex every time an index
+// embedded/migrations/index/*.sql, applied by OpenMailIndex every time an index
 // is opened (the file records the applied versions in its own
 // goose_db_version table). The design rules of the columns are stated in
-// app/migrations/index/0001_init.sql.
+// embedded/migrations/index/0001_init.sql.
 //
 // Tables (one model file per table):
 //   messages      app/models/message.go       every fetched mail (headers, body layout, detection outcome)
@@ -52,7 +52,7 @@ func OpenMailIndex(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := migrations.Apply(context.Background(), db, migrations.Index()); err != nil {
+	if _, err := dbschema.Apply(context.Background(), db, dbschema.Index()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to migrate the mail index: %w", err)
 	}
