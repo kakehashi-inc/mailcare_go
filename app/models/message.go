@@ -338,9 +338,9 @@ func ListMessageSources(db *sql.DB) (map[string]MessageSource, error) {
 // Message kinds of MessageFilter.Kind.
 const (
 	MessageKindAll    = ""       // every message
-	MessageKindBounce = "bounce" // detected as a daemon notice (is_bounce = 1; auto-replies and DMARC reports included)
+	MessageKindTarget = "target" // classified by one of MessageFilter.TargetRules (the notices MailCare handles)
 	MessageKindJunk   = "junk"   // detected as junk (bounce_kind = junk: phishing, spam)
-	MessageKindOther  = "other"  // everything else (is_bounce = 0, not junk)
+	MessageKindOther  = "other"  // everything else (neither a target nor junk; unclassified mail included)
 )
 
 // BounceKindJunk is messages.bounce_kind of junk mail (same literal as
@@ -349,18 +349,22 @@ const BounceKindJunk = "junk"
 
 // MessageFilter narrows ListMessages.
 type MessageFilter struct {
-	Query    string // matched against subject, from and to (LIKE)
-	Kind     string // MessageKindAll | MessageKindBounce | MessageKindOther
-	GroupKey string
-	Offset   int
-	Limit    int
+	Query string // matched against subject, from and to (LIKE)
+	Kind  string // MessageKindAll | MessageKindTarget | MessageKindJunk | MessageKindOther
+	// TargetRules are the rules of the target messages (the certain notices,
+	// mailengine.TargetRules); required by the target and other kinds and
+	// by CountMessagesByKind.
+	TargetRules []string
+	GroupKey    string
+	Offset      int
+	Limit       int
 }
 
 // MessageKindCounts is how many messages of each kind match a filter (its
 // Kind ignored).
 type MessageKindCounts struct {
 	All    int `json:"all"`
-	Bounce int `json:"bounce"`
+	Target int `json:"target"`
 	Junk   int `json:"junk"`
 	Other  int `json:"other"`
 }
@@ -370,10 +374,11 @@ type MessageKindCounts struct {
 func CountMessagesByKind(db *sql.DB, f MessageFilter) (MessageKindCounts, error) {
 	f.Kind = MessageKindAll
 	where, args := messageWhere(f)
+	target, targetArgs := targetCondition(f.TargetRules)
 	var c MessageKindCounts
-	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(m.is_bounce), 0), COALESCE(SUM(m.bounce_kind = ?), 0)`+
-		messageFrom+where, append([]any{BounceKindJunk}, args...)...).Scan(&c.All, &c.Bounce, &c.Junk)
-	c.Other = c.All - c.Bounce - c.Junk
+	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(`+target+`), 0), COALESCE(SUM(m.bounce_kind = ?), 0)`+
+		messageFrom+where, append(append(targetArgs, BounceKindJunk), args...)...).Scan(&c.All, &c.Target, &c.Junk)
+	c.Other = c.All - c.Target - c.Junk
 	return c, err
 }
 
@@ -432,14 +437,17 @@ func messageWhere(f MessageFilter) (string, []any) {
 	var conds []string
 	var args []any
 	switch f.Kind {
-	case MessageKindBounce:
-		conds = append(conds, `m.is_bounce = 1`)
+	case MessageKindTarget:
+		target, targetArgs := targetCondition(f.TargetRules)
+		conds = append(conds, target)
+		args = append(args, targetArgs...)
 	case MessageKindJunk:
 		conds = append(conds, `m.bounce_kind = ?`)
 		args = append(args, BounceKindJunk)
 	case MessageKindOther:
-		conds = append(conds, `m.is_bounce = 0 AND m.bounce_kind <> ?`)
-		args = append(args, BounceKindJunk)
+		target, targetArgs := targetCondition(f.TargetRules)
+		conds = append(conds, `NOT `+target+` AND m.bounce_kind <> ?`)
+		args = append(append(args, targetArgs...), BounceKindJunk)
 	}
 	if f.GroupKey != "" {
 		// The members of a group: the mails of its bounces and the report
@@ -458,6 +466,19 @@ func messageWhere(f MessageFilter) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + strings.Join(conds, " AND "), args
+}
+
+// targetCondition is the condition of a target message: classified by one
+// of the rules (never true without rules).
+func targetCondition(rules []string) (string, []any) {
+	if len(rules) == 0 {
+		return `(0)`, nil
+	}
+	args := make([]any, 0, len(rules))
+	for _, r := range rules {
+		args = append(args, r)
+	}
+	return `(m.classified = 1 AND m.rule IN (?` + strings.Repeat(", ?", len(rules)-1) + `))`, args
 }
 
 func scanMessage(s rowScanner) (*Message, error) {

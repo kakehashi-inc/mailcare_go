@@ -32,6 +32,37 @@ func stringOrNil(s string) *string {
 	return &s
 }
 
+// nullString converts a nullable string (nil when NULL).
+func nullString(v sql.NullString) *string {
+	if !v.Valid {
+		return nil
+	}
+	s := v.String
+	return &s
+}
+
+// StateChangeDTO is one entry of the state history of a group. Reason is
+// the code chosen (null for open and for the entries made from the state a
+// group had before the history was kept), Note the text written (null when
+// none), ChangedBy the username ("" for the CLI and those entries).
+type StateChangeDTO struct {
+	State     string  `json:"state"`
+	Reason    *string `json:"reason"`
+	Note      *string `json:"note"`
+	ChangedBy string  `json:"changed_by"`
+	ChangedAt string  `json:"changed_at"`
+}
+
+// toStateChangeDTOs converts a state history (newest first).
+func toStateChangeDTOs(history []*models.GroupStateChange) []StateChangeDTO {
+	out := make([]StateChangeDTO, 0, len(history))
+	for _, h := range history {
+		out = append(out, StateChangeDTO{State: h.State, Reason: nullString(h.Reason), Note: nullString(h.Note),
+			ChangedBy: h.ChangedBy, ChangedAt: timeString(h.ChangedAt)})
+	}
+	return out
+}
+
 // nullInt converts a nullable integer (nil when NULL).
 func nullInt(v sql.NullInt64) *int64 {
 	if !v.Valid {
@@ -160,11 +191,19 @@ type GroupDTO struct {
 	LastSeen           *string `json:"last_seen"`
 	State              string  `json:"state"`
 	StateUpdatedAt     *string `json:"state_updated_at"`
-	NeedsAnalysis      bool    `json:"needs_analysis"`
-	ReportSummary      string  `json:"report_summary"`
-	ReportSeverity     string  `json:"report_severity"`
-	ReportConfidence   *string `json:"report_confidence"`
-	ReportStatus       string  `json:"report_status"`
+	// StateReason is the code chosen with the current state (a resolve
+	// action or an ignore reason) and StateNote the note written with it;
+	// both null while the group is open or when none was given.
+	// NeedsRecheck is true for a resolved / ignored group sent back for a
+	// re-check.
+	StateReason      *string `json:"state_reason"`
+	StateNote        *string `json:"state_note"`
+	NeedsRecheck     bool    `json:"needs_recheck"`
+	NeedsAnalysis    bool    `json:"needs_analysis"`
+	ReportSummary    string  `json:"report_summary"`
+	ReportSeverity   string  `json:"report_severity"`
+	ReportConfidence *string `json:"report_confidence"`
+	ReportStatus     string  `json:"report_status"`
 	// ReportUnanalyzable is true when the latest analysis failed for good
 	// (not by a usage limit or a cancellation): the group is not analyzed
 	// again until a bounce of a new pattern arrives.
@@ -180,7 +219,8 @@ func toGroupDTO(g *models.BounceGroup, completed, latest *models.AgentReport) Gr
 		StatusCode: g.StatusCode, DiagnosticTemplate: g.DiagnosticTemplate,
 		Responsible: g.Responsible, MessageCount: g.MessageCount, RecipientCount: g.RecipientCount,
 		RemoteIPCount: g.RemoteIPCount, FirstSeen: nullTimeString(g.FirstSeen), LastSeen: nullTimeString(g.LastSeen),
-		State: g.State, StateUpdatedAt: nullTimeString(g.StateUpdatedAt), NeedsAnalysis: g.NeedsAnalysis,
+		State: g.State, StateUpdatedAt: nullTimeString(g.StateUpdatedAt), StateReason: nullString(g.StateReason),
+		StateNote: nullString(g.StateNote), NeedsRecheck: g.NeedsRecheck, NeedsAnalysis: g.NeedsAnalysis,
 	}
 	if completed != nil {
 		dto.ReportSummary = completed.Summary
@@ -194,13 +234,6 @@ func toGroupDTO(g *models.BounceGroup, completed, latest *models.AgentReport) Gr
 		dto.ReportStatus = completed.Status
 	}
 	return dto
-}
-
-// DashboardGroupDTO is a group annotated with its mailbox.
-type DashboardGroupDTO struct {
-	GroupDTO
-	MailboxID      int64  `json:"mailbox_id"`
-	MailboxAddress string `json:"mailbox_address"`
 }
 
 // ReportDTO is an agent report. Confidence, Model and ReasoningEffort are
@@ -381,9 +414,8 @@ func toJobDTOs(list []*models.Job, addresses map[int64]string) []JobDTO {
 
 // DashboardDTO aggregates the state of every mailbox.
 type DashboardDTO struct {
-	Mailboxes    []MailboxDTO        `json:"mailboxes"`
-	Totals       DashboardTotalsDTO  `json:"totals"`
-	RecentGroups []DashboardGroupDTO `json:"recent_groups"`
+	Mailboxes []MailboxDTO       `json:"mailboxes"`
+	Totals    DashboardTotalsDTO `json:"totals"`
 	// BusyMailboxIDs are the mailboxes a sync, fetch, group, reindex,
 	// reclassify or cleanup job is queued or running for (every user).
 	BusyMailboxIDs []int64 `json:"busy_mailbox_ids"`
@@ -395,14 +427,18 @@ type DashboardDTO struct {
 	Agent       DashboardAgentDTO `json:"agent"`
 }
 
-// DashboardTotalsDTO sums the per-mailbox counters. OpenGroups counts the
-// actionable open groups only.
+// DashboardTotalsDTO sums the per-mailbox counters (the same ones as the
+// cards of Alerts and Mails). OpenGroups counts the open groups of the
+// actionable Alerts list, RecheckGroups the resolved and ignored groups
+// sent back for a re-check.
 type DashboardTotalsDTO struct {
-	Mailboxes    int `json:"mailboxes"`
-	OpenGroups   int `json:"open_groups"`
-	Bounces      int `json:"bounces"`
-	Messages     int `json:"messages"`
-	Unclassified int `json:"unclassified"`
+	Mailboxes      int `json:"mailboxes"`
+	OpenGroups     int `json:"open_groups"`
+	RecheckGroups  int `json:"recheck_groups"`
+	Messages       int `json:"messages"`
+	TargetMessages int `json:"target_messages"`
+	JunkMessages   int `json:"junk_messages"`
+	Unclassified   int `json:"unclassified"`
 }
 
 // DashboardAgentDTO describes the configured agent.
@@ -420,6 +456,7 @@ type GroupExportDTO struct {
 	ExportedAt string                   `json:"exported_at"`
 	Mailbox    GroupExportMailboxDTO    `json:"mailbox"`
 	Group      GroupDTO                 `json:"group"`
+	History    []StateChangeDTO         `json:"history"`
 	Stats      *models.GroupBounceStats `json:"stats"`
 	Messages   []GroupExportMessageDTO  `json:"messages"`
 }

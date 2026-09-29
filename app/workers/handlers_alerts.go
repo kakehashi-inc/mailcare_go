@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
@@ -72,7 +71,8 @@ const (
 // handleListGroups answers one page (page, per_page) of the groups of a
 // mailbox matching the filters, in the requested order (sort), with the
 // number of matching groups and, except for the excluded scope, the count
-// per state.
+// per state. recheck=1 / 0 narrows resolved and ignored groups to the ones
+// sent back for a re-check or the others (the tabs of Alerts).
 func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	mb, ok := c.mailboxFromPath(w, r)
 	if !ok {
@@ -114,6 +114,15 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	switch filter.State {
 	case "", modules.GroupStateOpen, modules.GroupStateResolved, modules.GroupStateIgnored:
+	default:
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
+	}
+	switch q.Get("recheck") {
+	case "":
+	case "1", "0":
+		recheck := q.Get("recheck") == "1"
+		filter.Recheck = &recheck
 	default:
 		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
@@ -184,6 +193,11 @@ func (c *core) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "failed to list messages", err)
 		return
 	}
+	history, err := models.ListGroupStateChanges(idx, g.GroupKey)
+	if err != nil {
+		writeInternalError(w, "failed to list the state history", err)
+		return
+	}
 	reportDTOs := make([]ReportDTO, 0, len(reports))
 	for _, rep := range reports {
 		reportDTOs = append(reportDTOs, toReportDTO(rep))
@@ -195,22 +209,22 @@ func (c *core) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"group": toGroupDTO(g, completed, latest), "stats": stats, "report": report,
-		"reports": reportDTOs, "messages": toMessageDTOs(messages),
+		"reports": reportDTOs, "messages": toMessageDTOs(messages), "history": toStateChangeDTOs(history),
 	})
 }
 
 func (c *core) handleSetGroupState(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		State string `json:"state"`
+		State  string `json:"state"`
+		Reason string `json:"reason"`
+		Note   string `json:"note"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	body.State = strings.TrimSpace(body.State)
-	switch body.State {
-	case modules.GroupStateOpen, modules.GroupStateResolved, modules.GroupStateIgnored:
-	default:
-		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+	change, err := modules.GroupStateInput(body.State, body.Reason, body.Note)
+	if err != nil {
+		writeErrorMessage(w, r, err)
 		return
 	}
 	_, idx, g, ok := c.groupFromPath(w, r)
@@ -218,7 +232,11 @@ func (c *core) handleSetGroupState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer idx.Close()
-	if err := models.SetGroupState(idx, g.GroupKey, body.State); err != nil {
+	changedBy := ""
+	if u := userFrom(r); u != nil {
+		changedBy = u.Username
+	}
+	if err := modules.ChangeGroupState(idx, g.GroupKey, change, changedBy); err != nil {
 		writeInternalError(w, "failed to update group", err)
 		return
 	}

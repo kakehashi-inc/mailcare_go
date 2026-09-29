@@ -37,6 +37,8 @@ import (
 	"database/sql"
 	"io/fs"
 	"time"
+
+	"mailcare/app/modules/mailengine"
 )
 
 // Values shared with app/modules/constants.go (kept identical there).
@@ -148,4 +150,8 @@ type AnalyzeInput struct {
 	// supports one (ReasoningSelector); "" = the CLI's own setting.
 	ReasoningEffort string
 	Language        string // language for the report ("ja" default)
+	// RecheckDays are the re-check days of the categories (the settings):
+	// the settling period the prompt names when a resolved group is
+	// re-checked. nil = the defaults.
+	RecheckDays mailengine.RecheckDays
 }

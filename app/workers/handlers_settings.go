@@ -27,7 +27,9 @@ func (c *core) settingsDTO(u *models.User) map[string]any {
 		"agent_keep_days":        modules.ResolveAgentKeepDays(c.db),
 		"mail_keep_days":         modules.ResolveMailKeepDays(c.db),
 		"cleanup_time":           modules.ResolveCleanupTime(c.db),
-		"providers":              providers,
+		// recheck_days: the re-check days of every category.
+		"recheck_days": modules.ResolveRecheckDays(c.db),
+		"providers":    providers,
 		// check_times, cleanup_time and notify_time are interpreted in this zone.
 		"server_timezone": modules.ServerTimezone(),
 	}
@@ -48,19 +50,20 @@ func (c *core) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 // and reasoning level (validated together; a provider change without a
 // model or level clears them, and a level the model is known not to accept
 // refuses the whole request), the agent switch, the retention of the agent run directories, the retention
-// of fetched mails, the time of the daily cleanup and the worker count (applied to the job manager at
-// once). Absent fields are left unchanged.
+// of fetched mails, the time of the daily cleanup, the re-check days of the categories named (the others
+// keep theirs) and the worker count (applied to the job manager at once). Absent fields are left unchanged.
 func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CheckTimes    *[]string `json:"check_times"`
-		AgentProvider *string   `json:"agent_provider"`
-		AgentModel    *string   `json:"agent_model"`
-		AgentEffort   *string   `json:"agent_reasoning_effort"`
-		AgentEnabled  *bool     `json:"agent_enabled"`
-		AgentKeepDays *int      `json:"agent_keep_days"`
-		MailKeepDays  *int      `json:"mail_keep_days"`
-		CleanupTime   *string   `json:"cleanup_time"`
-		Workers       *int      `json:"workers"`
+		CheckTimes    *[]string      `json:"check_times"`
+		AgentProvider *string        `json:"agent_provider"`
+		AgentModel    *string        `json:"agent_model"`
+		AgentEffort   *string        `json:"agent_reasoning_effort"`
+		AgentEnabled  *bool          `json:"agent_enabled"`
+		AgentKeepDays *int           `json:"agent_keep_days"`
+		MailKeepDays  *int           `json:"mail_keep_days"`
+		CleanupTime   *string        `json:"cleanup_time"`
+		RecheckDays   map[string]int `json:"recheck_days"`
+		Workers       *int           `json:"workers"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -86,6 +89,10 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			writeErrorMessage(w, r, err)
 			return
 		}
+	}
+	if err := modules.ValidateRecheckDays(body.RecheckDays); err != nil {
+		writeErrorMessage(w, r, err)
+		return
 	}
 	var times []string
 	if body.CheckTimes != nil {
@@ -158,6 +165,12 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if body.CleanupTime != nil {
 		if _, err := modules.SaveCleanupTime(c.db, *body.CleanupTime); err != nil {
 			writeInternalError(w, "failed to save the cleanup time", err)
+			return
+		}
+	}
+	if len(body.RecheckDays) > 0 {
+		if err := modules.SaveRecheckDays(c.db, body.RecheckDays); err != nil {
+			writeInternalError(w, "failed to save the re-check days", err)
 			return
 		}
 	}

@@ -90,7 +90,7 @@ func TestGroupMessageTransaction(t *testing.T) {
 	}
 	failing := &failingExecer{Execer: tx, failOn: "UPDATE messages SET is_bounce"}
 	copyMsg := *msg
-	if err := groupMessageIn(failing, &copyMsg, pm, newGroupTracker(), address); !errors.Is(err, errInjected) {
+	if err := groupMessageIn(failing, &copyMsg, pm, newGroupTracker(nil), address); !errors.Is(err, errInjected) {
 		t.Fatalf("groupMessageIn with a failing messages update returned %v", err)
 	}
 	if err := tx.Rollback(); err != nil {
@@ -108,14 +108,14 @@ func TestGroupMessageTransaction(t *testing.T) {
 	//    has no details, so the next run repeats it.
 	failing = &failingExecer{Execer: db, failOn: "INSERT INTO bounces"}
 	copyMsg = *msg
-	if err := groupMessageIn(failing, &copyMsg, pm, newGroupTracker(), address); !errors.Is(err, errInjected) {
+	if err := groupMessageIn(failing, &copyMsg, pm, newGroupTracker(nil), address); !errors.Is(err, errInjected) {
 		t.Fatalf("groupMessageIn with a failing bounces insert returned %v", err)
 	}
 	assertUntouched(t, db, msg, true, "after a failed bounces insert")
 
 	// 3. The real path (groupMessage over the database) completes the
 	//    message and its group in one go.
-	if err := groupMessage(db, msg, pm, newGroupTracker(), address); err != nil {
+	if err := groupMessage(db, msg, pm, newGroupTracker(nil), address); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err := models.GetMessageByKey(db, msg.MessageKey)
@@ -157,7 +157,7 @@ func TestClearMailClassificationIsAtomic(t *testing.T) {
 			t.Errorf("%s not reset: %+v", m.MessageKey, m)
 		}
 	}
-	res, err := GroupMailbox(context.Background(), root, address, false, nil)
+	res, err := GroupMailbox(context.Background(), root, address, false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,10 +227,10 @@ func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 		t.Error("RefreshGroupCounters must not set the flag by itself (the grouping phase does)")
 	}
 	// A restore (reindex carry-over) never flags a recipient-side group.
-	if err := models.RestoreGroupState(db, excluded.GroupKey, "open", sql.NullTime{}, true); err != nil {
+	if err := models.RestoreGroupState(db, &models.BounceGroup{GroupKey: excluded.GroupKey, State: "open", NeedsAnalysis: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := models.RestoreGroupState(db, actionable.GroupKey, "open", sql.NullTime{}, true); err != nil {
+	if err := models.RestoreGroupState(db, &models.BounceGroup{GroupKey: actionable.GroupKey, State: "open", NeedsAnalysis: true}); err != nil {
 		t.Fatal(err)
 	}
 	if flag(excluded.GroupKey) || !flag(actionable.GroupKey) {
@@ -242,7 +242,7 @@ func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 	// grouped without the flag, the blacklist bounce with it.
 	root2 := t.TempDir()
 	storeSamples(t, root2, address, 1, sampleByFile(t, "gmail_overquota.eml"), sampleByFile(t, "spamhaus_block_a.eml"))
-	res, err := GroupMailbox(context.Background(), root2, address, false, nil)
+	res, err := GroupMailbox(context.Background(), root2, address, false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 	// The second over-quota sample has the same Message-ID; give it another
 	// identity by storing it under a new UID (storeSamples did), which is
 	// enough for the grouping phase.
-	if _, err := GroupMailbox(context.Background(), root2, address, false, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root2, address, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	db = mustOpenIndex(t, root2, address)

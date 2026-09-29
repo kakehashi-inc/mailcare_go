@@ -157,6 +157,11 @@
             "folderInvalid": "Folder names cannot contain line breaks.",
             "serverKeepDaysOverMailKeep": "The retention must not exceed the mail retention of the general settings ({{max}} days)."
         },
+        "group": {
+            "resolveActionRequired": "Choose what was done.",
+            "ignoreReasonRequired": "Choose the reason.",
+            "stateNoteTooLong": "Enter the details in {{max}} characters or fewer."
+        },
         "agent": {
             "providerUnknown": "The selected agent is not available.",
             "modelInvalid": "Use up to {{max}} characters: letters, digits and . _ : / @ + -, starting with a letter or digit.",
@@ -318,6 +323,33 @@
             "open": "Open",
             "resolved": "Resolved",
             "ignored": "Ignored"
+        },
+        "groupRecheck": {
+            "resolved": "Resolved (re)",
+            "ignored": "Ignored (re)"
+        },
+        "resolveAction": {
+            "delisting": "Requested delisting from the blacklist",
+            "dns_fixed": "Corrected the DNS records of the sending domain (SPF, DKIM, DMARC)",
+            "server_fixed": "Corrected the sending server configuration",
+            "sender_changed": "Reviewed the sender address",
+            "content_changed": "Reviewed the content or the attachments",
+            "volume_adjusted": "Adjusted the sending volume or rate",
+            "recipient_fixed": "Corrected or removed the recipient address",
+            "recipient_asked": "Contacted the recipient side administrator",
+            "other": "Other"
+        },
+        "ignoreReason": {
+            "temporary": "A temporary problem that has already cleared, so no action is needed",
+            "recipient_side": "A problem on the recipient side, so no action is possible",
+            "input_error": "The address was entered wrongly by a user, so no action is possible",
+            "stopped_sending": "Mail to the address is no longer sent, so no action is needed",
+            "spoofing": "Sent by a third party using the monitored domain, so no action is possible",
+            "external_service": "A problem of an external sending service, so no action is possible",
+            "false_positive": "Detected by mistake, so no action is needed",
+            "low_impact": "The impact is small, so no action is needed",
+            "test_mail": "Mail sent for a test or a check, so no action is needed",
+            "other": "Other"
         },
         "groupScope": {
             "actionable": "Actionable",
@@ -522,9 +554,9 @@
             "serverKeepDaysHint": "Bounces and other notices, and junk mails, older than this many days (from the mail's date) are deleted from the server. 0 never deletes them on the server.",
             "serverKeepDaysMax": "At most the mail retention of the general settings ({{max}} days).",
             "lastChecked": "Last synced",
-            "openGroups": "Open groups",
-            "bounces": "Bounces",
-            "messages": "Fetched mails",
+            "openGroups": "Open",
+            "recheckGroups": "Re-check",
+            "messages": "Fetched",
             "targetMessages": "Target mails",
             "junkMessages": "Junk mails",
             "unclassified": "Awaiting grouping"
@@ -569,6 +601,10 @@
             "firstSeen": "First seen",
             "lastSeen": "Last seen",
             "stateUpdated": "State updated",
+            "resolveAction": "Action taken",
+            "ignoreReason": "Reason",
+            "stateNote": "Details",
+            "changedBy": "Changed by",
             "messageCount": "Messages",
             "recipientCount": "Recipients",
             "ipCount": "IPs",
@@ -612,6 +648,8 @@
             "agentEnabledHint": "When enabled, new bounces found by a sync are analyzed automatically.",
             "agentKeepDays": "Workspace retention (days)",
             "agentKeepDaysHint": "How many days the workspace directory of each analysis run (prompt, CLI output, report) is kept. Older ones are removed by the daily cleanup.",
+            "recheckDays": "Days before a re-check",
+            "recheckDaysHint": "After a group is marked resolved, a notice about mail sent after this many days marks it \"Resolved (re)\". Notices before that are taken as arriving while a delisting or another change takes effect.",
             "webListen": "Listen address",
             "webPort": "Listen port",
             "dataDir": "Data directory"
@@ -661,7 +699,9 @@
             "empty": {
                 "open": "No open groups",
                 "resolved": "No resolved groups",
+                "resolved_recheck": "No resolved groups to re-check",
                 "ignored": "No ignored groups",
+                "ignored_recheck": "No ignored groups to re-check",
                 "excluded": "No excluded groups"
             }
         },
@@ -684,9 +724,6 @@
             "totals": "Totals",
             "mailboxes": "Mailboxes",
             "mailboxDisabled": "This mailbox is disabled and is skipped by scheduled syncs.",
-            "recentGroups": "Recent bounce groups",
-            "recentGroupsHint": "Recently updated actionable groups across all mailboxes.",
-            "noRecentGroups": "No recent bounces.",
             "schedule": "Schedule",
             "nextCheck": "Next sync",
             "noSchedule": "No schedule",
@@ -706,6 +743,14 @@
             "stats": "Statistics",
             "messagesTitle": "Source messages ({{count}})",
             "noMessages": "This group has no messages.",
+            "history": {
+                "title": "State history",
+                "empty": "The state has not been changed yet."
+            },
+            "recheck": {
+                "resolved": "After the group was marked resolved, a notice of a new pattern or about mail sent after the settling period arrived. Decide again.",
+                "ignored": "After the group was ignored, a notice of a new pattern arrived. Decide again."
+            },
             "report": {
                 "title": "Analysis report",
                 "runningHint": "The agent is analyzing this group. The page refreshes automatically when it finishes.",
@@ -732,7 +777,7 @@
             "kindTabs": "Mail kind",
             "kind": {
                 "all": "All",
-                "bounce": "Bounces",
+                "target": "Targets",
                 "junk": "Junk",
                 "other": "Others"
             },
@@ -752,10 +797,10 @@
             "noBodyHint": "Both the text and the HTML part are empty. The headers and the raw download are still available.",
             "noHeaders": "No header information",
             "htmlSandboxNote": "The HTML is sanitized and shown with scripts and remote images disabled.",
-            "bounce": {
-                "title": "Bounce extraction",
+            "extract": {
+                "title": "Extraction",
                 "none": "Nothing extracted",
-                "notBounce": "This message was not classified as a bounce."
+                "notTarget": "This message is not a target."
             }
         },
         "tools": {
@@ -834,6 +879,8 @@
             "addTimeHint": "HH:MM format (e.g. 09:00)",
             "cleanup": "Cleanup",
             "cleanupHint": "Settings of the processing that removes data past its retention.",
+            "recheck": "Re-check",
+            "recheckHint": "When resolved and ignored groups go back to the lists for a new decision.",
             "jobs": "Job execution",
             "jobsHint": "Settings for the jobs that run in the background.",
             "agent": "Agent",

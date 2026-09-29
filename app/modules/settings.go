@@ -11,6 +11,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules/agent"
+	"mailcare/app/modules/mailengine"
 	"mailcare/app/modules/wording"
 )
 
@@ -356,6 +357,101 @@ func SaveMailKeepDays(db *sql.DB, n int) error {
 		return err
 	}
 	return PersistSetting(db, SettingMailKeepDays, strconv.Itoa(n), n == DefaultMailKeepDays)
+}
+
+// --- Re-check days ---
+
+// recheckDaysInvalid is the error of a re-check day count out of bounds.
+func recheckDaysInvalid(category string) error {
+	return wording.New("validation.common.numberOutOfRange",
+		fmt.Sprintf("recheck days of %s must be an integer between %d and %d", category,
+			mailengine.MinRecheckDays, mailengine.MaxRecheckDays)).
+		With("min", mailengine.MinRecheckDays).With("max", mailengine.MaxRecheckDays)
+}
+
+// ValidateRecheckDays checks re-check days per category: every category
+// must be known and every count within MinRecheckDays..MaxRecheckDays.
+func ValidateRecheckDays(days map[string]int) error {
+	for category, n := range days {
+		if !IsKnownCategory(category) {
+			return wording.New("system.invalidRequest", fmt.Sprintf("unknown category %q in recheck_days", category))
+		}
+		if n < mailengine.MinRecheckDays || n > mailengine.MaxRecheckDays {
+			return recheckDaysInvalid(category)
+		}
+	}
+	return nil
+}
+
+// ParseRecheckDays parses re-check days given as text: comma-separated
+// "category=days" pairs (the saved form and the CLI's; "" = none).
+func ParseRecheckDays(s string) (map[string]int, error) {
+	days := map[string]int{}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		category, value, ok := strings.Cut(part, "=")
+		category = strings.TrimSpace(category)
+		n, err := strconv.Atoi(strings.TrimSpace(value))
+		if !ok || err != nil {
+			return nil, wording.New("system.invalidRequest",
+				fmt.Sprintf("invalid recheck_days entry %q (use category=days, comma-separated)", part))
+		}
+		days[category] = n
+	}
+	return days, ValidateRecheckDays(days)
+}
+
+// ResolveRecheckDays returns the re-check days of every category (saved >
+// default). A saved value that fails to parse falls back to the defaults
+// with a log line.
+func ResolveRecheckDays(db *sql.DB) mailengine.RecheckDays {
+	days := mailengine.RecheckDays{}
+	for _, c := range KnownCategories() {
+		days[c] = mailengine.DefaultRecheckDays(c)
+	}
+	saved := models.GetSetting(db, SettingRecheckDays)
+	if saved == "" {
+		return days
+	}
+	parsed, err := ParseRecheckDays(saved)
+	if err != nil {
+		log.Printf("ignoring invalid saved recheck_days %q: %v", saved, err)
+		return days
+	}
+	for c, n := range parsed {
+		days[c] = n
+	}
+	return days
+}
+
+// FormatRecheckDays renders the re-check days that differ from the defaults
+// as the saved form ("" when every category has its default).
+func FormatRecheckDays(days map[string]int) string {
+	var parts []string
+	for _, c := range KnownCategories() {
+		if n, ok := days[c]; ok && n != mailengine.DefaultRecheckDays(c) {
+			parts = append(parts, c+"="+strconv.Itoa(n))
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+// SaveRecheckDays persists the re-check days of the given categories (the
+// others keep their current value); only values that differ from the
+// defaults are stored.
+func SaveRecheckDays(db *sql.DB, days map[string]int) error {
+	if err := ValidateRecheckDays(days); err != nil {
+		return err
+	}
+	merged := ResolveRecheckDays(db)
+	for c, n := range days {
+		merged[c] = n
+	}
+	value := FormatRecheckDays(merged)
+	return PersistSetting(db, SettingRecheckDays, value, value == "")
 }
 
 // --- Cleanup time ---

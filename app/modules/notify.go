@@ -554,16 +554,32 @@ type NotificationGroup struct {
 	// from the notices (report confidence "low").
 	NeedsReview bool
 	URL         string
+	// ReasonLabel and Note are what the user chose and wrote when marking
+	// a group resolved or ignored (the groups sent back for a re-check;
+	// ReasonLabel in the recipient's language, "" when none was chosen;
+	// Note folded onto one line).
+	ReasonLabel string
+	Note        string
 
+	state, reason       string       // groups.state / groups.state_reason before rendering
 	firstSeen, lastSeen sql.NullTime // FirstSeen / LastSeen before rendering
 }
 
-// NotificationMailbox is the heading of one mail address.
+// NotificationMailbox is the heading of one mail address: its open
+// actionable groups with a completed report (Groups) and its resolved and
+// ignored groups sent back for a re-check.
 type NotificationMailbox struct {
-	ID          int64
-	Address     string
-	DisplayName string
-	Groups      []NotificationGroup
+	ID              int64
+	Address         string
+	DisplayName     string
+	Groups          []NotificationGroup
+	ResolvedRecheck []NotificationGroup
+	IgnoredRecheck  []NotificationGroup
+}
+
+// count is the number of groups of the mailbox in the mail.
+func (mb *NotificationMailbox) count() int {
+	return len(mb.Groups) + len(mb.ResolvedRecheck) + len(mb.IgnoredRecheck)
 }
 
 // Notification is the rendered mail and the data it was built from.
@@ -588,9 +604,10 @@ func BuildNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL strin
 }
 
 // collectNotification collects, from the index of every mailbox, the
-// actionable open groups that have a completed agent report (language
-// independent; the category labels and the dates are filled per recipient
-// by renderNotificationFor). Mailboxes without an index are skipped; a
+// actionable open groups that have a completed agent report and the
+// resolved and ignored groups sent back for a re-check (language
+// independent; the labels and the dates are filled per recipient by
+// renderNotificationFor). Mailboxes without an index are skipped; a
 // mailbox whose index cannot be opened is logged and skipped.
 func collectNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL string) ([]NotificationMailbox, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -607,15 +624,15 @@ func collectNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL str
 		if _, err := os.Stat(mailengine.MailboxIndexPath(mailsRoot, mb.Address)); err != nil {
 			continue
 		}
-		groups, err := collectNotificationGroups(ctx, mailsRoot, mb, baseURL)
+		entry, err := collectNotificationGroups(ctx, mailsRoot, mb, baseURL)
 		if err != nil {
 			log.Printf("notification: %s skipped: %v", mb.Address, err)
 			continue
 		}
-		if len(groups) == 0 {
+		if entry.count() == 0 {
 			continue
 		}
-		out = append(out, NotificationMailbox{ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, Groups: groups})
+		out = append(out, entry)
 	}
 	return out, nil
 }
@@ -625,24 +642,32 @@ func collectNotification(ctx context.Context, db *sql.DB, mailsRoot, baseURL str
 // and the template of its language. The report summaries stay as the agent
 // wrote them.
 func renderNotificationFor(mailboxes []NotificationMailbox, baseURL string, now time.Time, loc MailLocale) (*Notification, error) {
-	labels, err := loadCategoryLabels(loc.Language)
+	lang, err := LoadLanguageFile(loc.Language)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("category labels: %w", err)
 	}
-	n := &Notification{Date: now.In(loc.Location).Format("2006-01-02"), BaseURL: strings.TrimRight(baseURL, "/")}
-	for _, mb := range mailboxes {
-		groups := make([]NotificationGroup, 0, len(mb.Groups))
-		for _, g := range mb.Groups {
+	labels := lang.categoryLabels()
+	localize := func(in []NotificationGroup) []NotificationGroup {
+		out := make([]NotificationGroup, 0, len(in))
+		for _, g := range in {
 			g.CategoryLabel = labels[g.Category]
 			if g.CategoryLabel == "" {
 				g.CategoryLabel = g.Category
 			}
 			g.FirstSeen, g.LastSeen = localStamp(g.firstSeen, loc.Location), localStamp(g.lastSeen, loc.Location)
-			groups = append(groups, g)
+			if g.reason != "" {
+				g.ReasonLabel = lang.T(StateReasonKey(g.state, g.reason), nil)
+			}
+			out = append(out, g)
 		}
-		mb.Groups = groups
+		return out
+	}
+	n := &Notification{Date: now.In(loc.Location).Format("2006-01-02"), BaseURL: strings.TrimRight(baseURL, "/")}
+	for _, mb := range mailboxes {
+		mb.Groups, mb.ResolvedRecheck, mb.IgnoredRecheck =
+			localize(mb.Groups), localize(mb.ResolvedRecheck), localize(mb.IgnoredRecheck)
 		n.Mailboxes = append(n.Mailboxes, mb)
-		n.Total += len(groups)
+		n.Total += mb.count()
 	}
 	subject, body, err := renderSubjectAndBody(mailTemplatePath(notifyTemplateKind, loc.Language), n)
 	if err != nil {
@@ -652,41 +677,70 @@ func renderNotificationFor(mailboxes []NotificationMailbox, baseURL string, now 
 	return n, nil
 }
 
-// collectNotificationGroups reads the open actionable groups with a
-// completed report from the index of one mailbox.
-func collectNotificationGroups(ctx context.Context, mailsRoot string, mb *models.Mailbox, baseURL string) ([]NotificationGroup, error) {
+// collectNotificationGroups reads, from the index of one mailbox, the open
+// actionable groups with a completed report and the resolved and ignored
+// groups sent back for a re-check (with or without a report: a
+// recipient-side group is never analyzed).
+func collectNotificationGroups(ctx context.Context, mailsRoot string, mb *models.Mailbox, baseURL string) (NotificationMailbox, error) {
+	entry := NotificationMailbox{ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName}
 	idx, err := mailengine.OpenIndex(ctx, mailsRoot, mb.Address, nil)
 	if err != nil {
-		return nil, err
+		return entry, err
 	}
 	defer idx.Close()
-	actionable := true
-	groups, err := models.ListGroups(idx, models.GroupFilter{State: GroupStateOpen, Actionable: &actionable})
+	actionable, recheck := true, true
+	open, err := models.ListGroups(idx, models.GroupFilter{State: GroupStateOpen, Actionable: &actionable})
 	if err != nil {
-		return nil, err
+		return entry, err
+	}
+	sentBack, err := models.ListGroups(idx, models.GroupFilter{Recheck: &recheck})
+	if err != nil {
+		return entry, err
 	}
 	reports, err := models.LatestCompletedAgentReports(idx)
 	if err != nil {
-		return nil, err
+		return entry, err
 	}
-	var out []NotificationGroup
-	for _, g := range groups {
-		report := reports[g.GroupKey]
-		if report == nil {
-			continue
-		}
-		summary := strings.TrimSpace(report.Summary)
-		if summary == "" {
-			summary = firstParagraph(report.ReportMarkdown)
-		}
-		out = append(out, NotificationGroup{
+	build := func(g *models.BounceGroup, report *models.AgentReport) NotificationGroup {
+		n := NotificationGroup{
 			GroupKey: g.GroupKey, Category: g.Category, UnitValue: g.UnitValue, Authority: g.Authority,
-			MessageCount: g.MessageCount, RecipientCount: g.RecipientCount, Summary: summary,
-			NeedsReview: report.Confidence == agent.ConfidenceLow, URL: GroupURL(baseURL, mb.ID, g.GroupKey),
+			MessageCount: g.MessageCount, RecipientCount: g.RecipientCount, URL: GroupURL(baseURL, mb.ID, g.GroupKey),
+			Note: strings.Join(strings.Fields(g.StateNote.String), " "), state: g.State, reason: g.StateReason.String,
 			firstSeen: g.FirstSeen, lastSeen: g.LastSeen,
-		})
+		}
+		if report != nil {
+			n.Summary = strings.TrimSpace(report.Summary)
+			if n.Summary == "" {
+				n.Summary = firstParagraph(report.ReportMarkdown)
+			}
+			n.NeedsReview = report.Confidence == agent.ConfidenceLow
+		}
+		return n
 	}
-	return out, nil
+	for _, g := range open {
+		if report := reports[g.GroupKey]; report != nil {
+			entry.Groups = append(entry.Groups, build(g, report))
+		}
+	}
+	for _, g := range sentBack {
+		switch g.State {
+		case GroupStateResolved:
+			entry.ResolvedRecheck = append(entry.ResolvedRecheck, build(g, reports[g.GroupKey]))
+		case GroupStateIgnored:
+			entry.IgnoredRecheck = append(entry.IgnoredRecheck, build(g, reports[g.GroupKey]))
+		}
+	}
+	return entry, nil
+}
+
+// StateReasonKey is the language-file key of the reason code chosen with a
+// state (value.resolveAction.<code> for resolved, value.ignoreReason.<code>
+// for ignored).
+func StateReasonKey(state, reason string) string {
+	if state == GroupStateResolved {
+		return "value.resolveAction." + reason
+	}
+	return "value.ignoreReason." + reason
 }
 
 // GroupURL is the link to a group in the Web UI.
@@ -896,7 +950,7 @@ const (
 	SkipSMTPNotConfigured  = "SMTP host or sender address is not set"
 	SkipNoRecipient        = "no recipient is selected"
 	SkipRecipientsNoEmail  = "none of the selected recipients has an email address"
-	SkipNoActionableGroups = "no open actionable group has a completed report"
+	SkipNoActionableGroups = "no open actionable group has a completed report and no group was sent back for a re-check"
 )
 
 // SendNotification applies the send conditions of the design (SMTP
@@ -938,7 +992,7 @@ func SendNotification(ctx context.Context, db *sql.DB, key []byte, mailsRoot str
 		return nil, err
 	}
 	for _, mb := range mailboxes {
-		res.Groups += len(mb.Groups)
+		res.Groups += mb.count()
 	}
 	if res.Groups == 0 {
 		res.Skipped = SkipNoActionableGroups

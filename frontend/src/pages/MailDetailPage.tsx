@@ -295,7 +295,7 @@ export function MailDetailPage() {
 
                 <aside>
                     <Card>
-                        <CardHeader title={t('page.mailDetail.bounce.title')} />
+                        <CardHeader title={t('page.mailDetail.extract.title')} />
                         <p className='mb-3 text-sm text-muted'>
                             {t('field.bounce.bodySource')}:{' '}
                             <span className='text-ink'>{t(`value.bodySource.${bodySourceKey}`)}</span>
@@ -359,8 +359,8 @@ export function MailDetailPage() {
                             />
                         ) : (
                             <EmptyState
-                                title={t('page.mailDetail.bounce.none')}
-                                description={message.is_bounce ? undefined : t('page.mailDetail.bounce.notBounce')}
+                                title={t('page.mailDetail.extract.none')}
+                                description={message.is_bounce ? undefined : t('page.mailDetail.extract.notTarget')}
                             />
                         )}
                     </Card>

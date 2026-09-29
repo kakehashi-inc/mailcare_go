@@ -2,7 +2,6 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { getDashboard } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
-import { GroupRow } from '../components/domain/GroupRow';
 import { JobList } from '../components/domain/JobList';
 import { CheckStatusBadge, fetchStatus } from '../components/domain/StatusBadges';
 import { Alert } from '../components/ui/Alert';
@@ -33,6 +32,9 @@ export function DashboardPage() {
     const busy = new Set(data?.busy_mailbox_ids ?? []);
     const hasActive = busy.size > 0 || (data?.active_jobs.length ?? 0) > 0;
     const syncActive = (mb: MailboxDTO) => busy.has(mb.id);
+    // Resolved and ignored groups sent back for a re-check (both "(re)" tabs of Alerts).
+    const recheckCount = (mb: MailboxDTO) =>
+        mb.stats ? mb.stats.groups.resolved_recheck + mb.stats.groups.ignored_recheck : 0;
     usePolling(reload, !loading, hasActive ? JOB_POLL_INTERVAL_MS : DASHBOARD_REFRESH_MS);
 
     if (loading) return <LoadingBlock />;
@@ -57,8 +59,20 @@ export function DashboardPage() {
             icon: 'notifications_active',
             tone: data.totals.open_groups > 0 ? 'text-danger' : 'text-ink',
         },
-        { label: t('field.mailbox.bounces'), value: data.totals.bounces, icon: 'report', tone: 'text-ink' },
+        {
+            label: t('field.mailbox.recheckGroups'),
+            value: data.totals.recheck_groups,
+            icon: 'replay',
+            tone: data.totals.recheck_groups > 0 ? 'text-warning' : 'text-ink',
+        },
         { label: t('field.mailbox.messages'), value: data.totals.messages, icon: 'mail', tone: 'text-ink' },
+        {
+            label: t('field.mailbox.targetMessages'),
+            value: data.totals.target_messages,
+            icon: 'report',
+            tone: 'text-ink',
+        },
+        { label: t('field.mailbox.junkMessages'), value: data.totals.junk_messages, icon: 'block', tone: 'text-ink' },
     ];
     if (data.totals.unclassified > 0) {
         totals.push({
@@ -90,7 +104,7 @@ export function DashboardPage() {
 
             <section
                 aria-label={t('page.dashboard.totals')}
-                className={`grid grid-cols-2 gap-3 ${totals.length > 4 ? 'md:grid-cols-3 lg:grid-cols-5' : 'md:grid-cols-4'}`}
+                className={`grid grid-cols-2 gap-3 md:grid-cols-3 ${totals.length > 6 ? 'lg:grid-cols-7' : 'lg:grid-cols-6'}`}
             >
                 {totals.map(item => (
                     <Card key={item.label} className='flex items-center gap-3'>
@@ -143,7 +157,7 @@ export function DashboardPage() {
                                                     <CheckStatusBadge status={fetchStatus(mb)} />
                                                 )}
                                             </div>
-                                            <dl className='grid grid-cols-2 gap-2 text-sm'>
+                                            <dl className='grid grid-cols-3 gap-2 text-sm'>
                                                 <div>
                                                     <dt className='text-muted'>{t('field.mailbox.openGroups')}</dt>
                                                     <dd
@@ -152,10 +166,30 @@ export function DashboardPage() {
                                                         {mb.stats ? formatNumber(mb.stats.groups.open) : '-'}
                                                     </dd>
                                                 </div>
+                                                <div className='col-span-2'>
+                                                    <dt className='text-muted'>{t('field.mailbox.recheckGroups')}</dt>
+                                                    <dd
+                                                        className={`text-xl font-bold ${recheckCount(mb) ? 'text-warning' : 'text-ink'}`}
+                                                    >
+                                                        {mb.stats ? formatNumber(recheckCount(mb)) : '-'}
+                                                    </dd>
+                                                </div>
                                                 <div>
-                                                    <dt className='text-muted'>{t('field.mailbox.bounces')}</dt>
+                                                    <dt className='text-muted'>{t('field.mailbox.messages')}</dt>
                                                     <dd className='text-xl font-bold text-ink'>
-                                                        {mb.stats ? formatNumber(mb.stats.bounces) : '-'}
+                                                        {mb.stats ? formatNumber(mb.stats.messages) : '-'}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt className='text-muted'>{t('field.mailbox.targetMessages')}</dt>
+                                                    <dd className='text-xl font-bold text-ink'>
+                                                        {mb.stats ? formatNumber(mb.stats.target_messages) : '-'}
+                                                    </dd>
+                                                </div>
+                                                <div>
+                                                    <dt className='text-muted'>{t('field.mailbox.junkMessages')}</dt>
+                                                    <dd className='text-xl font-bold text-ink'>
+                                                        {mb.stats ? formatNumber(mb.stats.junk_messages) : '-'}
                                                     </dd>
                                                 </div>
                                                 {(mb.stats?.unclassified ?? 0) > 0 && (
@@ -168,7 +202,7 @@ export function DashboardPage() {
                                                         </dd>
                                                     </div>
                                                 )}
-                                                <div className='col-span-2'>
+                                                <div className='col-span-3'>
                                                     <dt className='text-muted'>{t('field.mailbox.lastChecked')}</dt>
                                                     <dd className='text-ink'>
                                                         <DateTime
@@ -199,28 +233,6 @@ export function DashboardPage() {
                                             </div>
                                         </Card>
                                     </li>
-                                ))}
-                            </ul>
-                        )}
-                    </section>
-
-                    <section>
-                        <CardHeader
-                            title={t('page.dashboard.recentGroups')}
-                            description={t('page.dashboard.recentGroupsHint')}
-                        />
-                        {data.recent_groups.length === 0 ? (
-                            <EmptyState title={t('page.dashboard.noRecentGroups')} />
-                        ) : (
-                            <ul className='flex flex-col gap-3'>
-                                {data.recent_groups.map(g => (
-                                    <GroupRow
-                                        key={`${g.mailbox_id}-${g.group_key}`}
-                                        group={g}
-                                        mailboxAddress={g.mailbox_address}
-                                        showState
-                                        to={`/alerts/${g.mailbox_id}/groups/${encodeURIComponent(g.group_key)}`}
-                                    />
                                 ))}
                             </ul>
                         )}

@@ -67,7 +67,7 @@ func TestReindexSyntheticUIDCollision(t *testing.T) {
 	seedRawWithIdentity(t, root, address, newKey, raw, nil)
 
 	var lines []string
-	res, err := Reindex(context.Background(), root, address, func(m string) { lines = append(lines, m) })
+	res, err := Reindex(context.Background(), root, address, nil, func(m string) { lines = append(lines, m) })
 	if err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestReindexSyntheticUIDCollision(t *testing.T) {
 	}
 	seedRawWithIdentity(t, root, address, newKey, raw, nil)
 	lines = nil
-	res, err = Reindex(context.Background(), root, address, func(m string) { lines = append(lines, m) })
+	res, err = Reindex(context.Background(), root, address, nil, func(m string) { lines = append(lines, m) })
 	if err != nil {
 		t.Fatalf("reindex with exhausted retries: %v", err)
 	}

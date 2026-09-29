@@ -522,9 +522,46 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, g := range groups {
-		if err := models.SetGroupState(idx, g.GroupKey, GroupStateResolved); err != nil {
+		change := GroupStateChange{State: GroupStateResolved, Reason: sql.NullString{String: models.ResolveActionDNSFixed, Valid: true}}
+		if err := ChangeGroupState(idx, g.GroupKey, change, ""); err != nil {
 			t.Fatal(err)
 		}
+	}
+	idx.Close()
+	expectSkip(SkipNoActionableGroups)
+	// A resolved group sent back for a re-check comes back in its own section
+	// with what was done, whatever its report.
+	idx, err = mailengine.OpenIndex(ctx, mailsRoot, mb.Address, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := models.SetGroupNeedsRecheck(idx, groups[0].GroupKey); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+	for _, c := range []struct {
+		language, heading, reason string
+	}{
+		{"ja", "[対応済(再)]", "対応内容: 送信ドメインの DNS 設定（SPF・DKIM・DMARC）を修正した"},
+		{"en", "[Resolved (re)]", "Action taken: Corrected the DNS records of the sending domain (SPF, DKIM, DMARC)"},
+	} {
+		n, err := BuildNotification(ctx, db, mailsRoot, "http://localhost:9790", now, MailLocale{Language: c.language, Location: time.UTC})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n.Total != 1 || !strings.Contains(n.Body, c.heading) || !strings.Contains(n.Body, c.reason) ||
+			strings.Contains(n.Body, "[未対応]") || strings.Contains(n.Body, "[Open]") ||
+			!strings.Contains(n.Body, GroupURL("http://localhost:9790", mb.ID, groups[0].GroupKey)) {
+			t.Errorf("%s: re-check mail (total %d):\n%s", c.language, n.Total, n.Body)
+		}
+	}
+	idx, err = mailengine.OpenIndex(ctx, mailsRoot, mb.Address, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change := GroupStateChange{State: GroupStateResolved, Reason: sql.NullString{String: models.ResolveActionDNSFixed, Valid: true}}
+	if err := ChangeGroupState(idx, groups[0].GroupKey, change, ""); err != nil {
+		t.Fatal(err)
 	}
 	idx.Close()
 	expectSkip(SkipNoActionableGroups)

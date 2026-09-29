@@ -293,6 +293,10 @@ const (
 	SettingNotifyInterval  = "notify_interval_days"
 	SettingNotifyUserIDs   = "notify_user_ids" // comma-separated users.id
 	SettingNotifyLastSent  = "notify_last_sent_at"
+	// SettingRecheckDays holds the re-check days of the categories whose
+	// value differs from the default (comma-separated "category=days"; see
+	// mailengine.RecheckDays and ResolveRecheckDays).
+	SettingRecheckDays = "recheck_days"
 	// SettingCleanupTime is the local time (HH:MM) at which the scheduler
 	// queues the daily cleanup job (DefaultCleanupTime).
 	SettingCleanupTime = "cleanup_time"

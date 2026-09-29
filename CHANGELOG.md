@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-30
+
+### Added
+
+- Marking an alert resolved asks what was done, and ignoring it asks why, each as a required choice. What was done can have optional details; for the reason, "Other" lets you write it. Cancel saves nothing. This works from the alert list, the alert detail and the command line (`groups set-state --reason --note`).
+- Each alert keeps a history of its state changes (when, who, the choice and the details), shown on the alert detail, in the PDF report and in the ZIP download. Reopening an alert clears its current choice and details; the history keeps them.
+- New "Resolved (re)" and "Ignored (re)" tabs list resolved and ignored alerts that need a new decision. Their state stays as you set it until you decide again.
+  - A resolved alert comes back when mail sent after the time the fix needs to take effect is still rejected. The days per category can be changed in the general settings (14 days for blacklists by default).
+  - Resolved and ignored alerts of authentication, server configuration and DMARC problems also come back when a new kind of rejection arrives.
+- Alerts that come back are analyzed again automatically. The AI judges whether the fix worked or the reason for ignoring still holds, from the analysis the decision was based on, what you recorded and the notices received after the decision.
+- The notification mail also lists the alerts that came back, with what was done or why they were ignored.
+
+### Changed
+
+- The alert and dashboard cards show the number of alerts to re-check next to the open ones. The dashboard also shows the fetched, target and junk mail counts, per mail address and in total, and no longer lists recent alert groups.
+- In the mail list, the "Bounces" tab is now "Targets" and lists the same mails as the target count on the cards.
+
 ## [0.2.1] - 2026-09-30
 
 ### Added

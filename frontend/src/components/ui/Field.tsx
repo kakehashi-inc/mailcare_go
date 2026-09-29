@@ -185,6 +185,84 @@ export function CheckboxField({ label, hint, className = '', ...rest }: Checkbox
     );
 }
 
+interface RadioGroupFieldProps<T extends string> {
+    label: ReactNode;
+    /** The choices in display order. */
+    options: readonly { value: T; label: ReactNode }[];
+    /** The chosen value; '' = none chosen yet. */
+    value: T | '';
+    onChange: (value: T) => void;
+    required?: boolean;
+    hint?: ReactNode;
+    error?: ReactNode;
+    disabled?: boolean;
+    className?: string;
+}
+
+/**
+ * A group of radio buttons with its label as the legend. Each choice sits on its own row, the button left of its
+ * label (like CheckboxField), and the whole row is the tap target.
+ */
+export function RadioGroupField<T extends string>({
+    label,
+    options,
+    value,
+    onChange,
+    required,
+    hint,
+    error,
+    disabled,
+    className = '',
+}: RadioGroupFieldProps<T>) {
+    const id = useId();
+    return (
+        <fieldset
+            className={className}
+            aria-describedby={error ? `${id}-error` : hint ? `${id}-hint` : undefined}
+            aria-invalid={error ? true : undefined}
+            disabled={disabled}
+        >
+            <legend className='mb-1 block text-sm font-medium text-ink'>
+                {label}
+                {required && (
+                    <span className='ml-1 text-danger' aria-hidden='true'>
+                        *
+                    </span>
+                )}
+            </legend>
+            <div className='flex flex-col'>
+                {options.map(o => (
+                    <label
+                        key={o.value}
+                        className='flex min-h-tap cursor-pointer items-center gap-3 rounded-md px-1 text-base text-ink hover:bg-well'
+                    >
+                        <input
+                            type='radio'
+                            name={id}
+                            value={o.value}
+                            checked={value === o.value}
+                            required={required}
+                            onChange={() => onChange(o.value)}
+                            className='h-5 w-5 shrink-0 accent-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+                        />
+                        <span>{o.label}</span>
+                    </label>
+                ))}
+            </div>
+            {hint && !error && (
+                <p id={`${id}-hint`} className='mt-1 text-sm text-muted'>
+                    {hint}
+                </p>
+            )}
+            {error && (
+                <p id={`${id}-error`} className='mt-1 text-sm text-danger' role='alert'>
+                    {error}
+                </p>
+            )}
+        </fieldset>
+    );
+}
+
 interface ToggleFieldProps {
     label: ReactNode;
     hint?: ReactNode;

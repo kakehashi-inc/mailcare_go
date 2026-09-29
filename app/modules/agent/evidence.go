@@ -57,13 +57,20 @@ type Pattern struct {
 	// previous report did not cover.
 	New    bool
 	Sample *Sample // nil when the pattern got no sample
+	// Before and After count the members of the pattern that arrived before
+	// and after the decision being re-checked (EvidenceInput.Decided set),
+	// SentAfter the members about mail sent after it (mailengine.SentAt);
+	// FirstAfter / LastAfter date the members after it.
+	Before, After, SentAfter int
+	FirstAfter, LastAfter    time.Time
 	// SourceIPs are the sending IPs of the DMARC records of the pattern
 	// (sorted; empty for bounces).
 	SourceIPs []string
 
-	newest     *models.GroupBounce
-	recipients map[string]bool
-	sources    map[string]bool
+	newest      *models.GroupBounce
+	newestAfter *models.GroupBounce
+	recipients  map[string]bool
+	sources     map[string]bool
 }
 
 // Sample is the evidence of one sample notice.
@@ -87,6 +94,9 @@ type Evidence struct {
 	// are covered by it, the others (New) appeared since, and only those
 	// get samples.
 	Update bool
+	// Recheck is true when the run re-checks a decision: the patterns carry
+	// their counts before and after it, and the samples come from after it.
+	Recheck bool
 }
 
 // EvidenceInput is everything BuildEvidence needs.
@@ -98,6 +108,10 @@ type EvidenceInput struct {
 	// Covered holds the pattern keys the previous completed report covered;
 	// nil (or covering none or all of the patterns) means a full analysis.
 	Covered map[string]bool
+	// Decided is when the decision being re-checked was made (zero when
+	// none): the members are then counted before and after it, and the
+	// samples are taken from after it (Covered is not used).
+	Decided time.Time
 }
 
 // readRawMessage reads the original notice of a message key. A variable so
@@ -135,6 +149,22 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 		if b.Date.After(p.LastSeen) {
 			p.LastSeen = b.Date
 		}
+		if in.Decided.IsZero() {
+			continue
+		}
+		if !b.Date.After(in.Decided) {
+			p.Before++
+			continue
+		}
+		p.After++
+		if mailengine.SentAt(b).After(in.Decided) {
+			p.SentAfter++
+		}
+		if p.newestAfter == nil {
+			// The members come newest first.
+			p.newestAfter, p.LastAfter = b, b.Date
+		}
+		p.FirstAfter = b.Date
 	}
 	sort.SliceStable(ev.Patterns, func(i, j int) bool {
 		if ev.Patterns[i].Messages != ev.Patterns[j].Messages {
@@ -142,6 +172,10 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 		}
 		return ev.Patterns[i].LastSeen.After(ev.Patterns[j].LastSeen)
 	})
+	if !in.Decided.IsZero() {
+		ev.Recheck = true
+		in.Covered = nil
+	}
 	newCount := 0
 	for i, p := range ev.Patterns {
 		p.ID = fmt.Sprintf("P%d", i+1)
@@ -161,22 +195,54 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 			p.New = false
 		}
 	}
-	for _, p := range ev.Patterns {
+	for _, p := range samplingOrder(ev) {
 		if len(ev.Samples) >= MaxEvidenceSamples {
 			break
 		}
 		if ev.Update && !p.New {
 			continue
 		}
-		s := &Sample{
-			ID: fmt.Sprintf("S%d", len(ev.Samples)+1), Pattern: p, MessageKey: p.newest.MessageKey,
-			FileName: evidenceFileName(p.newest),
+		member := p.newest
+		if p.newestAfter != nil {
+			member = p.newestAfter
 		}
-		buildSample(s, in, p.newest)
+		s := &Sample{
+			ID: fmt.Sprintf("S%d", len(ev.Samples)+1), Pattern: p, MessageKey: member.MessageKey,
+			FileName: evidenceFileName(member),
+		}
+		buildSample(s, in, member)
 		p.Sample = s
 		ev.Samples = append(ev.Samples, s)
 	}
 	return ev
+}
+
+// samplingOrder is the order in which the patterns get the sample slots.
+// Normally the list order (most frequent first). When a decision is
+// re-checked, what arrived after it comes first: the patterns that appeared
+// only after it, then the ones that continued after it (each by their
+// newest member after it), then the rest in list order.
+func samplingOrder(ev *Evidence) []*Pattern {
+	if !ev.Recheck {
+		return ev.Patterns
+	}
+	var appeared, continued, rest []*Pattern
+	for _, p := range ev.Patterns {
+		switch {
+		case p.After > 0 && p.Before == 0:
+			appeared = append(appeared, p)
+		case p.After > 0:
+			continued = append(continued, p)
+		default:
+			rest = append(rest, p)
+		}
+	}
+	byNewestAfter := func(ps []*Pattern) {
+		sort.SliceStable(ps, func(i, j int) bool { return ps[i].LastAfter.After(ps[j].LastAfter) })
+	}
+	byNewestAfter(appeared)
+	byNewestAfter(continued)
+	return append(append(appeared, continued...), rest...)
 }
 
 // evidenceFileName is the evidence file of a sample, relative to the

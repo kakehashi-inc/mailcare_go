@@ -100,7 +100,7 @@ func ListDMARCRecordsByGroup(db *sql.DB, groupKey string) ([]*DMARCRecord, error
 // (the form the agent evidence takes): the pattern, the rule, the sending IP
 // and the report mail's key and date, with the record itself in DMARC and
 // the diagnostic source "dmarc".
-func groupDMARCRecords(db *sql.DB, groupKey string) ([]*GroupBounce, error) {
+func groupDMARCRecords(db Execer, groupKey string) ([]*GroupBounce, error) {
 	rows, err := db.Query(`SELECT m.message_key, m.date, m.body_source, `+prefixColumns("d.", dmarcRecordColumns)+`
 		FROM dmarc_records d JOIN messages m ON m.id = d.message_id WHERE d.group_key = ?
 		ORDER BY m.date DESC, m.id DESC, d.id`, groupKey)

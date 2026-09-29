@@ -268,6 +268,8 @@ export interface GroupListParams {
     /** Defaults to "actionable" on the server. */
     scope?: GroupScope;
     state?: GroupState | '';
+    /** '1' = only the resolved / ignored groups sent back for a re-check, '0' = only the others. */
+    recheck?: '1' | '0';
     category?: string;
     responsible?: string;
     q?: string;
@@ -285,11 +287,18 @@ export function getGroup(mailboxId: number, key: string): Promise<GroupDetailRes
     return request<GroupDetailResponse>(api(`/mailboxes/${mailboxId}/groups/${encodeURIComponent(key)}`));
 }
 
+/** A state change: the code chosen (required for resolved and ignored) and the details written with it. */
+export interface GroupStateInput {
+    state: GroupState;
+    reason?: string;
+    note?: string;
+}
+
 /** Changes the group state and returns the updated group ({group: ...} unwrapped). */
-export async function setGroupState(mailboxId: number, key: string, state: GroupState): Promise<GroupDTO> {
+export async function setGroupState(mailboxId: number, key: string, input: GroupStateInput): Promise<GroupDTO> {
     const r = await request<GroupResponse>(
         api(`/mailboxes/${mailboxId}/groups/${encodeURIComponent(key)}/state`),
-        json('PUT', { state })
+        json('PUT', input)
     );
     return r.group;
 }

@@ -199,7 +199,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	// Grouping processes the fetched rows; only the actionable Spamhaus
 	// group is reported as touched.
 	lines = nil
-	gres, err := GroupMailbox(ctx, root, mb.Address, false, progress)
+	gres, err := GroupMailbox(ctx, root, mb.Address, false, nil, progress)
 	if err != nil {
 		t.Fatalf("group 1: %v\n%s", err, strings.Join(lines, "\n"))
 	}
@@ -235,7 +235,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 	if !strings.Contains(strings.Join(lines, "\n"), "recent window, 30 days") {
 		t.Errorf("run 2 did not use the recent window:\n%s", strings.Join(lines, "\n"))
 	}
-	if gres, err = GroupMailbox(ctx, root, mb.Address, false, nil); err != nil || gres.Processed != 0 || len(gres.GroupsTouched) != 0 {
+	if gres, err = GroupMailbox(ctx, root, mb.Address, false, nil, nil); err != nil || gres.Processed != 0 || len(gres.GroupsTouched) != 0 {
 		t.Errorf("group 2 = %+v (err %v), want nothing processed", gres, err)
 	}
 
@@ -275,7 +275,7 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 		idx.Close()
 	}
 	assertIndexState(t, root, mb.Address, len(recent)+3, len(recent), 3, gres.Groups, "run 3 fetch")
-	gres, err = GroupMailbox(ctx, root, mb.Address, false, nil)
+	gres, err = GroupMailbox(ctx, root, mb.Address, false, nil, nil)
 	if err != nil {
 		t.Fatalf("group 3: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestFetchIndexesEveryCopy(t *testing.T) {
 		return out
 	}
 	before := identities("before reindex")
-	rres, err := Reindex(ctx, root, mb.Address, nil)
+	rres, err := Reindex(ctx, root, mb.Address, nil, nil)
 	if err != nil || rres.Messages != 4 || rres.Skipped != 0 {
 		t.Fatalf("reindex = %+v (err %v), want 4 messages", rres, err)
 	}
@@ -565,7 +565,7 @@ func fetchAndGroup(t *testing.T, srv *memIMAP) string {
 	if _, err := FetchMailbox(ctx, root, srv.mailbox(), memPassword, FetchOptions{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := GroupMailbox(ctx, root, memUsername, false, nil); err != nil {
+	if _, err := GroupMailbox(ctx, root, memUsername, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	return root
@@ -702,7 +702,7 @@ func TestDeleteFromServer(t *testing.T) {
 		t.Errorf("second run: %+v %v", res, err)
 	}
 	// Reindex carries the deletion time over.
-	if _, err := Reindex(ctx, root, mb.Address, nil); err != nil {
+	if _, err := Reindex(ctx, root, mb.Address, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, err = models.OpenMailIndex(indexPath)

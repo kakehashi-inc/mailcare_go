@@ -159,25 +159,33 @@ func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
 }
 
 // groupTracker collects the groups touched during one run and decides, for
-// every message, whether its groups must be flagged for analysis: an
-// actionable group is flagged when a member just filed into it (a bounce,
-// or a failing record of a DMARC report) has a pattern (pattern_key) that
-// the latest completed report of the group did not cover (always the case
-// for a group without a completed report, a new group included). More
-// members of a covered pattern only update the counters (design 5.4
-// "incremental"). The counters and the flag are written inside the
-// transaction of the message, so they are always in step with the bounces
-// and dmarc_records rows. At the end the flagged groups are reported as
+// every message, whether its groups must be flagged:
+//
+//   - an open actionable group, and a resolved / ignored actionable group
+//     already sent back for a re-check, is flagged for analysis when a member
+//     just filed into it (a bounce, or a failing record of a DMARC report)
+//     has a pattern (pattern_key) that the latest completed report of the
+//     group did not cover (always the case for a group without a completed
+//     report, a new group included). More members of a covered pattern only
+//     update the counters (design 5.4 "incremental");
+//   - a resolved or ignored group not sent back yet is sent back for a
+//     re-check when the member shows the matter is not settled
+//     (recheckBasis.sendsBack), which also flags it for analysis when it is
+//     actionable.
+//
+// The counters and the flags are written inside the transaction of the
+// message, so they are always in step with the bounces and dmarc_records
+// rows. At the end the groups flagged for analysis are reported as
 // GroupResult.GroupsTouched.
 type groupTracker struct {
-	order      []string
-	seen       map[string]bool
-	actionable map[string]bool // groups.actionable as written by the last upsert
-	flagged    map[string]bool // actionable groups flagged during the run
+	order   []string
+	seen    map[string]bool
+	flagged map[string]bool // actionable groups flagged for analysis during the run
+	recheck RecheckDays
 }
 
-func newGroupTracker() *groupTracker {
-	return &groupTracker{seen: map[string]bool{}, actionable: map[string]bool{}, flagged: map[string]bool{}}
+func newGroupTracker(recheck RecheckDays) *groupTracker {
+	return &groupTracker{seen: map[string]bool{}, flagged: map[string]bool{}, recheck: recheck}
 }
 
 // upsert stores the descriptive columns of the group and remembers its key.
@@ -189,40 +197,61 @@ func (t *groupTracker) upsert(db models.Execer, g *models.BounceGroup) error {
 		t.seen[g.GroupKey] = true
 		t.order = append(t.order, g.GroupKey)
 	}
-	if err := models.UpsertGroup(db, g); err != nil {
-		return err
-	}
-	t.actionable[g.GroupKey] = g.Actionable
-	return nil
+	return models.UpsertGroup(db, g)
 }
 
 // recount refreshes the counters of the group once after the members of
-// the current message were written and, when the group is actionable and
-// one of the patterns of those members is not covered by the latest
-// completed report of the group, sets needs_analysis (once per run;
-// recipient-side groups are never flagged).
-func (t *groupTracker) recount(db models.Execer, g *models.BounceGroup, patternKeys ...string) error {
+// the current message were written, then sets its flags (see groupTracker):
+// the analysis flag once per run, the re-check flag once.
+func (t *groupTracker) recount(db models.Execer, g *models.BounceGroup, members ...*models.GroupBounce) error {
 	if g == nil {
 		return nil
 	}
 	if err := models.RefreshGroupCounters(db, g.GroupKey); err != nil {
 		return err
 	}
-	for _, patternKey := range patternKeys {
-		if !t.actionable[g.GroupKey] || t.flagged[g.GroupKey] {
+	if t.flagged[g.GroupKey] {
+		return nil
+	}
+	cur, err := models.GetGroup(db, g.GroupKey)
+	if err != nil {
+		return err
+	}
+	if cur.State != groupStateOpen && !cur.NeedsRecheck {
+		basis, err := loadRecheckBasis(db, cur.GroupKey)
+		if err != nil {
+			return err
+		}
+		for _, m := range members {
+			if !basis.sendsBack(cur, m, t.recheck) {
+				continue
+			}
+			if err := models.SetGroupNeedsRecheck(db, cur.GroupKey); err != nil {
+				return err
+			}
+			if cur.Actionable {
+				t.flagged[cur.GroupKey] = true
+			}
 			return nil
 		}
-		covered, err := models.PatternCovered(db, g.GroupKey, patternKey)
+		return nil
+	}
+	if !cur.Actionable {
+		return nil
+	}
+	for _, m := range members {
+		covered, err := models.PatternCovered(db, cur.GroupKey, m.PatternKey)
 		if err != nil {
 			return err
 		}
 		if covered {
 			continue
 		}
-		if err := models.SetGroupNeedsAnalysis(db, g.GroupKey, true); err != nil {
+		if err := models.SetGroupNeedsAnalysis(db, cur.GroupKey, true); err != nil {
 			return err
 		}
-		t.flagged[g.GroupKey] = true
+		t.flagged[cur.GroupKey] = true
+		return nil
 	}
 	return nil
 }

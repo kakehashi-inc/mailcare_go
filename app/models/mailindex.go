@@ -21,9 +21,9 @@ import (
 // address: the parsed headers and body layout of every message, the bounce
 // details extracted from the daemon notices, the failing records of the
 // DMARC aggregate reports, the groups those bounces and records are bundled
-// into and the reports the agent produced. Apart from the group
-// states and the reports (carried over by reindex) everything can be rebuilt
-// from the raw .eml files.
+// into, their state history and the reports the agent produced. Apart from
+// the group states, their history and the reports (carried over by reindex)
+// everything can be rebuilt from the raw .eml files.
 //
 // The schema is managed by goose migrations like the master database's:
 // embedded/migrations/index/*.sql, applied by OpenMailIndex every time an index
@@ -38,6 +38,8 @@ import (
 //   groups        app/models/bounce_group.go  bounces and DMARC records bundled by the unit an administrator acts on
 //   agent_reports app/models/agent_report.go  analysis produced by an agent CLI
 //   agent_report_patterns app/models/agent_report_pattern.go  member patterns (bounces, DMARC records) a settling report covered
+//   group_state_changes   app/models/group_state_change.go    the state history of a group (who set which state, with what choice and note)
+//   group_state_change_patterns app/models/group_state_change_pattern.go  re-check keys of the members at a state change
 
 // OpenMailIndex opens (creating when absent) the per-mailbox index at path
 // and applies its pending migrations. An index created before the migrations

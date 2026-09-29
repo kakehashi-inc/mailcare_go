@@ -3,18 +3,24 @@
 
   "subject" and "body" are rendered with the Notification value built in
   app/modules/notify.go for one recipient (dates in that recipient's time
-  zone). The category labels come from frontend/src/i18n/ja.json (value.category).
+  zone). The category labels and the labels of the chosen reasons come from
+  frontend/src/i18n/ja.json (value.category, value.resolveAction,
+  value.ignoreReason).
 
   Available fields:
     .Date            YYYY-MM-DD of the day the mail is built
     .Total           number of groups in the mail
     .BaseURL         the public URL of MailCare (link base)
     .Mailboxes       one entry per mail address that has groups:
-      .Address .DisplayName .Groups
+      .Address .DisplayName
+      .Groups          open actionable groups with a completed report
+      .ResolvedRecheck resolved groups sent back for a re-check
+      .IgnoredRecheck  ignored groups sent back for a re-check
     each group:
       .CategoryLabel .Category .UnitValue .Authority
       .MessageCount .RecipientCount .FirstSeen .LastSeen (recipient's time zone)
       .Summary .NeedsReview (the agent could not establish the cause) .URL
+      .ReasonLabel .Note (what the user chose and wrote with the state)
 */ -}}
 {{define "subject" -}}
 [MailCare] 対応が必要なアラート {{.Total}} 件 ({{.Date}})
@@ -22,12 +28,15 @@
 
 {{define "body" -}}
 MailCare からのお知らせです。
-メール管理者の対応が必要なグループが {{.Total}} 件あります（{{.Date}} 時点）。
-各グループの詳細と推奨する対応は、末尾の URL から確認できます。
+メール管理者の対応または再判定が必要なグループが {{.Total}} 件あります（{{.Date}} 時点）。
+各グループの詳細と推奨する対応は、各グループの URL から確認できます。
 {{range .Mailboxes}}
 ==================================================
 メールアドレス: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}}（{{.DisplayName}}）{{end}}
 ==================================================
+{{- if .Groups}}
+
+[未対応]
 {{range .Groups}}
 ■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
    対象メール: {{.MessageCount}} 件{{if .RecipientCount}} / 宛先: {{.RecipientCount}} 件{{end}}
@@ -35,6 +44,28 @@ MailCare からのお知らせです。
    要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
    URL: {{.URL}}
 {{end}}{{end}}
+{{- if .ResolvedRecheck}}
+
+[対応済(再)]
+{{range .ResolvedRecheck}}
+■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
+   対応内容: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}（記録なし）{{end}}{{if .Note}}
+   詳細: {{.Note}}{{end}}
+   対象メール: {{.MessageCount}} 件 / 最終: {{.LastSeen}}
+   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
+   URL: {{.URL}}
+{{end}}{{end}}
+{{- if .IgnoredRecheck}}
+
+[無視(再)]
+{{range .IgnoredRecheck}}
+■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
+   判断理由: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}（記録なし）{{end}}{{if .Note}}
+   詳細: {{.Note}}{{end}}
+   対象メール: {{.MessageCount}} 件 / 最終: {{.LastSeen}}
+   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
+   URL: {{.URL}}
+{{end}}{{end}}{{end}}
 --------------------------------------------------
 このメールは MailCare が自動送信しています。
 通知の設定は {{.BaseURL}}/settings/notifications から変更できます。

@@ -156,6 +156,11 @@
             "folderInvalid": "フォルダー名に改行は使えません。",
             "serverKeepDaysOverMailKeep": "保持日数は、一般設定のメールの保持日数（{{max}} 日）以下にしてください。"
         },
+        "group": {
+            "resolveActionRequired": "対応内容を選択してください。",
+            "ignoreReasonRequired": "判断理由を選択してください。",
+            "stateNoteTooLong": "詳細は {{max}} 文字以内で入力してください。"
+        },
         "agent": {
             "providerUnknown": "選択したエージェントは使用できません。",
             "modelInvalid": "モデル名は英数字で始まり、英数字と . _ : / @ + - だけを使った {{max}} 文字以内で入力してください。",
@@ -317,6 +322,33 @@
             "open": "未対応",
             "resolved": "対応済",
             "ignored": "無視"
+        },
+        "groupRecheck": {
+            "resolved": "対応済(再)",
+            "ignored": "無視(再)"
+        },
+        "resolveAction": {
+            "delisting": "ブラックリストの解除を申請した",
+            "dns_fixed": "送信ドメインの DNS 設定（SPF・DKIM・DMARC）を修正した",
+            "server_fixed": "送信サーバーの設定を修正した",
+            "sender_changed": "送信元アドレスを見直した",
+            "content_changed": "送信内容や添付ファイルを見直した",
+            "volume_adjusted": "送信量や送信速度を調整した",
+            "recipient_fixed": "宛先アドレスを修正または削除した",
+            "recipient_asked": "宛先側の管理者に連絡した",
+            "other": "その他"
+        },
+        "ignoreReason": {
+            "temporary": "一時的な問題で、すでに解消しているため対応不要",
+            "recipient_side": "宛先側の問題のため対応できない",
+            "input_error": "利用者が入力した宛先の誤りのため対応できない",
+            "stopped_sending": "宛先への送信をすでにやめているため対応不要",
+            "spoofing": "監視しているドメインを騙った第三者の送信のため対応できない",
+            "external_service": "送信に使っている外部サービス側の問題のため対応できない",
+            "false_positive": "誤検知のため対応不要",
+            "low_impact": "影響が小さいため対応不要",
+            "test_mail": "テスト送信または検証のためのメールのため対応不要",
+            "other": "その他"
         },
         "groupScope": {
             "actionable": "対応対象",
@@ -521,9 +553,9 @@
             "serverKeepDaysHint": "メールの日付からこの日数を過ぎたバウンスなどの通知メールと迷惑メールをサーバーから削除します。0 でサーバーから削除しません。",
             "serverKeepDaysMax": "一般設定のメールの保持日数（{{max}} 日）以下で指定します。",
             "lastChecked": "最終同期",
-            "openGroups": "未対応グループ",
-            "bounces": "バウンス",
-            "messages": "取得メール",
+            "openGroups": "未対応",
+            "recheckGroups": "再確認",
+            "messages": "取得",
             "targetMessages": "処理対象",
             "junkMessages": "迷惑",
             "unclassified": "纏め待ち"
@@ -568,6 +600,10 @@
             "firstSeen": "初回日時",
             "lastSeen": "最終日時",
             "stateUpdated": "状態の更新日時",
+            "resolveAction": "対応内容",
+            "ignoreReason": "判断理由",
+            "stateNote": "詳細",
+            "changedBy": "変更者",
             "messageCount": "メール数",
             "recipientCount": "宛先数",
             "ipCount": "IP 数",
@@ -611,6 +647,8 @@
             "agentEnabledHint": "有効にすると、同期で新しいバウンスが見つかったときに自動で分析します。",
             "agentKeepDays": "作業ディレクトリの保持日数",
             "agentKeepDaysHint": "解析の実行ごとに作られる作業ディレクトリ（プロンプト、CLI の出力、報告）を残す日数。毎日のクリーンアップで、これより古いものを削除します。",
+            "recheckDays": "再判定までの日数",
+            "recheckDaysHint": "対応済にした後、ここで指定した日数を過ぎてから送ったメールの通知が届くと「対応済(再)」にします。それまでに届く通知は、ブラックリストの解除などが反映されるまでのものとして扱います。",
             "webListen": "待受アドレス",
             "webPort": "待受ポート",
             "dataDir": "データディレクトリ"
@@ -660,7 +698,9 @@
             "empty": {
                 "open": "未対応のグループはありません",
                 "resolved": "対応済のグループはありません",
+                "resolved_recheck": "対応済(再)のグループはありません",
                 "ignored": "無視したグループはありません",
+                "ignored_recheck": "無視(再)のグループはありません",
                 "excluded": "対象外のグループはありません"
             }
         },
@@ -683,9 +723,6 @@
             "totals": "合計",
             "mailboxes": "メールアドレス",
             "mailboxDisabled": "このメールアドレスは無効化されており、自動同期の対象外です。",
-            "recentGroups": "直近の纏めグループ",
-            "recentGroupsHint": "すべてのメールアドレスから、最近更新された対応対象のグループを表示します。",
-            "noRecentGroups": "最近のバウンスはありません。",
             "schedule": "スケジュール",
             "nextCheck": "次回同期",
             "noSchedule": "スケジュール未設定",
@@ -705,6 +742,14 @@
             "stats": "統計",
             "messagesTitle": "元メール ({{count}} 件)",
             "noMessages": "このグループにメールはありません。",
+            "history": {
+                "title": "対応履歴",
+                "empty": "状態の変更はまだありません。"
+            },
+            "recheck": {
+                "resolved": "対応済にした後に、新しいパターンの通知、または反映を待つ期間を過ぎてから送ったメールの通知が届きました。もう一度判定してください。",
+                "ignored": "無視にした後に、新しいパターンの通知が届きました。もう一度判定してください。"
+            },
             "report": {
                 "title": "解析報告",
                 "runningHint": "エージェントが解析しています。完了すると自動で表示が更新されます。",
@@ -731,7 +776,7 @@
             "kindTabs": "メールの種類",
             "kind": {
                 "all": "すべて",
-                "bounce": "バウンス",
+                "target": "処理対象",
                 "junk": "迷惑",
                 "other": "その他"
             },
@@ -751,10 +796,10 @@
             "noBodyHint": "テキスト本文も HTML 本文も空です。ヘッダーの確認と原文のダウンロードはできます。",
             "noHeaders": "ヘッダー情報はありません",
             "htmlSandboxNote": "HTML はサニタイズ済みで、スクリプトや外部画像は無効化された状態で表示しています。",
-            "bounce": {
-                "title": "バウンス抽出結果",
+            "extract": {
+                "title": "抽出結果",
                 "none": "抽出結果はありません",
-                "notBounce": "このメールはバウンスとして判定されていません。"
+                "notTarget": "このメールは処理対象ではありません。"
             }
         },
         "tools": {
@@ -833,6 +878,8 @@
             "addTimeHint": "HH:MM 形式 (例: 09:00)",
             "cleanup": "クリーンアップ",
             "cleanupHint": "保持期間を過ぎたデータを削除する処理の設定です。",
+            "recheck": "再判定",
+            "recheckHint": "対応済・無視にしたグループを、もう一度判定が必要なものとして一覧に戻す条件です。",
             "jobs": "ジョブの実行",
             "jobsHint": "バックグラウンドで実行するジョブの設定です。",
             "agent": "エージェント",

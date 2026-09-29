@@ -144,6 +144,9 @@ const (
 	ruleDaemonDisplayName = "daemon_display_name"
 	ruleBodyPattern       = "body_pattern"
 
+	groupStateOpen     = "open"
+	groupStateResolved = "resolved"
+
 	responsibleSender    = "sender"
 	responsibleRecipient = "recipient"
 	responsibleDomain    = "domain"

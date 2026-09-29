@@ -12,6 +12,7 @@ import {
     ApiError,
 } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
+import { GroupStateDialog, type DecidedState } from '../components/domain/GroupStateDialog';
 import { JobProgressLog } from '../components/domain/JobProgressLog';
 import {
     ActionableBadge,
@@ -43,11 +44,47 @@ import { JOB_POLL_INTERVAL_MS } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { usePolling } from '../hooks/usePolling';
-import type { GroupState, JobDTO, MessageDTO, ReportDTO } from '../types';
+import type { GroupState, JobDTO, MessageDTO, ReportDTO, StateChangeDTO } from '../types';
 import { categoryDescription, groupHeadline } from '../utils/category';
 import { formatDateTime } from '../utils/format';
+import { stateReasonField, stateReasonLabel } from '../utils/stateReason';
 
 const STATES: GroupState[] = ['open', 'resolved', 'ignored'];
+const STATE_ICONS: Record<GroupState, string> = { open: 'undo', resolved: 'check_circle', ignored: 'visibility_off' };
+
+/** The state history of a group, newest first: when, the state, what was chosen and written, and by whom. */
+function StateHistory({ entries }: { entries: StateChangeDTO[] }) {
+    const { t } = useTranslation();
+    if (entries.length === 0) {
+        return <p className='text-sm text-muted'>{t('page.groupDetail.history.empty')}</p>;
+    }
+    return (
+        <ol className='flex flex-col gap-3'>
+            {entries.map((h, i) => (
+                <li key={`${h.changed_at}-${i}`} className='rounded-lg border border-line p-3'>
+                    <div className='flex flex-wrap items-center gap-2 text-sm'>
+                        <GroupStateBadge state={h.state} />
+                        <span className='text-muted'>
+                            <DateTime value={h.changed_at} />
+                        </span>
+                        {h.changed_by && (
+                            <span className='text-muted'>
+                                {t('field.group.changedBy')}: {h.changed_by}
+                            </span>
+                        )}
+                    </div>
+                    {h.state !== 'open' && (
+                        <p className='mt-2 break-words text-sm text-ink'>
+                            <span className='font-medium'>{stateReasonField(h.state, t)}:</span>{' '}
+                            {stateReasonLabel(h.state, h.reason, t)}
+                        </p>
+                    )}
+                    {h.note && <p className='mt-1 whitespace-pre-wrap break-words text-sm text-ink'>{h.note}</p>}
+                </li>
+            ))}
+        </ol>
+    );
+}
 
 function StatChips({ title, icon, values }: { title: string; icon: string; values: string[] }) {
     const { t } = useTranslation();
@@ -177,6 +214,8 @@ export function AlertGroupDetailPage() {
     const [job, setJob] = useState<JobDTO | null>(null);
     const [analyzing, setAnalyzing] = useState(false);
     const [changing, setChanging] = useState<GroupState | null>(null);
+    // The state waiting for what was done or why (the dialog of resolved / ignored).
+    const [deciding, setDeciding] = useState<DecidedState | null>(null);
     const group = detail.data?.group;
     const headline = group ? groupHeadline(group, t) : '';
     useDocumentTitle(headline || t('layout.nav.alerts'));
@@ -220,24 +259,25 @@ export function AlertGroupDetailPage() {
         }
     }
 
-    async function changeState(state: GroupState) {
+    // Resolved and ignored ask first what was done or why; the dialog stays open when the change fails, so
+    // nothing entered is lost. The detail is loaded again for the new history entry.
+    async function changeState(state: GroupState, reason?: string, note?: string) {
         setChanging(state);
         try {
-            const updated = await setGroupState(id, groupKey, state);
-            detail.setData(prev =>
-                prev
-                    ? {
-                          ...prev,
-                          group: updated ?? { ...prev.group, state, state_updated_at: new Date().toISOString() },
-                      }
-                    : prev
-            );
+            await setGroupState(id, groupKey, { state, reason, note });
+            setDeciding(null);
             toast.success(t('result.group.stateChanged', { state: t(`value.groupState.${state}`) }));
+            await detail.reload();
         } catch (err) {
             toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setChanging(null);
         }
+    }
+
+    function startChange(state: GroupState) {
+        if (state === 'open') void changeState(state);
+        else setDeciding(state);
     }
 
     if (detail.loading) return <LoadingBlock />;
@@ -253,6 +293,9 @@ export function AlertGroupDetailPage() {
     }
 
     const { stats, report, reports, messages } = detail.data;
+    const stateHistory = detail.data.history ?? [];
+    // A group sent back for a re-check offers every state (the new decision); otherwise the other states.
+    const nextStates = group.needs_recheck ? STATES : STATES.filter(s => s !== group.state);
     const history = reports.filter(r => !report || r.id !== report.id);
     // A re-analysis that failed after the shown report was completed: keep the report, but say so.
     const latestFailed = newestFailedAfter(reports, report);
@@ -296,15 +339,15 @@ export function AlertGroupDetailPage() {
                 ]}
                 actions={
                     <div className='flex flex-wrap gap-2' role='group' aria-label={t('action.group.changeState')}>
-                        {STATES.filter(s => s !== group.state).map(s => (
+                        {nextStates.map(s => (
                             <Button
                                 key={s}
                                 size='sm'
                                 variant={s === 'resolved' ? 'primary' : 'secondary'}
-                                icon={s === 'open' ? 'undo' : s === 'resolved' ? 'check_circle' : 'visibility_off'}
-                                loading={changing === s}
+                                icon={STATE_ICONS[s]}
+                                loading={changing === s && deciding === null}
                                 disabled={changing !== null}
-                                onClick={() => void changeState(s)}
+                                onClick={() => startChange(s)}
                             >
                                 {t(`action.group.markAs.${s}`)}
                             </Button>
@@ -320,7 +363,7 @@ export function AlertGroupDetailPage() {
                         <div className='mb-4 flex flex-wrap gap-2'>
                             <CategoryBadge category={group.category} />
                             <ActionableBadge actionable={group.actionable} />
-                            {!excludedOpen && <GroupStateBadge state={group.state} />}
+                            {!excludedOpen && <GroupStateBadge state={group.state} recheck={group.needs_recheck} />}
                             {group.actionable && <SeverityBadge severity={group.report_severity} />}
                             {group.report_confidence === 'low' && <NeedsReviewBadge />}
                             <ResponsibleBadge responsible={group.responsible} />
@@ -331,6 +374,11 @@ export function AlertGroupDetailPage() {
                                 </Badge>
                             )}
                         </div>
+                        {group.needs_recheck && group.state !== 'open' && (
+                            <Alert tone='warning' className='mb-4'>
+                                {t(`page.groupDetail.recheck.${group.state}`)}
+                            </Alert>
+                        )}
                         {description && (
                             <p className='mb-4 flex items-start gap-2 rounded-md bg-well p-3 text-base text-ink'>
                                 <Icon name='lightbulb' className='mt-0.5 shrink-0 text-[20px] text-accent' />
@@ -375,6 +423,26 @@ export function AlertGroupDetailPage() {
                                     label: t('field.group.stateUpdated'),
                                     value: <DateTime value={group.state_updated_at} />,
                                 },
+                                ...(group.state !== 'open'
+                                    ? [
+                                          {
+                                              label: stateReasonField(group.state, t),
+                                              value: stateReasonLabel(group.state, group.state_reason, t),
+                                              wide: true,
+                                          },
+                                          {
+                                              label: t('field.group.stateNote'),
+                                              value: group.state_note ? (
+                                                  <span className='whitespace-pre-wrap break-words'>
+                                                      {group.state_note}
+                                                  </span>
+                                              ) : (
+                                                  '-'
+                                              ),
+                                              wide: true,
+                                          },
+                                      ]
+                                    : []),
                                 {
                                     label: t('field.group.diagnosticTemplate'),
                                     value: (
@@ -523,7 +591,11 @@ export function AlertGroupDetailPage() {
                     </section>
                 </div>
 
-                <aside>
+                <aside className='flex flex-col gap-6'>
+                    <Card>
+                        <CardHeader title={t('page.groupDetail.history.title')} />
+                        <StateHistory entries={stateHistory} />
+                    </Card>
                     <Card className='flex flex-col gap-5'>
                         <CardHeader title={t('page.groupDetail.stats')} />
                         <StatChips title={t('field.group.recipients')} icon='person' values={stats.recipients} />
@@ -532,6 +604,13 @@ export function AlertGroupDetailPage() {
                     </Card>
                 </aside>
             </div>
+            <GroupStateDialog
+                state={deciding}
+                group={headline}
+                busy={changing !== null}
+                onConfirm={(reason, note) => deciding && void changeState(deciding, reason, note)}
+                onCancel={() => setDeciding(null)}
+            />
         </PageContainer>
     );
 }

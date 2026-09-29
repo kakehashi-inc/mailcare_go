@@ -37,7 +37,8 @@ func TestGroupsSetStateCommand(t *testing.T) {
 	before := time.Now().Add(-time.Second)
 
 	out := captureStdout(t, func() {
-		if err := (&GroupsSetStateCmd{Address: "OPS@example.test", Key: key0, State: GroupStateResolved}).Run(); err != nil {
+		if err := (&GroupsSetStateCmd{Address: "OPS@example.test", Key: key0, State: GroupStateResolved,
+			Reason: models.ResolveActionRecipientFixed, Note: "removed from the list"}).Run(); err != nil {
 			t.Errorf("set-state: %v", err)
 		}
 	})
@@ -50,12 +51,18 @@ func TestGroupsSetStateCommand(t *testing.T) {
 	}
 	defer idx.Close()
 	g, err := models.GetGroup(idx, key0)
-	if err != nil || g.State != GroupStateResolved || !g.StateUpdatedAt.Valid || g.StateUpdatedAt.Time.Before(before) {
+	if err != nil || g.State != GroupStateResolved || !g.StateUpdatedAt.Valid || g.StateUpdatedAt.Time.Before(before) ||
+		g.StateReason.String != models.ResolveActionRecipientFixed || g.StateNote.String != "removed from the list" {
 		t.Errorf("group after set-state = %+v (err %v)", g, err)
+	}
+	if history, err := models.ListGroupStateChanges(idx, key0); err != nil || len(history) != 1 || history[0].ChangedBy != "" {
+		t.Errorf("history after set-state = %+v (err %v), want one entry by the CLI", history, err)
 	}
 	for _, c := range []*GroupsSetStateCmd{
 		{Address: mb.Address, Key: "0000000000000000", State: GroupStateOpen},
 		{Address: "nobody@example.test", Key: key0, State: GroupStateOpen},
+		{Address: mb.Address, Key: key0, State: GroupStateResolved},
+		{Address: mb.Address, Key: key0, State: GroupStateIgnored, Reason: models.ResolveActionDelisting},
 	} {
 		var exitErr *ExitError
 		if err := c.Run(); !errors.As(err, &exitErr) || exitErr.Code != ExitArgument {

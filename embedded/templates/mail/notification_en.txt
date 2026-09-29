@@ -3,7 +3,9 @@
 
   "subject" and "body" are rendered with the Notification value built in
   app/modules/notify.go for one recipient (dates in that recipient's time
-  zone). The category labels come from frontend/src/i18n/en.json (value.category). The report summaries
+  zone). The category labels and the labels of the chosen reasons come from
+  frontend/src/i18n/en.json (value.category, value.resolveAction,
+  value.ignoreReason). The report summaries
   are written by the agent in the report language and are shown as they are.
 
   Available fields:
@@ -11,11 +13,15 @@
     .Total           number of groups in the mail
     .BaseURL         the public URL of MailCare (link base)
     .Mailboxes       one entry per mail address that has groups:
-      .Address .DisplayName .Groups
+      .Address .DisplayName
+      .Groups          open actionable groups with a completed report
+      .ResolvedRecheck resolved groups sent back for a re-check
+      .IgnoredRecheck  ignored groups sent back for a re-check
     each group:
       .CategoryLabel .Category .UnitValue .Authority
       .MessageCount .RecipientCount .FirstSeen .LastSeen (recipient's time zone)
       .Summary .NeedsReview (the agent could not establish the cause) .URL
+      .ReasonLabel .Note (what the user chose and wrote with the state)
 */ -}}
 {{define "subject" -}}
 [MailCare] {{.Total}} alert(s) need attention ({{.Date}})
@@ -23,12 +29,15 @@
 
 {{define "body" -}}
 This is a notification from MailCare.
-{{.Total}} group(s) need the mail administrator's attention (as of {{.Date}}).
+{{.Total}} group(s) need the mail administrator's attention or a new decision (as of {{.Date}}).
 Open the URL of each group for the details and the recommended actions.
 {{range .Mailboxes}}
 ==================================================
 Mail address: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}} ({{.DisplayName}}){{end}}
 ==================================================
+{{- if .Groups}}
+
+[Open]
 {{range .Groups}}
 * {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}} (decided by: {{.Authority}}){{end}}
    Mails: {{.MessageCount}}{{if .RecipientCount}} / Recipients: {{.RecipientCount}}{{end}}
@@ -36,6 +45,28 @@ Mail address: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}} ({{
    Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(the analysis report has no summary){{end}}
    URL: {{.URL}}
 {{end}}{{end}}
+{{- if .ResolvedRecheck}}
+
+[Resolved (re)]
+{{range .ResolvedRecheck}}
+* {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}} (decided by: {{.Authority}}){{end}}
+   Action taken: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}(not recorded){{end}}{{if .Note}}
+   Details: {{.Note}}{{end}}
+   Mails: {{.MessageCount}} / Last: {{.LastSeen}}
+   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(the analysis report has no summary){{end}}
+   URL: {{.URL}}
+{{end}}{{end}}
+{{- if .IgnoredRecheck}}
+
+[Ignored (re)]
+{{range .IgnoredRecheck}}
+* {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}} (decided by: {{.Authority}}){{end}}
+   Reason: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}(not recorded){{end}}{{if .Note}}
+   Details: {{.Note}}{{end}}
+   Mails: {{.MessageCount}} / Last: {{.LastSeen}}
+   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(the analysis report has no summary){{end}}
+   URL: {{.URL}}
+{{end}}{{end}}{{end}}
 --------------------------------------------------
 This mail was sent automatically by MailCare.
 You can change the notification settings at {{.BaseURL}}/settings/notifications

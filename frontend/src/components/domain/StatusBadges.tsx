@@ -9,8 +9,16 @@ const GROUP_STATE: Record<GroupState, { tone: BadgeTone; icon: string }> = {
     ignored: { tone: 'neutral', icon: 'visibility_off' },
 };
 
-export function GroupStateBadge({ state }: { state: GroupState }) {
+/** The state of a group; a resolved or ignored group sent back for a re-check shows as "(re)". */
+export function GroupStateBadge({ state, recheck = false }: { state: GroupState; recheck?: boolean }) {
     const { t } = useTranslation();
+    if (recheck && state !== 'open') {
+        return (
+            <Badge tone='warning' icon='replay'>
+                {t(`value.groupRecheck.${state}`)}
+            </Badge>
+        );
+    }
     const s = GROUP_STATE[state] ?? GROUP_STATE.open;
     return (
         <Badge tone={s.tone} icon={s.icon}>

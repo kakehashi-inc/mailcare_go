@@ -15,8 +15,9 @@ import (
 )
 
 // OpenIndex opens the per-mailbox index, applying its pending migrations
-// (models.OpenMailIndex). ctx and progress are kept for the callers; opening
-// never rebuilds the index.
+// (models.OpenMailIndex), and records the re-check keys of the state changes
+// that have none (fillStateChangePatterns). ctx and progress are kept for
+// the callers; opening never rebuilds the index.
 func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress) (*sql.DB, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -25,6 +26,10 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 	db, err := models.OpenMailIndex(path)
 	if err != nil {
 		return nil, fmt.Errorf("open index %s: %w", filepath.Base(path), err)
+	}
+	if err := fillStateChangePatterns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("record the patterns of the state changes of %s: %w", filepath.Base(path), err)
 	}
 	return db, nil
 }
@@ -54,7 +59,7 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 // see swapIndexFiles); on failure or cancellation the build file (with its
 // SQLite side files) is removed and the previous index stays as it was. A
 // raw file that cannot be indexed is reported and counted in Skipped.
-func Reindex(ctx context.Context, mailsRoot, address string, progress Progress) (*ReindexResult, error) {
+func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays, progress Progress) (*ReindexResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -88,7 +93,7 @@ func Reindex(ctx context.Context, mailsRoot, address string, progress Progress) 
 	}
 	report(progress, fmt.Sprintf("reindexing %d raw messages", len(listing.keys)))
 	result := &ReindexResult{}
-	tracker := newGroupTracker()
+	tracker := newGroupTracker(recheck)
 	exclude := []string{address}
 	for i, key := range listing.keys {
 		if err := ctx.Err(); err != nil {
@@ -130,7 +135,7 @@ func Reindex(ctx context.Context, mailsRoot, address string, progress Progress) 
 	}
 	result.Groups = groups
 	if carried != nil {
-		g, r, err := carried.apply(db)
+		g, r, err := carried.apply(db, recheck)
 		if err != nil {
 			return nil, err
 		}

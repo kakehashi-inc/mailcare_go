@@ -27,7 +27,7 @@ import (
 // when one of its patterns is not covered by its latest completed report),
 // and the responsible party named by its latest completed report is
 // re-applied.
-func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, progress Progress) (*GroupResult, error) {
+func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, recheck RecheckDays, progress Progress) (*GroupResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, pro
 	}
 	report(progress, fmt.Sprintf("grouping %d messages", len(msgs)))
 	result := &GroupResult{GroupsTouched: []string{}}
-	tracker := newGroupTracker()
+	tracker := newGroupTracker(recheck)
 	exclude := []string{address}
 	for i, msg := range msgs {
 		if err := ctx.Err(); err != nil {
@@ -169,12 +169,20 @@ func groupMessageIn(db models.Execer, msg *models.Message, pm *ParsedMessage, tr
 	// 3. the counters and the analysis flag of every group touched, once
 	// per group however many records of the report it received.
 	if bounce != nil {
-		if err := tracker.recount(db, group, bounce.PatternKey); err != nil {
+		member := &models.GroupBounce{Bounce: *bounce, MessageKey: msg.MessageKey, Date: msg.Date.UTC()}
+		if err := tracker.recount(db, group, member); err != nil {
 			return err
 		}
 	}
 	for _, rg := range recordGroups {
-		if err := tracker.recount(db, rg.group, rg.patterns...); err != nil {
+		members := make([]*models.GroupBounce, 0, len(rg.records))
+		for _, r := range rg.records {
+			members = append(members, &models.GroupBounce{
+				Bounce:     models.Bounce{ID: msg.ID, GroupKey: r.GroupKey, PatternKey: r.PatternKey},
+				MessageKey: msg.MessageKey, Date: msg.Date.UTC(), DMARC: r,
+			})
+		}
+		if err := tracker.recount(db, rg.group, members...); err != nil {
 			return err
 		}
 	}
@@ -198,10 +206,10 @@ func isGroupedKind(kind string) bool {
 }
 
 // reportGroup is one distinct group of the failing records of a DMARC
-// report, with the distinct pattern keys of its records in report order.
+// report, with one record per distinct pattern key in report order.
 type reportGroup struct {
-	group    *models.BounceGroup
-	patterns []string
+	group   *models.BounceGroup
+	records []*models.DMARCRecord
 }
 
 // distinctReportGroups folds the group of every record (records[i] belongs
@@ -220,7 +228,7 @@ func distinctReportGroups(records []*models.DMARCRecord, groups []*models.Bounce
 		}
 		if key := g.GroupKey + "|" + records[i].PatternKey; !seen[key] {
 			seen[key] = true
-			rg.patterns = append(rg.patterns, records[i].PatternKey)
+			rg.records = append(rg.records, records[i])
 		}
 	}
 	return out
@@ -242,5 +250,5 @@ func countAllGroups(db *sql.DB) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("count groups: %w", err)
 	}
-	return counts.Open + counts.Resolved + counts.Ignored, nil
+	return counts.Open + counts.Resolved + counts.ResolvedRecheck + counts.Ignored + counts.IgnoredRecheck, nil
 }

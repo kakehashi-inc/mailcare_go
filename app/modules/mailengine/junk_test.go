@@ -141,7 +141,7 @@ func TestJunkIsDeletedAndCountedApart(t *testing.T) {
 	if _, err := db.Exec(`UPDATE messages SET date = ?`, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := CountJunkMessages(db); n != 1 {
@@ -150,8 +150,8 @@ func TestJunkIsDeletedAndCountedApart(t *testing.T) {
 	if n, _ := CountTargetMessages(db); n != 1 {
 		t.Errorf("target messages = %d, want the DSN only", n)
 	}
-	counts, err := models.CountMessagesByKind(db, models.MessageFilter{})
-	if err != nil || counts != (models.MessageKindCounts{All: 3, Bounce: 1, Junk: 1, Other: 1}) {
+	counts, err := models.CountMessagesByKind(db, models.MessageFilter{TargetRules: TargetRules()})
+	if err != nil || counts != (models.MessageKindCounts{All: 3, Target: 1, Junk: 1, Other: 1}) {
 		t.Errorf("kind counts = %+v (err %v)", counts, err)
 	}
 	junk, _, err := models.ListMessages(db, models.MessageFilter{Kind: models.MessageKindJunk})

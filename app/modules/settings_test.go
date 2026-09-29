@@ -141,3 +141,39 @@ func TestAgentReasoningEffort(t *testing.T) {
 		t.Errorf("invalid stored level resolved to %q", got)
 	}
 }
+
+func TestRecheckDaysSettings(t *testing.T) {
+	db := newTestDB(t)
+	days := ResolveRecheckDays(db)
+	if days[CategoryIPBlocked] != 14 || days[CategoryAuthFailure] != 3 || days[CategoryUserUnknown] != 7 ||
+		len(days) != len(KnownCategories()) {
+		t.Errorf("defaults = %v", days)
+	}
+	if err := SaveRecheckDays(db, map[string]int{CategoryIPBlocked: 21, CategoryAuthFailure: 3}); err != nil {
+		t.Fatal(err)
+	}
+	// Only the values that differ from the defaults are stored.
+	if saved := models.GetSetting(db, SettingRecheckDays); saved != "ip_blocked=21" {
+		t.Errorf("saved = %q, want ip_blocked=21", saved)
+	}
+	// Saving other categories keeps the value of the ones not named.
+	if err := SaveRecheckDays(db, map[string]int{CategoryUserUnknown: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if days := ResolveRecheckDays(db); days[CategoryIPBlocked] != 21 || days[CategoryUserUnknown] != 10 {
+		t.Errorf("after the second save = %v", days)
+	}
+	for _, bad := range []map[string]int{{CategoryIPBlocked: 0}, {CategoryIPBlocked: 366}, {"nope": 3}} {
+		if err := SaveRecheckDays(db, bad); err == nil {
+			t.Errorf("%v was accepted", bad)
+		}
+	}
+	if _, err := ParseRecheckDays("ip_blocked=10, auth_failure = 2"); err != nil {
+		t.Errorf("parse: %v", err)
+	}
+	for _, bad := range []string{"ip_blocked", "ip_blocked=x", "nope=3"} {
+		if _, err := ParseRecheckDays(bad); err == nil {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}

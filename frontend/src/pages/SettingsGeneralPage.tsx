@@ -13,6 +13,8 @@ import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { BOUNCE_CATEGORIES } from '../types';
+import { categoryLabel } from '../utils/category';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const WORKERS_MIN = 1;
@@ -21,6 +23,8 @@ const KEEP_DAYS_MIN = 1;
 const KEEP_DAYS_MAX = 365;
 const MAIL_KEEP_DAYS_MIN = 1;
 const MAIL_KEEP_DAYS_MAX = 3650;
+const RECHECK_DAYS_MIN = 1;
+const RECHECK_DAYS_MAX = 365;
 // Same rule as agent.ValidateModel: starts with a letter or digit, no white space.
 const MODEL_MAX = 100;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$/;
@@ -54,6 +58,8 @@ export function SettingsGeneralPage() {
     const [keepDays, setKeepDays] = useState('');
     const [mailKeepDays, setMailKeepDays] = useState('');
     const [cleanupTime, setCleanupTime] = useState('');
+    // Re-check days per category, as typed.
+    const [recheckDays, setRecheckDays] = useState<Record<string, string>>({});
     const [workers, setWorkers] = useState('');
     const [saving, setSaving] = useState(false);
     const [dirty, setDirty] = useState(false);
@@ -68,6 +74,9 @@ export function SettingsGeneralPage() {
         setKeepDays(String(settings.data.agent_keep_days));
         setMailKeepDays(String(settings.data.mail_keep_days));
         setCleanupTime(settings.data.cleanup_time);
+        setRecheckDays(
+            Object.fromEntries(Object.entries(settings.data.recheck_days ?? {}).map(([c, n]) => [c, String(n)]))
+        );
         setWorkers(String(settings.data.workers ?? ''));
         setDirty(false);
     }, [settings.data]);
@@ -94,6 +103,9 @@ export function SettingsGeneralPage() {
         mailKeepDaysValue >= MAIL_KEEP_DAYS_MIN &&
         mailKeepDaysValue <= MAIL_KEEP_DAYS_MAX;
     const cleanupTimeValid = TIME_RE.test(cleanupTime);
+    const recheckDaysValid = (value: string) =>
+        /^\d+$/.test(value.trim()) && Number(value) >= RECHECK_DAYS_MIN && Number(value) <= RECHECK_DAYS_MAX;
+    const allRecheckDaysValid = Object.values(recheckDays).every(recheckDaysValid);
     const canSave =
         dirty &&
         invalidTimes.length === 0 &&
@@ -102,6 +114,7 @@ export function SettingsGeneralPage() {
         keepDaysValid &&
         mailKeepDaysValid &&
         cleanupTimeValid &&
+        allRecheckDaysValid &&
         modelValid &&
         effortValid &&
         !saving;
@@ -130,6 +143,7 @@ export function SettingsGeneralPage() {
                 agent_keep_days: keepDaysValue,
                 mail_keep_days: mailKeepDaysValue,
                 cleanup_time: cleanupTime,
+                recheck_days: Object.fromEntries(Object.entries(recheckDays).map(([c, v]) => [c, Number(v)])),
                 workers: workersValue,
             });
             toast.success(t('result.setting.saved'));
@@ -297,6 +311,45 @@ export function SettingsGeneralPage() {
                             width='short'
                         />
                     </div>
+                </Card>
+
+                <Card>
+                    <CardHeader
+                        title={t('page.settingsGeneral.recheck')}
+                        description={t('page.settingsGeneral.recheckHint')}
+                    />
+                    <fieldset>
+                        <legend className='text-sm font-medium text-ink'>{t('field.setting.recheckDays')}</legend>
+                        <p className='mb-3 mt-1 text-sm text-muted'>{t('field.setting.recheckDaysHint')}</p>
+                        <div className='grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2'>
+                            {BOUNCE_CATEGORIES.filter(c => c in recheckDays).map(c => (
+                                <InputField
+                                    key={c}
+                                    label={categoryLabel(c, t)}
+                                    type='number'
+                                    inputMode='numeric'
+                                    min={RECHECK_DAYS_MIN}
+                                    max={RECHECK_DAYS_MAX}
+                                    step={1}
+                                    value={recheckDays[c]}
+                                    onChange={e => {
+                                        const value = e.target.value;
+                                        setRecheckDays(prev => ({ ...prev, [c]: value }));
+                                        setDirty(true);
+                                    }}
+                                    error={
+                                        recheckDaysValid(recheckDays[c])
+                                            ? undefined
+                                            : t('validation.common.numberOutOfRange', {
+                                                  min: RECHECK_DAYS_MIN,
+                                                  max: RECHECK_DAYS_MAX,
+                                              })
+                                    }
+                                    width='short'
+                                />
+                            ))}
+                        </div>
+                    </fieldset>
                 </Card>
 
                 <Card>

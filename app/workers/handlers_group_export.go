@@ -79,6 +79,11 @@ func (c *core) handleGroupReport(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "failed to load reports", err)
 		return
 	}
+	history, err := models.ListGroupStateChanges(idx, g.GroupKey)
+	if err != nil {
+		writeInternalError(w, "failed to list the state history", err)
+		return
+	}
 	dto := toGroupDTO(g, completed, latest)
 	locale := modules.MailLocaleFor(userFrom(r))
 	lang, err := modules.LoadLanguageFile(locale.Language)
@@ -93,7 +98,7 @@ func (c *core) handleGroupReport(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	var buf bytes.Buffer
 	err = pdfreport.WriteGroupReport(&buf, &pdfreport.GroupReport{
-		Mailbox: mailbox, Group: g, Stats: stats,
+		Mailbox: mailbox, Group: g, History: history, Stats: stats,
 		Analysis: pdfreport.Analysis{
 			Severity: dto.ReportSeverity, NeedsReview: dto.ReportConfidence != nil && *dto.ReportConfidence == "low",
 			Status: dto.ReportStatus, Unanalyzable: dto.ReportUnanalyzable,
@@ -222,10 +227,15 @@ func (c *core) buildGroupExport(idx *sql.DB, mb *models.Mailbox, g *models.Bounc
 		recordsOf[rec.MessageID] = append(recordsOf[rec.MessageID], toDMARCRecordDTO(rec))
 	}
 
+	history, err := models.ListGroupStateChanges(idx, g.GroupKey)
+	if err != nil {
+		return nil, nil, err
+	}
 	export := &GroupExportDTO{
 		ExportedAt: timeString(now),
 		Mailbox:    GroupExportMailboxDTO{ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName},
 		Group:      toGroupDTO(g, completed, latest),
+		History:    toStateChangeDTOs(history),
 		Stats:      stats,
 		Messages:   make([]GroupExportMessageDTO, 0, len(messages)),
 	}

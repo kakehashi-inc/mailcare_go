@@ -114,6 +114,7 @@ func (c *SettingsShowCmd) Run() error {
 		SettingAgentKeepDays:        ResolveAgentKeepDays(db),
 		SettingMailKeepDays:         ResolveMailKeepDays(db),
 		SettingCleanupTime:          ResolveCleanupTime(db),
+		SettingRecheckDays:          ResolveRecheckDays(db),
 		SettingCookieTTLHours:       ResolveCookieTTLHours(db),
 		SettingSMTPHost:             notify.SMTP.Host,
 		SettingSMTPPort:             notify.SMTP.Port,
@@ -167,6 +168,12 @@ func (c *SettingsShowCmd) Run() error {
 	fmt.Printf("%-18s %v\n", SettingAgentKeepDays+":", values[SettingAgentKeepDays])
 	fmt.Printf("%-18s %v\n", SettingMailKeepDays+":", values[SettingMailKeepDays])
 	fmt.Printf("%-18s %v\n", SettingCookieTTLHours+":", values[SettingCookieTTLHours])
+	recheck := ResolveRecheckDays(db)
+	parts := make([]string, 0, len(recheck))
+	for _, category := range KnownCategories() {
+		parts = append(parts, fmt.Sprintf("%s=%d", category, recheck[category]))
+	}
+	fmt.Printf("%-18s %s\n", SettingRecheckDays+":", strings.Join(parts, ", "))
 	fmt.Println()
 	fmt.Printf("%-22s %v\n", SettingSMTPHost+":", notify.SMTP.Host)
 	fmt.Printf("%-22s %v\n", SettingSMTPPort+":", notify.SMTP.Port)
@@ -263,7 +270,8 @@ func SettingKeys() []string {
 	return []string{
 		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentModel,
 		SettingAgentReasoningEffort, SettingAgentEnabled,
-		SettingAgentKeepDays, SettingMailKeepDays, SettingCleanupTime, SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
+		SettingAgentKeepDays, SettingMailKeepDays, SettingCleanupTime, SettingRecheckDays, SettingCookieTTLHours,
+		SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
 		SettingSMTPUsername,
 		settingSMTPPassword,
 		SettingSMTPFrom, SettingPublicBaseURL, SettingNotifyEnabled, SettingNotifyTime, SettingNotifyInterval, SettingNotifyUserIDs,
@@ -366,6 +374,16 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		}
 		_, err := SaveCleanupTime(db, norm)
 		return norm, err
+	case SettingRecheckDays:
+		// "category=days" pairs; the categories not named keep their value.
+		days, perr := ParseRecheckDays(value)
+		if perr != nil {
+			return argErr(perr)
+		}
+		if err := SaveRecheckDays(db, days); err != nil {
+			return "", err
+		}
+		return FormatRecheckDays(ResolveRecheckDays(db)), nil
 	}
 	// Notification keys share the validation of the Web settings.
 	in := &NotificationInput{}

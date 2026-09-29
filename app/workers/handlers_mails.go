@@ -89,13 +89,13 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	switch kind {
 	case "", "all":
 		kind = models.MessageKindAll
-	case models.MessageKindBounce, models.MessageKindJunk, models.MessageKindOther:
+	case models.MessageKindTarget, models.MessageKindJunk, models.MessageKindOther:
 	default:
 		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	filter := models.MessageFilter{
-		Query: q.Get("q"), Kind: kind, GroupKey: q.Get("group"),
+		Query: q.Get("q"), Kind: kind, GroupKey: q.Get("group"), TargetRules: mailengine.TargetRules(),
 		Offset: (page - 1) * perPage, Limit: perPage,
 	}
 	idx, err := c.openIndex(r, mb)

@@ -234,7 +234,7 @@ func TestOtherKindIsNotGrouped(t *testing.T) {
 		}
 	}
 	db.Close()
-	res, err := GroupMailbox(context.Background(), root, address, false, nil)
+	res, err := GroupMailbox(context.Background(), root, address, false, nil, nil)
 	if err != nil {
 		t.Fatalf("group: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestOtherKindIsNotGrouped(t *testing.T) {
 	}
 	// Reclassifying gives the same picture (the "other" rows keep no stale
 	// bounces row).
-	res, err = GroupMailbox(context.Background(), root, address, true, nil)
+	res, err = GroupMailbox(context.Background(), root, address, true, nil, nil)
 	if err != nil || res.Groups != 1 || countRows(t, db, "bounces") != 1 {
 		t.Errorf("reclassify = %+v (err %v), bounces rows %d", res, err, countRows(t, db, "bounces"))
 	}

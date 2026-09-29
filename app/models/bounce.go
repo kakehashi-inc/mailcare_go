@@ -127,7 +127,7 @@ type GroupBounce struct {
 
 // ListGroupBounces returns every member of a group (its bounces and its
 // DMARC records) with its message key and date, newest message first.
-func ListGroupBounces(db *sql.DB, groupKey string) ([]*GroupBounce, error) {
+func ListGroupBounces(db Execer, groupKey string) ([]*GroupBounce, error) {
 	out, err := listGroupBouncesOnly(db, groupKey)
 	if err != nil {
 		return nil, err
@@ -145,7 +145,7 @@ func ListGroupBounces(db *sql.DB, groupKey string) ([]*GroupBounce, error) {
 }
 
 // listGroupBouncesOnly returns the bounces of a group, newest message first.
-func listGroupBouncesOnly(db *sql.DB, groupKey string) ([]*GroupBounce, error) {
+func listGroupBouncesOnly(db Execer, groupKey string) ([]*GroupBounce, error) {
 	rows, err := db.Query(`SELECT m.message_key, m.date, m.body_source, `+prefixColumns("b.", bounceColumns)+`
 		FROM bounces b JOIN messages m ON m.id = b.id WHERE b.group_key = ? ORDER BY m.date DESC, m.id DESC`, groupKey)
 	if err != nil {

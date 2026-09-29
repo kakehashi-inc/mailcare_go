@@ -60,7 +60,7 @@ func newSeededCore(t *testing.T) *seededCore {
 		}
 		keys = append(keys, key)
 	}
-	res, err := mailengine.Reindex(context.Background(), c.mailsRoot, mb.Address, nil)
+	res, err := mailengine.Reindex(context.Background(), c.mailsRoot, mb.Address, nil, nil)
 	if err != nil {
 		t.Fatalf("reindex: %v", err)
 	}
@@ -153,7 +153,11 @@ func TestGroupsEndpoints(t *testing.T) {
 	// sends it back.
 	moved := list.Groups[0].GroupKey
 	for _, st := range []string{"resolved", "ignored"} {
-		if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+moved+"/state"), map[string]string{"state": st}, s.admin); rec.Code != http.StatusOK {
+		body := map[string]string{"state": st, "reason": models.ResolveActionRecipientFixed}
+		if st == "ignored" {
+			body["reason"] = models.IgnoreReasonRecipientSide
+		}
+		if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+moved+"/state"), body, s.admin); rec.Code != http.StatusOK {
 			t.Fatalf("set excluded group %s: %d %s", st, rec.Code, rec.Body.String())
 		}
 		rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=excluded"), nil, s.user)
@@ -254,15 +258,38 @@ func TestGroupsEndpoints(t *testing.T) {
 	}
 
 	// State changes (every signed-in user).
-	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "ignored"}, s.user); rec.Code != http.StatusOK ||
-		!strings.Contains(rec.Body.String(), `"state":"ignored"`) {
+	// Ignoring requires a reason; the note is kept only with "other".
+	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "ignored"}, s.user); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), `"key":"validation.group.ignoreReasonRequired"`) {
+		t.Errorf("ignore without a reason: %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"),
+		map[string]string{"state": "ignored", "reason": "other", "note": " test run "}, s.user); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"state":"ignored"`) ||
+		!strings.Contains(rec.Body.String(), `"state_reason":"other","state_note":"test run"`) {
 		t.Errorf("set state as user: %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"),
+		map[string]string{"state": "ignored", "reason": "low_impact", "note": "dropped"}, s.user); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"state_reason":"low_impact","state_note":null`) {
+		t.Errorf("ignore with a fixed reason: %d %s, want the note dropped", rec.Code, rec.Body.String())
+	}
+	// Reopening clears the reason and the note of the group.
+	if rec := do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"),
+		map[string]string{"state": "open", "reason": "other", "note": "x"}, s.user); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"state_reason":null,"state_note":null`) {
+		t.Errorf("reopen: %d %s, want the reason and the note cleared", rec.Code, rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "done"}, s.admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("invalid state: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"), map[string]string{"state": "resolved"}, s.admin)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"key":"validation.group.resolveActionRequired"`) {
+		t.Errorf("resolve without a reason: %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodPut, s.path("/groups/"+gk+"/state"),
+		map[string]string{"state": "resolved", "reason": "delisting", "note": "Delisted at Spamhaus"}, s.admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("set state: %d %s", rec.Code, rec.Body.String())
 	}
@@ -270,13 +297,41 @@ func TestGroupsEndpoints(t *testing.T) {
 		Group GroupDTO `json:"group"`
 	}
 	decode(t, rec.Body.Bytes(), &changed)
-	if changed.Group.State != "resolved" || changed.Group.StateUpdatedAt == nil {
+	if changed.Group.State != "resolved" || changed.Group.StateUpdatedAt == nil || changed.Group.StateReason == nil ||
+		*changed.Group.StateReason != "delisting" || changed.Group.StateNote == nil || *changed.Group.StateNote != "Delisted at Spamhaus" {
 		t.Errorf("state response %+v", changed.Group)
 	}
 	rec = do(t, s.h, http.MethodGet, s.path("/groups?scope=all"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
-	if list.Counts.Open != len(all.Groups)-1 || list.Counts.Resolved != 1 {
+	if list.Counts.Open != len(all.Groups)-1 || list.Counts.Resolved != 1 || list.Counts.ResolvedRecheck != 0 {
 		t.Errorf("counts after resolve %+v", list.Counts)
+	}
+	// The tabs of resolved groups: the one sent back for a re-check and the
+	// others.
+	for _, c := range []struct {
+		recheck string
+		want    int
+	}{{"0", 1}, {"1", 0}} {
+		rec := do(t, s.h, http.MethodGet, s.path("/groups?scope=all&state=resolved&recheck="+c.recheck), nil, s.user)
+		var tab groupsResponse
+		decode(t, rec.Body.Bytes(), &tab)
+		if rec.Code != http.StatusOK || len(tab.Groups) != c.want {
+			t.Errorf("recheck=%s: %d, %d groups, want %d", c.recheck, rec.Code, len(tab.Groups), c.want)
+		}
+	}
+	if rec := do(t, s.h, http.MethodGet, s.path("/groups?recheck=yes"), nil, s.user); rec.Code != http.StatusBadRequest {
+		t.Errorf("recheck=yes: %d, want 400", rec.Code)
+	}
+	// The detail carries the state history, newest first, with who changed it.
+	rec = do(t, s.h, http.MethodGet, s.path("/groups/"+gk), nil, s.user)
+	var withHistory struct {
+		History []StateChangeDTO `json:"history"`
+	}
+	decode(t, rec.Body.Bytes(), &withHistory)
+	if h := withHistory.History; len(h) < 4 || h[0].State != "resolved" || h[0].ChangedBy != "admin" ||
+		h[0].Reason == nil || *h[0].Reason != "delisting" || h[1].State != "open" || h[1].ChangedBy != "bob" ||
+		h[2].State != "ignored" || h[2].Note != nil {
+		t.Errorf("history = %+v", h)
 	}
 	if list.Groups[0].State != "open" || list.Groups[len(list.Groups)-1].State != "resolved" {
 		t.Errorf("open groups should sort first: %s / %s", list.Groups[0].State, list.Groups[len(list.Groups)-1].State)
@@ -322,17 +377,17 @@ func TestMessagesEndpoints(t *testing.T) {
 		t.Errorf("page 2: %+v", list)
 	}
 	// Every list carries the counts per kind for the same search.
-	if list.Counts.All != 3 || list.Counts.Bounce != 2 || list.Counts.Other != 1 {
+	if list.Counts.All != 3 || list.Counts.Target != 2 || list.Counts.Other != 1 {
 		t.Errorf("counts: %+v", list.Counts)
 	}
-	rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=bounce"), nil, s.user)
+	rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=target"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
 	if list.Total != 2 || len(list.Messages) != 2 || list.Counts.All != 3 {
-		t.Errorf("kind=bounce: %+v", list)
+		t.Errorf("kind=target: %+v", list)
 	}
 	for _, m := range list.Messages {
 		if !m.IsBounce || m.GroupKey == "" {
-			t.Errorf("non-bounce in kind=bounce: %+v", m)
+			t.Errorf("non-target in kind=target: %+v", m)
 		}
 	}
 	rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=other"), nil, s.user)
@@ -345,12 +400,14 @@ func TestMessagesEndpoints(t *testing.T) {
 	if list.Total != 3 {
 		t.Errorf("kind=all: %+v", list)
 	}
-	if rec = do(t, s.h, http.MethodGet, s.path("/messages?kind=nope"), nil, s.user); rec.Code != http.StatusBadRequest {
-		t.Errorf("unknown kind: %d", rec.Code)
+	for _, kind := range []string{"nope", "bounce"} {
+		if rec = do(t, s.h, http.MethodGet, s.path("/messages?kind="+kind), nil, s.user); rec.Code != http.StatusBadRequest {
+			t.Errorf("unknown kind %s: %d", kind, rec.Code)
+		}
 	}
 	rec = do(t, s.h, http.MethodGet, s.path("/messages?q=campaign"), nil, s.user)
 	decode(t, rec.Body.Bytes(), &list)
-	if list.Total != 1 || list.Messages[0].IsBounce || list.Counts.All != 1 || list.Counts.Other != 1 || list.Counts.Bounce != 0 {
+	if list.Total != 1 || list.Messages[0].IsBounce || list.Counts.All != 1 || list.Counts.Other != 1 || list.Counts.Target != 0 {
 		t.Errorf("q: %+v", list)
 	}
 	for _, bad := range []string{"?page=0", "?per_page=0", "?per_page=1000", "?page=x"} {
@@ -651,6 +708,9 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		{"agent_model": "-c evil"},
 		{"agent_model": "gpt 5"},
 		{"agent_model": strings.Repeat("a", 101)},
+		{"recheck_days": map[string]int{"ip_blocked": 0}},
+		{"recheck_days": map[string]int{"ip_blocked": 366}},
+		{"recheck_days": map[string]int{"nope": 3}},
 	} {
 		rec := do(t, s.h, http.MethodPut, "/api/v1/settings", bad, s.admin)
 		if rec.Code != http.StatusBadRequest {
@@ -678,6 +738,17 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		st.AgentKeepDays != modules.DefaultAgentKeepDays || st.MailKeepDays != modules.DefaultMailKeepDays ||
 		st.CleanupTime != modules.DefaultCleanupTime {
 		t.Errorf("settings %+v", st)
+	}
+	// The re-check days of the named categories change; the others keep
+	// theirs.
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"recheck_days": map[string]int{"ip_blocked": 21}}, s.admin)
+	var recheck struct {
+		RecheckDays map[string]int `json:"recheck_days"`
+	}
+	decode(t, rec.Body.Bytes(), &recheck)
+	if rec.Code != http.StatusOK || recheck.RecheckDays["ip_blocked"] != 21 || recheck.RecheckDays["auth_failure"] != 3 ||
+		len(recheck.RecheckDays) != len(modules.KnownCategories()) {
+		t.Errorf("recheck_days: %d %v", rec.Code, recheck.RecheckDays)
 	}
 	// The cleanup time is stored normalized (non-default only).
 	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"cleanup_time": "3:30"}, s.admin)
@@ -827,23 +898,15 @@ func TestDashboardAndMailboxStats(t *testing.T) {
 	}
 	var d DashboardDTO
 	decode(t, rec.Body.Bytes(), &d)
-	if d.Totals.Mailboxes != 1 || d.Totals.Messages != 3 || d.Totals.Bounces != 2 || d.Totals.OpenGroups != actionable || d.Totals.Unclassified != 0 {
+	if d.Totals.Mailboxes != 1 || d.Totals.Messages != 3 || d.Totals.TargetMessages != 2 || d.Totals.OpenGroups != actionable || d.Totals.Unclassified != 0 {
 		t.Errorf("totals %+v (actionable %d)", d.Totals, actionable)
 	}
 	if len(d.Mailboxes) != 1 || d.Mailboxes[0].Stats == nil || d.Mailboxes[0].Stats.Messages != 3 ||
 		d.Mailboxes[0].Stats.Groups.Open != actionable {
 		t.Errorf("mailboxes %+v (actionable %d)", d.Mailboxes, actionable)
 	}
-	if len(d.RecentGroups) != actionable {
-		t.Errorf("recent groups %+v (want %d actionable)", d.RecentGroups, actionable)
-	}
-	for i, g := range d.RecentGroups {
-		if !g.Actionable || g.MailboxAddress != s.mb.Address || g.MailboxID != s.mb.ID || g.LastSeen == nil {
-			t.Errorf("recent group %+v", g)
-		}
-		if i > 0 && *d.RecentGroups[i-1].LastSeen < *g.LastSeen {
-			t.Errorf("recent groups not newest first: %+v", d.RecentGroups)
-		}
+	if strings.Contains(rec.Body.String(), `"recent_groups"`) {
+		t.Error("the dashboard lists no groups")
 	}
 	if d.NextCheckAt == nil || len(d.CheckTimes) != 3 || d.Agent.Provider != modules.DefaultAgentProvider || !d.Agent.Enabled {
 		t.Errorf("schedule/agent %+v %v %+v", d.CheckTimes, d.NextCheckAt, d.Agent)

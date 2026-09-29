@@ -33,7 +33,8 @@ func groupRow(g *models.BounceGroup, report *models.AgentReport) map[string]inte
 		"status_code": g.StatusCode, "diagnostic_template": g.DiagnosticTemplate,
 		"responsible": g.Responsible, "message_count": g.MessageCount, "recipient_count": g.RecipientCount,
 		"remote_ip_count": g.RemoteIPCount, "first_seen": rfc3339OrNull(g.FirstSeen), "last_seen": rfc3339OrNull(g.LastSeen),
-		"state": g.State, "state_updated_at": rfc3339OrNull(g.StateUpdatedAt), "needs_analysis": g.NeedsAnalysis,
+		"state": g.State, "state_updated_at": rfc3339OrNull(g.StateUpdatedAt), "state_reason": stringOrNull(g.StateReason.String),
+		"state_note": stringOrNull(g.StateNote.String), "needs_recheck": g.NeedsRecheck, "needs_analysis": g.NeedsAnalysis,
 		"report_summary": "", "report_severity": "",
 	}
 	if report != nil {
@@ -82,6 +83,7 @@ type GroupsListCmd struct {
 	Address  string `arg:"" help:"Mail address"`
 	Key      string `arg:"" optional:"" help:"Group key: show that group instead of the list"`
 	State    string `help:"Filter by state" enum:",open,resolved,ignored" default:""`
+	Recheck  bool   `help:"Only the resolved / ignored groups sent back for a re-check"`
 	Scope    string `help:"Which groups: actionable (default), excluded (recipient-side problems) or all" enum:"actionable,excluded,all" default:"actionable"`
 	Category string `help:"Filter by category (ip_blocked, user_unknown, ...)" default:""`
 	JSON     bool   `help:"Output as JSON"`
@@ -114,7 +116,12 @@ func (c *GroupsListCmd) Run() error {
 		return err
 	}
 	defer idx.Close()
-	groups, err := models.ListGroups(idx, models.GroupFilter{State: c.State, Category: c.Category, Scope: scope})
+	filter := models.GroupFilter{State: c.State, Category: c.Category, Scope: scope}
+	if c.Recheck {
+		recheck := true
+		filter.Recheck = &recheck
+	}
+	groups, err := models.ListGroups(idx, filter)
 	if err != nil {
 		return NewExitError(ExitGeneral, err.Error())
 	}
@@ -134,16 +141,25 @@ func (c *GroupsListCmd) Run() error {
 		fmt.Println("No groups.")
 		return nil
 	}
-	fmt.Printf("%-16s %-8s %-17s %-9s %-5s %-20s %-8s %s\n", "KEY", "STATE", "CATEGORY", "RESP", "MSGS", "LAST SEEN", "SEVERITY", "TITLE")
+	fmt.Printf("%-16s %-13s %-17s %-9s %-5s %-20s %-8s %s\n", "KEY", "STATE", "CATEGORY", "RESP", "MSGS", "LAST SEEN", "SEVERITY", "TITLE")
 	for _, g := range groups {
 		severity := ""
 		if r := reports[g.GroupKey]; r != nil {
 			severity = r.Severity
 		}
-		fmt.Printf("%-16s %-8s %-17s %-9s %-5d %-20s %-8s %s\n", g.GroupKey, g.State, clip(g.Category, 17), g.Responsible,
+		fmt.Printf("%-16s %-13s %-17s %-9s %-5d %-20s %-8s %s\n", g.GroupKey, cliGroupState(g), clip(g.Category, 17), g.Responsible,
 			g.MessageCount, formatNullTime(g.LastSeen), severity, clip(g.Label(), 60))
 	}
 	return nil
+}
+
+// cliGroupState is the state of a group as the CLI shows it: a resolved or
+// ignored group sent back for a re-check is marked "(re)".
+func cliGroupState(g *models.BounceGroup) string {
+	if g.NeedsRecheck {
+		return g.State + " (re)"
+	}
+	return g.State
 }
 
 // showGroup prints one bounce group with its latest report ("groups ADDRESS
@@ -180,9 +196,21 @@ func showGroup(address, key string, asJSON bool) error {
 	if err != nil && err != sql.ErrNoRows {
 		return NewExitError(ExitGeneral, err.Error())
 	}
+	history, err := models.ListGroupStateChanges(idx, g.GroupKey)
+	if err != nil {
+		return NewExitError(ExitGeneral, err.Error())
+	}
 	if asJSON {
 		row := groupRow(g, report)
 		row["stats"] = stats
+		changes := make([]map[string]interface{}, 0, len(history))
+		for _, h := range history {
+			changes = append(changes, map[string]interface{}{
+				"state": h.State, "reason": stringOrNull(h.Reason.String), "note": stringOrNull(h.Note.String),
+				"changed_by": h.ChangedBy, "changed_at": h.ChangedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			})
+		}
+		row["history"] = changes
 		if report != nil {
 			row["report"] = map[string]interface{}{
 				"id": report.ID, "provider": report.Provider, "status": report.Status, "summary": report.Summary,
@@ -197,7 +225,13 @@ func showGroup(address, key string, asJSON bool) error {
 	}
 	fmt.Printf("key:           %s\n", g.GroupKey)
 	fmt.Printf("label:         %s\n", g.Label())
-	fmt.Printf("state:         %s\n", g.State)
+	fmt.Printf("state:         %s\n", cliGroupState(g))
+	if g.StateReason.Valid {
+		fmt.Printf("reason:        %s\n", g.StateReason.String)
+	}
+	if g.StateNote.Valid {
+		fmt.Printf("note:          %s\n", clip(g.StateNote.String, 300))
+	}
 	fmt.Printf("category:      %s\n", g.Category)
 	fmt.Printf("unit:          %s\n", g.UnitValue)
 	fmt.Printf("authority:     %s\n", g.Authority)
@@ -219,6 +253,22 @@ func showGroup(address, key string, asJSON bool) error {
 	if len(stats.RemoteMTAs) > 0 {
 		fmt.Printf("remote MTAs:   %s\n", clip(strings.Join(stats.RemoteMTAs, ", "), 300))
 	}
+	if len(history) > 0 {
+		fmt.Println("\n--- state history (newest first) ---")
+		for _, h := range history {
+			line := fmt.Sprintf("%s  %-8s", h.ChangedAt.Local().Format(cliTimeFmt), h.State)
+			if h.Reason.Valid {
+				line += "  " + h.Reason.String
+			}
+			if h.ChangedBy != "" {
+				line += "  by " + h.ChangedBy
+			}
+			if h.Note.Valid {
+				line += "  - " + clip(h.Note.String, 200)
+			}
+			fmt.Println(line)
+		}
+	}
 	if report == nil {
 		fmt.Println("\nNo completed analysis report.")
 		return nil
@@ -233,14 +283,22 @@ func showGroup(address, key string, asJSON bool) error {
 }
 
 // GroupsSetStateCmd changes the state of a group ("groups set-state ADDRESS
-// KEY STATE"), the same change the Web UI makes from the group detail.
+// KEY STATE [--reason R] [--note N]"), the same change the Web UI makes from
+// the alerts list and the group detail (validated by GroupStateInput,
+// applied by ChangeGroupState).
 type GroupsSetStateCmd struct {
 	Address string `arg:"" help:"Mail address"`
 	Key     string `arg:"" help:"Group key"`
 	State   string `arg:"" help:"New state" enum:"open,resolved,ignored"`
+	Reason  string `help:"Required with resolved (delisting, dns_fixed, server_fixed, sender_changed, content_changed, volume_adjusted, recipient_fixed, recipient_asked, other) and ignored (temporary, recipient_side, input_error, stopped_sending, spoofing, external_service, false_positive, low_impact, test_mail, other)"`
+	Note    string `help:"Details of what was done (resolved), or the reason in words (ignored with --reason other)"`
 }
 
 func (c *GroupsSetStateCmd) Run() error {
+	change, err := GroupStateInput(c.State, c.Reason, c.Note)
+	if err != nil {
+		return NewExitError(ExitArgument, err.Error())
+	}
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
@@ -265,7 +323,7 @@ func (c *GroupsSetStateCmd) Run() error {
 	if err != nil {
 		return NewExitError(ExitGeneral, err.Error())
 	}
-	if err := models.SetGroupState(idx, g.GroupKey, c.State); err != nil {
+	if err := ChangeGroupState(idx, g.GroupKey, change, ""); err != nil {
 		return NewExitError(ExitGeneral, err.Error())
 	}
 	fmt.Printf("Group %s of %s is now %s\n", g.GroupKey, mb.Address, c.State)

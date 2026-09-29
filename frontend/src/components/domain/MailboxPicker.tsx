@@ -40,6 +40,9 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
         <ul className='grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3'>
             {mailboxes.map(mb => {
                 const open = mb.stats?.groups.open;
+                const recheck = mb.stats
+                    ? mb.stats.groups.resolved_recheck + mb.stats.groups.ignored_recheck
+                    : undefined;
                 const messages = mb.stats?.messages;
                 const targetMessages = mb.stats?.target_messages;
                 const junkMessages = mb.stats?.junk_messages;
@@ -78,6 +81,16 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                                             {value ?? '-'}
                                         </p>
                                     </div>
+                                    {highlight === 'open' && (
+                                        <div>
+                                            <p className='text-sm text-muted'>{t('field.mailbox.recheckGroups')}</p>
+                                            <p
+                                                className={`text-2xl font-bold ${recheck ? 'text-warning' : 'text-ink'}`}
+                                            >
+                                                {recheck ?? '-'}
+                                            </p>
+                                        </div>
+                                    )}
                                     {highlight === 'messages' && (
                                         <>
                                             <div>

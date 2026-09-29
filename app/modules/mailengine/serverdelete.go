@@ -36,6 +36,13 @@ var serverDeletableRules = []string{ruleDSNReport, ruleDMARCReport, ruleDaemonSe
 // target messages and the junk.
 var serverDeletionRules = append(append([]string{}, serverDeletableRules...), junkRules...)
 
+// TargetRules returns the rules of the messages MailCare handles as its
+// targets (the notices classified with certain evidence,
+// serverDeletableRules): the "target" kind of the mail list.
+func TargetRules() []string {
+	return append([]string{}, serverDeletableRules...)
+}
+
 // CountTargetMessages returns how many messages of an index MailCare
 // handles as its targets: the notices classified with certain evidence
 // (serverDeletableRules), whether or not they are still on the IMAP server.

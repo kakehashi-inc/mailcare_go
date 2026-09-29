@@ -22,8 +22,8 @@ import { useMailboxes } from '../hooks/useMailboxes';
 import type { MessageDTO, MessageKind } from '../types';
 import { formatBytes, mailboxLabel } from '../utils/format';
 
-const KINDS: MessageKind[] = ['all', 'bounce', 'junk', 'other'];
-const KIND_ICONS: Record<MessageKind, string> = { all: 'inbox', bounce: 'report', junk: 'block', other: 'mail' };
+const KINDS: MessageKind[] = ['all', 'target', 'junk', 'other'];
+const KIND_ICONS: Record<MessageKind, string> = { all: 'inbox', target: 'report', junk: 'block', other: 'mail' };
 
 export function MailsListPage() {
     const { t } = useTranslation();

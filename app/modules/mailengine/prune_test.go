@@ -107,7 +107,7 @@ func TestPruneMailboxRemovesExpiredMail(t *testing.T) {
 		{"autoreply.eml", recent},        // untouched, no bounces row
 	}
 	keys := storeDated(t, root, address, list)
-	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil, nil); err != nil {
 		t.Fatalf("group: %v", err)
 	}
 	db := mustOpenIndex(t, root, address)
@@ -245,7 +245,7 @@ func TestPruneMailboxKeepsRowWhenFileRemovalFails(t *testing.T) {
 	address := "newsletter@example.jp"
 	const day = 24 * time.Hour
 	keys := storeDated(t, root, address, []datedSample{{"normal.eml", 40 * day}, {"postfix_dsn.eml", 40 * day}})
-	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Both messages share one month directory (see MessageDir).

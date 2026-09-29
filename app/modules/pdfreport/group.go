@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"mailcare/app/models"
@@ -28,6 +29,7 @@ type Analysis struct {
 type GroupReport struct {
 	Mailbox     string // the mail address (with its display name)
 	Group       *models.BounceGroup
+	History     []*models.GroupStateChange // the state history of the group, newest first
 	Analysis    Analysis
 	Stats       *models.GroupBounceStats
 	GeneratedAt time.Time
@@ -84,9 +86,10 @@ func GroupHeadline(g *models.BounceGroup, tr Translate) string {
 
 // WriteGroupReport renders the report of a group as a PDF: a header (the
 // headline, the mail address, when it was generated), the overview (the
-// status badges, what the category asks for and the facts of the group)
-// and the statistics (every recipient, IP and remote MTA), laid out like
-// the group detail of the Web UI.
+// status badges, what the category asks for, the facts of the group and
+// what was chosen and written with its state), the state history and the
+// statistics (every recipient, IP and remote MTA), laid out like the group
+// detail of the Web UI.
 func WriteGroupReport(w io.Writer, rep *GroupReport, tr Translate) error {
 	t := func(key string, params map[string]any) string {
 		if text, ok := tr(key, params); ok {
@@ -172,7 +175,7 @@ func WriteGroupReport(w io.Writer, rep *GroupReport, tr Translate) error {
 		}
 		return formatTime(v.Time, rep.Location, rep.Language)
 	}
-	d.fields([]field{
+	fields := []field{
 		{label: t("field.group.unitValue", nil), value: dash(g.UnitValue), kind: fieldCode},
 		{label: t("field.group.authority", nil), value: dash(g.Authority), kind: fieldCode},
 		{label: t("field.common.recipientDomain", nil), value: dash(g.RecipientDomain)},
@@ -185,7 +188,39 @@ func WriteGroupReport(w io.Writer, rep *GroupReport, tr Translate) error {
 		{label: t("field.group.stateUpdated", nil), value: stamp(g.StateUpdatedAt)},
 		{label: t("field.group.diagnosticTemplate", nil), value: dash(g.DiagnosticTemplate), kind: fieldCodeBlock, wide: true},
 		{label: t("field.group.key", nil), value: g.GroupKey, kind: fieldCode, wide: true},
-	})
+	}
+	if g.State != "open" {
+		fields = append(fields,
+			field{label: t(stateReasonField(g.State), nil), value: reasonLabel(g.State, g.StateReason, t), wide: true},
+			field{label: t("field.group.stateNote", nil), value: dash(g.StateNote.String), wide: true})
+	}
+	d.fields(fields)
+	d.space(5)
+
+	// State history.
+	d.heading(t("page.groupDetail.history.title", nil), 12)
+	if len(rep.History) == 0 {
+		d.setFont(familyText, "", 9.5)
+		d.setTextColor(colorMuted)
+		d.lines([]string{t("page.groupDetail.history.empty", nil)}, marginX, d.width, lineHeight(9.5))
+	} else {
+		entries := make([]field, 0, len(rep.History))
+		for _, h := range rep.History {
+			label := formatTime(h.ChangedAt, rep.Location, rep.Language) + "  " + t("value.groupState."+h.State, nil)
+			var value []string
+			if h.State != "open" {
+				value = append(value, t(stateReasonField(h.State), nil)+": "+reasonLabel(h.State, h.Reason, t))
+			}
+			if h.Note.Valid {
+				value = append(value, h.Note.String)
+			}
+			if h.ChangedBy != "" {
+				value = append(value, t("field.group.changedBy", nil)+": "+h.ChangedBy)
+			}
+			entries = append(entries, field{label: label, value: dash(strings.Join(value, "\n")), wide: true})
+		}
+		d.fields(entries)
+	}
 	d.space(5)
 
 	// Statistics.
@@ -210,6 +245,27 @@ func WriteGroupReport(w io.Writer, rep *GroupReport, tr Translate) error {
 	return d.pdf.Output(w)
 }
 
+// stateReasonField is the language-file key of the field that holds the
+// code chosen with a state (what was done, or why it was ignored).
+func stateReasonField(state string) string {
+	if state == "resolved" {
+		return "field.group.resolveAction"
+	}
+	return "field.group.ignoreReason"
+}
+
+// reasonLabel is the label of the code chosen with a state ("-" when none
+// was recorded).
+func reasonLabel(state string, reason sql.NullString, t func(string, map[string]any) string) string {
+	if !reason.Valid {
+		return "-"
+	}
+	if state == "resolved" {
+		return t("value.resolveAction."+reason.String, nil)
+	}
+	return t("value.ignoreReason."+reason.String, nil)
+}
+
 // groupBadges are the status badges of the overview, as the group detail of
 // the Web UI shows them.
 func groupBadges(g *models.BounceGroup, a Analysis, t func(string, map[string]any) string, tr Translate) []badge {
@@ -224,7 +280,10 @@ func groupBadges(g *models.BounceGroup, a Analysis, t func(string, map[string]an
 		list = append(list, badge{t("value.groupScope.excluded", nil), toneNeutral})
 	}
 	// An open recipient-side group is on the excluded list, which has no states.
-	if g.Actionable || g.State != "open" {
+	switch {
+	case g.NeedsRecheck:
+		list = append(list, badge{t("value.groupRecheck."+g.State, nil), toneWarning})
+	case g.Actionable || g.State != "open":
 		list = append(list, badge{t("value.groupState."+g.State, nil), stateTones[g.State]})
 	}
 	if g.Actionable {

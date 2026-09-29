@@ -221,7 +221,7 @@ func TestGroupDMARCReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := GroupMailbox(context.Background(), root, address, false, nil)
+	res, err := GroupMailbox(context.Background(), root, address, false, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestGroupDMARCReport(t *testing.T) {
 	}
 
 	// A full reclassification rebuilds the same groups.
-	if res, err = GroupMailbox(context.Background(), root, address, true, nil); err != nil || res.Groups != 3 {
+	if res, err = GroupMailbox(context.Background(), root, address, true, nil, nil); err != nil || res.Groups != 3 {
 		t.Fatalf("full regroup = %+v (err %v)", res, err)
 	}
 	// The mail retention removes the report: its records and groups go.

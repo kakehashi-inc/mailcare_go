@@ -989,7 +989,7 @@ func (m *JobManager) runGroup(ctx context.Context, job *models.Job, mb *models.M
 	} else {
 		progress("grouping")
 	}
-	res, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, full, mailengine.Progress(progress))
+	res, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, full, ResolveRecheckDays(m.db), mailengine.Progress(progress))
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
@@ -1014,7 +1014,7 @@ func (m *JobManager) runSync(ctx context.Context, job *models.Job, mb *models.Ma
 		return fetchLine(fetched), errors.New("server shutting down")
 	}
 	progress("grouping")
-	grouped, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, false, mailengine.Progress(progress))
+	grouped, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, false, ResolveRecheckDays(m.db), mailengine.Progress(progress))
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return fetchLine(fetched), fmt.Errorf("%s: %w", mb.Address, err)
@@ -1056,7 +1056,7 @@ func (m *JobManager) countGroupsNeedingAnalysis(ctx context.Context, address str
 // flagged needs_analysis are analyzed).
 func (m *JobManager) runReindex(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
 	progress("reindexing")
-	res, err := mailengine.Reindex(ctx, m.mailsRoot, mb.Address, mailengine.Progress(progress))
+	res, err := mailengine.Reindex(ctx, m.mailsRoot, mb.Address, ResolveRecheckDays(m.db), mailengine.Progress(progress))
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
@@ -1157,7 +1157,7 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 		report, err := agent.AnalyzeGroup(ctx, agent.AnalyzeInput{
 			MailsRoot: m.mailsRoot, AgentRoot: m.agentRoot, TemplatesFS: m.templates,
 			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Model: model,
-			ReasoningEffort: reasoning, Language: "ja",
+			ReasoningEffort: reasoning, Language: "ja", RecheckDays: ResolveRecheckDays(m.db),
 		}, progress)
 		switch {
 		case err != nil:

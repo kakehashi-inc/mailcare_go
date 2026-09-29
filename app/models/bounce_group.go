@@ -16,26 +16,35 @@ import (
 // reference but excluded from Alerts by default. Membership is recorded in
 // bounces.group_key and dmarc_records.group_key. There is no stored title:
 // see Label.
+//
+// StateReason and StateNote are what the user chose and wrote with the
+// current state (see GroupStateChange; both NULL while the group is open).
+// NeedsRecheck is set when a resolved or ignored group receives a notice
+// that sends it back to the users (mailengine decides, see
+// SetGroupNeedsRecheck); the next state change clears it.
 type BounceGroup struct {
-	GroupKey           string       `json:"group_key"`
-	Category           string       `json:"category"`
-	Actionable         bool         `json:"actionable"`
-	UnitValue          string       `json:"unit_value"`
-	Authority          string       `json:"authority"`
-	RecipientDomain    string       `json:"recipient_domain"`
-	StatusCode         string       `json:"status_code"`
-	DiagnosticTemplate string       `json:"diagnostic_template"`
-	Responsible        string       `json:"responsible"`
-	State              string       `json:"state"`
-	StateUpdatedAt     sql.NullTime `json:"-"`
-	NeedsAnalysis      bool         `json:"needs_analysis"`
-	MessageCount       int          `json:"message_count"`
-	RecipientCount     int          `json:"recipient_count"`
-	RemoteIPCount      int          `json:"remote_ip_count"`
-	FirstSeen          sql.NullTime `json:"-"`
-	LastSeen           sql.NullTime `json:"-"`
-	CreatedAt          time.Time    `json:"created_at"`
-	UpdatedAt          time.Time    `json:"updated_at"`
+	GroupKey           string         `json:"group_key"`
+	Category           string         `json:"category"`
+	Actionable         bool           `json:"actionable"`
+	UnitValue          string         `json:"unit_value"`
+	Authority          string         `json:"authority"`
+	RecipientDomain    string         `json:"recipient_domain"`
+	StatusCode         string         `json:"status_code"`
+	DiagnosticTemplate string         `json:"diagnostic_template"`
+	Responsible        string         `json:"responsible"`
+	State              string         `json:"state"`
+	StateUpdatedAt     sql.NullTime   `json:"-"`
+	StateReason        sql.NullString `json:"-"`
+	StateNote          sql.NullString `json:"-"`
+	NeedsRecheck       bool           `json:"needs_recheck"`
+	NeedsAnalysis      bool           `json:"needs_analysis"`
+	MessageCount       int            `json:"message_count"`
+	RecipientCount     int            `json:"recipient_count"`
+	RemoteIPCount      int            `json:"remote_ip_count"`
+	FirstSeen          sql.NullTime   `json:"-"`
+	LastSeen           sql.NullTime   `json:"-"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
 // Label is the technical one-line name of a group ("<category>: <unit> @
@@ -56,8 +65,8 @@ func (g *BounceGroup) Label() string {
 }
 
 const groupColumns = `group_key, category, actionable, unit_value, authority, recipient_domain, status_code,
-	diagnostic_template, responsible, state, state_updated_at, needs_analysis, message_count, recipient_count,
-	remote_ip_count, first_seen, last_seen, created_at, updated_at`
+	diagnostic_template, responsible, state, state_updated_at, state_reason, state_note, needs_recheck, needs_analysis,
+	message_count, recipient_count, remote_ip_count, first_seen, last_seen, created_at, updated_at`
 
 // UpsertGroup inserts a group or, when it exists, refreshes its descriptive
 // columns (category, actionable, unit, authority, domain, status code,
@@ -72,9 +81,9 @@ func UpsertGroup(db Execer, g *BounceGroup) error {
 	}
 	_, err := db.Exec(
 		`INSERT INTO groups (group_key, category, actionable, unit_value, authority, recipient_domain, status_code,
-		   diagnostic_template, responsible, state, needs_analysis, message_count, recipient_count, remote_ip_count,
-		   created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)
+		   diagnostic_template, responsible, state, needs_recheck, needs_analysis, message_count, recipient_count,
+		   remote_ip_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, ?)
 		 ON CONFLICT(group_key) DO UPDATE SET category = excluded.category, actionable = excluded.actionable,
 		   unit_value = excluded.unit_value, authority = excluded.authority,
 		   recipient_domain = excluded.recipient_domain, status_code = excluded.status_code,
@@ -125,11 +134,26 @@ func DeleteEmptyGroups(db Execer) error {
 	return err
 }
 
-// SetGroupState changes the state (open / resolved / ignored) of a group.
-func SetGroupState(db *sql.DB, groupKey, state string) error {
-	now := time.Now().UTC()
-	_, err := db.Exec(`UPDATE groups SET state = ?, state_updated_at = ?, updated_at = ? WHERE group_key = ?`,
-		state, now, now, groupKey)
+// SetGroupState changes the state (open / resolved / ignored) of a group at
+// the given time with the reason code and the note the user left (NULL when
+// none; both NULL for open) and clears the re-check flag. The analysis flag
+// becomes needsAnalysis for an open actionable group and is cleared
+// otherwise: a resolved or ignored group is analyzed only after it was sent
+// back for a re-check. The caller validates the change and records it in the
+// history (modules.ChangeGroupState).
+func SetGroupState(db Execer, groupKey, state string, reason, note sql.NullString, at time.Time, needsAnalysis bool) error {
+	_, err := db.Exec(`UPDATE groups SET state = ?, state_updated_at = ?, state_reason = ?, state_note = ?,
+		   needs_recheck = 0, needs_analysis = CASE WHEN ? = 'open' AND actionable = 1 THEN ? ELSE 0 END, updated_at = ?
+		 WHERE group_key = ?`,
+		state, at.UTC(), reason, note, state, boolToInt(needsAnalysis), time.Now().UTC(), groupKey)
+	return err
+}
+
+// SetGroupNeedsRecheck sends a resolved or ignored group back to the users
+// (needs_recheck = 1) and flags it for analysis when it is actionable.
+func SetGroupNeedsRecheck(db Execer, groupKey string) error {
+	_, err := db.Exec(`UPDATE groups SET needs_recheck = 1, needs_analysis = actionable, updated_at = ?
+		 WHERE group_key = ? AND state <> 'open'`, time.Now().UTC(), groupKey)
 	return err
 }
 
@@ -148,14 +172,16 @@ func UpdateGroupResponsible(db *sql.DB, groupKey, responsible string) error {
 	return err
 }
 
-// RestoreGroupState puts back the state, its change time and the analysis flag
-// of a group (used when an index is rebuilt and the group key came back). The
-// flag is never set on a recipient-side group.
-func RestoreGroupState(db *sql.DB, groupKey, state string, stateUpdatedAt sql.NullTime, needsAnalysis bool) error {
-	_, err := db.Exec(`UPDATE groups SET state = ?, state_updated_at = ?,
-		   needs_analysis = CASE WHEN actionable = 0 THEN 0 ELSE ? END, updated_at = ?
+// RestoreGroupState puts back the state columns of a group (state, its
+// change time, reason and note, the re-check flag and the analysis flag),
+// taken from g, when an index is rebuilt and the group key came back. The
+// analysis flag is never set on a recipient-side group.
+func RestoreGroupState(db *sql.DB, g *BounceGroup) error {
+	_, err := db.Exec(`UPDATE groups SET state = ?, state_updated_at = ?, state_reason = ?, state_note = ?,
+		   needs_recheck = ?, needs_analysis = CASE WHEN actionable = 0 THEN 0 ELSE ? END, updated_at = ?
 		 WHERE group_key = ?`,
-		state, utcNullTime(stateUpdatedAt), boolToInt(needsAnalysis), time.Now().UTC(), groupKey)
+		g.State, utcNullTime(g.StateUpdatedAt), g.StateReason, g.StateNote, boolToInt(g.NeedsRecheck),
+		boolToInt(g.NeedsAnalysis), time.Now().UTC(), g.GroupKey)
 	return err
 }
 
@@ -192,14 +218,16 @@ type GroupFilter struct {
 	Responsible string // "" = all
 	Category    string // "" = all
 	Actionable  *bool  // nil = all; true / false = the actionable column only (analysis, notification)
+	Recheck     *bool  // nil = all; true / false = the needs_recheck column (the "(re)" tabs of resolved / ignored)
 	Scope       string // GroupScope*: the Alerts list the group belongs to (see groupScopeCondition)
 	Query       string // matched against unit, authority, recipient domain and template (LIKE)
 	Sort        string // GroupSort*: the order within a state ("" = last seen, newest first)
 }
 
 // Orders of ListGroups (GroupFilter.Sort). Groups are ordered by state
-// first (open, resolved, ignored), then by the sort, then by group key, so
-// that the order is total and pages never overlap.
+// first (open, resolved, ignored; within a state the groups sent back for a
+// re-check first), then by the sort, then by group key, so that the order
+// is total and pages never overlap.
 const (
 	GroupSortLastSeenDesc = ""              // last seen, newest first
 	GroupSortLastSeenAsc  = "last_seen_asc" // last seen, oldest first
@@ -249,6 +277,10 @@ func groupWhere(f GroupFilter) (string, []any) {
 		conds = append(conds, `actionable = ?`)
 		args = append(args, boolToInt(*f.Actionable))
 	}
+	if f.Recheck != nil {
+		conds = append(conds, `needs_recheck = ?`)
+		args = append(args, boolToInt(*f.Recheck))
+	}
 	if c := groupScopeCondition(f.Scope); c != "" {
 		conds = append(conds, c)
 	}
@@ -271,7 +303,8 @@ func groupOrderBy(f GroupFilter) string {
 	if order == "" {
 		order = groupSortOrder(GroupSortLastSeenDesc)
 	}
-	return ` ORDER BY CASE state WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 ELSE 2 END, ` + order + `, group_key`
+	return ` ORDER BY CASE state WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 ELSE 2 END, needs_recheck DESC, ` + order +
+		`, group_key`
 }
 
 // ListGroups returns every group matching the filter, ordered by state
@@ -295,19 +328,27 @@ func ListGroupsPage(db *sql.DB, f GroupFilter, offset, limit int) ([]*BounceGrou
 	return groups, total, err
 }
 
-// ListGroupsNeedingAnalysis returns open, actionable groups flagged for
-// analysis (new groups and groups that gained messages), oldest last-seen
-// first. Recipient-side groups are never analyzed.
+// ListGroupsNeedingAnalysis returns the actionable groups flagged for
+// analysis, oldest last-seen first: open groups with a pattern their latest
+// report did not cover (new groups included) and resolved / ignored groups
+// sent back for a re-check (SetGroupNeedsRecheck; SetGroupState clears the
+// flag of the other resolved / ignored groups). Recipient-side groups are
+// never analyzed.
 func ListGroupsNeedingAnalysis(db *sql.DB) ([]*BounceGroup, error) {
-	return queryGroups(db, `SELECT `+groupColumns+` FROM groups WHERE needs_analysis = 1 AND state = 'open' AND actionable = 1
+	return queryGroups(db, `SELECT `+groupColumns+` FROM groups WHERE needs_analysis = 1 AND actionable = 1
 		ORDER BY last_seen ASC`)
 }
 
-// GroupCounts holds per-state group counts for the dashboard.
+// GroupCounts holds per-state group counts for the dashboard and the tabs
+// of Alerts. Resolved and Ignored count the groups of the state that were
+// not sent back for a re-check, ResolvedRecheck and IgnoredRecheck the ones
+// that were (every group is counted once).
 type GroupCounts struct {
-	Open     int `json:"open"`
-	Resolved int `json:"resolved"`
-	Ignored  int `json:"ignored"`
+	Open            int `json:"open"`
+	Resolved        int `json:"resolved"`
+	ResolvedRecheck int `json:"resolved_recheck"`
+	Ignored         int `json:"ignored"`
+	IgnoredRecheck  int `json:"ignored_recheck"`
 }
 
 // CountGroups returns the number of groups per state within a scope
@@ -318,24 +359,28 @@ func CountGroups(db *sql.DB, scope string) (GroupCounts, error) {
 	if cond := groupScopeCondition(scope); cond != "" {
 		where = ` WHERE ` + cond
 	}
-	rows, err := db.Query(`SELECT state, COUNT(*) FROM groups` + where + ` GROUP BY state`)
+	rows, err := db.Query(`SELECT state, needs_recheck, COUNT(*) FROM groups` + where + ` GROUP BY state, needs_recheck`)
 	if err != nil {
 		return c, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var state string
-		var n int
-		if err := rows.Scan(&state, &n); err != nil {
+		var recheck, n int
+		if err := rows.Scan(&state, &recheck, &n); err != nil {
 			return c, err
 		}
-		switch state {
-		case "open":
-			c.Open = n
-		case "resolved":
-			c.Resolved = n
-		case "ignored":
-			c.Ignored = n
+		switch {
+		case state == "open":
+			c.Open += n
+		case state == "resolved" && recheck != 0:
+			c.ResolvedRecheck += n
+		case state == "resolved":
+			c.Resolved += n
+		case state == "ignored" && recheck != 0:
+			c.IgnoredRecheck += n
+		case state == "ignored":
+			c.Ignored += n
 		}
 	}
 	return c, rows.Err()
@@ -360,12 +405,13 @@ func queryGroups(db *sql.DB, query string, args ...any) ([]*BounceGroup, error) 
 
 func scanGroup(s rowScanner) (*BounceGroup, error) {
 	g := &BounceGroup{}
-	var actionable, needs int
+	var actionable, recheck, needs int
 	if err := s.Scan(&g.GroupKey, &g.Category, &actionable, &g.UnitValue, &g.Authority, &g.RecipientDomain,
-		&g.StatusCode, &g.DiagnosticTemplate, &g.Responsible, &g.State, &g.StateUpdatedAt, &needs, &g.MessageCount,
+		&g.StatusCode, &g.DiagnosticTemplate, &g.Responsible, &g.State, &g.StateUpdatedAt, &g.StateReason, &g.StateNote, &recheck,
+		&needs, &g.MessageCount,
 		&g.RecipientCount, &g.RemoteIPCount, &g.FirstSeen, &g.LastSeen, &g.CreatedAt, &g.UpdatedAt); err != nil {
 		return nil, err
 	}
-	g.Actionable, g.NeedsAnalysis = actionable != 0, needs != 0
+	g.Actionable, g.NeedsRecheck, g.NeedsAnalysis = actionable != 0, recheck != 0, needs != 0
 	return g, nil
 }

@@ -75,13 +75,19 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 	// settle ends the waiting of the group: it records the patterns the
 	// run dealt with and sets needs_analysis to whether a bounce of another
 	// pattern arrived meanwhile (always false for a recipient-side group).
+	// A resolved or ignored group that is not waiting for a re-check is
+	// never flagged (it is analyzed only after it is sent back).
 	settle := func(patterns []string) {
 		if err := models.InsertAgentReportPatterns(in.Index, report.ID, patterns); err != nil {
 			progress("warning: could not record the patterns: " + err.Error())
 		}
 		needs := false
-		if group.Actionable {
-			var err error
+		cur, err := models.GetGroup(in.Index, group.GroupKey)
+		if err != nil {
+			progress("warning: could not reload the group: " + err.Error())
+			cur = group
+		}
+		if cur.Actionable && (cur.State == "open" || cur.NeedsRecheck) {
 			if needs, err = models.GroupHasUncoveredPattern(in.Index, group.GroupKey); err != nil {
 				progress("warning: could not check the covered patterns: " + err.Error())
 				needs = false
@@ -151,11 +157,31 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 	if err != nil {
 		return fail(fmt.Errorf("load previous report: %w", err))
 	}
-	ev := BuildEvidence(EvidenceInput{MailsRoot: in.MailsRoot, Address: in.Address, Group: group, Bounces: bounces, Covered: covered})
+	// A resolved or ignored group is re-checked against the user's latest
+	// decision; an open group that was reopened gets its earlier decision
+	// as background.
+	history, err := models.ListGroupStateChanges(in.Index, group.GroupKey)
+	if err != nil {
+		return fail(fmt.Errorf("load state history: %w", err))
+	}
+	recheck, earlier := decisionsOf(group, history)
+	evIn := EvidenceInput{MailsRoot: in.MailsRoot, Address: in.Address, Group: group, Bounces: bounces, Covered: covered}
+	if recheck != nil {
+		evIn.Decided = recheck.DecidedAt
+		if recheck.State == "resolved" {
+			recheck.SettlingDays = in.RecheckDays.For(group.Category)
+		}
+		reports, err := models.ListAgentReports(in.Index, group.GroupKey)
+		if err != nil {
+			return fail(fmt.Errorf("load reports: %w", err))
+		}
+		previous = reportBefore(reports, recheck.DecidedAt)
+	}
+	ev := BuildEvidence(evIn)
 	if err := writeEvidenceFiles(dir, ev); err != nil {
 		return fail(fmt.Errorf("write evidence: %w", err))
 	}
-	if !ev.Update {
+	if !ev.Update && !ev.Recheck {
 		previous = nil
 	}
 
@@ -170,6 +196,8 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		Stats:       stats,
 		Evidence:    ev,
 		Previous:    previous,
+		Recheck:     recheck,
+		Earlier:     earlier,
 	})
 	// The progress names the run directory relative to the address (its
 	// absolute path would expose the server's layout to every Web user).

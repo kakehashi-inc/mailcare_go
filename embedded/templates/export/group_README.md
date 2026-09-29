@@ -56,12 +56,18 @@ Times are RFC 3339 strings in UTC; a time or value that is not known is
   "exported_at": time,
   "mailbox":  { "id", "address", "display_name" },      the monitored mail address
   "group":    Group,
+  "history":  [ { "state", "reason", "note", "changed_by", "changed_at" } ],
   "stats":    { "recipients": [string], "remote_ips": [string], "remote_mtas": [string] },
   "messages": [ { "message": Message, "bounce": Bounce | null,
                   "dmarc_records": [DMARCRecord], "files": [string] } ]
 }
 ```
 
+- `history`: every change of the handling state, newest first: the state
+  set, the code the user chose with it (see `state_reason` below; `null`
+  for `open` and for changes recorded before choices existed), the text the
+  user wrote (`null` when none), the username (`""` for the command line)
+  and when.
 - `stats`: the distinct failed recipient addresses, remote IPs (of the
   bounces, plus the sending IPs of the DMARC records) and remote MTAs of the
   group, sorted.
@@ -87,6 +93,8 @@ Times are RFC 3339 strings in UTC; a time or value that is not known is
 | `message_count`, `recipient_count`, `remote_ip_count` | number of mails, distinct recipients, distinct IPs |
 | `first_seen`, `last_seen` | date of the oldest and the newest mail |
 | `state`, `state_updated_at` | handling state set by the users: `open`, `resolved`, `ignored` |
+| `state_reason`, `state_note` | what the user chose and wrote with the current state (`null` when open or not recorded). For `resolved` what was done: `delisting` (asked the blacklist to delist), `dns_fixed` (SPF / DKIM / DMARC records corrected), `server_fixed`, `sender_changed`, `content_changed`, `volume_adjusted`, `recipient_fixed`, `recipient_asked` (contacted the recipient side), `other`. For `ignored` why: `temporary`, `recipient_side`, `input_error` (address entered wrongly by a user), `stopped_sending`, `spoofing` (a third party using the domain), `external_service`, `false_positive`, `low_impact`, `test_mail`, `other` |
+| `needs_recheck` | `true` when a notice arrived after the group was marked resolved or ignored that asks for a new decision (a new kind of rejection, or, for `resolved`, mail sent after the time the action needs to take effect) |
 | `needs_analysis` | a notice of a new pattern arrived since the last analysis |
 | `report_summary`, `report_severity`, `report_confidence` | of the newest completed AI analysis: one-line summary, `high` / `medium` / `low` / `""`, `high` / `medium` / `low` / `null` |
 | `report_status`, `report_unanalyzable` | of the newest analysis: `running`, `completed`, `error` or `""`; `true` when it failed for good |

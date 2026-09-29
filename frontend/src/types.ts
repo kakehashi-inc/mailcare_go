@@ -3,6 +3,35 @@
 
 export type Role = 'admin' | 'user';
 export type GroupState = 'open' | 'resolved' | 'ignored';
+/** What was done for a resolved group (value.resolveAction), in the order the dialog offers them ("other" last). */
+export const RESOLVE_ACTIONS = [
+    'delisting',
+    'dns_fixed',
+    'server_fixed',
+    'sender_changed',
+    'content_changed',
+    'volume_adjusted',
+    'recipient_fixed',
+    'recipient_asked',
+    'other',
+] as const;
+export type ResolveAction = (typeof RESOLVE_ACTIONS)[number];
+/** Why a group was ignored (value.ignoreReason), in the order the dialog offers them ("other" last). */
+export const IGNORE_REASONS = [
+    'temporary',
+    'recipient_side',
+    'input_error',
+    'stopped_sending',
+    'spoofing',
+    'external_service',
+    'false_positive',
+    'low_impact',
+    'test_mail',
+    'other',
+] as const;
+export type IgnoreReason = (typeof IGNORE_REASONS)[number];
+/** Maximum length of the details written with a state change (characters). */
+export const MAX_STATE_NOTE_LENGTH = 2000;
 export type Responsible = 'sender' | 'recipient' | 'domain' | 'unknown';
 export type Severity = 'high' | 'medium' | 'low' | '';
 /** How firmly the agent established the cause from the notices. */
@@ -104,7 +133,19 @@ export interface MailboxStats {
     /** Junk mails (phishing, spam): deleted from the server like the targets, counted apart. */
     junk_messages: number;
     /** Counts of the actionable Alerts list only (excluded groups are not counted). */
-    groups: { open: number; resolved: number; ignored: number };
+    groups: GroupCounts;
+}
+
+/**
+ * Groups per tab of Alerts: resolved and ignored count the groups not sent back for a re-check,
+ * resolved_recheck and ignored_recheck the ones that were (every group is counted once).
+ */
+export interface GroupCounts {
+    open: number;
+    resolved: number;
+    resolved_recheck: number;
+    ignored: number;
+    ignored_recheck: number;
 }
 
 export interface MailboxDTO {
@@ -168,6 +209,12 @@ export interface GroupDTO {
     last_seen: string | null;
     state: GroupState;
     state_updated_at: string | null;
+    /** Code chosen with the current state (a ResolveAction or an IgnoreReason); null while open or when none was recorded. */
+    state_reason: string | null;
+    /** Details written with the current state; null when none. */
+    state_note: string | null;
+    /** A resolved or ignored group sent back for a new decision (the "(re)" tabs). */
+    needs_recheck: boolean;
     needs_analysis: boolean;
     report_summary: string;
     report_severity: Severity | string;
@@ -176,12 +223,6 @@ export interface GroupDTO {
     report_status: ReportStatus;
     /** The latest analysis failed for good (not a usage limit or a cancellation): not analyzed again until a new pattern arrives. */
     report_unanalyzable: boolean;
-}
-
-/** A group row on the dashboard, which spans mailboxes. */
-export interface DashboardGroup extends GroupDTO {
-    mailbox_id: number;
-    mailbox_address: string;
 }
 
 export interface ReportDTO {
@@ -328,9 +369,19 @@ export interface JobSubmitResult {
 
 export interface DashboardDTO {
     mailboxes: MailboxDTO[];
-    /** open_groups counts actionable groups only; unclassified is the number of mails waiting to be grouped. */
-    totals: { mailboxes: number; open_groups: number; bounces: number; messages: number; unclassified: number };
-    recent_groups: DashboardGroup[];
+    /**
+     * The counters of the Alerts and Mails cards summed over the mailboxes: open_groups and recheck_groups count
+     * the actionable Alerts list; unclassified is the number of mails waiting to be grouped.
+     */
+    totals: {
+        mailboxes: number;
+        open_groups: number;
+        recheck_groups: number;
+        messages: number;
+        target_messages: number;
+        junk_messages: number;
+        unclassified: number;
+    };
     /** Mailboxes a sync, fetch, group, reindex, reclassify or cleanup job is queued or running for (every user). */
     busy_mailbox_ids: number[];
     /** Filled for administrators only (empty for members). */
@@ -370,6 +421,8 @@ export interface SettingsDTO {
     mail_keep_days: number;
     /** Local time (HH:MM) of the daily cleanup. */
     cleanup_time: string;
+    /** Re-check days of every group category (1-365). */
+    recheck_days: Record<string, number>;
     providers: ProviderStatus[];
     /** Jobs executed at the same time (1-16). Present for administrators only. */
     workers?: number;
@@ -392,6 +445,8 @@ export interface SettingsInput {
     agent_keep_days?: number;
     mail_keep_days?: number;
     cleanup_time?: string;
+    /** Re-check days of the categories named (the others keep theirs). */
+    recheck_days?: Record<string, number>;
     workers?: number;
 }
 
@@ -456,8 +511,19 @@ export interface GroupListResponse {
     total: number;
     page: number;
     per_page: number;
-    /** Per-state counts within the requested scope (absent for the excluded scope, which is not counted). */
-    counts?: { open: number; resolved: number; ignored: number };
+    /** Per-tab counts within the requested scope (absent for the excluded scope, which is not counted). */
+    counts?: GroupCounts;
+}
+
+/** One entry of the state history of a group. */
+export interface StateChangeDTO {
+    state: GroupState;
+    /** Code chosen; null for open and for entries kept from before the history was recorded. */
+    reason: string | null;
+    note: string | null;
+    /** Username; empty for the CLI and for entries kept from before the history was recorded. */
+    changed_by: string;
+    changed_at: string;
 }
 
 /** GET /api/v1/mailboxes/{id}/groups/{key} */
@@ -467,11 +533,13 @@ export interface GroupDetailResponse {
     report: ReportDTO | null;
     reports: ReportDTO[];
     messages: MessageDTO[];
+    /** State history, newest first. */
+    history: StateChangeDTO[];
 }
 
 /** GET /api/v1/mailboxes/{id}/messages */
-/** Mail kind switch of the mail list: all, notices (auto-replies and DMARC reports included), junk (phishing, spam), everything else. */
-export type MessageKind = 'all' | 'bounce' | 'junk' | 'other';
+/** Mail kind switch of the mail list: all, targets (notices classified with certain evidence), junk (phishing, spam), everything else. */
+export type MessageKind = 'all' | 'target' | 'junk' | 'other';
 
 export interface MessageListResponse {
     messages: MessageDTO[];

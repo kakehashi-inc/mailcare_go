@@ -605,7 +605,7 @@ func buildMailbox(t *testing.T) (root, address string) {
 	root = t.TempDir()
 	address = "newsletter@example.jp"
 	storeSamples(t, root, address, 1, samples...)
-	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil, nil); err != nil {
 		t.Fatalf("group: %v", err)
 	}
 	return root, address
@@ -839,7 +839,7 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 		}
 	}
 	var lines []string
-	res, err := Reindex(context.Background(), root, address, func(m string) { lines = append(lines, m) })
+	res, err := Reindex(context.Background(), root, address, nil, func(m string) { lines = append(lines, m) })
 	if err != nil {
 		t.Fatalf("reindex: %v (progress: %v)", err, lines)
 	}
@@ -882,7 +882,7 @@ func TestStoreAndReindexRoundTrip(t *testing.T) {
 	}
 
 	// A full grouping keeps the messages and rebuilds the classification.
-	gres, err := GroupMailbox(context.Background(), root, address, true, nil)
+	gres, err := GroupMailbox(context.Background(), root, address, true, nil, nil)
 	if err != nil {
 		t.Fatalf("full grouping: %v", err)
 	}
@@ -948,6 +948,29 @@ func snapshotMessages(t *testing.T, db *sql.DB) map[string]messageRow {
 	return out
 }
 
+// carriedNote is the note seedReport leaves with the resolved state; a full
+// grouping and a reindex keep it with the state and the history.
+const carriedNote = "Delisting requested"
+
+// setStateForTest changes the state of a group at the given time the way
+// modules.ChangeGroupState does (the state columns, a history row and the
+// re-check keys of the current members).
+func setStateForTest(t *testing.T, db *sql.DB, key, state, reason, note string, at time.Time) {
+	t.Helper()
+	r := sql.NullString{String: reason, Valid: reason != ""}
+	n := sql.NullString{String: note, Valid: note != ""}
+	if err := models.SetGroupState(db, key, state, r, n, at, false); err != nil {
+		t.Fatal(err)
+	}
+	c := &models.GroupStateChange{GroupKey: key, State: state, Reason: r, Note: n, ChangedBy: "tester", ChangedAt: at}
+	if err := models.InsertGroupStateChange(db, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordStateChangePatterns(db, c.ID, key); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // seedReport stores a completed agent report on the largest group, marks the
 // group resolved with an agent-chosen responsible party and returns the key,
 // plus the key of a single-message group (whose files the caller may delete).
@@ -995,9 +1018,7 @@ func seedReport(t *testing.T, root, address string) (kept, single string, stateU
 			t.Fatal(err)
 		}
 	}
-	if err := models.SetGroupState(db, kept, "resolved"); err != nil {
-		t.Fatal(err)
-	}
+	setStateForTest(t, db, kept, "resolved", models.ResolveActionDelisting, carriedNote, time.Now().UTC())
 	g, err := models.GetGroup(db, kept)
 	if err != nil {
 		t.Fatal(err)
@@ -1020,6 +1041,16 @@ func assertCarried(t *testing.T, root, address, kept, single string, stateUpdate
 	}
 	if g.State != "resolved" || !g.StateUpdatedAt.Valid || !g.StateUpdatedAt.Time.Equal(stateUpdated) {
 		t.Errorf("%s: state = %s at %v, want resolved at %v", label, g.State, g.StateUpdatedAt, stateUpdated)
+	}
+	if g.StateReason.String != models.ResolveActionDelisting || g.StateNote.String != carriedNote || g.NeedsRecheck {
+		t.Errorf("%s: reason / note / recheck = %v / %v / %v, want %s / %q / false", label, g.StateReason, g.StateNote,
+			g.NeedsRecheck, models.ResolveActionDelisting, carriedNote)
+	}
+	history, err := models.ListGroupStateChanges(db, g.GroupKey)
+	if err != nil || len(history) != 1 || history[0].State != "resolved" || history[0].Note.String != carriedNote {
+		t.Errorf("%s: history = %+v (err %v), want the resolved change", label, history, err)
+	} else if keys, err := models.ListGroupStateChangePatterns(db, history[0].ID); err != nil || len(keys) == 0 {
+		t.Errorf("%s: the re-check keys of the change were not kept: %v (err %v)", label, keys, err)
 	}
 	if g.NeedsAnalysis {
 		t.Errorf("%s: needs_analysis was set although every pattern was covered", label)
@@ -1052,7 +1083,7 @@ func assertCarried(t *testing.T, root, address, kept, single string, stateUpdate
 func TestFullGroupingKeepsReports(t *testing.T) {
 	root, address := buildMailbox(t)
 	kept, single, stateUpdated := seedReport(t, root, address)
-	res, err := GroupMailbox(context.Background(), root, address, true, nil)
+	res, err := GroupMailbox(context.Background(), root, address, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1102,7 +1133,7 @@ func TestReindexCarriesReportsOver(t *testing.T) {
 	// Remove the raw files of the single-message group so that it vanishes.
 	removeGroupFiles(t, root, address, single)
 	var lines []string
-	if _, err := Reindex(context.Background(), root, address, func(m string) { lines = append(lines, m) }); err != nil {
+	if _, err := Reindex(context.Background(), root, address, nil, func(m string) { lines = append(lines, m) }); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(strings.Join(lines, "\n"), "group states and 1 agent reports") {
@@ -1115,7 +1146,7 @@ func TestReindexCarriesReportsOver(t *testing.T) {
 	if err := removeIndexFiles(MailboxIndexPath(root, address)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Reindex(context.Background(), root, address, nil); err != nil {
+	if _, err := Reindex(context.Background(), root, address, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
@@ -1153,7 +1184,7 @@ func TestReindexKeepsReportIDs(t *testing.T) {
 		t.Fatalf("reports of the kept group before reindex: %+v, %v", before, err)
 	}
 	removeGroupFiles(t, root, address, single)
-	if _, err := Reindex(context.Background(), root, address, nil); err != nil {
+	if _, err := Reindex(context.Background(), root, address, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, err = models.OpenMailIndex(MailboxIndexPath(root, address))
@@ -1250,7 +1281,7 @@ func TestReportResponsibleUnknownKeepsRuleValue(t *testing.T) {
 	check("reapply")
 	db.Close()
 
-	if _, err := GroupMailbox(context.Background(), root, address, true, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root, address, true, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, err = models.OpenMailIndex(MailboxIndexPath(root, address))
@@ -1260,7 +1291,7 @@ func TestReportResponsibleUnknownKeepsRuleValue(t *testing.T) {
 	check("full grouping")
 	db.Close()
 
-	if _, err := Reindex(context.Background(), root, address, nil); err != nil {
+	if _, err := Reindex(context.Background(), root, address, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, err = models.OpenMailIndex(MailboxIndexPath(root, address))
@@ -1292,9 +1323,13 @@ func TestOpenIndexAppliesMigrations(t *testing.T) {
 	current := version(db)
 
 	// An index written before the migrations were introduced (no goose
-	// table, a table of a later version missing) is adopted as it is: the
-	// data stays and what is missing is created.
-	for _, stmt := range []string{`DROP TABLE goose_db_version`, `DROP TABLE agent_report_patterns`, `PRAGMA user_version = 1`} {
+	// table, a table of a later version missing, none of the columns and
+	// tables the later migrations add) is adopted as it is: the data stays
+	// and what is missing is created.
+	for _, stmt := range []string{`DROP TABLE goose_db_version`, `DROP TABLE agent_report_patterns`,
+		`DROP TABLE group_state_change_patterns`, `DROP TABLE group_state_changes`,
+		`ALTER TABLE groups DROP COLUMN needs_recheck`, `ALTER TABLE groups DROP COLUMN state_note`,
+		`ALTER TABLE groups DROP COLUMN state_reason`, `PRAGMA user_version = 1`} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
@@ -1354,7 +1389,7 @@ func TestReindexWithoutSourcesAndCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lines []string
-	res, err := Reindex(context.Background(), root, address, func(m string) { lines = append(lines, m) })
+	res, err := Reindex(context.Background(), root, address, nil, func(m string) { lines = append(lines, m) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1394,7 +1429,7 @@ func TestReindexWithoutSourcesAndCancel(t *testing.T) {
 	// The next rebuild finds the rows in the previous index and carries the
 	// same identity over (the raw file still records nothing).
 	before := snapshotMessages(t, mustOpenIndex(t, root, address))
-	if _, err := Reindex(context.Background(), root, address, nil); err != nil {
+	if _, err := Reindex(context.Background(), root, address, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	after := snapshotMessages(t, mustOpenIndex(t, root, address))
@@ -1406,17 +1441,17 @@ func TestReindexWithoutSourcesAndCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := Reindex(ctx, root, address, nil); err != context.Canceled {
+	if _, err := Reindex(ctx, root, address, nil, nil); err != context.Canceled {
 		t.Errorf("cancelled reindex err = %v", err)
 	}
-	if _, err := GroupMailbox(ctx, root, address, true, nil); err != context.Canceled {
+	if _, err := GroupMailbox(ctx, root, address, true, nil, nil); err != context.Canceled {
 		t.Errorf("cancelled grouping err = %v", err)
 	}
 	// A rebuild cancelled mid-run (after the build file was created) leaves
 	// no build file behind and keeps the previous index.
 	cctx, ccancel := context.WithCancel(context.Background())
 	defer ccancel()
-	_, err = Reindex(cctx, root, address, func(m string) {
+	_, err = Reindex(cctx, root, address, nil, func(m string) {
 		if strings.HasPrefix(m, "reindexing ") {
 			ccancel()
 		}
@@ -1975,7 +2010,7 @@ func TestGroupIncremental(t *testing.T) {
 	db.Close()
 
 	var lines []string
-	res, err := GroupMailbox(context.Background(), root, address, false, func(m string) { lines = append(lines, m) })
+	res, err := GroupMailbox(context.Background(), root, address, false, nil, func(m string) { lines = append(lines, m) })
 	if err != nil {
 		t.Fatalf("group run 1: %v", err)
 	}
@@ -1999,7 +2034,7 @@ func TestGroupIncremental(t *testing.T) {
 	groupsAfter1 := res.Groups
 
 	// Nothing new: nothing processed, nothing touched.
-	res, err = GroupMailbox(context.Background(), root, address, false, nil)
+	res, err = GroupMailbox(context.Background(), root, address, false, nil, nil)
 	if err != nil {
 		t.Fatalf("group run 2: %v", err)
 	}
@@ -2011,7 +2046,7 @@ func TestGroupIncremental(t *testing.T) {
 	// actionable group (touched), the over-quota bounce creates a
 	// recipient-side group (not touched).
 	storeSamples(t, root, address, uint32(len(first)+1), later...)
-	res, err = GroupMailbox(context.Background(), root, address, false, nil)
+	res, err = GroupMailbox(context.Background(), root, address, false, nil, nil)
 	if err != nil {
 		t.Fatalf("group run 3: %v", err)
 	}
@@ -2484,7 +2519,7 @@ func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	address := "newsletter@example.jp"
 	storeSamples(t, root, address, 1,
 		sample{file: "html_only_bounce_wording.eml"}, sample{file: "attach_mixed.eml"}, sample{file: "html_skeleton.eml"}, sample{file: "gmail_bounce.eml"})
-	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	db, err := models.OpenMailIndex(MailboxIndexPath(root, address))
@@ -2774,7 +2809,7 @@ func TestAnalysisFlagFollowsPatterns(t *testing.T) {
 	root := t.TempDir()
 	address := "newsletter@example.jp"
 	storeSamples(t, root, address, 1, samples...)
-	if _, err := GroupMailbox(context.Background(), root, address, false, nil); err != nil {
+	if _, err := GroupMailbox(context.Background(), root, address, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	spamKey := GroupKey(categoryIPBlocked, "203.0.113.5", "spamhaus.org")
@@ -2814,7 +2849,7 @@ func TestAnalysisFlagFollowsPatterns(t *testing.T) {
 	// Every pattern covered: regrouping every message flags nothing.
 	cover(patterns)
 	db.Close()
-	res, err := GroupMailbox(context.Background(), root, address, true, nil)
+	res, err := GroupMailbox(context.Background(), root, address, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2833,7 +2868,7 @@ func TestAnalysisFlagFollowsPatterns(t *testing.T) {
 	// flags the group.
 	cover([]string{"another-pattern"})
 	db.Close()
-	res, err = GroupMailbox(context.Background(), root, address, true, nil)
+	res, err = GroupMailbox(context.Background(), root, address, true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
