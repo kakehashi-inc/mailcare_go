@@ -18,6 +18,16 @@ type ServerDeleteResult struct {
 	Skipped int // candidates left on the server (UIDVALIDITY changed, Message-ID missing or different)
 }
 
+// serverDeletableRules are the classification rules whose evidence is
+// certain enough for the server retention to delete a message from the
+// IMAP server for good: a delivery-status report, a mail daemon sender
+// address, "Auto-Submitted: auto-replied" and the fixed wording of a
+// non-delivery report. Matches on the subject or the display name alone
+// (auto_reply_subject, subject_pattern, daemon_display_name) and
+// automatically generated messages (auto_generated) are left on the server:
+// a person's mail can look like them.
+var serverDeletableRules = []string{ruleDSNReport, ruleDaemonSender, ruleAutoReply, ruleBodyPattern}
+
 // ErrOtherDeletedFlags is returned by DeleteFromServer on a server without
 // UID EXPUNGE when messages other than the ones to delete carry \Deleted
 // (flagged by another client): the plain EXPUNGE such a server offers would
@@ -29,10 +39,13 @@ var ErrOtherDeletedFlags = errors.New(`other messages in the folder are flagged 
 // command names.
 const serverDeleteBatch = 200
 
-// DeleteFromServer applies the server retention of a mailbox (design 5.6):
-// the mails of its folder that belong to a group marked resolved or ignored
-// and whose date is older than keep are deleted from the IMAP server for
-// good (\Deleted, then an expunge; no move to a trash folder). The raw
+// DeleteFromServer applies the server retention of a mailbox (design 5.6.1):
+// the mails of its folder classified as a daemon notice (failures, delays,
+// auto-replies and other daemon mail, whatever the state of their group) by
+// one of serverDeletableRules (not the ordinary mail, the mails not
+// classified yet or the ones matched on weaker evidence) whose date is
+// older than keep are deleted from the IMAP
+// server for good (\Deleted, then an expunge; no move to a trash folder). The raw
 // files and the index rows stay (the local retention removes them later);
 // the rows get server_deleted_at so they are not tried again, and a reindex
 // carries it over.
@@ -63,14 +76,14 @@ func DeleteFromServer(ctx context.Context, mailsRoot string, mb *models.Mailbox,
 		return res, err
 	}
 	defer db.Close()
-	candidates, err := models.ListServerDeletionCandidates(db, folder, time.Now().Add(-keep))
+	candidates, err := models.ListServerDeletionCandidates(db, folder, time.Now().Add(-keep), serverDeletableRules)
 	if err != nil {
 		return res, fmt.Errorf("list server deletion candidates: %w", err)
 	}
 	if len(candidates) == 0 {
 		return res, nil
 	}
-	report(progress, fmt.Sprintf("%d message(s) of resolved or ignored groups are past the server retention", len(candidates)))
+	report(progress, fmt.Sprintf("%d daemon notice(s) are past the server retention", len(candidates)))
 
 	s, err := connect(ctx, mb, password)
 	if err != nil {

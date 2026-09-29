@@ -29,10 +29,13 @@ type Mailbox struct {
 	Folder          string `json:"folder"`
 	InitialDays     int    `json:"initial_days"`
 	RecentDays      int    `json:"recent_days"`
-	// ServerKeepDays is how many days (counted from the mail's date) a mail
-	// of a resolved or ignored group stays on the IMAP server before the
-	// daily cleanup deletes it there; 0 keeps every mail on the server
-	// (also the value of a row saved before the setting existed).
+	// ServerKeepDays is how many days (counted from the mail's date) a
+	// daemon notice classified with certain evidence (see
+	// mailengine.serverDeletableRules) stays on the
+	// IMAP server before the daily cleanup deletes it there (it cannot be
+	// set above mail_keep_days, and the cleanup applies mail_keep_days when
+	// the mail retention was shortened later); 0 keeps every mail on the
+	// server (also the value of a row saved before the setting existed).
 	ServerKeepDays int `json:"server_keep_days"`
 }
 
@@ -118,9 +121,11 @@ func UpdateMailboxFetchResult(db *sql.DB, id int64, errMsg string) error {
 	return err
 }
 
-// ListMailboxes returns every mailbox ordered by address.
+// ListMailboxes returns every mailbox ordered by domain (the part after
+// "@"), then by address. Addresses are stored in lower case.
 func ListMailboxes(db *sql.DB) ([]*Mailbox, error) {
-	rows, err := db.Query(`SELECT ` + mailboxColumns + ` FROM mailboxes ORDER BY address ASC`)
+	rows, err := db.Query(`SELECT ` + mailboxColumns + ` FROM mailboxes
+		ORDER BY substr(address, instr(address, '@') + 1) ASC, address ASC`)
 	if err != nil {
 		return nil, err
 	}

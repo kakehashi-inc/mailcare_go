@@ -587,6 +587,46 @@ func TestMailboxServerKeepDays(t *testing.T) {
 		t.Errorf("update stored %d, want 120", stored.ServerKeepDays)
 	}
 
+	// The server retention cannot exceed the mail retention (180 days by
+	// default) ...
+	update.ServerKeepDays = days(DefaultMailKeepDays + 1)
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); err == nil || !strings.Contains(err.Error(), "must not exceed mail_keep_days (180 days)") {
+		t.Errorf("above the mail retention: %v", err)
+	}
+	over := in("d@example.test")
+	over.ServerKeepDays = days(DefaultMailKeepDays + 1)
+	if _, err := CreateMailbox(db, key, over); err == nil {
+		t.Error("new mailbox above the mail retention accepted")
+	}
+	// ... but a stored value left above a shortened mail retention stays
+	// while other fields are edited, and cannot be raised or set anew.
+	if err := SaveMailKeepDays(db, 100); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ = models.GetMailboxByID(db, mb.ID)
+	update.ServerKeepDays = days(120)
+	update.DisplayName = "Ops"
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); err != nil {
+		t.Errorf("unchanged value above a shortened mail retention: %v", err)
+	}
+	stored, _ = models.GetMailboxByID(db, mb.ID)
+	update.ServerKeepDays = days(110)
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); err == nil {
+		t.Error("changed value above the mail retention accepted")
+	}
+	update.ServerKeepDays = days(100)
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); err != nil {
+		t.Errorf("value equal to the mail retention: %v", err)
+	}
+	// A new mailbox gets the mail retention when it is shorter than the
+	// default.
+	if err := SaveMailKeepDays(db, 30); err != nil {
+		t.Fatal(err)
+	}
+	if short, err := CreateMailbox(db, key, in("e@example.test")); err != nil || short.ServerKeepDays != 30 {
+		t.Errorf("default under a short mail retention: %+v %v", short, err)
+	}
+
 	// A mailbox saved before the setting existed (no key in detail_info)
 	// keeps its mails on the server.
 	if _, err := db.Exec(`UPDATE mailboxes SET detail_info = json_remove(detail_info, '$.server_keep_days') WHERE id = ?`, mb.ID); err != nil {
@@ -608,5 +648,32 @@ func TestMailboxServerKeepDays(t *testing.T) {
 	stored.Enabled, stored.ServerKeepDays = true, 0
 	if keys := jobResourceKeys(JobKindCleanup, stored); len(keys) != 2 {
 		t.Errorf("cleanup keys without a server retention: %v", keys)
+	}
+}
+
+// TestListMailboxesOrderedByDomain: the mailboxes are listed by domain, then
+// by address.
+func TestListMailboxesOrderedByDomain(t *testing.T) {
+	db := newTestDB(t)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []string{"a@zeta.example", "c@alpha.example", "b@alpha.example", "a@mid.example"} {
+		if _, err := CreateMailbox(db, key, &MailboxInput{Address: address, ImapHost: "imap.example.test", ImapUsername: "u", ImapPassword: "p"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := models.ListMailboxes(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, mb := range list {
+		got = append(got, mb.Address)
+	}
+	want := "b@alpha.example c@alpha.example a@mid.example a@zeta.example"
+	if strings.Join(got, " ") != want {
+		t.Errorf("order %v, want %s", got, want)
 	}
 }

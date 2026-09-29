@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -347,14 +348,15 @@ func TestFetchAndGroupAgainstMemServer(t *testing.T) {
 
 // TestFetchNotBeforeBoundsWindow: FetchOptions.NotBefore caps how far back
 // a run searches. A bound later than the window's start replaces it (and
-// is reported), an earlier one changes nothing.
+// is reported), an earlier one changes nothing. FetchOptions.AllTime
+// ignores both and searches the whole folder.
 func TestFetchNotBeforeBoundsWindow(t *testing.T) {
 	srv := startMemIMAP(t)
 	ctx := context.Background()
 	for _, s := range []struct {
 		name    string
 		daysAgo int
-	}{{"postfix_dsn.eml", 80}, {"qmail_bounce.eml", 45}, {"gmail_bounce.eml", 20}, {"postfix_delayed.eml", 1}} {
+	}{{"normal.eml", 200}, {"postfix_dsn.eml", 80}, {"qmail_bounce.eml", 45}, {"gmail_bounce.eml", 20}, {"postfix_delayed.eml", 1}} {
 		srv.appendSample(t, s.name, s.daysAgo)
 	}
 	// A 30 day bound on a fresh index (initial window 90 days): only the
@@ -395,8 +397,19 @@ func TestFetchNotBeforeBoundsWindow(t *testing.T) {
 	if err != nil || res.Fetched != 0 {
 		t.Errorf("later bounded run: %+v, %v", res, err)
 	}
-	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "recent window, 30 days, limited to the mail retention") || !strings.Contains(joined, "found 1 messages in the window, 0 new") {
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "recent window, 30 days, limited to the mail retention") || !strings.Contains(joined, "found 1 messages, 0 new") {
 		t.Errorf("later bounded run progress:\n%s", joined)
+	}
+	// An all-time run searches the whole folder despite the window and the
+	// bound: only the mail older than the initial window is new.
+	lines = nil
+	res, err = FetchMailbox(ctx, root, srv.mailbox(), memPassword,
+		FetchOptions{NotBefore: time.Now().AddDate(0, 0, -10), AllTime: true}, func(m string) { lines = append(lines, m) })
+	if err != nil || res.Fetched != 1 {
+		t.Errorf("all-time run: %+v, %v", res, err)
+	}
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "searching the whole folder (all time)") || !strings.Contains(joined, "found 5 messages, 1 new") {
+		t.Errorf("all-time run progress:\n%s", joined)
 	}
 }
 
@@ -489,6 +502,20 @@ func TestDeleteFromServer(t *testing.T) {
 		"gmail_bounce.eml", "autoreply.eml", "normal.eml"} {
 		srv.appendSample(t, name, 10+i)
 	}
+	// A message a system generated on its own, a person's mail with an
+	// out-of-office word in the subject and a person's mail under a
+	// "Postmaster Team" display name stay on the server: they are matched
+	// on weaker evidence than serverDeletableRules.
+	generated := append([]byte("Auto-Submitted: auto-generated\r\n"), withNewMessageID(readSample(t, "normal.eml"), "generated@example.jp")...)
+	srv.appendRaw(t, generated, time.Now().AddDate(0, 0, -20))
+	srv.appendRaw(t, []byte("From: Jiro <jiro@partner.example.com>\r\nTo: newsletter@example.jp\r\n"+
+		"Subject: Re: vacation plans (out of office next week)\r\nMessage-Id: <subject-only@example.jp>\r\n"+
+		"Date: Tue, 2 Sep 2025 09:15:30 +0900\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"+
+		"Here is my contact while I am away.\r\n"), time.Now().AddDate(0, 0, -21))
+	srv.appendRaw(t, []byte("From: Postmaster Team <support@hosting.example.net>\r\nTo: newsletter@example.jp\r\n"+
+		"Subject: Scheduled maintenance of the mail platform\r\nMessage-Id: <display-name@example.jp>\r\n"+
+		"Date: Tue, 2 Sep 2025 09:15:30 +0900\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"+
+		"The mail platform will be upgraded on Saturday.\r\n"), time.Now().AddDate(0, 0, -22))
 	root := fetchAndGroup(t, srv)
 	ctx := context.Background()
 	mb := srv.mailbox()
@@ -499,29 +526,52 @@ func TestDeleteFromServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	groups, err := models.ListGroups(db, models.GroupFilter{})
-	if err != nil || len(groups) < 3 {
-		t.Fatalf("need at least 3 groups: %v (%d)", err, len(groups))
-	}
-	// One group resolved, one ignored, the others stay open.
-	if err := models.SetGroupState(db, groups[0].GroupKey, "resolved"); err != nil {
-		t.Fatal(err)
-	}
-	if err := models.SetGroupState(db, groups[1].GroupKey, "ignored"); err != nil {
-		t.Fatal(err)
-	}
-	due, err := models.ListServerDeletionCandidates(db, memFolder, time.Now().Add(-keep))
-	if err != nil || len(due) == 0 {
-		t.Fatalf("candidates: %v (%d)", err, len(due))
+	// Every daemon notice classified by a deletable rule is due whatever the
+	// state of its group (all groups stay open here); the ordinary mail and
+	// the three messages above are not.
+	due, err := models.ListServerDeletionCandidates(db, memFolder, time.Now().Add(-keep), serverDeletableRules)
+	if err != nil || len(due) != 6 {
+		t.Fatalf("candidates: %v (%d, want 6)", err, len(due))
 	}
 	for _, c := range due {
 		m, _ := models.GetMessageByKey(db, c.MessageKey)
-		if m.GroupKey != groups[0].GroupKey && m.GroupKey != groups[1].GroupKey {
-			t.Errorf("candidate %s belongs to the open group %s", c.MessageKey, m.GroupKey)
+		if !m.IsBounce || !slices.Contains(serverDeletableRules, m.Rule) {
+			t.Errorf("candidate %s: is_bounce %v, rule %q", c.MessageKey, m.IsBounce, m.Rule)
 		}
 	}
-	// A candidate whose Message-ID no longer matches stays on the server.
+	for id, want := range map[string]string{"generated@example.jp": ruleAutoGenerated, "subject-only@example.jp": ruleAutoReplySubject, "display-name@example.jp": ruleDaemonDisplayName} {
+		var rule string
+		var isBounce bool
+		if err := db.QueryRow(`SELECT rule, is_bounce FROM messages WHERE message_id LIKE ?`, "%"+id+"%").Scan(&rule, &isBounce); err != nil || rule != want || !isBounce {
+			t.Errorf("%s: rule %q, is_bounce %v, %v (want %s)", id, rule, isBounce, err, want)
+		}
+	}
+	// A message not classified yet is never due.
+	if _, err := db.Exec(`UPDATE messages SET classified = 0 WHERE id = ?`, due[len(due)-1].ID); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := models.ListServerDeletionCandidates(db, memFolder, time.Now().Add(-keep), serverDeletableRules); len(again) != len(due)-1 {
+		t.Errorf("unclassified message still due: %d candidates", len(again))
+	}
+	if _, err := db.Exec(`UPDATE messages SET classified = 1 WHERE id = ?`, due[len(due)-1].ID); err != nil {
+		t.Fatal(err)
+	}
+	// A candidate without a Message-ID (the qmail notice) stays on the
+	// server, and so does one whose Message-ID no longer matches.
+	skipped := map[int64]bool{}
+	for _, c := range due {
+		if c.MessageID == "" {
+			skipped[c.ID] = true
+		}
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("want exactly one candidate without a Message-ID, got %d", len(skipped))
+	}
 	mismatch := due[0]
+	if skipped[mismatch.ID] {
+		mismatch = due[1]
+	}
+	skipped[mismatch.ID] = true
 	if _, err := db.Exec(`UPDATE messages SET message_id = 'someone-else@example.jp' WHERE id = ?`, mismatch.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -543,11 +593,11 @@ func TestDeleteFromServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteFromServer: %v\n%s", err, strings.Join(lines, "\n"))
 	}
-	if res.Deleted != len(due)-1 || res.Skipped != 1 {
-		t.Errorf("result %+v, want %d deleted / 1 skipped", res, len(due)-1)
+	if res.Deleted != len(due)-len(skipped) || res.Skipped != len(skipped) {
+		t.Errorf("result %+v, want %d deleted / %d skipped", res, len(due)-len(skipped), len(skipped))
 	}
-	if after := srv.serverCount(t); after != before-uint32(len(due)-1) {
-		t.Errorf("server holds %d messages, want %d", after, before-uint32(len(due)-1))
+	if after := srv.serverCount(t); after != before-uint32(len(due)-len(skipped)) {
+		t.Errorf("server holds %d messages, want %d", after, before-uint32(len(due)-len(skipped)))
 	}
 	db, err = models.OpenMailIndex(indexPath)
 	if err != nil {
@@ -558,14 +608,14 @@ func TestDeleteFromServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the local row must stay: %v", err)
 		}
-		if m.ServerDeletedAt.Valid == (c.ID == mismatch.ID) {
+		if m.ServerDeletedAt.Valid == skipped[c.ID] {
 			t.Errorf("%s: server_deleted_at = %v", c.MessageKey, m.ServerDeletedAt)
 		}
 	}
 	db.Close()
 
 	// A second run deletes nothing more.
-	if res, err := DeleteFromServer(ctx, root, mb, memPassword, keep, nil); err != nil || res.Deleted != 0 || res.Skipped != 1 {
+	if res, err := DeleteFromServer(ctx, root, mb, memPassword, keep, nil); err != nil || res.Deleted != 0 || res.Skipped != len(skipped) {
 		t.Errorf("second run: %+v %v", res, err)
 	}
 	// Reindex carries the deletion time over.
@@ -579,7 +629,7 @@ func TestDeleteFromServer(t *testing.T) {
 	defer db.Close()
 	for _, c := range due {
 		m, err := models.GetMessageByKey(db, c.MessageKey)
-		if err != nil || m.ServerDeletedAt.Valid == (c.ID == mismatch.ID) {
+		if err != nil || m.ServerDeletedAt.Valid == skipped[c.ID] {
 			t.Errorf("after reindex %s: %+v %v", c.MessageKey, m, err)
 		}
 	}
@@ -588,17 +638,6 @@ func TestDeleteFromServer(t *testing.T) {
 func TestDeleteFromServerSafety(t *testing.T) {
 	ctx := context.Background()
 	keep := 24 * time.Hour
-	resolveAll := func(t *testing.T, root string) {
-		t.Helper()
-		db, err := models.OpenMailIndex(MailboxIndexPath(root, memUsername))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		if _, err := db.Exec(`UPDATE groups SET state = 'resolved'`); err != nil {
-			t.Fatal(err)
-		}
-	}
 
 	// A server without UIDPLUS (IMAP4rev1 only): the plain EXPUNGE is used
 	// while no other message carries \Deleted ...
@@ -606,7 +645,6 @@ func TestDeleteFromServerSafety(t *testing.T) {
 	srv.appendSample(t, "postfix_dsn.eml", 10)
 	srv.appendSample(t, "normal.eml", 10)
 	root := fetchAndGroup(t, srv)
-	resolveAll(t, root)
 	res, err := DeleteFromServer(ctx, root, srv.mailbox(), memPassword, keep, nil)
 	if err != nil || res.Deleted != 1 {
 		t.Errorf("without UIDPLUS: %+v %v", res, err)
@@ -620,7 +658,6 @@ func TestDeleteFromServerSafety(t *testing.T) {
 	srv.appendSample(t, "postfix_dsn.eml", 10)
 	srv.appendSample(t, "normal.eml", 10)
 	root = fetchAndGroup(t, srv)
-	resolveAll(t, root)
 	s, err := connect(ctx, srv.mailbox(), memPassword)
 	if err != nil {
 		t.Fatal(err)
@@ -644,7 +681,7 @@ func TestDeleteFromServerSafety(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if due, _ := models.ListServerDeletionCandidates(db, memFolder, time.Now().Add(-keep)); len(due) != 1 {
+	if due, _ := models.ListServerDeletionCandidates(db, memFolder, time.Now().Add(-keep), serverDeletableRules); len(due) != 1 {
 		t.Errorf("the candidate must stay due for the next cleanup, got %d", len(due))
 	}
 	db.Close()
@@ -654,7 +691,6 @@ func TestDeleteFromServerSafety(t *testing.T) {
 	srv = startMemIMAP(t)
 	srv.appendSample(t, "postfix_dsn.eml", 10)
 	root = fetchAndGroup(t, srv)
-	resolveAll(t, root)
 	db, err = models.OpenMailIndex(MailboxIndexPath(root, memUsername))
 	if err != nil {
 		t.Fatal(err)

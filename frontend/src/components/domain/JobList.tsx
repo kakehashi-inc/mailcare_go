@@ -30,7 +30,9 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                         ? job.target === '*'
                             ? t('component.jobList.targetAll')
                             : job.target || t('component.jobList.targetNeeds')
-                        : '';
+                        : (job.kind === 'sync' || job.kind === 'fetch') && job.target === '*'
+                          ? t('component.jobList.targetAllTime')
+                          : '';
                 return (
                     <li key={job.id} className='rounded-lg border border-line bg-surface p-3'>
                         <div className='flex flex-wrap items-start justify-between gap-2'>

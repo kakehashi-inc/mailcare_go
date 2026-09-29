@@ -637,6 +637,9 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		{"mail_keep_days": 0},
 		{"mail_keep_days": modules.MaxMailKeepDays + 1},
 		{"mail_keep_days": -1},
+		{"cleanup_time": "24:00"},
+		{"cleanup_time": "02:00,03:00"},
+		{"cleanup_time": ""},
 		{"agent_model": "-c evil"},
 		{"agent_model": "gpt 5"},
 		{"agent_model": strings.Repeat("a", 101)},
@@ -656,6 +659,7 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 		AgentEnabled  bool     `json:"agent_enabled"`
 		AgentKeepDays int      `json:"agent_keep_days"`
 		MailKeepDays  int      `json:"mail_keep_days"`
+		CleanupTime   string   `json:"cleanup_time"`
 		Workers       int      `json:"workers"`
 		WebPort       int      `json:"web_port"`
 		DataDir       string   `json:"data_dir"`
@@ -663,8 +667,25 @@ func TestSettingsValidationAndPersistence(t *testing.T) {
 	decode(t, rec.Body.Bytes(), &st)
 	if strings.Join(st.CheckTimes, ",") != "07:30,23:00" || st.AgentEnabled || st.AgentProvider != modules.DefaultAgentProvider ||
 		st.WebPort != modules.DefaultWebPort || st.DataDir != s.dataDir || st.Workers != modules.DefaultWorkers ||
-		st.AgentKeepDays != modules.DefaultAgentKeepDays || st.MailKeepDays != modules.DefaultMailKeepDays {
+		st.AgentKeepDays != modules.DefaultAgentKeepDays || st.MailKeepDays != modules.DefaultMailKeepDays ||
+		st.CleanupTime != modules.DefaultCleanupTime {
 		t.Errorf("settings %+v", st)
+	}
+	// The cleanup time is stored normalized (non-default only).
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"cleanup_time": "3:30"}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cleanup_time: %d %s", rec.Code, rec.Body.String())
+	}
+	decode(t, rec.Body.Bytes(), &st)
+	if st.CleanupTime != "03:30" || models.GetSetting(s.db, modules.SettingCleanupTime) != "03:30" {
+		t.Errorf("cleanup_time not applied: dto %q stored %q", st.CleanupTime, models.GetSetting(s.db, modules.SettingCleanupTime))
+	}
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"cleanup_time": modules.DefaultCleanupTime}, s.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
+	}
+	if _, found, _ := models.GetSettingStrict(s.db, modules.SettingCleanupTime); found {
+		t.Errorf("default cleanup_time still stored")
 	}
 	// The mail retention is stored (non-default only) and a rejected value
 	// leaves it alone.

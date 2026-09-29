@@ -112,7 +112,7 @@ export interface MailboxDTO {
     enabled: boolean;
     initial_days: number;
     recent_days: number;
-    /** Days (from the mail's date) a mail of a resolved or ignored group stays on the IMAP server; 0 = never deleted there. */
+    /** Days (from the mail's date) a mail server notice classified with certain evidence (not by subject or sender name alone, not an auto-generated message) stays on the IMAP server, at most mail_keep_days; 0 = never deleted there. */
     server_keep_days: number;
     /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
     last_fetched_at: string | null;
@@ -278,6 +278,7 @@ export interface JobInput {
     kind: JobKind;
     /** null (or omitted) means every mail address: the server queues one child job per address. */
     mailbox_id?: number | null;
+    /** analyze: '' (groups awaiting analysis), '*' (every group) or a group key; sync / fetch: '' (fetch window) or '*' (all time). */
     target?: string;
 }
 
@@ -337,6 +338,8 @@ export interface SettingsDTO {
     agent_keep_days: number;
     /** Days a fetched mail is kept, counted from its date (1-3650). */
     mail_keep_days: number;
+    /** Local time (HH:MM) of the daily cleanup. */
+    cleanup_time: string;
     providers: ProviderStatus[];
     /** Jobs executed at the same time (1-16). Present for administrators only. */
     workers?: number;
@@ -344,7 +347,7 @@ export interface SettingsDTO {
     web_listen?: string;
     web_port?: number;
     data_dir?: string;
-    /** IANA zone the scheduler interprets check_times and notify_time in. */
+    /** IANA zone the scheduler interprets check_times, cleanup_time and notify_time in. */
     server_timezone: string;
 }
 
@@ -358,6 +361,7 @@ export interface SettingsInput {
     agent_enabled?: boolean;
     agent_keep_days?: number;
     mail_keep_days?: number;
+    cleanup_time?: string;
     workers?: number;
 }
 

@@ -199,15 +199,28 @@ type ServerDeletionCandidate struct {
 
 // ListServerDeletionCandidates returns the messages of a folder that are
 // still on the IMAP server (server_deleted_at NULL), dated before cutoff and
-// filed into a group marked resolved or ignored, oldest first. Messages with
-// a synthetic identity (uidvalidity 0: indexed from a raw file the fetch
-// never saw) are never candidates.
-func ListServerDeletionCandidates(db *sql.DB, folder string, cutoff time.Time) ([]ServerDeletionCandidate, error) {
+// classified as a daemon notice (classified = 1, is_bounce = 1: failures,
+// delays, auto-replies and other daemon mail, whatever the state of their
+// group) by one of rules, oldest first. The messages not classified yet,
+// the ordinary mail (is_bounce = 0) and the ones matched by another rule
+// are left out; no rule means no candidate. Messages with a synthetic
+// identity (uidvalidity 0: indexed from a raw file the fetch never saw) are
+// never candidates.
+func ListServerDeletionCandidates(db *sql.DB, folder string, cutoff time.Time, rules []string) ([]ServerDeletionCandidate, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	args := []any{folder, cutoff.UTC()}
+	for _, r := range rules {
+		args = append(args, r)
+	}
 	rows, err := db.Query(`SELECT m.id, m.message_key, m.message_id, m.uidvalidity, m.uid
-		FROM messages m JOIN bounces b ON b.id = m.id JOIN groups g ON g.group_key = b.group_key
-		WHERE g.state IN ('resolved', 'ignored') AND m.server_deleted_at IS NULL AND m.folder = ?
+		FROM messages m
+		WHERE m.classified = 1 AND m.is_bounce = 1
+		  AND m.server_deleted_at IS NULL AND m.folder = ?
 		  AND m.uidvalidity <> 0 AND m.date < ?
-		ORDER BY m.date ASC, m.id ASC`, folder, cutoff.UTC())
+		  AND m.rule IN (?`+strings.Repeat(", ?", len(rules)-1)+`)
+		ORDER BY m.date ASC, m.id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}

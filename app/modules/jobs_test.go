@@ -147,12 +147,18 @@ func TestEnqueueJobValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, created, err := jm.Enqueue(JobKindSync, mb.ID, "ignored-target", "web:alice")
+	// A sync / fetch target is "" (the fetch window) or "*" (all time).
+	for _, kind := range []string{JobKindSync, JobKindFetch} {
+		if _, _, err := jm.Enqueue(kind, mb.ID, "ignored-target", "t"); err == nil || !strings.Contains(err.Error(), "invalid "+kind+" target") {
+			t.Errorf("%s with an unknown target: %v", kind, err)
+		}
+	}
+	first, created, err := jm.Enqueue(JobKindSync, mb.ID, "", "web:alice")
 	if err != nil || !created {
 		t.Fatalf("first enqueue: created=%v err=%v", created, err)
 	}
 	if first.Target != "" {
-		t.Errorf("target not cleared for a sync job: %q", first.Target)
+		t.Errorf("target of a sync job: %q", first.Target)
 	}
 	if first.Status != JobStatusQueued || first.RequestedBy != "web:alice" || first.MailboxID.Int64 != mb.ID {
 		t.Errorf("unexpected job %+v", first)
@@ -160,6 +166,10 @@ func TestEnqueueJobValidation(t *testing.T) {
 	dup, created, err := jm.Enqueue(JobKindSync, mb.ID, "", "cli")
 	if err != nil || created || dup.ID != first.ID {
 		t.Errorf("duplicate: created=%v id=%d (want %d) err=%v", created, dup.ID, first.ID, err)
+	}
+	// The all-time sync is a different job.
+	if allTime, created, err := jm.Enqueue(JobKindSync, mb.ID, " * ", "cli"); err != nil || !created || allTime.Target != FetchAllTimeTarget {
+		t.Errorf("all-time sync: created=%v job=%+v err=%v", created, allTime, err)
 	}
 	// Every kind is accepted; fetch and sync of the same mailbox are distinct.
 	for _, kind := range []string{JobKindFetch, JobKindGroup, JobKindReindex, JobKindReclassify} {
@@ -816,7 +826,8 @@ func TestCleanupJobAppliesRetentions(t *testing.T) {
 	}
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{
-		"cleaning up (server retention 60 days, mail retention 30 days, agent workspace retention 2 days, job history 30 days)",
+		// The server retention (60 days) is capped by the shorter mail retention.
+		"cleaning up (server retention 30 days (limited to the mail retention), mail retention 30 days, agent workspace retention 2 days, job history 30 days)",
 		"removed 3 message(s) older than 30 days, 2 group(s) left empty and removed",
 		"removed 1 stale temporary file(s)",
 		"removed 2 expired agent workspace(s)",

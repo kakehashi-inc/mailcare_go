@@ -32,7 +32,7 @@ type CLI struct {
 	Reclassify modules.ReclassifyCmd `cmd:"" help:"Re-run bounce detection and grouping over every mail"`
 	Analyze    modules.AnalyzeCmd    `cmd:"" help:"Run the agent analysis over bounce groups"`
 	Notify     modules.NotifyCmd     `cmd:"" help:"Send the alert notification mail now, or an SMTP test mail (--test)"`
-	Cleanup    modules.CleanupCmd    `cmd:"" help:"Remove the mails and agent workspaces older than their retention (runs daily on the server)"`
+	Cleanup    modules.CleanupCmd    `cmd:"" help:"Apply the retentions now: delete old daemon notices from the IMAP server, remove old mails, temporary files, agent workspaces and job history (runs daily on the server at cleanup_time)"`
 	Groups     modules.GroupsCmd     `cmd:"" help:"List the bounce groups of a mail address, show one group (ADDRESS KEY) or change its state (set-state)"`
 	Schedule   modules.ScheduleCmd   `cmd:"" help:"Show or set the daily check times"`
 	Settings   modules.SettingsCmd   `cmd:"" help:"Show or change settings"`

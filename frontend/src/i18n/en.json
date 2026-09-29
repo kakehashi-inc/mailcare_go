@@ -100,6 +100,7 @@
             "requestedBy": "by {{name}}",
             "targetAll": "all groups",
             "targetNeeds": "groups awaiting analysis",
+            "targetAllTime": "all time",
             "expanded": "expanded per mailbox",
             "deletedMailbox": "Deleted mailbox"
         },
@@ -150,7 +151,8 @@
             "addressRequired": "Enter the email address.",
             "addressTaken": "That email address is already registered.",
             "addressConflicts": "This address cannot be used because its data would share a folder name with {{other}}, which is already registered.",
-            "folderInvalid": "Folder names cannot contain line breaks."
+            "folderInvalid": "Folder names cannot contain line breaks.",
+            "serverKeepDaysOverMailKeep": "The retention must not exceed the mail retention of the general settings ({{max}} days)."
         },
         "agent": {
             "providerUnknown": "The selected agent is not available.",
@@ -483,16 +485,18 @@
         "mailbox": {
             "address": "Email address",
             "addressHint": "The address to monitor. It is stored in lower case.",
+            "domain": "Domain",
             "enabled": "Enable monitoring",
             "enabledHint": "When disabled, the mailbox is skipped by scheduled syncs.",
             "server": "Server",
             "initialDays": "Initial days",
             "initialDaysHint": "Days to look back on the first sync (default 90)",
             "recentDays": "Recent days",
-            "recentDaysHint": "Days to look back on later syncs (default 30)",
+            "recentDaysHint": "Days to look back on later syncs (default 10)",
             "fetchDays": "Fetch days",
-            "serverKeepDays": "Server retention",
-            "serverKeepDaysHint": "Mails older than this many days (from the mail's date) are deleted. 0 never deletes them on the server.",
+            "serverKeepDays": "Retention",
+            "serverKeepDaysHint": "Bounces and other notices older than this many days (from the mail's date) are deleted from the server. 0 never deletes them on the server.",
+            "serverKeepDaysMax": "At most the mail retention of the general settings ({{max}} days).",
             "lastChecked": "Last synced",
             "openGroups": "Open groups",
             "bounces": "Bounces",
@@ -568,7 +572,9 @@
             "checkTimes": "Sync times",
             "checkTimesHint": "All enabled mailboxes are synced automatically at these times.",
             "mailKeepDays": "Mail retention (days)",
-            "mailKeepDaysHint": "Mails older than this many days, counted from their date, are removed by the cleanup that runs whenever the date changes (it can also be started from the Tools page). The bounce groups they belonged to are recounted; a group left without mails is removed together with its analysis report.",
+            "mailKeepDaysHint": "Mails older than this many days, counted from their date, are removed by the daily cleanup. The bounce groups they belonged to are recounted; a group left without mails is removed together with its analysis report.",
+            "cleanupTime": "Cleanup time",
+            "cleanupTimeHint": "Every day at this time, the mails, workspaces and other data past their retention are removed (it can also be started from the Tools page).",
             "workers": "Workers",
             "workersHint": "Number of jobs that run at the same time. Accounts on the same IMAP server are processed one after another automatically.",
             "agentModelPlaceholder": "Not set (the CLI default model)",
@@ -579,7 +585,7 @@
             "agentEnabled": "Enable agent analysis",
             "agentEnabledHint": "When enabled, new bounces found by a sync are analyzed automatically.",
             "agentKeepDays": "Workspace retention (days)",
-            "agentKeepDaysHint": "How many days the workspace directory of each analysis run (prompt, CLI output, report) is kept. Older ones are removed by the cleanup that runs whenever the date changes.",
+            "agentKeepDaysHint": "How many days the workspace directory of each analysis run (prompt, CLI output, report) is kept. Older ones are removed by the daily cleanup.",
             "webListen": "Listen address",
             "webPort": "Listen port",
             "dataDir": "Data directory"
@@ -729,10 +735,13 @@
             "allNote": "With \"All\", one job is expanded per mailbox and they run in parallel within the worker limit.",
             "analyzeScope": "Analysis scope",
             "scopeNeeds": "Awaiting analysis only",
+            "fetchRange": "Fetch period",
+            "fetchRangeDefault": "Default",
             "run": "Run",
             "runFor": "Start {{tool}}",
             "confirmTitle": "Run {{tool}}?",
             "confirmMessage": "Target: {{target}}. {{tool}} runs in the background.",
+            "confirmAllTime": "Fetch period: all time",
             "jobs": "Job history",
             "jobsHint": "Active jobs refresh automatically. Jobs queued for \"All\" appear as one child job per mailbox.",
             "tool": {
@@ -763,7 +772,7 @@
                 },
                 "cleanup": {
                     "title": "Cleanup",
-                    "description": "Deletes the mails of resolved or ignored groups from the IMAP server as set per mail address, then removes the mails past their retention (original, body sections and index row), the old agent workspaces and the jobs finished more than 30 days ago. The server runs this automatically whenever the date changes.",
+                    "description": "Deletes the bounces and other notices past the retention of their mail address (except those recognized by subject or sender name alone, and automatically generated messages) from the IMAP server, then removes the mails past the mail retention (original, body sections and index row), the temporary files left by interrupted writes, the old agent workspaces and the jobs finished more than 30 days ago. The server runs this automatically every day at the cleanup time.",
                     "warning": "Mails deleted from the IMAP server cannot be restored. A bounce group left without mails is removed together with its analysis report."
                 }
             }
@@ -783,8 +792,8 @@
             "serverTimeZone": "Runs at the server local time ({{zone}}).",
             "noCheckTimes": "No sync times configured. Automatic syncs are off.",
             "addTimeHint": "HH:MM format (e.g. 09:00)",
-            "mailRetention": "Mail retention",
-            "mailRetentionHint": "How long fetched mails (original, body sections and index row) are kept.",
+            "cleanup": "Cleanup",
+            "cleanupHint": "Settings of the processing that removes data past its retention.",
             "jobs": "Job execution",
             "jobsHint": "Settings for the jobs that run in the background.",
             "agent": "Agent",
@@ -802,9 +811,9 @@
             "sectionImap": "IMAP connection",
             "sectionImapHint": "How to reach the incoming mail server. The password is stored encrypted.",
             "sectionRange": "Fetch range",
-            "sectionRangeHint": "The first check looks back initial_days; later checks look back recent_days.",
+            "sectionRangeHint": "The first check looks back the initial fetch days; later checks look back the regular fetch days. \"All time\" on the Tools page checks every mail regardless of the period.",
             "sectionServerKeep": "Deleting mails on the server",
-            "sectionServerKeepHint": "The daily cleanup deletes the mails of resolved or ignored groups from the IMAP server for good. Deleted mails cannot be restored. MailCare keeps its own copy until the mail retention."
+            "sectionServerKeepHint": "The daily cleanup deletes bounces, auto-replies and similar notices from the IMAP server for good. Mails recognized by subject or sender name alone, automatically generated messages and ordinary mail are not deleted. Deleted mails cannot be restored. MailCare keeps its own copy until the mail retention."
         },
         "notifications": {
             "description": "Sends a digest of the alerts that need attention to the selected users by mail.",

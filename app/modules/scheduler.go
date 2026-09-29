@@ -15,11 +15,11 @@ import (
 
 // Scheduler queues a sync job for every enabled mailbox at each configured
 // check time (HH:MM, local wall clock), a notify job when the notify time
-// arrives and the notification interval has elapsed (NotifyDue), and one
-// cleanup job (every mailbox) on the first tick of each local day
-// (CleanupDue; the date is recorded in the cleanup_last_run_date setting so
-// a restart does not repeat it and a day the server was down is caught up
-// at start), and the analysis of the waiting groups once the agent's usage
+// arrives and the notification interval has elapsed (NotifyDue), one
+// cleanup job (every mailbox) a day at the cleanup time (CleanupDue; the
+// date of the occurrence is recorded in the cleanup_last_run_date setting so
+// a restart does not repeat it and an occurrence missed while the server was
+// down is caught up at start), and the analysis of the waiting groups once the agent's usage
 // limit is over (queueAnalysisAfterLimit). It re-reads the settings on every tick so a change takes
 // effect immediately, and it never fires the same time twice within one
 // minute.
@@ -32,7 +32,7 @@ type Scheduler struct {
 	lastTick     time.Time
 	lastFired    map[string]string // HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
 	notifyFired  string            // "YYYY-MM-DD HH:MM" of the last notify firing
-	cleanupFired string            // "YYYY-MM-DD" of the last cleanup queued by this process
+	cleanupFired string            // "YYYY-MM-DD" of the last cleanup occurrence queued by this process
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 }
@@ -42,9 +42,10 @@ func NewScheduler(db *sql.DB, jm *JobManager) *Scheduler {
 	return &Scheduler{db: db, jm: jm, now: time.Now, lastFired: map[string]string{}}
 }
 
-// Start launches the ticking goroutine. Times that already passed today do
-// not fire retroactively; the daily cleanup is queued at once when none was
-// queued today yet (the server was down when the day began).
+// Start launches the ticking goroutine. Check and notify times that already
+// passed today do not fire retroactively; the daily cleanup is queued at
+// once when its latest occurrence was not queued yet (the server was down at
+// the cleanup time).
 func (s *Scheduler) Start() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,8 +89,8 @@ func (s *Scheduler) Stop() {
 // once: every configured check time that arrived since the previous tick
 // queues one sync job (mailbox NULL: expanded into one child per enabled
 // mailbox by the job manager), a due notify time queues one notify job, and
-// the first tick of a new local day queues one cleanup job (mailbox NULL:
-// one child per mailbox, disabled ones included).
+// the first tick at or after the cleanup time of a day queues one cleanup
+// job (mailbox NULL: one child per mailbox, disabled ones included).
 func (s *Scheduler) Tick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -136,9 +137,10 @@ func (s *Scheduler) queueAnalysisAfterLimit(now time.Time) {
 }
 
 // queueCleanupIfDue queues the daily cleanup when CleanupDue says so and
-// records the date (settings cleanup_last_run_date). The caller holds s.mu.
+// records the date of the occurrence (settings cleanup_last_run_date). The
+// caller holds s.mu.
 func (s *Scheduler) queueCleanupIfDue(now time.Time) {
-	date, due := CleanupDue(now, models.GetSetting(s.db, SettingCleanupLastRunDate), s.cleanupFired)
+	date, due := CleanupDue(now, ResolveCleanupTime(s.db), models.GetSetting(s.db, SettingCleanupLastRunDate), s.cleanupFired)
 	if !due {
 		return
 	}
@@ -169,16 +171,46 @@ func (s *Scheduler) enqueue(kind string) bool {
 }
 
 // CleanupDue decides whether the scheduler should queue the daily cleanup at
-// now: the local date of now differs from the date of the last queued
-// cleanup (lastRun, the cleanup_last_run_date setting, "" = never) and this
-// process did not queue one for that date yet (fired). It returns the date
-// to record ("YYYY-MM-DD").
-func CleanupDue(now time.Time, lastRun, fired string) (string, bool) {
-	today := now.In(time.Local).Format("2006-01-02")
-	if today == lastRun || today == fired {
+// now. The latest occurrence of cleanupTime (HH:MM, local wall clock) at or
+// before now is due when its date is later than the date of the last queued
+// occurrence (lastRun, the cleanup_last_run_date setting, "" = never) and
+// this process did not queue it yet (fired). It returns the date to record
+// ("YYYY-MM-DD"). An invalid cleanupTime counts as DefaultCleanupTime. A
+// lastRun later than today (recorded while the clock was ahead) is ignored,
+// so that it cannot hold the cleanup back until that date.
+func CleanupDue(now time.Time, cleanupTime, lastRun, fired string) (string, bool) {
+	now = now.In(time.Local)
+	h, m, ok := parseClock(cleanupTime)
+	if !ok {
+		h, m, _ = parseClock(DefaultCleanupTime)
+	}
+	occ := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, time.Local)
+	if occ.After(now) {
+		occ = occ.AddDate(0, 0, -1)
+	}
+	date := occ.Format("2006-01-02")
+	if lastRun > now.Format("2006-01-02") {
+		lastRun = ""
+	}
+	// YYYY-MM-DD compares in date order; "" (never) is before every date.
+	if date <= lastRun || date == fired {
 		return "", false
 	}
-	return today, true
+	return date, true
+}
+
+// parseClock splits a normalized "HH:MM" time into hour and minute.
+func parseClock(t string) (hour, minute int, ok bool) {
+	hh, mm, found := strings.Cut(t, ":")
+	if !found {
+		return 0, 0, false
+	}
+	h, err1 := strconv.Atoi(hh)
+	m, err2 := strconv.Atoi(mm)
+	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, 0, false
+	}
+	return h, m, true
 }
 
 // NextCheckAt returns the next scheduled check (false when no time is set).

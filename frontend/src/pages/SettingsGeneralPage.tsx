@@ -53,6 +53,7 @@ export function SettingsGeneralPage() {
     const [enabled, setEnabled] = useState(false);
     const [keepDays, setKeepDays] = useState('');
     const [mailKeepDays, setMailKeepDays] = useState('');
+    const [cleanupTime, setCleanupTime] = useState('');
     const [workers, setWorkers] = useState('');
     const [saving, setSaving] = useState(false);
     const [dirty, setDirty] = useState(false);
@@ -66,6 +67,7 @@ export function SettingsGeneralPage() {
         setEnabled(settings.data.agent_enabled);
         setKeepDays(String(settings.data.agent_keep_days));
         setMailKeepDays(String(settings.data.mail_keep_days));
+        setCleanupTime(settings.data.cleanup_time);
         setWorkers(String(settings.data.workers ?? ''));
         setDirty(false);
     }, [settings.data]);
@@ -91,6 +93,7 @@ export function SettingsGeneralPage() {
         /^\d+$/.test(mailKeepDays.trim()) &&
         mailKeepDaysValue >= MAIL_KEEP_DAYS_MIN &&
         mailKeepDaysValue <= MAIL_KEEP_DAYS_MAX;
+    const cleanupTimeValid = TIME_RE.test(cleanupTime);
     const canSave =
         dirty &&
         invalidTimes.length === 0 &&
@@ -98,6 +101,7 @@ export function SettingsGeneralPage() {
         workersValid &&
         keepDaysValid &&
         mailKeepDaysValid &&
+        cleanupTimeValid &&
         modelValid &&
         effortValid &&
         !saving;
@@ -125,6 +129,7 @@ export function SettingsGeneralPage() {
                 agent_enabled: enabled,
                 agent_keep_days: keepDaysValue,
                 mail_keep_days: mailKeepDaysValue,
+                cleanup_time: cleanupTime,
                 workers: workersValue,
             });
             toast.success(t('result.setting.saved'));
@@ -251,32 +256,47 @@ export function SettingsGeneralPage() {
 
                 <Card>
                     <CardHeader
-                        title={t('page.settingsGeneral.mailRetention')}
-                        description={t('page.settingsGeneral.mailRetentionHint')}
+                        title={t('page.settingsGeneral.cleanup')}
+                        description={`${t('page.settingsGeneral.cleanupHint')} ${t('page.settingsGeneral.serverTimeZone', { zone: settings.data.server_timezone || '-' })}`}
                     />
-                    <InputField
-                        label={t('field.setting.mailKeepDays')}
-                        type='number'
-                        inputMode='numeric'
-                        min={MAIL_KEEP_DAYS_MIN}
-                        max={MAIL_KEEP_DAYS_MAX}
-                        step={1}
-                        value={mailKeepDays}
-                        onChange={e => {
-                            setMailKeepDays(e.target.value);
-                            setDirty(true);
-                        }}
-                        hint={t('field.setting.mailKeepDaysHint')}
-                        error={
-                            mailKeepDaysValid
-                                ? undefined
-                                : t('validation.common.numberOutOfRange', {
-                                      min: MAIL_KEEP_DAYS_MIN,
-                                      max: MAIL_KEEP_DAYS_MAX,
-                                  })
-                        }
-                        width='short'
-                    />
+                    <div className='flex flex-col gap-4'>
+                        <InputField
+                            label={t('field.setting.cleanupTime')}
+                            type='time'
+                            step={60}
+                            value={cleanupTime}
+                            onChange={e => {
+                                setCleanupTime(e.target.value);
+                                setDirty(true);
+                            }}
+                            hint={t('field.setting.cleanupTimeHint')}
+                            error={cleanupTimeValid ? undefined : t('validation.common.timeFormat')}
+                            width='short'
+                        />
+                        <InputField
+                            label={t('field.setting.mailKeepDays')}
+                            type='number'
+                            inputMode='numeric'
+                            min={MAIL_KEEP_DAYS_MIN}
+                            max={MAIL_KEEP_DAYS_MAX}
+                            step={1}
+                            value={mailKeepDays}
+                            onChange={e => {
+                                setMailKeepDays(e.target.value);
+                                setDirty(true);
+                            }}
+                            hint={t('field.setting.mailKeepDaysHint')}
+                            error={
+                                mailKeepDaysValid
+                                    ? undefined
+                                    : t('validation.common.numberOutOfRange', {
+                                          min: MAIL_KEEP_DAYS_MIN,
+                                          max: MAIL_KEEP_DAYS_MAX,
+                                      })
+                            }
+                            width='short'
+                        />
+                    </div>
                 </Card>
 
                 <Card>

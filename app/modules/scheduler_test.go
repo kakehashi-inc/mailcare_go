@@ -149,24 +149,46 @@ func newTestDB(t *testing.T) *sql.DB {
 }
 
 func TestCleanupDue(t *testing.T) {
-	now := localDate(2026, 9, 18, 0, 0, 20)
-	if date, due := CleanupDue(now, "", ""); !due || date != "2026-09-18" {
+	now := localDate(2026, 9, 18, 2, 0, 20)
+	if date, due := CleanupDue(now, "02:00", "", ""); !due || date != "2026-09-18" {
 		t.Errorf("never run: %q %v", date, due)
 	}
-	if date, due := CleanupDue(now, "2026-09-17", ""); !due || date != "2026-09-18" {
+	if date, due := CleanupDue(now, "02:00", "2026-09-17", ""); !due || date != "2026-09-18" {
 		t.Errorf("last run yesterday: %q %v", date, due)
 	}
-	if _, due := CleanupDue(now, "2026-09-18", ""); due {
+	if _, due := CleanupDue(now, "02:00", "2026-09-18", ""); due {
 		t.Error("already run today")
 	}
-	if _, due := CleanupDue(now, "2026-09-17", "2026-09-18"); due {
+	if _, due := CleanupDue(now, "02:00", "2026-09-17", "2026-09-18"); due {
 		t.Error("already queued today by this process")
 	}
-	if _, due := CleanupDue(localDate(2026, 9, 18, 23, 59, 59), "2026-09-18", ""); due {
+	if _, due := CleanupDue(localDate(2026, 9, 18, 23, 59, 59), "02:00", "2026-09-18", ""); due {
 		t.Error("end of the same day")
 	}
-	if date, due := CleanupDue(localDate(2026, 9, 19, 0, 0, 5), "2026-09-18", "2026-09-18"); !due || date != "2026-09-19" {
-		t.Errorf("first tick of the next day: %q %v", date, due)
+	// Before the cleanup time the latest occurrence is yesterday's.
+	if _, due := CleanupDue(localDate(2026, 9, 19, 1, 59, 50), "02:00", "2026-09-18", ""); due {
+		t.Error("before the cleanup time of the next day")
+	}
+	if date, due := CleanupDue(localDate(2026, 9, 19, 1, 59, 50), "02:00", "2026-09-17", ""); !due || date != "2026-09-18" {
+		t.Errorf("yesterday's occurrence missed: %q %v", date, due)
+	}
+	if date, due := CleanupDue(localDate(2026, 9, 19, 2, 0, 5), "02:00", "2026-09-18", "2026-09-18"); !due || date != "2026-09-19" {
+		t.Errorf("first tick at the cleanup time of the next day: %q %v", date, due)
+	}
+	// A recorded date in the future (the clock was ahead) does not hold the
+	// cleanup back.
+	if date, due := CleanupDue(localDate(2026, 9, 19, 2, 0, 5), "02:00", "2026-12-31", ""); !due || date != "2026-09-19" {
+		t.Errorf("future last run: %q %v", date, due)
+	}
+	if _, due := CleanupDue(localDate(2026, 9, 19, 2, 0, 5), "02:00", "2026-12-31", "2026-09-19"); due {
+		t.Error("future last run, already queued by this process")
+	}
+	// An invalid time counts as the default.
+	if _, due := CleanupDue(localDate(2026, 9, 19, 1, 0, 0), "bad", "2026-09-18", ""); due {
+		t.Error("invalid time before the default time")
+	}
+	if date, due := CleanupDue(localDate(2026, 9, 19, 2, 0, 0), "bad", "2026-09-18", ""); !due || date != "2026-09-19" {
+		t.Errorf("invalid time at the default time: %q %v", date, due)
 	}
 }
 
@@ -186,9 +208,10 @@ func activeJobsOfKind(t *testing.T, db *sql.DB, kind string) []*models.Job {
 	return out
 }
 
-// TestSchedulerQueuesDailyCleanup: the first tick of a day queues exactly
-// one cleanup expansion job and records the date; later ticks of the same
-// day queue nothing, the first tick of the next day queues the next one.
+// TestSchedulerQueuesDailyCleanup: the first tick at the cleanup time
+// queues exactly one cleanup expansion job and records the date; later
+// ticks of the same day queue nothing, the first tick at the cleanup time of
+// the next day queues the next one.
 func TestSchedulerQueuesDailyCleanup(t *testing.T) {
 	db := newTestDB(t)
 	if err := SaveCheckTimes(db, nil); err != nil {
@@ -202,18 +225,20 @@ func TestSchedulerQueuesDailyCleanup(t *testing.T) {
 	if err := models.SetSetting(db, SettingCleanupLastRunDate, "2026-09-17"); err != nil {
 		t.Fatal(err)
 	}
-	// Still the same day: nothing.
-	clock = localDate(2026, 9, 17, 23, 59, 55)
-	s.Tick()
-	if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 0 {
-		t.Fatalf("cleanup queued before the date changed: %d", len(jobs))
+	// The date changed but the cleanup time has not come yet: nothing.
+	for _, at := range []time.Time{localDate(2026, 9, 18, 0, 0, 10), localDate(2026, 9, 18, 1, 59, 50)} {
+		clock = at
+		s.Tick()
+		if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 0 {
+			t.Fatalf("at %v: cleanup queued before the cleanup time: %d", at, len(jobs))
+		}
 	}
-	// The first tick after midnight queues one cleanup for every mailbox.
-	clock = localDate(2026, 9, 18, 0, 0, 10)
+	// The first tick at the cleanup time queues one cleanup for every mailbox.
+	clock = localDate(2026, 9, 18, 2, 0, 10)
 	s.Tick()
 	jobs := activeJobsOfKind(t, db, JobKindCleanup)
 	if len(jobs) != 1 {
-		t.Fatalf("after midnight: %d cleanup jobs", len(jobs))
+		t.Fatalf("at the cleanup time: %d cleanup jobs", len(jobs))
 	}
 	if jobs[0].MailboxID.Valid || jobs[0].RequestedBy != RequestedByScheduler || jobs[0].Target != "" {
 		t.Errorf("unexpected job %+v", jobs[0])
@@ -223,12 +248,12 @@ func TestSchedulerQueuesDailyCleanup(t *testing.T) {
 	}
 	// The rest of the day queues nothing, whether the job is still active
 	// or already finished.
-	clock = localDate(2026, 9, 18, 0, 0, 40)
+	clock = localDate(2026, 9, 18, 2, 0, 40)
 	s.Tick()
 	if err := models.FinishJob(db, jobs[0].ID, "queued 0 jobs", ""); err != nil {
 		t.Fatal(err)
 	}
-	for _, at := range []time.Time{localDate(2026, 9, 18, 0, 1, 10), localDate(2026, 9, 18, 12, 0, 0), localDate(2026, 9, 18, 23, 59, 50)} {
+	for _, at := range []time.Time{localDate(2026, 9, 18, 2, 1, 10), localDate(2026, 9, 18, 12, 0, 0), localDate(2026, 9, 18, 23, 59, 50)} {
 		clock = at
 		s.Tick()
 		if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 0 {
@@ -244,8 +269,16 @@ func TestSchedulerQueuesDailyCleanup(t *testing.T) {
 	if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 0 {
 		t.Errorf("repeated within the process after the setting vanished: %d", len(jobs))
 	}
-	// The next day queues the next one.
-	clock = localDate(2026, 9, 19, 0, 0, 5)
+	// The next day queues the next one at the configured time.
+	if _, err := SaveCleanupTime(db, "03:30"); err != nil {
+		t.Fatal(err)
+	}
+	clock = localDate(2026, 9, 19, 2, 0, 5)
+	s.Tick()
+	if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 0 {
+		t.Errorf("before the configured time: %d cleanup jobs", len(jobs))
+	}
+	clock = localDate(2026, 9, 19, 3, 30, 5)
 	s.Tick()
 	if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 1 {
 		t.Errorf("next day: %d cleanup jobs", len(jobs))
@@ -259,8 +292,8 @@ func TestSchedulerQueuesDailyCleanup(t *testing.T) {
 }
 
 // TestSchedulerStartCatchesUpCleanup: starting the scheduler queues the
-// cleanup at once when none was queued today (the server was down when the
-// day began, or never ran), and not when today's already happened.
+// cleanup at once when its latest occurrence was not queued (the server was
+// down at the cleanup time, or never ran), and not when it already was.
 func TestSchedulerStartCatchesUpCleanup(t *testing.T) {
 	db := newTestDB(t)
 	if err := SaveCheckTimes(db, nil); err != nil {
@@ -294,7 +327,7 @@ func TestSchedulerStartCatchesUpCleanup(t *testing.T) {
 	if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 0 {
 		t.Errorf("restart on the same day queued %d cleanup jobs", len(jobs))
 	}
-	// Started on a later day (the server was down at midnight): queued.
+	// Started on a later day (the server was down at the cleanup time): queued.
 	clock = localDate(2026, 9, 20, 9, 30, 0)
 	s = newScheduler()
 	s.Start()
@@ -303,6 +336,30 @@ func TestSchedulerStartCatchesUpCleanup(t *testing.T) {
 		t.Errorf("start after a missed day: %d cleanup jobs", len(jobs))
 	}
 	if got := models.GetSetting(db, SettingCleanupLastRunDate); got != "2026-09-20" {
+		t.Errorf("cleanup_last_run_date = %q", got)
+	}
+	if err := models.FinishJob(db, activeJobsOfKind(t, db, JobKindCleanup)[0].ID, "queued 0 jobs", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Started before the cleanup time of the next day: yesterday's already
+	// ran, so nothing until the time comes.
+	clock = localDate(2026, 9, 21, 1, 0, 0)
+	s = newScheduler()
+	s.Start()
+	s.Stop()
+	if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 0 {
+		t.Errorf("start before the cleanup time: %d cleanup jobs", len(jobs))
+	}
+	// Started before the cleanup time after missing yesterday's: queued for
+	// yesterday's occurrence.
+	clock = localDate(2026, 9, 23, 1, 0, 0)
+	s = newScheduler()
+	s.Start()
+	s.Stop()
+	if jobs := activeJobsOfKind(t, db, JobKindCleanup); len(jobs) != 1 {
+		t.Errorf("start after missing yesterday's cleanup: %d cleanup jobs", len(jobs))
+	}
+	if got := models.GetSetting(db, SettingCleanupLastRunDate); got != "2026-09-22" {
 		t.Errorf("cleanup_last_run_date = %q", got)
 	}
 	// Start does not fire the check times retroactively.

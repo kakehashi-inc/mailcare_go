@@ -26,8 +26,9 @@ func (c *core) settingsDTO(u *models.User) map[string]any {
 		"agent_enabled":          modules.ResolveAgentEnabled(c.db),
 		"agent_keep_days":        modules.ResolveAgentKeepDays(c.db),
 		"mail_keep_days":         modules.ResolveMailKeepDays(c.db),
+		"cleanup_time":           modules.ResolveCleanupTime(c.db),
 		"providers":              providers,
-		// check_times and notify_time are interpreted in this zone.
+		// check_times, cleanup_time and notify_time are interpreted in this zone.
 		"server_timezone": modules.ServerTimezone(),
 	}
 	if u != nil && u.Role == modules.RoleAdmin {
@@ -47,7 +48,7 @@ func (c *core) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 // and reasoning level (validated together; a provider change without a
 // model or level clears them, and a level the model is known not to accept
 // refuses the whole request), the agent switch, the retention of the agent run directories, the retention
-// of fetched mails and the worker count (applied to the job manager at
+// of fetched mails, the time of the daily cleanup and the worker count (applied to the job manager at
 // once). Absent fields are left unchanged.
 func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -58,6 +59,7 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		AgentEnabled  *bool     `json:"agent_enabled"`
 		AgentKeepDays *int      `json:"agent_keep_days"`
 		MailKeepDays  *int      `json:"mail_keep_days"`
+		CleanupTime   *string   `json:"cleanup_time"`
 		Workers       *int      `json:"workers"`
 	}
 	if !decodeJSON(w, r, &body) {
@@ -75,6 +77,12 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.MailKeepDays != nil {
 		if err := modules.ValidateMailKeepDays(*body.MailKeepDays); err != nil {
+			writeErrorMessage(w, r, err)
+			return
+		}
+	}
+	if body.CleanupTime != nil {
+		if _, err := modules.ParseCleanupTime(*body.CleanupTime); err != nil {
 			writeErrorMessage(w, r, err)
 			return
 		}
@@ -144,6 +152,12 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if body.MailKeepDays != nil {
 		if err := modules.SaveMailKeepDays(c.db, *body.MailKeepDays); err != nil {
 			writeInternalError(w, "failed to save the mail retention", err)
+			return
+		}
+	}
+	if body.CleanupTime != nil {
+		if _, err := modules.SaveCleanupTime(c.db, *body.CleanupTime); err != nil {
+			writeInternalError(w, "failed to save the cleanup time", err)
 			return
 		}
 	}

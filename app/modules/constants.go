@@ -86,12 +86,14 @@ const (
 	// DefaultInitialDays is how far back the first check of a mailbox looks.
 	DefaultInitialDays = 90
 	// DefaultRecentDays is how far back every later check looks.
-	DefaultRecentDays = 30
+	DefaultRecentDays = 10
 	// DefaultServerKeepDays is the server retention of a newly registered
-	// mailbox: the days (from the mail's date) a mail of a resolved or
-	// ignored group stays on the IMAP server before the daily cleanup
-	// deletes it there. 0 keeps every mail on the server; a mailbox saved
-	// before the setting existed reads as 0.
+	// mailbox: the days (from the mail's date) a daemon notice classified
+	// with certain evidence (mailengine.serverDeletableRules) stays on the IMAP server
+	// before the daily cleanup deletes it there. 0 keeps every mail on the
+	// server; a mailbox saved before the setting existed reads as 0. A new
+	// mailbox gets at most the mail retention (mail_keep_days), and the
+	// retention cannot be set above it (checkServerKeepDays).
 	DefaultServerKeepDays = 60
 	// MaxServerKeepDays bounds the server retention.
 	MaxServerKeepDays = 3650
@@ -151,6 +153,9 @@ const (
 	DefaultMailKeepDays = 180
 	MinMailKeepDays     = 1
 	MaxMailKeepDays     = 3650
+	// DefaultCleanupTime is the local time of the daily cleanup job; the
+	// setting cleanup_time overrides it.
+	DefaultCleanupTime = "02:00"
 )
 
 // --- Job kinds and statuses (jobs table) ---
@@ -163,7 +168,7 @@ const (
 	JobKindReindex    = "reindex"    // rebuild the index from the raw files (fetch-equivalent + full grouping)
 	JobKindReclassify = "reclassify" // re-run classification and grouping over every message
 	JobKindNotify     = "notify"     // send the alert summary mail to the notification recipients
-	JobKindCleanup    = "cleanup"    // remove the mails older than mail_keep_days and the agent run directories older than agent_keep_days (one mailbox; NULL expands to every mailbox)
+	JobKindCleanup    = "cleanup"    // apply the retentions: server mails, local mails, stale temporary files, agent run directories, job history (one mailbox; NULL expands to every mailbox)
 
 	JobStatusQueued   = "queued"
 	JobStatusRunning  = "running"
@@ -281,8 +286,11 @@ const (
 	SettingNotifyInterval  = "notify_interval_days"
 	SettingNotifyUserIDs   = "notify_user_ids" // comma-separated users.id
 	SettingNotifyLastSent  = "notify_last_sent_at"
-	// SettingCleanupLastRunDate is the local date (YYYY-MM-DD) on which the
-	// scheduler last queued the daily cleanup job (internal; see scheduler.go).
+	// SettingCleanupTime is the local time (HH:MM) at which the scheduler
+	// queues the daily cleanup job (DefaultCleanupTime).
+	SettingCleanupTime = "cleanup_time"
+	// SettingCleanupLastRunDate is the local date (YYYY-MM-DD) of the last
+	// cleanup occurrence the scheduler queued (internal; see scheduler.go).
 	SettingCleanupLastRunDate = "cleanup_last_run_date"
 	// SettingAgentLimitedUntil is when the agent CLI's usage limit is lifted
 	// (RFC 3339, internal): set when an analysis is refused by the limit and

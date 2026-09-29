@@ -358,6 +358,48 @@ func SaveMailKeepDays(db *sql.DB, n int) error {
 	return PersistSetting(db, SettingMailKeepDays, strconv.Itoa(n), n == DefaultMailKeepDays)
 }
 
+// --- Cleanup time ---
+
+// ParseCleanupTime checks one HH:MM time (local wall clock) and returns it
+// normalized.
+func ParseCleanupTime(s string) (string, error) {
+	times, err := ParseCheckTimes([]string{s})
+	if err != nil || len(times) != 1 {
+		return "", message.New("validation.common.timeFormat", fmt.Sprintf("invalid cleanup_time %q (use one HH:MM time, 00:00-23:59)", strings.TrimSpace(s)))
+	}
+	return times[0], nil
+}
+
+// ResolveCleanupTime returns the time of the daily cleanup (saved >
+// default). A saved value that fails to parse falls back to the default
+// with a log line.
+func ResolveCleanupTime(db *sql.DB) string {
+	saved, found, err := models.GetSettingStrict(db, SettingCleanupTime)
+	if err != nil {
+		log.Printf("failed to read cleanup_time: %v", err)
+		return DefaultCleanupTime
+	}
+	if !found {
+		return DefaultCleanupTime
+	}
+	t, err := ParseCleanupTime(saved)
+	if err != nil {
+		log.Printf("ignoring invalid saved cleanup_time %q: %v", saved, err)
+		return DefaultCleanupTime
+	}
+	return t
+}
+
+// SaveCleanupTime persists the time of the daily cleanup (non-default
+// only) and returns it normalized.
+func SaveCleanupTime(db *sql.DB, s string) (string, error) {
+	t, err := ParseCleanupTime(s)
+	if err != nil {
+		return "", err
+	}
+	return t, PersistSetting(db, SettingCleanupTime, t, t == DefaultCleanupTime)
+}
+
 // ParseBoolSetting accepts 1/0, true/false, yes/no, on/off.
 func ParseBoolSetting(s string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {

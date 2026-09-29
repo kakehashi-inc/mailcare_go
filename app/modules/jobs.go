@@ -45,6 +45,9 @@ const (
 	jobRetention = 30 * 24 * time.Hour
 	// analyzeAllTarget is the analyze job target meaning "every actionable group".
 	analyzeAllTarget = "*"
+	// FetchAllTimeTarget is the sync / fetch job target meaning "search the
+	// whole folder" instead of the fetch window ("" = the window).
+	FetchAllTimeTarget = "*"
 )
 
 // Resource keys held by running jobs (see the system design document (Documents) 7.2).
@@ -398,6 +401,10 @@ func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy st
 		if mailboxID == 0 && target != "" && target != analyzeAllTarget {
 			return nil, false, message.New("system.invalidRequest", "analyze of one group requires a mailbox")
 		}
+	case JobKindSync, JobKindFetch:
+		if target != "" && target != FetchAllTimeTarget {
+			return nil, false, message.New("system.invalidRequest", fmt.Sprintf("invalid %s target %q (use \"\" or %q)", kind, target, FetchAllTimeTarget))
+		}
 	case JobKindNotify:
 		if mailboxID != 0 {
 			return nil, false, message.New("system.invalidRequest", "notify takes no mailbox")
@@ -643,7 +650,7 @@ func (m *JobManager) RunJob(ctx context.Context, job *models.Job, progress func(
 	case JobKindSync:
 		return m.runSync(ctx, job, mb, progress)
 	case JobKindFetch:
-		return m.runFetch(ctx, mb, progress)
+		return m.runFetch(ctx, job, mb, progress)
 	case JobKindGroup:
 		return m.runGroup(ctx, job, mb, false, progress)
 	case JobKindReclassify:
@@ -790,16 +797,20 @@ func (m *JobManager) queueAnalysis(job *models.Job, mb *models.Mailbox, progress
 }
 
 // fetchOne runs FetchMailbox for one mailbox and records the outcome on the
-// mailbox row. The search window never reaches before the mail retention
-// (mail_keep_days): mail older than that would only be removed again by the
-// daily cleanup.
-func (m *JobManager) fetchOne(ctx context.Context, mb *models.Mailbox, progress func(string)) (*mailengine.FetchResult, error) {
+// mailbox row. With the job target FetchAllTimeTarget the whole folder is
+// searched; otherwise the search window never reaches before the mail
+// retention (mail_keep_days): mail older than that would only be removed
+// again by the daily cleanup.
+func (m *JobManager) fetchOne(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (*mailengine.FetchResult, error) {
 	password, err := MailboxPassword(m.key, mb)
 	if err != nil {
 		_ = models.UpdateMailboxFetchResult(m.db, mb.ID, err.Error())
 		return nil, err
 	}
 	opts := mailengine.FetchOptions{NotBefore: time.Now().UTC().AddDate(0, 0, -ResolveMailKeepDays(m.db))}
+	if job.Target == FetchAllTimeTarget {
+		opts = mailengine.FetchOptions{AllTime: true}
+	}
 	res, err := mailengine.FetchMailbox(ctx, m.mailsRoot, mb, password, opts, mailengine.Progress(progress))
 	if err != nil {
 		_ = models.UpdateMailboxFetchResult(m.db, mb.ID, err.Error())
@@ -812,9 +823,9 @@ func (m *JobManager) fetchOne(ctx context.Context, mb *models.Mailbox, progress 
 }
 
 // runFetch downloads new mail into the index (no classification).
-func (m *JobManager) runFetch(ctx context.Context, mb *models.Mailbox, progress func(string)) (string, error) {
+func (m *JobManager) runFetch(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
 	progress("fetching")
-	res, err := m.fetchOne(ctx, mb, progress)
+	res, err := m.fetchOne(ctx, job, mb, progress)
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
@@ -832,10 +843,12 @@ func serverRetentionApplies(mb *models.Mailbox) bool {
 
 // runCleanup applies the retentions for one mailbox (the daily cleanup job,
 // also runnable by hand): first, for an enabled mailbox with a server
-// retention, the mails of resolved or ignored groups older than
-// server_keep_days are deleted from the IMAP server (mailengine.
-// DeleteFromServer; it runs before the local retention so that a row is
-// never removed from the index while its mail is still due on the server),
+// retention, the daemon notices classified with certain evidence
+// (mailengine.serverDeletableRules) older than the server retention are deleted from the IMAP
+// server (mailengine.DeleteFromServer; it runs before the local retention so
+// that a row is never removed from the index while its mail is still due on
+// the server; a server retention longer than mail_keep_days is applied as
+// mail_keep_days, see effectiveServerKeepDays),
 // then the mails older than mail_keep_days are removed (mailengine.PruneMailbox: files and index rows, the groups they
 // belonged to recounted, the groups left empty deleted with their reports)
 // together with the leftovers of interrupted writes in the mailbox
@@ -847,18 +860,23 @@ func serverRetentionApplies(mb *models.Mailbox) bool {
 // failed; the result line counts what was removed and any failure makes the
 // job fail afterwards (what could not be removed is tried again next time).
 func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progress func(string)) (string, error) {
-	mailKeep := time.Duration(ResolveMailKeepDays(m.db)) * 24 * time.Hour
+	mailKeepDays := ResolveMailKeepDays(m.db)
+	mailKeep := time.Duration(mailKeepDays) * 24 * time.Hour
 	agentKeep := time.Duration(ResolveAgentKeepDays(m.db)) * 24 * time.Hour
+	serverKeepDays := effectiveServerKeepDays(mb.ServerKeepDays, mailKeepDays)
 	serverKeep := "off"
 	if serverRetentionApplies(mb) {
-		serverKeep = serverKeepLabel(mb.ServerKeepDays)
+		serverKeep = serverKeepLabel(serverKeepDays)
+		if serverKeepDays < mb.ServerKeepDays {
+			serverKeep += " (limited to the mail retention)"
+		}
 	}
 	progress(fmt.Sprintf("cleaning up (server retention %s, mail retention %s, agent workspace retention %s, job history %s)",
 		serverKeep, keepDaysLabel(mailKeep), keepDaysLabel(agentKeep), keepDaysLabel(jobRetention)))
 	var errs []error
 	serverDeleted := 0
 	if serverRetentionApplies(mb) {
-		deleted, err := m.deleteFromServer(ctx, mb, progress)
+		deleted, err := m.deleteFromServer(ctx, mb, serverKeepDays, progress)
 		serverDeleted = deleted
 		if err != nil {
 			progress(fmt.Sprintf("error: server retention: %v", err))
@@ -904,14 +922,25 @@ func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progres
 	return line, nil
 }
 
+// effectiveServerKeepDays returns the server retention the cleanup applies:
+// the mailbox's server_keep_days, but never more than mail_keep_days. A mail
+// past the mail retention loses its index row in the same cleanup, and
+// without the row it could never be deleted from the server afterwards
+// (the setting is refused above mail_keep_days on input, but mail_keep_days
+// may be shortened later).
+func effectiveServerKeepDays(serverKeepDays, mailKeepDays int) int {
+	return min(serverKeepDays, mailKeepDays)
+}
+
 // deleteFromServer applies the server retention of one mailbox
-// (mailengine.DeleteFromServer) and returns how many mails went.
-func (m *JobManager) deleteFromServer(ctx context.Context, mb *models.Mailbox, progress func(string)) (int, error) {
+// (mailengine.DeleteFromServer, keepDays from effectiveServerKeepDays) and
+// returns how many mails went.
+func (m *JobManager) deleteFromServer(ctx context.Context, mb *models.Mailbox, keepDays int, progress func(string)) (int, error) {
 	password, err := MailboxPassword(m.key, mb)
 	if err != nil {
 		return 0, err
 	}
-	keep := time.Duration(mb.ServerKeepDays) * 24 * time.Hour
+	keep := time.Duration(keepDays) * 24 * time.Hour
 	res, err := mailengine.DeleteFromServer(ctx, m.mailsRoot, mb, password, keep, mailengine.Progress(progress))
 	if res == nil {
 		return 0, err
@@ -965,7 +994,7 @@ func (m *JobManager) runGroup(ctx context.Context, job *models.Job, mb *models.M
 // actionable group gained messages.
 func (m *JobManager) runSync(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
 	progress("fetching")
-	fetched, err := m.fetchOne(ctx, mb, progress)
+	fetched, err := m.fetchOne(ctx, job, mb, progress)
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)

@@ -147,7 +147,7 @@ func TestConnection(ctx context.Context, mb *models.Mailbox, password string) er
 
 // FetchMailbox downloads the messages not yet indexed (initial_days back on
 // the first run, recent_days afterwards, but never before opts.NotBefore
-// when it is set), stores their raw and derived files and adds their index
+// when it is set; the whole folder with opts.AllTime), stores their raw and derived files and adds their index
 // rows with classified = 0 (design 5.1). No classification or grouping
 // happens here; GroupMailbox does that. The caller records the outcome on
 // the mailbox row.
@@ -218,14 +218,20 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 		}
 	}
 
-	since := time.Now().UTC().AddDate(0, 0, -days)
-	bounded := ""
-	if !opts.NotBefore.IsZero() && opts.NotBefore.After(since) {
-		since = opts.NotBefore.UTC()
-		bounded = ", limited to the mail retention"
+	criteria := &imap.SearchCriteria{}
+	if opts.AllTime {
+		report(progress, "searching the whole folder (all time)")
+	} else {
+		since := time.Now().UTC().AddDate(0, 0, -days)
+		bounded := ""
+		if !opts.NotBefore.IsZero() && opts.NotBefore.After(since) {
+			since = opts.NotBefore.UTC()
+			bounded = ", limited to the mail retention"
+		}
+		report(progress, fmt.Sprintf("searching since %s (%s window, %d days%s)", since.Format("2006-01-02"), window, days, bounded))
+		criteria.Since = since
 	}
-	report(progress, fmt.Sprintf("searching since %s (%s window, %d days%s)", since.Format("2006-01-02"), window, days, bounded))
-	search, err := s.client.UIDSearch(&imap.SearchCriteria{Since: since}, nil).Wait()
+	search, err := s.client.UIDSearch(criteria, nil).Wait()
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", ctxErr(ctx, err))
 	}
@@ -243,7 +249,7 @@ func FetchMailbox(ctx context.Context, mailsRoot string, mb *models.Mailbox, pas
 			pending = append(pending, uid)
 		}
 	}
-	report(progress, fmt.Sprintf("found %d messages in the window, %d new", len(uids), len(pending)))
+	report(progress, fmt.Sprintf("found %d messages, %d new", len(uids), len(pending)))
 	if len(pending) == 0 {
 		return result, nil
 	}

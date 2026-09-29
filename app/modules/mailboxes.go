@@ -48,8 +48,9 @@ type MailboxInput struct {
 	InitialDays  int    `json:"initial_days"`  // 0 = DefaultInitialDays
 	RecentDays   int    `json:"recent_days"`   // 0 = DefaultRecentDays
 	// ServerKeepDays is the server retention (0..MaxServerKeepDays, 0 =
-	// never delete on the server). nil = DefaultServerKeepDays on creation,
-	// the stored value on update.
+	// never delete on the server, at most mail_keep_days: see
+	// checkServerKeepDays). nil = DefaultServerKeepDays (or mail_keep_days
+	// when shorter) on creation, the stored value on update.
 	ServerKeepDays *int `json:"server_keep_days"`
 }
 
@@ -142,6 +143,31 @@ func ValidateMailboxInput(in *MailboxInput) error {
 }
 
 var errAddressInvalid = message.New("validation.common.emailFormat", "address is not a valid mail address")
+
+// checkServerKeepDays bounds the server retention by the mail retention
+// (mail_keep_days): a mail past the mail retention loses its index row, so
+// a longer server retention could never be applied to it. On creation
+// (stored nil) an absent value becomes DefaultServerKeepDays, or
+// mail_keep_days when that is shorter. A value above mail_keep_days is
+// refused, except on update when it is the stored value unchanged (the mail
+// retention was shortened after it was saved; the cleanup then applies
+// mail_keep_days, see effectiveServerKeepDays), so that editing another
+// field of such a mailbox still works.
+func checkServerKeepDays(db *sql.DB, in *MailboxInput, stored *int) error {
+	mailKeep := ResolveMailKeepDays(db)
+	if in.ServerKeepDays == nil {
+		if stored == nil {
+			days := min(DefaultServerKeepDays, mailKeep)
+			in.ServerKeepDays = &days
+		}
+		return nil
+	}
+	if *in.ServerKeepDays <= mailKeep || (stored != nil && *in.ServerKeepDays == *stored) {
+		return nil
+	}
+	return message.New("validation.mailbox.serverKeepDaysOverMailKeep",
+		fmt.Sprintf("server_keep_days must not exceed mail_keep_days (%d days)", mailKeep)).With("max", mailKeep)
+}
 
 // validIMAPHost accepts a host name or an IP literal (IPv4, or IPv6 such as
 // "::1", as net.ParseIP reads it). A "host:port" value is refused: the port
@@ -238,7 +264,10 @@ func CreateMailbox(db *sql.DB, key []byte, in *MailboxInput) (*models.Mailbox, e
 	if err := checkAddressAvailable(db, in.Address, 0); err != nil {
 		return nil, err
 	}
-	mb := &models.Mailbox{ServerKeepDays: DefaultServerKeepDays}
+	if err := checkServerKeepDays(db, in, nil); err != nil {
+		return nil, err
+	}
+	mb := &models.Mailbox{}
 	if err := applyMailboxInput(key, mb, in); err != nil {
 		return nil, err
 	}
@@ -267,6 +296,10 @@ func UpdateMailbox(db *sql.DB, key []byte, mailsRoot, agentRoot string, mb *mode
 		return ErrPasswordRequired
 	}
 	if err := checkAddressAvailable(db, in.Address, mb.ID); err != nil {
+		return err
+	}
+	stored := mb.ServerKeepDays
+	if err := checkServerKeepDays(db, in, &stored); err != nil {
 		return err
 	}
 	oldAddress := mb.Address

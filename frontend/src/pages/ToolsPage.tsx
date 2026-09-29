@@ -23,6 +23,11 @@ import { usePolling } from '../hooks/usePolling';
 import { JOB_KINDS, type JobDTO, type ToolKind } from '../types';
 
 type AnalyzeScope = 'needs' | 'all';
+/** How far back sync / fetch search: the mailbox's fetch window, or the whole folder (job target '*'). */
+type FetchRange = 'default' | 'all';
+type FetchKind = 'sync' | 'fetch';
+
+const isFetchKind = (kind: ToolKind): kind is FetchKind => kind === 'sync' || kind === 'fetch';
 
 // Every tool is run by administrators only; members see the cards and the job history.
 const TOOL_META: Record<ToolKind, { icon: string; danger: boolean }> = {
@@ -54,6 +59,10 @@ export function ToolsPage() {
     // Selected mailbox per tool ("" = all addresses).
     const [targets, setTargets] = useState<Record<ToolKind, string>>(emptyTargets);
     const [scope, setScope] = useState<AnalyzeScope>('needs');
+    const [fetchRanges, setFetchRanges] = useState<Record<FetchKind, FetchRange>>({
+        sync: 'default',
+        fetch: 'default',
+    });
     const [pending, setPending] = useState<ToolKind | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [canceling, setCanceling] = useState<number | null>(null);
@@ -72,7 +81,16 @@ export function ToolsPage() {
         setSubmitting(true);
         try {
             const mailboxId = targets[kind] ? Number(targets[kind]) : null;
-            const target = kind === 'analyze' ? (scope === 'all' ? '*' : '') : undefined;
+            const target =
+                kind === 'analyze'
+                    ? scope === 'all'
+                        ? '*'
+                        : ''
+                    : isFetchKind(kind)
+                      ? fetchRanges[kind] === 'all'
+                          ? '*'
+                          : ''
+                      : undefined;
             // One job per click: with mailbox_id null the server expands it to one child job per address.
             const r = await createJob({ kind, mailbox_id: mailboxId, target });
             if (r.created) toast.success(t('result.job.queued', { tool: toolTitle(kind) }));
@@ -148,6 +166,21 @@ export function ToolsPage() {
                                                 <option value='all'>{t('component.jobList.targetAll')}</option>
                                             </SelectField>
                                         )}
+                                        {isFetchKind(kind) && (
+                                            <SelectField
+                                                label={t('page.tools.fetchRange')}
+                                                value={fetchRanges[kind]}
+                                                onChange={e =>
+                                                    setFetchRanges(prev => ({
+                                                        ...prev,
+                                                        [kind]: e.target.value as FetchRange,
+                                                    }))
+                                                }
+                                            >
+                                                <option value='default'>{t('page.tools.fetchRangeDefault')}</option>
+                                                <option value='all'>{t('component.jobList.targetAllTime')}</option>
+                                            </SelectField>
+                                        )}
                                         <Button
                                             variant='primary'
                                             icon='play_arrow'
@@ -204,6 +237,9 @@ export function ToolsPage() {
                                     target: targetLabel(pending),
                                 })}
                             </p>
+                            {isFetchKind(pending) && fetchRanges[pending] === 'all' && (
+                                <p className='mt-2'>{t('page.tools.confirmAllTime')}</p>
+                            )}
                             {!targets[pending] && <p className='mt-2'>{t('page.tools.allNote')}</p>}
                             {toolWarning(pending) && <p className='mt-2 text-warning'>{toolWarning(pending)}</p>}
                         </>

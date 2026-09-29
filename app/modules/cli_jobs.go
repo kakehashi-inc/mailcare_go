@@ -242,10 +242,10 @@ func printJobOutcome(id int64, status, result, errMsg string) bool {
 }
 
 // specsForAddresses builds one spec per address, or a single expansion spec
-// (every mailbox) when no address is given.
-func specsForAddresses(db *sql.DB, kind string, addresses []string) ([]jobSpec, error) {
+// (every mailbox) when no address is given. Every spec carries target.
+func specsForAddresses(db *sql.DB, kind, target string, addresses []string) ([]jobSpec, error) {
 	if len(addresses) == 0 {
-		return []jobSpec{{kind: kind}}, nil
+		return []jobSpec{{kind: kind, target: target}}, nil
 	}
 	var specs []jobSpec
 	for _, a := range addresses {
@@ -253,19 +253,20 @@ func specsForAddresses(db *sql.DB, kind string, addresses []string) ([]jobSpec, 
 		if err != nil {
 			return nil, err
 		}
-		specs = append(specs, jobSpec{kind: kind, mailboxID: mb.ID, address: mb.Address})
+		specs = append(specs, jobSpec{kind: kind, mailboxID: mb.ID, address: mb.Address, target: target})
 	}
 	return specs, nil
 }
 
-// runKindForAddresses opens the database and runs kind for the addresses.
-func runKindForAddresses(kind string, addresses []string, wait bool) error {
+// runKindForAddresses opens the database and runs kind (with target) for
+// the addresses.
+func runKindForAddresses(kind, target string, addresses []string, wait bool) error {
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	specs, err := specsForAddresses(db, kind, addresses)
+	specs, err := specsForAddresses(db, kind, target, addresses)
 	if err != nil {
 		return err
 	}
@@ -276,19 +277,29 @@ func runKindForAddresses(kind string, addresses []string, wait bool) error {
 type SyncCmd struct {
 	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every enabled address)"`
 	Wait      bool     `help:"When submitted to a running server, wait for completion and show progress"`
+	AllTime   bool     `name:"all-time" help:"Search the whole folder instead of the fetch window (initial / recent days, never before the mail retention)"`
 }
 
 func (c *SyncCmd) Run() error {
-	return runKindForAddresses(JobKindSync, c.Addresses, c.Wait)
+	return runKindForAddresses(JobKindSync, fetchTarget(c.AllTime), c.Addresses, c.Wait)
 }
 
 // FetchCmd downloads new mail without grouping it.
 type FetchCmd struct {
 	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every enabled address)"`
+	AllTime   bool     `name:"all-time" help:"Search the whole folder instead of the fetch window (initial / recent days, never before the mail retention)"`
 }
 
 func (c *FetchCmd) Run() error {
-	return runKindForAddresses(JobKindFetch, c.Addresses, true)
+	return runKindForAddresses(JobKindFetch, fetchTarget(c.AllTime), c.Addresses, true)
+}
+
+// fetchTarget maps the --all-time flag to the sync / fetch job target.
+func fetchTarget(allTime bool) string {
+	if allTime {
+		return FetchAllTimeTarget
+	}
+	return ""
 }
 
 // GroupCmd runs the grouping phase: classifies and groups the mail not
@@ -299,7 +310,7 @@ type GroupCmd struct {
 }
 
 func (c *GroupCmd) Run() error {
-	return runKindForAddresses(JobKindGroup, c.Addresses, true)
+	return runKindForAddresses(JobKindGroup, "", c.Addresses, true)
 }
 
 // ReindexCmd rebuilds the index from the raw files.
@@ -308,7 +319,7 @@ type ReindexCmd struct {
 }
 
 func (c *ReindexCmd) Run() error {
-	return runKindForAddresses(JobKindReindex, c.Addresses, true)
+	return runKindForAddresses(JobKindReindex, "", c.Addresses, true)
 }
 
 // ReclassifyCmd re-runs bounce detection and grouping over every mail.
@@ -317,7 +328,7 @@ type ReclassifyCmd struct {
 }
 
 func (c *ReclassifyCmd) Run() error {
-	return runKindForAddresses(JobKindReclassify, c.Addresses, true)
+	return runKindForAddresses(JobKindReclassify, "", c.Addresses, true)
 }
 
 // AnalyzeCmd runs the agent over bounce groups.
@@ -356,16 +367,19 @@ func (c *AnalyzeCmd) Run() error {
 	return runJobs(db, []jobSpec{spec}, true)
 }
 
-// CleanupCmd applies the retentions now: removes the mails older than
-// mail_keep_days and the agent run directories older than agent_keep_days
-// (what the scheduler does once a day).
+// CleanupCmd applies the retentions now (what the scheduler does once a day
+// at cleanup_time): deletes the daemon notices classified with certain
+// evidence (mailengine.serverDeletableRules) past the server
+// retention from the IMAP server, then removes the mails older than
+// mail_keep_days, the stale temporary files, the agent run directories older
+// than agent_keep_days and the jobs finished more than 30 days ago.
 type CleanupCmd struct {
 	Addresses []string `arg:"" optional:"" help:"Mail addresses (default: every address)"`
 	Wait      bool     `help:"When submitted to a running server, wait for completion and show progress"`
 }
 
 func (c *CleanupCmd) Run() error {
-	return runKindForAddresses(JobKindCleanup, c.Addresses, c.Wait)
+	return runKindForAddresses(JobKindCleanup, "", c.Addresses, c.Wait)
 }
 
 // NotifyCmd sends the notification mail now, or a test mail that only

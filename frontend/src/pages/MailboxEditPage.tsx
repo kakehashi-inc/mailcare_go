@@ -1,7 +1,15 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
-import { createMailbox, deleteMailbox, getMailbox, testMailbox, updateMailbox, ApiError } from '../api/client';
+import {
+    createMailbox,
+    deleteMailbox,
+    getMailbox,
+    getSettings,
+    testMailbox,
+    updateMailbox,
+    ApiError,
+} from '../api/client';
 import { Alert } from '../components/ui/Alert';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
@@ -86,6 +94,9 @@ export function MailboxEditPage() {
     const navigate = useNavigate();
     const toast = useToast();
     const existing = useAsync(() => (isNew ? Promise.resolve(null) : getMailbox(id)), [isNew, id]);
+    // The server retention may not exceed the mail retention of the general settings.
+    const settings = useAsync(getSettings, []);
+    const mailKeepDays = settings.data?.mail_keep_days;
     const [form, setForm] = useState<FormState>(EMPTY);
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
@@ -99,6 +110,16 @@ export function MailboxEditPage() {
     useEffect(() => {
         if (existing.data) setForm(fromDto(existing.data));
     }, [existing.data]);
+
+    // A new mailbox defaults to the mail retention when that is shorter (same rule as the server).
+    useEffect(() => {
+        if (!isNew || mailKeepDays === undefined || mailKeepDays >= DEFAULT_SERVER_KEEP_DAYS) return;
+        setForm(prev =>
+            prev.server_keep_days === EMPTY.server_keep_days
+                ? { ...prev, server_keep_days: String(mailKeepDays) }
+                : prev
+        );
+    }, [isNew, mailKeepDays]);
 
     function set<K extends keyof FormState>(key: K, value: FormState[K]) {
         setForm(prev => ({ ...prev, [key]: value }));
@@ -130,13 +151,18 @@ export function MailboxEditPage() {
         v !== '' && (!Number.isInteger(Number(v)) || Number(v) < 1 || Number(v) > MAX_FETCH_DAYS)
             ? t('validation.common.numberOutOfRange', { min: 1, max: MAX_FETCH_DAYS })
             : undefined;
+    const serverKeep = Number(form.server_keep_days);
+    // A stored value above a mail retention shortened later may stay while other fields change.
+    const storedServerKeep = existing.data?.server_keep_days;
     const serverKeepError =
         form.server_keep_days === '' ||
-        !Number.isInteger(Number(form.server_keep_days)) ||
-        Number(form.server_keep_days) < 0 ||
-        Number(form.server_keep_days) > MAX_SERVER_KEEP_DAYS
+        !Number.isInteger(serverKeep) ||
+        serverKeep < 0 ||
+        serverKeep > MAX_SERVER_KEEP_DAYS
             ? t('validation.common.numberOutOfRange', { min: 0, max: MAX_SERVER_KEEP_DAYS })
-            : undefined;
+            : mailKeepDays !== undefined && serverKeep > mailKeepDays && serverKeep !== storedServerKeep
+              ? t('validation.mailbox.serverKeepDaysOverMailKeep', { max: mailKeepDays })
+              : undefined;
     const passwordRequired = isNew && form.imap_password === '';
     // The server uses the stored password only for the server it was saved
     // for: a change of the host, port, connection mode or username of an
@@ -418,11 +444,19 @@ export function MailboxEditPage() {
                         type='number'
                         inputMode='numeric'
                         min={0}
-                        max={MAX_SERVER_KEEP_DAYS}
+                        max={
+                            mailKeepDays === undefined
+                                ? MAX_SERVER_KEEP_DAYS
+                                : Math.max(mailKeepDays, storedServerKeep ?? 0)
+                        }
                         step={1}
                         value={form.server_keep_days}
                         onChange={e => set('server_keep_days', e.target.value)}
-                        hint={t('field.mailbox.serverKeepDaysHint')}
+                        hint={
+                            mailKeepDays === undefined
+                                ? t('field.mailbox.serverKeepDaysHint')
+                                : `${t('field.mailbox.serverKeepDaysHint')} ${t('field.mailbox.serverKeepDaysMax', { max: mailKeepDays })}`
+                        }
                         error={serverKeepError}
                         width='short'
                     />

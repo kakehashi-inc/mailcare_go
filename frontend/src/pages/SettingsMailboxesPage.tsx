@@ -77,6 +77,13 @@ export function SettingsMailboxesPage() {
             ),
         },
         {
+            key: 'domain',
+            header: t('field.mailbox.domain'),
+            // The card heading already shows the full address.
+            hideInCard: true,
+            cell: mb => <span className='break-all'>{mb.address.slice(mb.address.indexOf('@') + 1)}</span>,
+        },
+        {
             key: 'server',
             header: t('field.mailbox.server'),
             cell: mb => (

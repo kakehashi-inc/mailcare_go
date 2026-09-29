@@ -25,9 +25,11 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
   own language (Japanese / English) and time zone. The time and the interval (daily to every 7 days) are
   configurable.
 - **Mail viewer** - browse the fetched mail by all / bounces / others (text and HTML bodies, original download).
-- **Automatic cleanup** - fetched mail is removed after its retention (180 days by default). The mails of
-  resolved or ignored alerts can also be deleted from the IMAP server after a number of days set per mail
-  address (60 by default for a new address; 0 never deletes).
+- **Automatic cleanup** - every day at a set time (2:00 by default), fetched mail past its retention (180 days by
+  default) is removed. Bounces, auto-replies and similar notices can also be deleted from the IMAP server after a
+  number of days set per mail address (60 by default for a new address, at most the mail retention; 0 never
+  deletes). Mails recognized by subject or sender name alone, automatically generated messages and ordinary mail
+  stay on the server.
 - **Users and roles** - administrators and read-only users. The UI is available in Japanese and English, with
   light and dark themes.
 - **Command line** - starting and stopping, registering users and mail addresses, syncing and more can also be
@@ -68,7 +70,7 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
 4. Register the mail addresses to watch in "Settings -> Mailboxes" and check the IMAP connection with
    "Test connection".
 5. Configure the rest as needed:
-   - "Settings -> General": check times, mail retention, AI agent (model, reasoning level, automatic analysis
+   - "Settings -> General": check times, cleanup time, mail retention, AI agent (model, reasoning level, automatic analysis
      on / off)
    - "Settings -> Notifications": SMTP server, recipient users, notification time and interval
    - "Settings -> Users": users and their roles
@@ -118,10 +120,10 @@ While the server is running, command line operations are handed to it. Main comm
 | --- | --- |
 | `mailcare user create --username admin --role admin` | Create a user |
 | `mailcare mailbox add --address a@example.com --host imap.example.com --username a@example.com` | Register a mail address to watch (the password is prompted for) |
-| `mailcare sync --wait` | Sync every mail address now (fetch -> group -> analyze) |
+| `mailcare sync --wait` | Sync every mail address now (fetch -> group -> analyze). Add `--all-time` to check every mail regardless of the period |
 | `mailcare schedule set 06:00 12:00 18:00` | Change the automatic check times |
 | `mailcare settings show` / `mailcare settings set <key> <value>` | Show / change the settings |
-| `mailcare cleanup` | Apply the retentions now |
+| `mailcare cleanup` | Apply the retentions now: delete old notices from the IMAP server, remove old mail, temporary files, agent workspaces and job history |
 | `mailcare jobs list` | Show the task history |
 
 `mailcare --help` lists every command.

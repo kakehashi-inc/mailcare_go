@@ -82,7 +82,7 @@ func (c *ScheduleSetCmd) Run() error {
 // SettingsCmd shows or changes server settings.
 type SettingsCmd struct {
 	Show SettingsShowCmd `cmd:"" help:"Show the settings"`
-	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, agent_keep_days, mail_keep_days, cookie_ttl_hours, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, smtp_from, public_base_url, notify_enabled, notify_time, notify_interval_days, notify_user_ids)"`
+	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, agent_keep_days, mail_keep_days, cleanup_time, cookie_ttl_hours, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, smtp_from, public_base_url, notify_enabled, notify_time, notify_interval_days, notify_user_ids)"`
 }
 
 // SettingsShowCmd prints every effective setting.
@@ -113,6 +113,7 @@ func (c *SettingsShowCmd) Run() error {
 		SettingAgentEnabled:         ResolveAgentEnabled(db),
 		SettingAgentKeepDays:        ResolveAgentKeepDays(db),
 		SettingMailKeepDays:         ResolveMailKeepDays(db),
+		SettingCleanupTime:          ResolveCleanupTime(db),
 		SettingCookieTTLHours:       ResolveCookieTTLHours(db),
 		SettingSMTPHost:             notify.SMTP.Host,
 		SettingSMTPPort:             notify.SMTP.Port,
@@ -193,7 +194,8 @@ func (c *SettingsShowCmd) Run() error {
 	if lastCleanup == "" {
 		lastCleanup = "-"
 	}
-	fmt.Printf("%-22s %s (the daily cleanup runs when the date changes)\n", SettingCleanupLastRunDate+":", lastCleanup)
+	fmt.Printf("%-22s %v\n", SettingCleanupTime+":", values[SettingCleanupTime])
+	fmt.Printf("%-22s %s\n", SettingCleanupLastRunDate+":", lastCleanup)
 	return nil
 }
 
@@ -261,7 +263,7 @@ func SettingKeys() []string {
 	return []string{
 		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentModel,
 		SettingAgentReasoningEffort, SettingAgentEnabled,
-		SettingAgentKeepDays, SettingMailKeepDays, SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
+		SettingAgentKeepDays, SettingMailKeepDays, SettingCleanupTime, SettingCookieTTLHours, SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
 		SettingSMTPUsername,
 		settingSMTPPassword,
 		SettingSMTPFrom, SettingPublicBaseURL, SettingNotifyEnabled, SettingNotifyTime, SettingNotifyInterval, SettingNotifyUserIDs,
@@ -357,6 +359,13 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 			return argErr(perr)
 		}
 		return strconv.Itoa(n), SaveMailKeepDays(db, n)
+	case SettingCleanupTime:
+		norm, perr := ParseCleanupTime(value)
+		if perr != nil {
+			return argErr(perr)
+		}
+		_, err := SaveCleanupTime(db, norm)
+		return norm, err
 	}
 	// Notification keys share the validation of the Web settings.
 	in := &NotificationInput{}

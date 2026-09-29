@@ -639,8 +639,8 @@ func TestSchedulerQueuesNotifyJob(t *testing.T) {
 	clock := localDate(2026, 9, 17, 8, 59, 50)
 	s.now = func() time.Time { return clock }
 	s.lastTick = clock
-	// Only the notify jobs are counted (the daily cleanup is queued on the
-	// first tick of a day as well).
+	// Only the notify jobs are counted (the daily cleanup may be queued on
+	// the first tick as well).
 	clock = localDate(2026, 9, 17, 9, 0, 10)
 	s.Tick()
 	jobs := activeJobsOfKind(t, db, JobKindNotify)
