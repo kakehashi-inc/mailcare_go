@@ -224,6 +224,9 @@ func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
 	} else if err != sql.ErrNoRows {
 		return nil, err
 	}
+	if err := CheckEmailAvailable(db, email, 0); err != nil {
+		return nil, err
+	}
 	hash, err := HashPassword(in.Password)
 	if err != nil {
 		return nil, err
@@ -284,10 +287,37 @@ func ApplyProfile(u *models.User, in ProfileInput) (displayName, email, language
 	return displayName, email, language, timezone, theme, nil
 }
 
+// ErrEmailTaken is returned when a mail address is already set on another
+// user. Addresses are unique among users because they can be used to log in.
+var ErrEmailTaken = errors.New("email address is already used by another user")
+
+// CheckEmailAvailable returns ErrEmailTaken when email (already normalized)
+// belongs to a user other than exceptID. An empty address is always
+// available.
+func CheckEmailAvailable(db *sql.DB, email string, exceptID int64) error {
+	if email == "" {
+		return nil
+	}
+	other, err := models.GetUserByEmail(db, email)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if other.ID != exceptID {
+		return ErrEmailTaken
+	}
+	return nil
+}
+
 // UpdateProfile validates and stores the profile fields of a user.
 func UpdateProfile(db *sql.DB, u *models.User, in ProfileInput) error {
 	displayName, email, language, timezone, theme, err := ApplyProfile(u, in)
 	if err != nil {
+		return err
+	}
+	if err := CheckEmailAvailable(db, email, u.ID); err != nil {
 		return err
 	}
 	return models.UpdateUserProfile(db, u.ID, displayName, email, language, timezone, theme)
@@ -311,10 +341,20 @@ func ChangePassword(db *sql.DB, userID int64, newPassword string) error {
 	return models.UpdateUserPassword(db, userID, hash)
 }
 
-// AuthenticateUser checks a username/password pair and returns the user.
-// A wrong pair yields ErrInvalidCredentials; other errors are internal.
-func AuthenticateUser(db *sql.DB, username, password string) (*models.User, error) {
-	u, err := models.GetUserByUsername(db, strings.TrimSpace(username))
+// AuthenticateUser checks a login name/password pair and returns the user.
+// The login name is a username, or the user's mail address when it contains
+// "@" (usernames cannot, so the two never collide; the address is compared
+// case-insensitively). A wrong pair yields ErrInvalidCredentials; other
+// errors are internal.
+func AuthenticateUser(db *sql.DB, login, password string) (*models.User, error) {
+	login = strings.TrimSpace(login)
+	var u *models.User
+	var err error
+	if strings.Contains(login, "@") {
+		u, err = models.GetUserByEmail(db, strings.ToLower(login))
+	} else {
+		u, err = models.GetUserByUsername(db, login)
+	}
 	if err == sql.ErrNoRows {
 		// Burn comparable time so a missing user is not distinguishable.
 		_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))

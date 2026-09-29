@@ -85,14 +85,15 @@ func GetUserByID(db *sql.DB, id int64) (*User, error) {
 	return scanUser(db.QueryRow(`SELECT `+userColumns+` FROM users WHERE id = ?`, id))
 }
 
-// GetUserByUsername returns the user with the given username (sql.ErrNoRows when absent).
 // GetUserByEmail returns the user whose notification address is email
 // (compared as stored: addresses are saved lower-cased), the oldest one when
-// several share it; sql.ErrNoRows when none.
+// several share it (possible only for data saved before addresses became
+// unique); sql.ErrNoRows when none.
 func GetUserByEmail(db *sql.DB, email string) (*User, error) {
 	return scanUser(db.QueryRow(`SELECT `+userColumns+` FROM users WHERE email = ? AND email <> '' ORDER BY id LIMIT 1`, email))
 }
 
+// GetUserByUsername returns the user with the given username (sql.ErrNoRows when absent).
 func GetUserByUsername(db *sql.DB, username string) (*User, error) {
 	return scanUser(db.QueryRow(`SELECT `+userColumns+` FROM users WHERE username = ?`, username))
 }

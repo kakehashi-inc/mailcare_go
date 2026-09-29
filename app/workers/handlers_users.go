@@ -2,6 +2,7 @@ package workers
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 
 	"mailcare/app/models"
@@ -99,6 +100,13 @@ func (c *core) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		DisplayName: body.DisplayName, Email: body.Email, Language: body.Language, Timezone: body.Timezone, Theme: body.Theme})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := modules.CheckEmailAvailable(c.db, email, u.ID); errors.Is(err, modules.ErrEmailTaken) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	} else if err != nil {
+		writeInternalError(w, "failed to check the email address", err)
 		return
 	}
 	if body.Role == "" {

@@ -11,7 +11,15 @@ import { CheckboxField, InputField, SelectField, ToggleField } from '../componen
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
-import { DEFAULT_FOLDER, DEFAULT_IMAP_PORT_PLAIN, DEFAULT_IMAP_PORT_SSL, DEFAULT_INITIAL_DAYS, DEFAULT_RECENT_DAYS, DEFAULT_SERVER_KEEP_DAYS, MAX_SERVER_KEEP_DAYS } from '../constants';
+import {
+    DEFAULT_FOLDER,
+    DEFAULT_IMAP_PORT_PLAIN,
+    DEFAULT_IMAP_PORT_SSL,
+    DEFAULT_INITIAL_DAYS,
+    DEFAULT_RECENT_DAYS,
+    DEFAULT_SERVER_KEEP_DAYS,
+    MAX_SERVER_KEEP_DAYS,
+} from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { ImapSecurity, MailboxDTO, MailboxInput } from '../types';
@@ -388,7 +396,10 @@ export function MailboxEditPage() {
                 </Card>
 
                 <Card>
-                    <CardHeader title={t('mailbox.sectionServerKeep')} description={t('mailbox.sectionServerKeepHint')} />
+                    <CardHeader
+                        title={t('mailbox.sectionServerKeep')}
+                        description={t('mailbox.sectionServerKeepHint')}
+                    />
                     <InputField
                         label={t('mailbox.serverKeepDays')}
                         type='number'

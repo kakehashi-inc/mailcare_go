@@ -16,6 +16,7 @@ const SERVER_MESSAGES: { match: RegExp; key: string }[] = [
         key: 'serverError.currentPasswordWrong',
     },
     { match: /username already exists|username (is )?taken|duplicate username/i, key: 'serverError.usernameExists' },
+    { match: /email address is already used by another user/i, key: 'serverError.emailExists' },
     {
         match: /address already exists|mailbox already exists|duplicate (mailbox|address)/i,
         key: 'serverError.mailboxExists',

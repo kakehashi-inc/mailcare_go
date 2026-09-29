@@ -159,7 +159,12 @@ export function MailsListPage() {
                 />
             </div>
 
-            <div role='tabpanel' id={`tabpanel-${kind}`} aria-labelledby={`tab-${kind}`} className='mt-4 flex flex-col gap-4'>
+            <div
+                role='tabpanel'
+                id={`tabpanel-${kind}`}
+                aria-labelledby={`tab-${kind}`}
+                className='mt-4 flex flex-col gap-4'
+            >
                 {list.loading ? (
                     <LoadingBlock />
                 ) : list.error || !data ? (

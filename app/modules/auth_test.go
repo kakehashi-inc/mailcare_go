@@ -1,9 +1,54 @@
 package modules
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
+
+func TestAuthenticateUserByEmail(t *testing.T) {
+	db := newTestDB(t)
+	alice, err := CreateUserFrom(db, NewUser{Username: "alice", Email: "Alice@Example.com", Password: "password123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := CreateUserFrom(db, NewUser{Username: "bob", Password: "password456"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, login := range []string{"alice", "alice@example.com", " ALICE@example.COM "} {
+		u, err := AuthenticateUser(db, login, "password123")
+		if err != nil || u.ID != alice.ID {
+			t.Errorf("login %q: %v", login, err)
+		}
+	}
+	if _, err := AuthenticateUser(db, "alice@example.com", "wrong-password"); err != ErrInvalidCredentials {
+		t.Errorf("wrong password by email: %v", err)
+	}
+	if _, err := AuthenticateUser(db, "nobody@example.com", "password123"); err != ErrInvalidCredentials {
+		t.Errorf("unknown email: %v", err)
+	}
+	if _, err := AuthenticateUser(db, "@", "password123"); err != ErrInvalidCredentials {
+		t.Errorf("bare @: %v", err)
+	}
+
+	// Addresses are unique among users (case-insensitively).
+	if _, err := CreateUserFrom(db, NewUser{Username: "carol", Email: "alice@example.com", Password: "password789"}); !errors.Is(err, ErrEmailTaken) {
+		t.Errorf("create with a taken address: %v", err)
+	}
+	taken := "ALICE@example.com"
+	if err := UpdateProfile(db, bob, ProfileInput{Email: &taken}); !errors.Is(err, ErrEmailTaken) {
+		t.Errorf("update to a taken address: %v", err)
+	}
+	same := "alice@example.com"
+	if err := UpdateProfile(db, alice, ProfileInput{Email: &same}); err != nil {
+		t.Errorf("keeping one's own address: %v", err)
+	}
+	if err := CheckEmailAvailable(db, "", bob.ID); err != nil {
+		t.Errorf("empty address: %v", err)
+	}
+}
 
 func TestLoginLimiter(t *testing.T) {
 	now := time.Date(2026, 9, 18, 9, 0, 0, 0, time.UTC)

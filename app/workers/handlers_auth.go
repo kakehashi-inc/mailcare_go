@@ -107,14 +107,15 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// handleLogin signs in with username + password (JSON body only). remember =
-// true opens a persistent session (see setSessionCookie). Tokens are not
-// accepted here: they are reserved for the future API. Failed attempts are
-// counted per client and username (LoginLimiter): a wrong password is
-// answered 401 as usual, and while the wait that follows repeated failures
-// is in force every attempt is refused with 429 before the password is
-// checked. Failures and refusals are logged with the client address and the
-// username.
+// handleLogin signs in with username + password (JSON body only); the
+// username field also accepts the user's mail address (AuthenticateUser).
+// remember = true opens a persistent session (see setSessionCookie). Tokens
+// are not accepted here: they are reserved for the future API. Failed
+// attempts are counted per client and login name as typed (LoginLimiter): a
+// wrong password is answered 401 as usual, and while the wait that follows
+// repeated failures is in force every attempt is refused with 429 before the
+// password is checked. Failures and refusals are logged with the client
+// address and the login name.
 func (c *core) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"`
