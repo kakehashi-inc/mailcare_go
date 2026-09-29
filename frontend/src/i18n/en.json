@@ -283,6 +283,10 @@
                 "resolved": "Mark \"{{group}}\" resolved",
                 "ignored": "Ignore \"{{group}}\""
             },
+            "reopenConfirm": {
+                "resolved": "What was done and the details are cleared. The state history keeps them.",
+                "ignored": "The reason and the details are cleared. The state history keeps them."
+            },
             "copyAll": "Copy all {{what}}",
             "copyValue": "Copy {{value}}",
             "copyUnit": "Copy action unit \"{{value}}\"",

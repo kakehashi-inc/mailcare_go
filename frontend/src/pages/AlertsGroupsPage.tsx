@@ -6,6 +6,7 @@ import { GroupRow } from '../components/domain/GroupRow';
 import { GroupStateDialog, type DecidedState } from '../components/domain/GroupStateDialog';
 import { MailboxSelect } from '../components/domain/MailboxSelect';
 import { Button } from '../components/ui/Button';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { InputField, SelectField } from '../components/ui/Field';
@@ -21,6 +22,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
 import { BOUNCE_CATEGORIES, type GroupDTO, type GroupScope, type GroupSort, type GroupState } from '../types';
 import { categoryLabel, groupHeadline } from '../utils/category';
+import { reopenMessage } from '../utils/stateReason';
 import { mailboxLabel } from '../utils/format';
 
 /**
@@ -82,7 +84,8 @@ export function AlertsGroupsPage() {
     // The row whose state is being changed, and to which state.
     const [changing, setChanging] = useState<{ key: string; state: GroupState } | null>(null);
     // The row waiting for what was done or why (the dialog of resolved / ignored).
-    const [deciding, setDeciding] = useState<{ group: GroupDTO; state: DecidedState } | null>(null);
+    // The row waiting for a confirmation: what was done or why (resolved / ignored), or the reopening.
+    const [deciding, setDeciding] = useState<{ group: GroupDTO; state: GroupState } | null>(null);
 
     const { mailboxes } = useMailboxes();
     const mailbox = useAsync(() => getMailbox(id), [id]);
@@ -128,8 +131,9 @@ export function AlertsGroupsPage() {
     }, [data]);
 
     // Changes the state of one group from the list; it then moves to another tab, so the list and the
-    // tab counts are loaded again. Resolved and ignored ask first what was done or why (the dialog stays
-    // open when the change fails, so nothing entered is lost).
+    // tab counts are loaded again. Every change is confirmed in a dialog first: resolved and ignored ask what
+    // was done or why, reopening says what is cleared (the dialog stays open when the change fails, so nothing
+    // entered is lost).
     async function changeState(group: GroupDTO, next: GroupState, reason?: string, note?: string) {
         setChanging({ key: group.group_key, state: next });
         try {
@@ -145,8 +149,7 @@ export function AlertsGroupsPage() {
     }
 
     function startChange(group: GroupDTO, next: GroupState) {
-        if (next === 'open') void changeState(group, next);
-        else setDeciding({ group, state: next });
+        setDeciding({ group, state: next });
     }
 
     function rowActions(group: GroupDTO) {
@@ -158,7 +161,6 @@ export function AlertsGroupsPage() {
                 size='xs'
                 variant={next === 'resolved' ? 'primary' : 'secondary'}
                 icon={STATE_ICONS[next]}
-                loading={changing?.key === group.group_key && changing.state === next}
                 disabled={changing !== null}
                 onClick={() => startChange(group, next)}
                 aria-label={t(`action.group.markAsFor.${next}`, { group: headline })}
@@ -343,10 +345,19 @@ export function AlertsGroupsPage() {
                 </div>
             )}
             <GroupStateDialog
-                state={deciding?.state ?? null}
+                state={deciding && deciding.state !== 'open' ? (deciding.state as DecidedState) : null}
                 group={deciding ? groupHeadline(deciding.group, t) : ''}
                 busy={changing !== null}
                 onConfirm={(reason, note) => deciding && void changeState(deciding.group, deciding.state, reason, note)}
+                onCancel={() => setDeciding(null)}
+            />
+            <ConfirmDialog
+                open={deciding?.state === 'open'}
+                title={deciding ? t('action.group.markAsFor.open', { group: groupHeadline(deciding.group, t) }) : ''}
+                message={deciding ? reopenMessage(deciding.group.state, t) : ''}
+                confirmLabel={t('action.group.markAs.open')}
+                busy={changing !== null}
+                onConfirm={() => deciding && void changeState(deciding.group, 'open')}
                 onCancel={() => setDeciding(null)}
             />
         </PageContainer>

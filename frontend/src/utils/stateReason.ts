@@ -16,6 +16,11 @@ export function stateReasonLabel(state: GroupState, reason: string | null, t: TF
     return reason;
 }
 
+/** The confirmation of reopening a group: what it clears (its current choice and details; the history keeps them). */
+export function reopenMessage(state: GroupState, t: TFunction): string {
+    return state === 'ignored' ? t('action.group.reopenConfirm.ignored') : t('action.group.reopenConfirm.resolved');
+}
+
 /** The label of the field that holds the code chosen with a state. */
 export function stateReasonField(state: GroupState, t: TFunction): string {
     return state === 'resolved' ? t('field.group.resolveAction') : t('field.group.ignoreReason');

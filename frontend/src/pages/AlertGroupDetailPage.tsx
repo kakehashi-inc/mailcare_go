@@ -29,6 +29,7 @@ import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
 import { AnchorButton, Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { CopyButton } from '../components/ui/CopyButton';
 import { DateTime } from '../components/ui/DateTime';
 import { DescriptionList } from '../components/ui/DescriptionList';
@@ -47,7 +48,7 @@ import { usePolling } from '../hooks/usePolling';
 import type { GroupState, JobDTO, MessageDTO, ReportDTO, StateChangeDTO } from '../types';
 import { categoryDescription, groupHeadline } from '../utils/category';
 import { formatDateTime } from '../utils/format';
-import { stateReasonField, stateReasonLabel } from '../utils/stateReason';
+import { reopenMessage, stateReasonField, stateReasonLabel } from '../utils/stateReason';
 
 const STATES: GroupState[] = ['open', 'resolved', 'ignored'];
 const STATE_ICONS: Record<GroupState, string> = { open: 'undo', resolved: 'check_circle', ignored: 'visibility_off' };
@@ -215,7 +216,8 @@ export function AlertGroupDetailPage() {
     const [analyzing, setAnalyzing] = useState(false);
     const [changing, setChanging] = useState<GroupState | null>(null);
     // The state waiting for what was done or why (the dialog of resolved / ignored).
-    const [deciding, setDeciding] = useState<DecidedState | null>(null);
+    // The state waiting for a confirmation: what was done or why (resolved / ignored), or the reopening.
+    const [deciding, setDeciding] = useState<GroupState | null>(null);
     const group = detail.data?.group;
     const headline = group ? groupHeadline(group, t) : '';
     useDocumentTitle(headline || t('layout.nav.alerts'));
@@ -259,8 +261,9 @@ export function AlertGroupDetailPage() {
         }
     }
 
-    // Resolved and ignored ask first what was done or why; the dialog stays open when the change fails, so
-    // nothing entered is lost. The detail is loaded again for the new history entry.
+    // Every change is confirmed in a dialog first: resolved and ignored ask what was done or why, reopening
+    // says what is cleared. The dialog stays open when the change fails, so nothing entered is lost. The
+    // detail is loaded again for the new history entry.
     async function changeState(state: GroupState, reason?: string, note?: string) {
         setChanging(state);
         try {
@@ -276,8 +279,7 @@ export function AlertGroupDetailPage() {
     }
 
     function startChange(state: GroupState) {
-        if (state === 'open') void changeState(state);
-        else setDeciding(state);
+        setDeciding(state);
     }
 
     if (detail.loading) return <LoadingBlock />;
@@ -345,7 +347,6 @@ export function AlertGroupDetailPage() {
                                 size='sm'
                                 variant={s === 'resolved' ? 'primary' : 'secondary'}
                                 icon={STATE_ICONS[s]}
-                                loading={changing === s && deciding === null}
                                 disabled={changing !== null}
                                 onClick={() => startChange(s)}
                             >
@@ -605,10 +606,19 @@ export function AlertGroupDetailPage() {
                 </aside>
             </div>
             <GroupStateDialog
-                state={deciding}
+                state={deciding && deciding !== 'open' ? (deciding as DecidedState) : null}
                 group={headline}
                 busy={changing !== null}
                 onConfirm={(reason, note) => deciding && void changeState(deciding, reason, note)}
+                onCancel={() => setDeciding(null)}
+            />
+            <ConfirmDialog
+                open={deciding === 'open'}
+                title={t('action.group.markAsFor.open', { group: headline })}
+                message={reopenMessage(group.state, t)}
+                confirmLabel={t('action.group.markAs.open')}
+                busy={changing !== null}
+                onConfirm={() => void changeState('open')}
                 onCancel={() => setDeciding(null)}
             />
         </PageContainer>

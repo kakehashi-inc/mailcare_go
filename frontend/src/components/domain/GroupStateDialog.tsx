@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { IGNORE_REASONS, MAX_STATE_NOTE_LENGTH, RESOLVE_ACTIONS } from '../../types';
 import { Button } from '../ui/Button';
 import { RadioGroupField, TextareaField } from '../ui/Field';
@@ -38,35 +39,8 @@ export function GroupStateDialog({ state, group, busy = false, onConfirm, onCanc
         setMissing(false);
     }, [state]);
 
-    useEffect(() => {
-        if (!state) return;
-        const previous = document.activeElement as HTMLElement | null;
-        dialogRef.current?.querySelector<HTMLElement>('input')?.focus();
-        function onKey(e: KeyboardEvent) {
-            if (e.key === 'Escape' && !busy) onCancel();
-            if (e.key === 'Tab' && dialogRef.current) {
-                // Keep focus inside the dialog.
-                const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
-                    'input:not([disabled]), textarea:not([disabled]), button:not([disabled])'
-                );
-                if (focusable.length === 0) return;
-                const first = focusable[0];
-                const last = focusable[focusable.length - 1];
-                if (e.shiftKey && document.activeElement === first) {
-                    e.preventDefault();
-                    last.focus();
-                } else if (!e.shiftKey && document.activeElement === last) {
-                    e.preventDefault();
-                    first.focus();
-                }
-            }
-        }
-        document.addEventListener('keydown', onKey);
-        return () => {
-            document.removeEventListener('keydown', onKey);
-            previous?.focus();
-        };
-    }, [state, busy, onCancel]);
+    // The focus starts on the first choice.
+    useFocusTrap(dialogRef, state !== null, () => !busy && onCancel());
 
     if (!state) return null;
 

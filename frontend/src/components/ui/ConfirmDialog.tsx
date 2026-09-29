@@ -1,5 +1,6 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { Button } from './Button';
 import { Icon } from './Icon';
 
@@ -30,33 +31,8 @@ export function ConfirmDialog({
     const cancelRef = useRef<HTMLButtonElement>(null);
     const dialogRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        if (!open) return;
-        const previous = document.activeElement as HTMLElement | null;
-        cancelRef.current?.focus();
-        function onKey(e: KeyboardEvent) {
-            if (e.key === 'Escape' && !busy) onCancel();
-            if (e.key === 'Tab' && dialogRef.current) {
-                // Keep focus inside the dialog.
-                const focusable = dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled])');
-                if (focusable.length === 0) return;
-                const first = focusable[0];
-                const last = focusable[focusable.length - 1];
-                if (e.shiftKey && document.activeElement === first) {
-                    e.preventDefault();
-                    last.focus();
-                } else if (!e.shiftKey && document.activeElement === last) {
-                    e.preventDefault();
-                    first.focus();
-                }
-            }
-        }
-        document.addEventListener('keydown', onKey);
-        return () => {
-            document.removeEventListener('keydown', onKey);
-            previous?.focus();
-        };
-    }, [open, busy, onCancel]);
+    // The focus starts on Cancel, the safe choice.
+    useFocusTrap(dialogRef, open, () => !busy && onCancel(), cancelRef);
 
     if (!open) return null;
 

@@ -282,6 +282,10 @@
                 "resolved": "「{{group}}」を対応済にする",
                 "ignored": "「{{group}}」を無視する"
             },
+            "reopenConfirm": {
+                "resolved": "対応内容と詳細は消えます。対応履歴には残ります。",
+                "ignored": "判断理由と詳細は消えます。対応履歴には残ります。"
+            },
             "copyAll": "{{what}}をすべてコピー",
             "copyValue": "{{value}}をコピー",
             "copyUnit": "対応単位「{{value}}」をコピー",
