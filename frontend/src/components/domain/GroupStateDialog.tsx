@@ -129,12 +129,13 @@ export function GroupStateDialog({ state, group, busy = false, onConfirm, onCanc
                             disabled={busy}
                         />
                     )}
-                    <div className='flex flex-col-reverse gap-2 sm:flex-row sm:justify-end'>
-                        <Button type='button' variant='secondary' onClick={onCancel} disabled={busy}>
-                            {t('common.cancel')}
-                        </Button>
+                    {/* Same order as ConfirmDialog: confirm left, cancel right; stacked, cancel at the bottom. */}
+                    <div className='flex flex-col gap-2 sm:flex-row sm:justify-end'>
                         <Button type='submit' variant={resolved ? 'primary' : 'secondary'} loading={busy}>
                             {t(`action.group.markAs.${state}`)}
+                        </Button>
+                        <Button type='button' variant='secondary' onClick={onCancel} disabled={busy}>
+                            {t('common.cancel')}
                         </Button>
                     </div>
                 </form>

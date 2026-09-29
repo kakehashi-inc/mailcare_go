@@ -89,12 +89,13 @@ export function ConfirmDialog({
                         </div>
                     </div>
                 </div>
-                <div className='mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end'>
-                    <Button ref={cancelRef} variant='secondary' onClick={onCancel} disabled={busy}>
-                        {cancelLabel ?? t('common.cancel')}
-                    </Button>
+                {/* Like the dialogs of the OS and the browser: confirm left, cancel right; stacked, cancel at the bottom. */}
+                <div className='mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end'>
                     <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} loading={busy}>
                         {confirmLabel ?? t('component.confirmDialog.confirm')}
+                    </Button>
+                    <Button ref={cancelRef} variant='secondary' onClick={onCancel} disabled={busy}>
+                        {cancelLabel ?? t('common.cancel')}
                     </Button>
                 </div>
             </div>
