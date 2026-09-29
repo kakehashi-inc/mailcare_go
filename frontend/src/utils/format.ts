@@ -104,8 +104,8 @@ export function formatDuration(startIso: string | null, endIso: string | null, t
     const end = endIso ? new Date(endIso).getTime() : Date.now();
     if (Number.isNaN(start) || Number.isNaN(end)) return '';
     const sec = Math.max(0, Math.round((end - start) / 1000));
-    if (sec < 60) return t('time.seconds', { count: sec });
+    if (sec < 60) return t('common.duration.seconds', { count: sec });
     const min = Math.floor(sec / 60);
-    if (min < 60) return t('time.minutesSeconds', { minutes: min, seconds: sec % 60 });
-    return t('time.hoursMinutes', { hours: Math.floor(min / 60), minutes: min % 60 });
+    if (min < 60) return t('common.duration.minutesSeconds', { minutes: min, seconds: sec % 60 });
+    return t('common.duration.hoursMinutes', { hours: Math.floor(min / 60), minutes: min % 60 });
 }

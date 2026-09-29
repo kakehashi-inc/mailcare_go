@@ -48,12 +48,12 @@ export function categoryTone(category: string): BadgeTone {
 
 /** Translated category name; an unknown category (newer server) is shown as is. */
 export function categoryLabel(category: string, t: TFunction): string {
-    return isBounceCategory(category) ? t(`category.${category}.label`) : category;
+    return isBounceCategory(category) ? t(`value.category.${category}.label`) : category;
 }
 
 /** What the administrator should do about this category, or "" when unknown. */
 export function categoryDescription(category: string, t: TFunction): string {
-    return isBounceCategory(category) ? t(`category.${category}.description`) : '';
+    return isBounceCategory(category) ? t(`value.category.${category}.description`) : '';
 }
 
 /**
@@ -73,9 +73,9 @@ export function groupHeadline(
     const authority = group.category === 'unknown_failure' ? '' : group.authority;
     if (group.unit_value) {
         return authority
-            ? t('group.headlineWithAuthority', { label, unit: group.unit_value, authority })
-            : t('group.headline', { label, unit: group.unit_value });
+            ? t('field.group.titleWithAuthority', { label, unit: group.unit_value, authority })
+            : t('field.group.title', { label, unit: group.unit_value });
     }
     const where = authority || group.recipient_domain;
-    return where ? t('group.headlineNoUnit', { label, where }) : label;
+    return where ? t('field.group.titleNoUnit', { label, where }) : label;
 }

@@ -1,4 +1,6 @@
 import { API_BASE, RETRY_503_DELAY_MS, WEB_BASE } from '../constants';
+import type { ParseKeys } from 'i18next';
+import i18n from '../i18n/i18n';
 import type {
     BounceDTO,
     DashboardDTO,
@@ -38,13 +40,24 @@ import type {
     UserUpdateInput,
 } from '../types';
 
-/** Raised for any non-2xx response, or with status 0 when the network failed. */
+/** A key of the language files. */
+export type MessageKey = ParseKeys;
+
+/**
+ * Raised for any non-2xx response, or with status 0 when the network failed.
+ * key (a full key of the language files) and params come from the server
+ * ({"key", "params"}); the page shows t(key, params).
+ */
 export class ApiError extends Error {
     status: number;
-    constructor(status: number, message: string) {
-        super(message);
+    key: MessageKey;
+    params: Record<string, unknown>;
+    constructor(status: number, key: MessageKey, params: Record<string, unknown> = {}) {
+        super(key);
         this.name = 'ApiError';
         this.status = status;
+        this.key = key;
+        this.params = params;
     }
     get isUnauthorized(): boolean {
         return this.status === 401;
@@ -82,15 +95,32 @@ function sleep(ms: number): Promise<void> {
     return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
-async function readError(res: Response): Promise<string> {
-    let message = `HTTP ${res.status}`;
+/** The message of a response without one of its own (e.g. a proxy error page). */
+function statusKey(status: number): MessageKey {
+    switch (status) {
+        case 401:
+            return 'system.unauthorized';
+        case 403:
+            return 'system.forbidden';
+        case 404:
+            return 'system.notFound';
+        case 503:
+            return 'system.unavailable';
+        default:
+            return 'system.internal';
+    }
+}
+
+async function readError(res: Response): Promise<ApiError> {
     try {
         const body = await res.json();
-        if (body && typeof body.error === 'string') message = body.error;
+        if (body && typeof body.key === 'string' && i18n.exists(body.key)) {
+            return new ApiError(res.status, body.key as MessageKey, body.params ?? {});
+        }
     } catch {
-        // The body is not JSON; keep the status text.
+        // The body is not JSON.
     }
-    return message;
+    return new ApiError(res.status, statusKey(res.status));
 }
 
 async function request<T>(url: string, init: RequestInit = {}, opts: RequestOptions = {}): Promise<T> {
@@ -99,7 +129,7 @@ async function request<T>(url: string, init: RequestInit = {}, opts: RequestOpti
         try {
             return await fetch(url, { credentials: 'same-origin', ...init });
         } catch {
-            throw new ApiError(0, 'network');
+            throw new ApiError(0, 'system.network');
         }
     };
     res = await doFetch();
@@ -112,7 +142,7 @@ async function request<T>(url: string, init: RequestInit = {}, opts: RequestOpti
         unauthorizedHandler();
     }
     if (!res.ok) {
-        throw new ApiError(res.status, await readError(res));
+        throw await readError(res);
     }
     if (res.status === 204 || res.headers.get('content-length') === '0') {
         return undefined as T;

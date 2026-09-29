@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { createUser, deleteUser, listUsers, setUserPassword, updateUser } from '../api/client';
+import { createUser, deleteUser, listUsers, setUserPassword, updateUser, ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { RoleBadge } from '../components/domain/StatusBadges';
 import { UserPreferenceFields } from '../components/domain/UserPreferenceFields';
@@ -21,7 +21,6 @@ import { isLang } from '../i18n/i18n';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { Role, UserDTO, UserUpdateInput } from '../types';
-import { errorMessage } from '../utils/errors';
 import { DEFAULT_THEME, isTheme, type Theme } from '../utils/theme';
 import { DEFAULT_TIME_ZONE } from '../utils/timezone';
 import { isEmailAddress } from '../utils/validate';
@@ -30,7 +29,7 @@ type Panel = { mode: 'create' } | { mode: 'edit'; user: UserDTO } | { mode: 'pas
 
 export function SettingsUsersPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.settingsUsers'));
+    useDocumentTitle(t('layout.nav.settingsUsers'));
     const { me } = useAuth();
     const toast = useToast();
     const users = useAsync(listUsers, []);
@@ -45,11 +44,11 @@ export function SettingsUsersPage() {
         setBusy(true);
         try {
             await deleteUser(deleting.id);
-            toast.success(t('user.deleted', { username: deleting.username }));
+            toast.success(t('result.user.deleted', { username: deleting.username }));
             setDeleting(null);
             await users.reload();
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setBusy(false);
         }
@@ -58,14 +57,14 @@ export function SettingsUsersPage() {
     const columns: Column<UserDTO>[] = [
         {
             key: 'username',
-            header: t('user.username'),
+            header: t('field.user.username'),
             primary: true,
             cell: u => (
                 <span className='inline-flex flex-wrap items-center gap-2 break-all'>
                     <span className='font-medium text-ink'>{u.username}</span>
                     {me?.user.id === u.id && (
                         <Badge tone='info' icon='person_pin'>
-                            {t('user.you')}
+                            {t('page.users.you')}
                         </Badge>
                     )}
                 </span>
@@ -73,7 +72,7 @@ export function SettingsUsersPage() {
         },
         {
             key: 'display_name',
-            header: t('user.displayName'),
+            header: t('field.common.displayName'),
             cell: u =>
                 u.display_name ? (
                     <span className='break-words'>{u.display_name}</span>
@@ -81,23 +80,23 @@ export function SettingsUsersPage() {
                     <span className='text-muted'>-</span>
                 ),
         },
-        { key: 'role', header: t('user.role'), cell: u => <RoleBadge role={u.role} /> },
+        { key: 'role', header: t('field.user.role'), cell: u => <RoleBadge role={u.role} /> },
         {
             key: 'email',
-            header: t('user.email'),
+            header: t('field.user.email'),
             cell: u =>
                 u.email ? (
                     <span className='break-all'>{u.email}</span>
                 ) : (
-                    <span className='text-muted'>{t('user.emailNone')}</span>
+                    <span className='text-muted'>{t('common.notSet')}</span>
                 ),
         },
         {
             key: 'last_login',
-            header: t('user.lastLogin'),
-            cell: u => <DateTime value={u.last_login_at} relative empty={t('user.neverLoggedIn')} />,
+            header: t('field.user.lastLogin'),
+            cell: u => <DateTime value={u.last_login_at} relative empty={t('field.user.lastLoginNever')} />,
         },
-        { key: 'created', header: t('common.createdAt'), cell: u => <DateTime value={u.created_at} /> },
+        { key: 'created', header: t('field.common.createdAt'), cell: u => <DateTime value={u.created_at} /> },
         {
             key: 'actions',
             header: t('common.actions'),
@@ -111,7 +110,7 @@ export function SettingsUsersPage() {
                         <Button
                             size='sm'
                             icon='edit'
-                            aria-label={t('user.editAria', { username: u.username })}
+                            aria-label={t('action.user.editFor', { username: u.username })}
                             onClick={() => setPanel({ mode: 'edit', user: u })}
                         >
                             {t('common.edit')}
@@ -119,22 +118,22 @@ export function SettingsUsersPage() {
                         <Button
                             size='sm'
                             icon='lock_reset'
-                            aria-label={t('user.resetPasswordAria', { username: u.username })}
+                            aria-label={t('action.user.resetPasswordFor', { username: u.username })}
                             onClick={() => setPanel({ mode: 'password', user: u })}
                         >
-                            {t('user.resetPassword')}
+                            {t('action.user.resetPassword')}
                         </Button>
                         <Button
                             size='sm'
                             icon='delete'
                             className='text-danger'
                             disabled={isSelf || lastAdmin}
-                            aria-label={t('user.deleteAria', { username: u.username })}
+                            aria-label={t('action.user.deleteFor', { username: u.username })}
                             title={
                                 isSelf
-                                    ? t('user.cannotDeleteSelf')
+                                    ? t('result.user.deleteSelf')
                                     : lastAdmin
-                                      ? t('user.cannotDeleteLastAdmin')
+                                      ? t('result.user.lastAdmin')
                                       : undefined
                             }
                             onClick={() => setDeleting(u)}
@@ -150,12 +149,15 @@ export function SettingsUsersPage() {
     return (
         <PageContainer wide>
             <PageHeader
-                title={t('nav.settingsUsers')}
-                description={t('settings.menu.users')}
-                crumbs={[{ label: t('nav.settings'), to: '/settings' }, { label: t('nav.settingsUsers') }]}
+                title={t('layout.nav.settingsUsers')}
+                description={t('page.settings.menu.users')}
+                crumbs={[
+                    { label: t('layout.nav.settings'), to: '/settings' },
+                    { label: t('layout.nav.settingsUsers') },
+                ]}
                 actions={
                     <Button variant='primary' icon='person_add' onClick={() => setPanel({ mode: 'create' })}>
-                        {t('user.add')}
+                        {t('action.user.add')}
                     </Button>
                 }
             />
@@ -180,21 +182,24 @@ export function SettingsUsersPage() {
             {users.loading ? (
                 <LoadingBlock />
             ) : users.error || !users.data ? (
-                <ErrorState message={errorMessage(users.error, t)} onRetry={() => void users.reload()} />
+                <ErrorState
+                    message={t(users.error?.key ?? 'system.internal', users.error?.params)}
+                    onRetry={() => void users.reload()}
+                />
             ) : (
                 <Table
                     columns={columns}
                     rows={users.data}
                     rowKey={u => u.id}
-                    caption={t('nav.settingsUsers')}
-                    emptyState={<EmptyState title={t('user.empty')} />}
+                    caption={t('layout.nav.settingsUsers')}
+                    emptyState={<EmptyState title={t('page.users.empty')} />}
                 />
             )}
 
             <ConfirmDialog
                 open={deleting !== null}
-                title={t('user.deleteTitle')}
-                message={deleting ? t('user.deleteMessage', { username: deleting.username }) : ''}
+                title={t('action.user.delete')}
+                message={deleting ? t('action.user.deleteConfirm', { username: deleting.username }) : ''}
                 confirmLabel={t('common.delete')}
                 danger
                 busy={busy}
@@ -255,7 +260,7 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
     const passwordOk = !needsPassword || (password.length >= MIN_PASSWORD_LENGTH && confirm === password);
     const demotingLastAdmin =
         panel.mode === 'edit' && panel.user.role === 'admin' && role !== 'admin' && adminCount <= 1;
-    const emailError = email.trim() !== '' && !isEmailAddress(email) ? t('user.emailInvalid') : undefined;
+    const emailError = email.trim() !== '' && !isEmailAddress(email) ? t('validation.common.emailFormat') : undefined;
     const canSubmit =
         (panel.mode !== 'create' || username.trim() !== '') &&
         (panel.mode !== 'edit' || editDirty) &&
@@ -266,10 +271,10 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
 
     const title =
         panel.mode === 'create'
-            ? t('user.add')
+            ? t('action.user.add')
             : panel.mode === 'edit'
-              ? t('user.editTitle', { username: panel.user.username })
-              : t('user.resetPasswordTitle', { username: panel.user.username });
+              ? t('action.user.editFor', { username: panel.user.username })
+              : t('action.user.resetPasswordFor', { username: panel.user.username });
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
@@ -288,17 +293,17 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
                     password,
                     role,
                 });
-                toast.success(t('user.created', { username: username.trim() }));
+                toast.success(t('result.user.created', { username: username.trim() }));
             } else if (panel.mode === 'edit') {
                 await updateUser(panel.user.id, changes);
-                toast.success(t('user.updated', { username: panel.user.username }));
+                toast.success(t('result.user.updated', { username: panel.user.username }));
             } else {
                 await setUserPassword(panel.user.id, password);
-                toast.success(t('user.passwordReset', { username: panel.user.username }));
+                toast.success(t('result.user.passwordReset', { username: panel.user.username }));
             }
             await onSaved();
         } catch (err) {
-            setError(errorMessage(err, t));
+            setError(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSubmitting(false);
         }
@@ -317,11 +322,11 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
             <form onSubmit={handleSubmit} noValidate className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                 {panel.mode === 'create' && (
                     <InputField
-                        label={t('user.username')}
+                        label={t('field.user.username')}
                         autoComplete='off'
                         value={username}
                         onChange={e => setUsername(e.target.value)}
-                        hint={t('user.usernameHint')}
+                        hint={t('field.user.usernameHint')}
                         autoFocus
                         required
                     />
@@ -329,20 +334,20 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
                 {panel.mode !== 'password' && (
                     <>
                         <InputField
-                            label={t('user.displayName')}
+                            label={t('field.common.displayName')}
                             autoComplete='off'
                             value={displayName}
                             onChange={e => setDisplayName(e.target.value)}
                             autoFocus={panel.mode === 'edit'}
                         />
                         <InputField
-                            label={t('user.email')}
+                            label={t('field.user.email')}
                             type='email'
                             autoComplete='off'
                             inputMode='email'
                             value={email}
                             onChange={e => setEmail(e.target.value)}
-                            hint={t('user.emailHint')}
+                            hint={t('field.user.emailHint')}
                             error={emailError}
                         />
                         <UserPreferenceFields
@@ -354,37 +359,41 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
                             onTheme={setTheme}
                         />
                         <SelectField
-                            label={t('user.role')}
+                            label={t('field.user.role')}
                             value={role}
                             onChange={e => setRole(e.target.value as Role)}
-                            hint={t('user.roleHint')}
-                            error={demotingLastAdmin ? t('user.cannotDemoteLastAdmin') : undefined}
+                            hint={t('field.user.roleHint')}
+                            error={demotingLastAdmin ? t('result.user.lastAdmin') : undefined}
                         >
-                            <option value='user'>{t('role.user')}</option>
-                            <option value='admin'>{t('role.admin')}</option>
+                            <option value='user'>{t('value.role.user')}</option>
+                            <option value='admin'>{t('value.role.admin')}</option>
                         </SelectField>
                     </>
                 )}
                 {needsPassword && (
                     <>
                         <InputField
-                            label={panel.mode === 'password' ? t('profile.newPassword') : t('user.password')}
+                            label={panel.mode === 'password' ? t('field.user.newPassword') : t('field.user.password')}
                             type='password'
                             autoComplete='new-password'
                             value={password}
                             onChange={e => setPassword(e.target.value)}
-                            hint={t('user.passwordHint', { min: MIN_PASSWORD_LENGTH })}
-                            error={tooShort ? t('user.passwordTooShort', { min: MIN_PASSWORD_LENGTH }) : undefined}
+                            hint={t('field.user.passwordHint', { min: MIN_PASSWORD_LENGTH })}
+                            error={
+                                tooShort
+                                    ? t('validation.user.passwordTooShort', { min: MIN_PASSWORD_LENGTH })
+                                    : undefined
+                            }
                             autoFocus={panel.mode === 'password'}
                             required
                         />
                         <InputField
-                            label={t('user.passwordConfirm')}
+                            label={t('field.user.passwordConfirm')}
                             type='password'
                             autoComplete='new-password'
                             value={confirm}
                             onChange={e => setConfirm(e.target.value)}
-                            error={mismatch ? t('user.passwordMismatch') : undefined}
+                            error={mismatch ? t('validation.user.passwordMismatch') : undefined}
                             required
                         />
                     </>

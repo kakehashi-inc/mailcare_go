@@ -106,7 +106,7 @@ func (c *core) handleUpdateNotificationSettings(w http.ResponseWriter, r *http.R
 		Time: body.NotifyTime, IntervalDays: body.NotifyIntervalDays, UserIDs: body.NotifyUserIDs,
 	}
 	if err := modules.SaveNotificationSettings(c.db, c.key, in); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	dto, err := c.notificationSettingsDTO()
@@ -147,7 +147,7 @@ func (c *core) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 		to = userFrom(r).Email
 	}
 	if to == "" {
-		writeError(w, http.StatusBadRequest, "no recipient: set your notification address or pass \"to\"")
+		writeError(w, http.StatusBadRequest, "validation.notification.testRecipientRequired")
 		return
 	}
 	cfg, err := modules.SMTPConfigForTest(c.db, c.key, &modules.SMTPTestInput{
@@ -155,14 +155,14 @@ func (c *core) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 		Password: body.SMTPPassword, From: body.SMTPFrom,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	// A user's address gets the mail in that user's language and time zone;
 	// any other address in the caller's.
 	loc := modules.MailLocaleForAddress(c.db, to, modules.MailLocaleFor(userFrom(r)))
 	if err := modules.TestSMTP(r.Context(), cfg, to, loc); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

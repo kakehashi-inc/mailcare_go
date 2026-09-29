@@ -100,13 +100,13 @@ func (c *core) webHandler() http.Handler {
 
 	// Unknown API paths answer JSON, not the SPA shell.
 	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 	})
 	mux.HandleFunc("/web/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 	})
 	mux.HandleFunc("/control/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeControlError(w, http.StatusNotFound, "not found")
 	})
 
 	// SPA + static assets fallback.
@@ -191,20 +191,27 @@ func sameOrigin(origin, host string) bool {
 // without one the Sec-Fetch-Site header, when present, must not say
 // cross-site or same-site (403 otherwise). It returns false after answering.
 func checkStateChangingRequest(w http.ResponseWriter, r *http.Request) bool {
-	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+	// refuse answers in the error shape of the path: English text for the
+	// control endpoints (the CLI), a code for the Web API.
+	refuse := func(status int, code, msg string) bool {
+		if strings.HasPrefix(r.URL.Path, "/control/") {
+			writeControlError(w, status, msg)
+		} else {
+			writeError(w, status, code)
+		}
 		return false
+	}
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		return refuse(http.StatusUnsupportedMediaType, "invalidRequest", "Content-Type must be application/json")
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if !sameOrigin(origin, r.Host) {
-			writeError(w, http.StatusForbidden, "cross-origin request refused")
-			return false
+			return refuse(http.StatusForbidden, "forbidden", "cross-origin request refused")
 		}
 	} else {
 		switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
 		case "cross-site", "same-site":
-			writeError(w, http.StatusForbidden, "cross-site request refused")
-			return false
+			return refuse(http.StatusForbidden, "forbidden", "cross-site request refused")
 		}
 	}
 	return true
@@ -248,7 +255,7 @@ func (c *core) webMiddleware(next http.Handler) http.Handler {
 		switch {
 		case strings.HasPrefix(p, "/control/"):
 			if !isLoopbackRequest(r) {
-				writeError(w, http.StatusForbidden, "forbidden")
+				writeControlError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -260,10 +267,10 @@ func (c *core) webMiddleware(next http.Handler) http.Handler {
 				// about the session, so answer 503 instead: the SPA keeps the
 				// session and retries rather than showing the login screen.
 				if errors.Is(err, modules.ErrSessionInvalid) {
-					writeError(w, http.StatusUnauthorized, "unauthorized")
+					writeError(w, http.StatusUnauthorized, "system.unauthorized")
 				} else {
 					log.Printf("session validation failed transiently: %v", err)
-					writeError(w, http.StatusServiceUnavailable, "temporarily unavailable")
+					writeError(w, http.StatusServiceUnavailable, "system.unavailable")
 				}
 				return
 			}
@@ -287,11 +294,11 @@ func (c *core) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u := userFrom(r)
 		if u == nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeError(w, http.StatusUnauthorized, "system.unauthorized")
 			return
 		}
 		if u.Role != modules.RoleAdmin {
-			writeError(w, http.StatusForbidden, "forbidden")
+			writeError(w, http.StatusForbidden, "system.forbidden")
 			return
 		}
 		next(w, r)

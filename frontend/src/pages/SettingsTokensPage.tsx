@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { createToken, deleteToken, listTokens } from '../api/client';
+import { createToken, deleteToken, listTokens, ApiError } from '../api/client';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -18,7 +18,6 @@ import { useToast } from '../components/ui/Toast';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { TokenDTO } from '../types';
-import { errorMessage } from '../utils/errors';
 import { localInputToIso } from '../utils/timezone';
 
 type Expiry = 'never' | '7' | '30' | '90' | '365' | 'custom';
@@ -41,7 +40,7 @@ function expiresAt(choice: Expiry, custom: string): string | undefined {
  */
 export function SettingsTokensPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.settingsTokens'));
+    useDocumentTitle(t('layout.nav.settingsTokens'));
     const toast = useToast();
     const tokens = useAsync(listTokens, []);
     const [showForm, setShowForm] = useState(false);
@@ -78,7 +77,7 @@ export function SettingsTokensPage() {
             setShowForm(false);
             await tokens.reload();
         } catch (err) {
-            setError(errorMessage(err, t));
+            setError(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSubmitting(false);
         }
@@ -89,11 +88,11 @@ export function SettingsTokensPage() {
         setBusy(true);
         try {
             await deleteToken(deleting.identifier);
-            toast.success(t('token.deleted', { name: deleting.name || deleting.identifier }));
+            toast.success(t('result.token.deleted', { name: deleting.name || deleting.identifier }));
             setDeleting(null);
             await tokens.reload();
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setBusy(false);
         }
@@ -103,15 +102,15 @@ export function SettingsTokensPage() {
     const columns: Column<TokenDTO>[] = [
         {
             key: 'name',
-            header: t('token.name'),
+            header: t('field.token.name'),
             primary: true,
             cell: tk => (
                 <span className='break-all'>
                     <span className='inline-flex flex-wrap items-center gap-2'>
-                        <span className='font-medium text-ink'>{tk.name || t('token.unnamed')}</span>
+                        <span className='font-medium text-ink'>{tk.name || t('field.token.nameNone')}</span>
                         {tk.is_default && (
                             <Badge tone='accent' icon='star'>
-                                {t('token.isDefault')}
+                                {t('field.token.isDefault')}
                             </Badge>
                         )}
                     </span>
@@ -121,23 +120,23 @@ export function SettingsTokensPage() {
         },
         {
             key: 'expires',
-            header: t('token.expires'),
+            header: t('field.token.expires'),
             cell: tk => {
-                if (!tk.expires_at) return <span className='text-muted'>{t('token.neverExpires')}</span>;
+                if (!tk.expires_at) return <span className='text-muted'>{t('value.tokenExpiry.never')}</span>;
                 const expired = new Date(tk.expires_at).getTime() < now;
                 return (
                     <span className='flex flex-wrap items-center gap-1'>
                         <DateTime value={tk.expires_at} />
                         {expired && (
                             <Badge tone='danger' icon='event_busy'>
-                                {t('token.expired')}
+                                {t('value.tokenExpiry.expired')}
                             </Badge>
                         )}
                     </span>
                 );
             },
         },
-        { key: 'created', header: t('common.createdAt'), cell: tk => <DateTime value={tk.created_at} /> },
+        { key: 'created', header: t('field.common.createdAt'), cell: tk => <DateTime value={tk.created_at} /> },
         {
             key: 'actions',
             header: t('common.actions'),
@@ -148,7 +147,7 @@ export function SettingsTokensPage() {
                     size='sm'
                     icon='delete'
                     className='text-danger'
-                    aria-label={t('token.deleteAria', { name: tk.name || tk.identifier })}
+                    aria-label={t('action.token.deleteFor', { name: tk.name || tk.identifier })}
                     onClick={() => setDeleting(tk)}
                 >
                     {t('common.delete')}
@@ -160,71 +159,74 @@ export function SettingsTokensPage() {
     return (
         <PageContainer wide>
             <PageHeader
-                title={t('nav.settingsTokens')}
-                description={t('token.description')}
-                crumbs={[{ label: t('nav.settings'), to: '/settings' }, { label: t('nav.settingsTokens') }]}
+                title={t('layout.nav.settingsTokens')}
+                description={t('page.tokens.description')}
+                crumbs={[
+                    { label: t('layout.nav.settings'), to: '/settings' },
+                    { label: t('layout.nav.settingsTokens') },
+                ]}
                 actions={
                     <Button variant='primary' icon='add' onClick={() => setShowForm(v => !v)} aria-expanded={showForm}>
-                        {t('token.create')}
+                        {t('action.token.create')}
                     </Button>
                 }
             />
 
             <Alert tone='info' className='mb-6'>
-                {t('token.futureNote')}
+                {t('page.tokens.futureNote')}
             </Alert>
 
             {created && (
                 <Alert
                     tone='success'
                     className='mb-6'
-                    title={t('token.createdTitle', { name: created.token.name || created.token.identifier })}
+                    title={t('result.token.created', { name: created.token.name || created.token.identifier })}
                     actions={
                         <Button size='sm' variant='ghost' icon='close' onClick={() => setCreated(null)}>
                             {t('common.close')}
                         </Button>
                     }
                 >
-                    <p>{t('token.createdOnce')}</p>
+                    <p>{t('page.tokens.createdOnce')}</p>
                     <div className='mt-2 flex flex-wrap items-center gap-2'>
                         <code className='break-all rounded-md bg-surface px-2 py-1 font-mono text-sm text-ink'>
                             {created.value}
                         </code>
-                        <CopyButton text={created.value} label={t('token.copy')} size='md' />
+                        <CopyButton text={created.value} label={t('action.token.copy')} size='md' />
                     </div>
                 </Alert>
             )}
 
             {showForm && (
                 <Card className='mb-6'>
-                    <CardHeader title={t('token.create')} />
+                    <CardHeader title={t('action.token.create')} />
                     <form onSubmit={handleCreate} noValidate className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                         <InputField
-                            label={t('token.name')}
+                            label={t('field.token.name')}
                             value={name}
                             onChange={e => setName(e.target.value)}
-                            hint={t('token.nameHint')}
+                            hint={t('field.token.nameHint')}
                             autoFocus
                             required
                         />
                         <InputField
-                            label={t('token.identifier')}
+                            label={t('field.token.identifier')}
                             autoComplete='off'
                             value={identifier}
                             onChange={e => setIdentifier(e.target.value)}
-                            hint={t('token.identifierHint')}
+                            hint={t('field.token.identifierHint')}
                         />
                         <SelectField
-                            label={t('token.expires')}
+                            label={t('field.token.expires')}
                             value={expiry}
                             onChange={e => setExpiry(e.target.value as Expiry)}
                         >
-                            <option value='never'>{t('token.neverExpires')}</option>
-                            <option value='7'>{t('token.expiresDays', { count: 7 })}</option>
-                            <option value='30'>{t('token.expiresDays', { count: 30 })}</option>
-                            <option value='90'>{t('token.expiresDays', { count: 90 })}</option>
-                            <option value='365'>{t('token.expiresDays', { count: 365 })}</option>
-                            <option value='custom'>{t('token.expiresCustom')}</option>
+                            <option value='never'>{t('value.tokenExpiry.never')}</option>
+                            <option value='7'>{t('value.tokenExpiry.days', { count: 7 })}</option>
+                            <option value='30'>{t('value.tokenExpiry.days', { count: 30 })}</option>
+                            <option value='90'>{t('value.tokenExpiry.days', { count: 90 })}</option>
+                            <option value='365'>{t('value.tokenExpiry.days', { count: 365 })}</option>
+                            <option value='custom'>{t('value.tokenExpiry.custom')}</option>
                         </SelectField>
                         {expiry === 'custom' && (
                             <div>
@@ -232,7 +234,7 @@ export function SettingsTokensPage() {
                                     htmlFor='token-expires-custom'
                                     className='mb-1 block text-sm font-medium text-ink'
                                 >
-                                    {t('token.expiresAt')}
+                                    {t('field.token.expiresAt')}
                                 </label>
                                 <input
                                     id='token-expires-custom'
@@ -244,7 +246,7 @@ export function SettingsTokensPage() {
                                 />
                                 {customInvalid && custom !== '' && (
                                     <p className='mt-1 text-sm text-danger' role='alert'>
-                                        {t('token.expiresInvalid')}
+                                        {t('validation.token.expiresInvalid')}
                                     </p>
                                 )}
                             </div>
@@ -263,7 +265,7 @@ export function SettingsTokensPage() {
                                 loading={submitting}
                                 disabled={!canSubmit}
                             >
-                                {t('token.create')}
+                                {t('action.token.create')}
                             </Button>
                         </div>
                     </form>
@@ -273,21 +275,26 @@ export function SettingsTokensPage() {
             {tokens.loading ? (
                 <LoadingBlock />
             ) : tokens.error || !tokens.data ? (
-                <ErrorState message={errorMessage(tokens.error, t)} onRetry={() => void tokens.reload()} />
+                <ErrorState
+                    message={t(tokens.error?.key ?? 'system.internal', tokens.error?.params)}
+                    onRetry={() => void tokens.reload()}
+                />
             ) : (
                 <Table
                     columns={columns}
                     rows={tokens.data}
                     rowKey={tk => tk.identifier}
-                    caption={t('nav.settingsTokens')}
-                    emptyState={<EmptyState title={t('token.empty')} description={t('token.emptyHint')} />}
+                    caption={t('layout.nav.settingsTokens')}
+                    emptyState={<EmptyState title={t('page.tokens.empty')} description={t('page.tokens.emptyHint')} />}
                 />
             )}
 
             <ConfirmDialog
                 open={deleting !== null}
-                title={t('token.deleteTitle')}
-                message={deleting ? t('token.deleteMessage', { name: deleting.name || deleting.identifier }) : ''}
+                title={t('action.token.delete')}
+                message={
+                    deleting ? t('action.token.deleteConfirm', { name: deleting.name || deleting.identifier }) : ''
+                }
                 confirmLabel={t('common.delete')}
                 danger
                 busy={busy}

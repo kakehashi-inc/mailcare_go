@@ -1,12 +1,18 @@
 package workers
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
+	"mailcare/app/modules/message"
 )
 
 // Control endpoints: reachable from loopback only (see webMiddleware), used
@@ -37,23 +43,30 @@ func (c *core) handleControlStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// The control endpoints answer errors as English text for the CLI
+// (writeControlError), not with the codes of the Web API.
+
 // handleControlCreateJob queues a job on behalf of the local CLI.
 func (c *core) handleControlCreateJob(w http.ResponseWriter, r *http.Request) {
 	var body modules.JobRequest
-	if !decodeJSON(w, r, &body) {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxJSONBody)).Decode(&body); err != nil {
+		writeControlError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	if err := modules.ValidateJobKind(body.Kind); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeControlError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.MailboxID < 0 {
-		writeError(w, http.StatusBadRequest, "invalid mailbox_id")
+		writeControlError(w, http.StatusBadRequest, "invalid mailbox_id")
 		return
 	}
 	job, created, err := c.jm.Enqueue(body.Kind, body.MailboxID, body.Target, modules.RequestedByCLI)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		if _, ok := message.As(err); !ok {
+			log.Printf("control: failed to queue a job: %v", err)
+		}
+		writeControlError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	status := http.StatusOK
@@ -64,5 +77,20 @@ func (c *core) handleControlCreateJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *core) handleControlGetJob(w http.ResponseWriter, r *http.Request) {
-	c.handleGetJob(w, r)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeControlError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	job, err := models.GetJobByID(c.db, id)
+	if err == sql.ErrNoRows {
+		writeControlError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		log.Printf("control: failed to load job %d: %v", id, err)
+		writeControlError(w, http.StatusInternalServerError, "failed to load job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job": toJobDTO(job, c.mailboxAddresses())})
 }

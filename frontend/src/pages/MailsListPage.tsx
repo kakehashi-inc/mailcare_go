@@ -20,7 +20,6 @@ import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
 import type { MessageDTO, MessageKind } from '../types';
-import { errorMessage } from '../utils/errors';
 import { formatBytes, mailboxLabel } from '../utils/format';
 
 const KINDS: MessageKind[] = ['all', 'bounce', 'other'];
@@ -41,7 +40,7 @@ export function MailsListPage() {
 
     const { mailboxes } = useMailboxes();
     const mailbox = useAsync(() => getMailbox(id), [id]);
-    useDocumentTitle(mailbox.data ? `${t('nav.mails')} - ${mailbox.data.address}` : t('nav.mails'));
+    useDocumentTitle(mailbox.data ? `${t('layout.nav.mails')} - ${mailbox.data.address}` : t('layout.nav.mails'));
     const list = useAsync(
         () => listMessages(id, { q, kind, group, page, per_page: MAIL_PAGE_SIZE }),
         [id, q, kind, group, page]
@@ -60,31 +59,33 @@ export function MailsListPage() {
     const columns: Column<MessageDTO>[] = [
         {
             key: 'date',
-            header: t('mail.date'),
+            header: t('field.mail.date'),
             cell: m => <DateTime value={m.date || m.received_at} />,
             className: 'whitespace-nowrap',
         },
         {
             key: 'subject',
-            header: t('mail.subject'),
-            cell: m => <span className='break-words font-medium text-ink'>{m.subject || t('mail.noSubject')}</span>,
+            header: t('field.mail.subject'),
+            cell: m => (
+                <span className='break-words font-medium text-ink'>{m.subject || t('field.mail.subjectNone')}</span>
+            ),
             primary: true,
         },
         {
             key: 'from',
-            header: t('mail.from'),
+            header: t('field.mail.from'),
             cell: m => (
                 <span className='break-all'>{m.from_name ? `${m.from_name} <${m.from_address}>` : m.from_address}</span>
             ),
         },
         {
             key: 'kind',
-            header: t('mail.kind'),
+            header: t('field.mail.kind'),
             cell: m => <BounceKindBadge kind={m.bounce_kind} isBounce={m.is_bounce} />,
         },
         {
             key: 'size',
-            header: t('mail.size'),
+            header: t('field.mail.size'),
             cell: m => formatBytes(m.size),
             className: 'whitespace-nowrap text-muted',
         },
@@ -103,8 +104,8 @@ export function MailsListPage() {
     return (
         <PageContainer wide>
             <PageHeader
-                title={mailbox.data ? mailboxLabel(mailbox.data) : t('nav.mails')}
-                crumbs={[{ label: t('nav.mails'), to: '/mails' }, { label: mailbox.data?.address ?? '...' }]}
+                title={mailbox.data ? mailboxLabel(mailbox.data) : t('layout.nav.mails')}
+                crumbs={[{ label: t('layout.nav.mails'), to: '/mails' }, { label: mailbox.data?.address ?? '...' }]}
             />
 
             <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>
@@ -128,7 +129,7 @@ export function MailsListPage() {
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         onBlur={() => search.trim() !== q && update({ q: search.trim() })}
-                        placeholder={t('mails.searchPlaceholder')}
+                        placeholder={t('page.mails.searchPlaceholder')}
                         enterKeyHint='search'
                     />
                 </form>
@@ -137,7 +138,7 @@ export function MailsListPage() {
             {group && (
                 <div className='mt-3 flex flex-wrap items-center gap-2'>
                     <Badge tone='accent' icon='filter_alt'>
-                        {t('mails.groupFilter')}: <code className='font-mono'>{group}</code>
+                        {t('page.mails.groupFilter')}: <code className='font-mono'>{group}</code>
                     </Badge>
                     <Button size='sm' variant='ghost' icon='close' onClick={() => update({ group: '' })}>
                         {t('common.clearFilter')}
@@ -147,12 +148,12 @@ export function MailsListPage() {
 
             <div className='mt-4'>
                 <Tabs<MessageKind>
-                    label={t('mails.kindTabs')}
+                    label={t('page.mails.kindTabs')}
                     value={kind}
                     onChange={k => update({ kind: k === 'all' ? '' : k })}
                     tabs={KINDS.map(k => ({
                         key: k,
-                        label: t(`mails.kind.${k}`),
+                        label: t(`page.mails.kind.${k}`),
                         icon: KIND_ICONS[k],
                         count: data?.counts?.[k],
                     }))}
@@ -168,20 +169,25 @@ export function MailsListPage() {
                 {list.loading ? (
                     <LoadingBlock />
                 ) : list.error || !data ? (
-                    <ErrorState message={errorMessage(list.error, t)} onRetry={() => void list.reload()} />
+                    <ErrorState
+                        message={t(list.error?.key ?? 'system.internal', list.error?.params)}
+                        onRetry={() => void list.reload()}
+                    />
                 ) : (
                     <>
                         <Table
                             columns={columns}
                             rows={data.messages}
                             rowKey={m => m.message_key}
-                            caption={t('nav.mails')}
+                            caption={t('layout.nav.mails')}
                             onRowClick={m => navigate(`/mails/${id}/${encodeURIComponent(m.message_key)}`)}
-                            rowAriaLabel={m => t('mail.openAria', { subject: m.subject || t('mail.noSubject') })}
+                            rowAriaLabel={m =>
+                                t('action.mail.openFor', { subject: m.subject || t('field.mail.subjectNone') })
+                            }
                             emptyState={
                                 <EmptyState
-                                    title={t('mails.empty')}
-                                    description={q || kind !== 'all' || group ? t('mails.emptyFiltered') : undefined}
+                                    title={t('page.mails.empty')}
+                                    description={q || kind !== 'all' || group ? t('common.emptyFiltered') : undefined}
                                 />
                             }
                             dense

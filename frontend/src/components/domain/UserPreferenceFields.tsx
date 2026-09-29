@@ -30,22 +30,22 @@ export function UserPreferenceFields({
     return (
         <>
             <SelectField
-                label={t('user.language')}
+                label={t('field.user.language')}
                 value={language}
                 onChange={e => onLanguage(e.target.value as Lang)}
-                hint={t('user.languageHint')}
+                hint={t('field.user.languageHint')}
             >
                 {SUPPORTED_LANGS.map(code => (
                     <option key={code} value={code}>
-                        {t(`lang.${code}`)}
+                        {t(`value.language.${code}`)}
                     </option>
                 ))}
             </SelectField>
             <SelectField
-                label={t('user.timezone')}
+                label={t('field.user.timezone')}
                 value={timezone}
                 onChange={e => onTimezone(e.target.value)}
-                hint={`${t('user.timezoneHint')} (${zoneLabel(timezone)})`}
+                hint={`${t('field.user.timezoneHint')} (${zoneLabel(timezone)})`}
             >
                 {zones.map(z => (
                     <option key={z} value={z}>
@@ -54,14 +54,14 @@ export function UserPreferenceFields({
                 ))}
             </SelectField>
             <SelectField
-                label={t('user.theme')}
+                label={t('field.user.theme')}
                 value={theme}
                 onChange={e => onTheme(e.target.value as Theme)}
-                hint={t('user.themeHint')}
+                hint={t('field.user.themeHint')}
             >
                 {THEMES.map(v => (
                     <option key={v} value={v}>
-                        {t(`theme.${v}`)}
+                        {t(`value.theme.${v}`)}
                     </option>
                 ))}
             </SelectField>

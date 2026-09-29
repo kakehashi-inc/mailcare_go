@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/message"
 )
 
 var identifierRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -16,13 +17,13 @@ var identifierRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // ValidateIdentifier checks an identifier against the allowed character set.
 func ValidateIdentifier(id string) error {
 	if id == "" {
-		return errors.New("identifier must not be empty")
+		return message.New("validation.token.identifierInvalid", "identifier must not be empty").With("max", 64)
 	}
 	if len(id) > 64 {
-		return errors.New("identifier must be 64 characters or fewer")
+		return message.New("validation.token.identifierInvalid", "identifier must be 64 characters or fewer").With("max", 64)
 	}
 	if !identifierRe.MatchString(id) {
-		return errors.New("identifier may only contain [A-Za-z0-9_-]")
+		return message.New("validation.token.identifierInvalid", "identifier may only contain [A-Za-z0-9_-]").With("max", 64)
 	}
 	return nil
 }
@@ -93,7 +94,7 @@ func ParseExpiry(s string) (sql.NullTime, error) {
 			return sql.NullTime{Time: t.UTC(), Valid: true}, nil
 		}
 	}
-	return sql.NullTime{}, fmt.Errorf("invalid expiry %q (use a duration like 720h or an RFC3339 timestamp)", s)
+	return sql.NullTime{}, message.New("validation.token.expiresInvalid", fmt.Sprintf("invalid expiry %q (use a duration like 720h or an RFC3339 timestamp)", s))
 }
 
 // CreateToken creates a token, allocating an identifier from name when empty,
@@ -101,7 +102,7 @@ func ParseExpiry(s string) (sql.NullTime, error) {
 func CreateToken(db *sql.DB, name, identifier string, expiresAt sql.NullTime, makeDefault bool) (*models.Token, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, errors.New("name is required")
+		return nil, message.New("validation.token.nameRequired", "name is required")
 	}
 
 	if identifier == "" {
@@ -115,7 +116,7 @@ func CreateToken(db *sql.DB, name, identifier string, expiresAt sql.NullTime, ma
 			return nil, err
 		}
 		if _, err := models.GetTokenByIdentifier(db, identifier); err == nil {
-			return nil, fmt.Errorf("identifier %q already exists", identifier)
+			return nil, message.New("validation.token.identifierTaken", fmt.Sprintf("identifier %q already exists", identifier))
 		} else if err != sql.ErrNoRows {
 			return nil, err
 		}

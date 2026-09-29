@@ -3,7 +3,6 @@ package workers
 import (
 	"database/sql"
 	"errors"
-	"fmt"
 	"log"
 	"math"
 	"net"
@@ -71,7 +70,7 @@ func (c *core) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if n > 0 {
-		writeError(w, http.StatusForbidden, "setup is already done")
+		writeError(w, http.StatusForbidden, "result.session.setupDone")
 		return
 	}
 	var body struct {
@@ -89,7 +88,7 @@ func (c *core) handleSetup(w http.ResponseWriter, r *http.Request) {
 	u, err := modules.CreateUserFrom(c.db, modules.NewUser{Username: body.Username, DisplayName: body.DisplayName, Email: body.Email,
 		Language: body.Language, Timezone: body.Timezone, Theme: body.Theme, Password: body.Password, Role: modules.RoleAdmin})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	_ = models.TouchUserLogin(c.db, u.ID)
@@ -127,7 +126,7 @@ func (c *core) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Username = strings.TrimSpace(body.Username)
 	if body.Username == "" || body.Password == "" {
-		writeError(w, http.StatusBadRequest, "username and password are required")
+		writeError(w, http.StatusBadRequest, "result.session.loginFailed")
 		return
 	}
 	ip := clientIP(r)
@@ -143,7 +142,7 @@ func (c *core) handleLogin(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Printf("login failed for %q from %s: invalid credentials", body.Username, ip)
 		}
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		writeError(w, http.StatusUnauthorized, "result.session.loginFailed")
 		return
 	}
 	if err != nil {
@@ -164,7 +163,7 @@ func writeTooManyLogins(w http.ResponseWriter, wait time.Duration) {
 		seconds = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
-	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed login attempts; try again in %d seconds", seconds))
+	writeJSON(w, http.StatusTooManyRequests, apiMessage{Key: "result.session.tooManyAttempts", Params: map[string]any{"seconds": seconds}})
 }
 
 // handleLogout clears the session cookie.
@@ -190,13 +189,13 @@ func (c *core) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !modules.VerifyPassword(u, body.CurrentPassword) {
-		writeError(w, http.StatusBadRequest, "current password is wrong")
+		writeError(w, http.StatusBadRequest, "validation.user.currentPasswordWrong")
 		return
 	}
 	// Read the session mode before the change invalidates the cookie.
 	remember := c.sessionRemember(r)
 	if err := modules.ChangePassword(c.db, u.ID, body.NewPassword); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	fresh, err := models.GetUserByID(c.db, u.ID)
@@ -241,7 +240,7 @@ func (c *core) handleChangeMyProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	in := modules.ProfileInput{DisplayName: body.DisplayName, Email: body.Email, Language: body.Language, Timezone: body.Timezone, Theme: body.Theme}
 	if err := modules.UpdateProfile(c.db, u, in); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	fresh, err := models.GetUserByID(c.db, u.ID)

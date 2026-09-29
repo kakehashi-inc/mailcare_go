@@ -16,7 +16,6 @@ import { LoadingBlock } from '../components/ui/Spinner';
 import { TabPanel, Tabs } from '../components/ui/Tabs';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { errorMessage } from '../utils/errors';
 import { formatBytes } from '../utils/format';
 
 /** Tab keys: the headers, then one tab per text section and per HTML section (text-1, html-2, ...). */
@@ -75,13 +74,16 @@ export function MailDetailPage() {
     const [chosen, setChosen] = useState<{ key: string; tab: BodyTab } | null>(null);
     const tab = chosen?.key === messageKey ? chosen.tab : null;
     const setTab = (next: BodyTab) => setChosen({ key: messageKey, tab: next });
-    useDocumentTitle(detail.data?.message.subject || t('mail.detail'));
+    useDocumentTitle(detail.data?.message.subject || t('page.mailDetail.title'));
 
     if (detail.loading) return <LoadingBlock />;
     if (detail.error || !detail.data) {
         return (
             <PageContainer>
-                <ErrorState message={errorMessage(detail.error, t)} onRetry={() => void detail.reload()} />
+                <ErrorState
+                    message={t(detail.error?.key ?? 'system.internal', detail.error?.params)}
+                    onRetry={() => void detail.reload()}
+                />
             </PageContainer>
         );
     }
@@ -97,15 +99,17 @@ export function MailDetailPage() {
     // Headers first, then one tab per section with content. A lone section
     // keeps the plain label; several of a kind are numbered in MIME order.
     const bodyTabs: { key: BodyTab; label: string; icon: string }[] = [
-        { key: 'headers', label: t('mail.tabHeaders'), icon: 'list' },
+        { key: 'headers', label: t('page.mailDetail.tabHeaders'), icon: 'list' },
         ...sections.map((_, i) => ({
             key: `text-${i + 1}` as const,
-            label: sections.length === 1 ? t('mail.tabText') : t('mail.tabTextN', { index: i + 1 }),
+            label:
+                sections.length === 1 ? t('page.mailDetail.tabText') : t('page.mailDetail.tabTextN', { index: i + 1 }),
             icon: 'notes',
         })),
         ...htmlNumbers.map(n => ({
             key: `html-${n}` as const,
-            label: htmlNumbers.length === 1 ? t('mail.tabHtml') : t('mail.tabHtmlN', { index: n }),
+            label:
+                htmlNumbers.length === 1 ? t('page.mailDetail.tabHtml') : t('page.mailDetail.tabHtmlN', { index: n }),
             icon: 'code',
         })),
     ];
@@ -118,17 +122,17 @@ export function MailDetailPage() {
     return (
         <PageContainer wide>
             <PageHeader
-                title={message.subject || t('mail.noSubject')}
+                title={message.subject || t('field.mail.subjectNone')}
                 crumbs={[
-                    { label: t('nav.mails'), to: '/mails' },
+                    { label: t('layout.nav.mails'), to: '/mails' },
                     { label: mailbox.data?.address ?? '...', to: `/mails/${id}` },
-                    { label: t('mail.detail') },
+                    { label: t('page.mailDetail.title') },
                 ]}
                 actions={
                     <>
                         <a href={messageRawUrl(id, messageKey)} download={`${messageKey}.eml`} className={BUTTON_LINK}>
                             <Icon name='download' className='text-[20px]' />
-                            {t('mail.downloadRaw')}
+                            {t('action.mail.downloadRaw')}
                         </a>
                         {message.group_key && (
                             <Link
@@ -136,7 +140,7 @@ export function MailDetailPage() {
                                 className={BUTTON_LINK}
                             >
                                 <Icon name='notifications' className='text-[20px]' />
-                                {t('mail.openGroup')}
+                                {t('action.mail.openGroup')}
                             </Link>
                         )}
                     </>
@@ -149,7 +153,7 @@ export function MailDetailPage() {
                         <DescriptionList
                             items={[
                                 {
-                                    label: t('mail.from'),
+                                    label: t('field.mail.from'),
                                     value: (
                                         <span className='break-all'>
                                             {message.from_name && (
@@ -160,7 +164,7 @@ export function MailDetailPage() {
                                     ),
                                 },
                                 {
-                                    label: t('mail.to'),
+                                    label: t('field.mail.to'),
                                     value: (
                                         <span className='break-all'>
                                             {message.to_name && <span className='font-medium'>{message.to_name} </span>}
@@ -170,20 +174,20 @@ export function MailDetailPage() {
                                 },
                                 ...(message.date
                                     ? [
-                                          { label: t('mail.date'), value: <DateTime value={message.date} /> },
+                                          { label: t('field.mail.date'), value: <DateTime value={message.date} /> },
                                           {
-                                              label: t('mail.receivedAt'),
+                                              label: t('field.mail.receivedAt'),
                                               value: <DateTime value={message.received_at} />,
                                           },
                                       ]
                                     : [
                                           {
-                                              label: t('mail.receivedAt'),
+                                              label: t('field.mail.receivedAt'),
                                               value: <DateTime value={message.received_at} />,
                                           },
                                       ]),
                                 {
-                                    label: t('mail.messageId'),
+                                    label: t('field.mail.messageId'),
                                     value: (
                                         <span className='inline-flex max-w-full items-center gap-1'>
                                             <code className='truncate font-mono text-sm'>
@@ -195,19 +199,24 @@ export function MailDetailPage() {
                                     wide: true,
                                 },
                                 ...(message.folder
-                                    ? [{ label: t('mail.folder'), value: `${message.folder} (UID ${message.uid})` }]
+                                    ? [
+                                          {
+                                              label: t('field.common.folder'),
+                                              value: `${message.folder} (UID ${message.uid})`,
+                                          },
+                                      ]
                                     : []),
                                 ...(message.server_deleted_at
                                     ? [
                                           {
-                                              label: t('mail.serverDeletedAt'),
+                                              label: t('field.mail.serverDeletedAt'),
                                               value: <DateTime value={message.server_deleted_at} />,
                                           },
                                       ]
                                     : []),
-                                { label: t('mail.size'), value: formatBytes(message.size) },
+                                { label: t('field.mail.size'), value: formatBytes(message.size) },
                                 {
-                                    label: t('mail.kind'),
+                                    label: t('field.mail.kind'),
                                     value: (
                                         <span className='inline-flex flex-wrap items-center gap-2'>
                                             <BounceKindBadge kind={message.bounce_kind} isBounce={message.is_bounce} />
@@ -218,7 +227,7 @@ export function MailDetailPage() {
                                     ),
                                 },
                                 {
-                                    label: t('mail.key'),
+                                    label: t('field.mail.key'),
                                     value: <code className='font-mono text-sm'>{message.message_key}</code>,
                                 },
                             ]}
@@ -227,14 +236,19 @@ export function MailDetailPage() {
 
                     <Card>
                         {!hasText && !hasHtml && (
-                            <Alert tone='info' className='mb-4' title={t('mail.noBody')}>
-                                {t('mail.noBodyHint')}
+                            <Alert tone='info' className='mb-4' title={t('page.mailDetail.noBody')}>
+                                {t('page.mailDetail.noBodyHint')}
                             </Alert>
                         )}
-                        <Tabs<BodyTab> label={t('mail.bodyTabs')} value={activeTab} onChange={setTab} tabs={bodyTabs} />
+                        <Tabs<BodyTab>
+                            label={t('page.mailDetail.bodyTabs')}
+                            value={activeTab}
+                            onChange={setTab}
+                            tabs={bodyTabs}
+                        />
                         <TabPanel id='headers' active={activeTab === 'headers'}>
                             {headerEntries.length === 0 ? (
-                                <EmptyState title={t('mail.noHeaders')} />
+                                <EmptyState title={t('page.mailDetail.noHeaders')} />
                             ) : (
                                 <dl className='divide-y divide-line'>
                                     {headerEntries.map(([name, value]) => (
@@ -261,14 +275,16 @@ export function MailDetailPage() {
                         {htmlNumbers.map(n => (
                             <TabPanel key={`html-${n}`} id={`html-${n}`} active={activeTab === `html-${n}`}>
                                 <Alert tone='info' className='mb-3'>
-                                    {t('mail.htmlSandboxNote')}
+                                    {t('page.mailDetail.htmlSandboxNote')}
                                 </Alert>
                                 <iframe
                                     src={messageHtmlUrl(id, messageKey, n)}
                                     sandbox=''
                                     referrerPolicy='no-referrer'
                                     title={
-                                        htmlNumbers.length === 1 ? t('mail.tabHtml') : t('mail.tabHtmlN', { index: n })
+                                        htmlNumbers.length === 1
+                                            ? t('page.mailDetail.tabHtml')
+                                            : t('page.mailDetail.tabHtmlN', { index: n })
                                     }
                                     className='h-[70vh] w-full rounded-md border border-line bg-white'
                                 />
@@ -279,40 +295,40 @@ export function MailDetailPage() {
 
                 <aside>
                     <Card>
-                        <CardHeader title={t('bounce.title')} />
+                        <CardHeader title={t('page.mailDetail.bounce.title')} />
                         <p className='mb-3 text-sm text-muted'>
-                            {t('bounce.bodySource')}:{' '}
-                            <span className='text-ink'>{t(`bounce.bodySource_${bodySourceKey}`)}</span>
+                            {t('field.bounce.bodySource')}:{' '}
+                            <span className='text-ink'>{t(`value.bodySource.${bodySourceKey}`)}</span>
                         </p>
                         {bounce ? (
                             <DescriptionList
                                 columns={1}
                                 items={[
                                     {
-                                        label: t('bounce.originalRecipient'),
+                                        label: t('field.bounce.originalRecipient'),
                                         value: <span className='break-all'>{bounce.original_recipient || '-'}</span>,
                                     },
-                                    { label: t('bounce.recipientDomain'), value: bounce.recipient_domain || '-' },
-                                    { label: t('bounce.action'), value: bounce.action || '-' },
+                                    { label: t('field.common.recipientDomain'), value: bounce.recipient_domain || '-' },
+                                    { label: t('field.bounce.action'), value: bounce.action || '-' },
                                     {
-                                        label: t('bounce.statusCode'),
+                                        label: t('field.bounce.statusCode'),
                                         value: `${bounce.status_code || '-'} / ${bounce.smtp_code || '-'}`,
                                     },
                                     {
-                                        label: t('bounce.responsible'),
+                                        label: t('field.group.responsible'),
                                         value: <ResponsibleBadge responsible={bounce.responsible} />,
                                     },
                                     {
-                                        label: t('bounce.remoteMta'),
+                                        label: t('field.common.remoteMta'),
                                         value: <span className='break-all'>{bounce.remote_mta || '-'}</span>,
                                     },
-                                    { label: t('bounce.remoteIp'), value: bounce.remote_ip || '-' },
+                                    { label: t('field.bounce.remoteIp'), value: bounce.remote_ip || '-' },
                                     {
-                                        label: t('bounce.reportingMta'),
+                                        label: t('field.bounce.reportingMta'),
                                         value: <span className='break-all'>{bounce.reporting_mta || '-'}</span>,
                                     },
                                     {
-                                        label: t('bounce.diagnostic'),
+                                        label: t('field.bounce.diagnostic'),
                                         value: (
                                             <code className='block whitespace-pre-wrap break-words rounded-md bg-well p-2 font-mono text-sm'>
                                                 {bounce.diagnostic || '-'}
@@ -320,19 +336,19 @@ export function MailDetailPage() {
                                         ),
                                     },
                                     {
-                                        label: t('bounce.originalSubject'),
+                                        label: t('field.bounce.originalSubject'),
                                         value: <span className='break-words'>{bounce.original_subject || '-'}</span>,
                                     },
                                     {
-                                        label: t('bounce.originalFrom'),
+                                        label: t('field.bounce.originalFrom'),
                                         value: <span className='break-all'>{bounce.original_from || '-'}</span>,
                                     },
                                     {
-                                        label: t('bounce.originalDate'),
+                                        label: t('field.bounce.originalDate'),
                                         value: <DateTime value={bounce.original_date} />,
                                     },
                                     {
-                                        label: t('bounce.originalMessageId'),
+                                        label: t('field.bounce.originalMessageId'),
                                         value: (
                                             <code className='break-all font-mono text-sm'>
                                                 {bounce.original_message_id || '-'}
@@ -343,8 +359,8 @@ export function MailDetailPage() {
                             />
                         ) : (
                             <EmptyState
-                                title={t('bounce.none')}
-                                description={message.is_bounce ? undefined : t('bounce.notBounce')}
+                                title={t('page.mailDetail.bounce.none')}
+                                description={message.is_bounce ? undefined : t('page.mailDetail.bounce.notBounce')}
                             />
                         )}
                     </Card>

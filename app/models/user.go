@@ -2,8 +2,17 @@ package models
 
 import (
 	"database/sql"
+	"mailcare/app/modules/message"
 	"time"
 )
+
+// ErrEmailTaken is returned by the user writes when the mail address is
+// already set on another user. Addresses are unique among users (they can be
+// used to log in), but without a UNIQUE constraint: the writes check it in
+// the same statement (SQLite runs each statement atomically, so concurrent
+// writers, including the CLI in another process, cannot both pass), and rows
+// that shared an address before the rule existed can keep it.
+var ErrEmailTaken = message.New("validation.user.emailTaken", "email address is already used by another user")
 
 // User is a row of the users table: a person who can log in to the Web UI.
 type User struct {
@@ -44,18 +53,26 @@ func (u *User) applyPreferenceDefaults() {
 	}
 }
 
-// InsertUser creates a user row and fills in its ID.
+// InsertUser creates a user row and fills in its ID. It returns
+// ErrEmailTaken when another user already has the address.
 func InsertUser(db *sql.DB, u *User) error {
 	now := time.Now().UTC()
 	u.applyPreferenceDefaults()
 	res, err := db.Exec(
 		`INSERT INTO users (username, display_name, email, language, timezone, theme, password_hash, role, created_at,
 		   updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 WHERE ? = '' OR NOT EXISTS (SELECT 1 FROM users WHERE email = ?)`,
 		u.Username, u.DisplayName, u.Email, u.Language, u.Timezone, u.Theme, u.PasswordHash, u.Role, now, now,
+		u.Email, u.Email,
 	)
 	if err != nil {
 		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrEmailTaken
 	}
 	u.ID, _ = res.LastInsertId()
 	u.CreatedAt, u.UpdatedAt = now, now
@@ -114,29 +131,52 @@ func CountAdmins(db *sql.DB) (int, error) {
 
 // UpdateUser updates the display name, preferences and role of a user
 // (administrator edit). Empty preference values fall back to the defaults.
+// It returns ErrEmailTaken when the address is changed to one another user
+// already has (an unchanged address is always kept).
 func UpdateUser(db *sql.DB, id int64, displayName, email, language, timezone, theme, role string) error {
 	p := &User{Language: language, Timezone: timezone, Theme: theme}
 	p.applyPreferenceDefaults()
-	_, err := db.Exec(
+	res, err := db.Exec(
 		`UPDATE users SET display_name = ?, email = ?, language = ?, timezone = ?, theme = ?, role = ?, updated_at = ?
-		 WHERE id = ?`,
+		 WHERE id = ? AND (email = ? OR ? = '' OR NOT EXISTS (SELECT 1 FROM users o WHERE o.email = ? AND o.id <> ?))`,
 		displayName, email, p.Language, p.Timezone, p.Theme, role,
-		time.Now().UTC(), id,
+		time.Now().UTC(), id, email, email, email, id,
 	)
-	return err
+	return emailUpdateResult(db, res, err, id)
 }
 
 // UpdateUserProfile updates the fields a user may change about themselves
 // (profile page): display name, notification address, language, timezone and
-// theme. Empty preference values fall back to the defaults.
+// theme. Empty preference values fall back to the defaults. It returns
+// ErrEmailTaken like UpdateUser.
 func UpdateUserProfile(db *sql.DB, id int64, displayName, email, language, timezone, theme string) error {
 	p := &User{Language: language, Timezone: timezone, Theme: theme}
 	p.applyPreferenceDefaults()
-	_, err := db.Exec(
-		`UPDATE users SET display_name = ?, email = ?, language = ?, timezone = ?, theme = ?, updated_at = ? WHERE id = ?`,
-		displayName, email, p.Language, p.Timezone, p.Theme, time.Now().UTC(), id,
+	res, err := db.Exec(
+		`UPDATE users SET display_name = ?, email = ?, language = ?, timezone = ?, theme = ?, updated_at = ?
+		 WHERE id = ? AND (email = ? OR ? = '' OR NOT EXISTS (SELECT 1 FROM users o WHERE o.email = ? AND o.id <> ?))`,
+		displayName, email, p.Language, p.Timezone, p.Theme, time.Now().UTC(), id, email, email, email, id,
 	)
-	return err
+	return emailUpdateResult(db, res, err, id)
+}
+
+// emailUpdateResult interprets an UPDATE guarded by the address condition:
+// no row changed means either the user is gone (not an error, as before) or
+// the address is taken.
+func emailUpdateResult(db *sql.DB, res sql.Result, err error, id int64) error {
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n > 0 {
+		return err
+	}
+	if _, err := GetUserByID(db, id); err == sql.ErrNoRows {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return ErrEmailTaken
 }
 
 // ListUsersByIDs returns the users with the given ids (missing ids are skipped), ordered by username.

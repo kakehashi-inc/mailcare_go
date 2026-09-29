@@ -11,6 +11,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules/agent"
+	"mailcare/app/modules/message"
 )
 
 // Settings resolution: explicit argument > saved setting > code default. A
@@ -94,7 +95,8 @@ func ClampWorkers(n int) int {
 func ParseWorkers(s string) (int, error) {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil || n < 1 || n > MaxWorkers {
-		return 0, fmt.Errorf("workers must be an integer between 1 and %d", MaxWorkers)
+		return 0, message.New("validation.common.numberOutOfRange", fmt.Sprintf("workers must be an integer between 1 and %d", MaxWorkers)).
+			With("min", 1).With("max", MaxWorkers)
 	}
 	return n, nil
 }
@@ -123,7 +125,7 @@ func ResolveAgentProvider(db *sql.DB) string {
 func SetAgentProvider(db *sql.DB, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return fmt.Errorf("agent provider must not be empty")
+		return errAgentProviderEmpty
 	}
 	if name != ResolveAgentProvider(db) {
 		if err := models.DeleteSetting(db, SettingAgentModel); err != nil {
@@ -214,7 +216,7 @@ func SaveAgentSettings(db *sql.DB, provider, model, level *string) error {
 	if provider != nil {
 		name := strings.TrimSpace(*provider)
 		if name == "" {
-			return fmt.Errorf("agent provider must not be empty")
+			return errAgentProviderEmpty
 		}
 		if name != finalProvider {
 			finalModel, finalLevel = "", ""
@@ -238,6 +240,8 @@ func SaveAgentSettings(db *sql.DB, provider, model, level *string) error {
 	}
 	return PersistSetting(db, SettingAgentReasoningEffort, finalLevel, finalLevel == "")
 }
+
+var errAgentProviderEmpty = message.New("validation.agent.providerUnknown", "agent provider must not be empty")
 
 // CheckAgentSettings validates a combination of agent provider, model and
 // reasoning level before any of them is saved: the model's shape and the
@@ -265,16 +269,22 @@ func SetAgentEnabled(db *sql.DB, enabled bool) error {
 // in days (MinAgentKeepDays..MaxAgentKeepDays).
 func ValidateAgentKeepDays(n int) error {
 	if n < MinAgentKeepDays || n > MaxAgentKeepDays {
-		return fmt.Errorf("agent_keep_days must be an integer between %d and %d", MinAgentKeepDays, MaxAgentKeepDays)
+		return agentKeepDaysInvalid()
 	}
 	return nil
+}
+
+func agentKeepDaysInvalid() error {
+	return message.New("validation.common.numberOutOfRange",
+		fmt.Sprintf("agent_keep_days must be an integer between %d and %d", MinAgentKeepDays, MaxAgentKeepDays)).
+		With("min", MinAgentKeepDays).With("max", MaxAgentKeepDays)
 }
 
 // ParseAgentKeepDays parses the retention given as text.
 func ParseAgentKeepDays(s string) (int, error) {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
-		return 0, fmt.Errorf("agent_keep_days must be an integer between %d and %d", MinAgentKeepDays, MaxAgentKeepDays)
+		return 0, agentKeepDaysInvalid()
 	}
 	if err := ValidateAgentKeepDays(n); err != nil {
 		return 0, err
@@ -307,16 +317,22 @@ func SaveAgentKeepDays(db *sql.DB, n int) error {
 // (MinMailKeepDays..MaxMailKeepDays).
 func ValidateMailKeepDays(n int) error {
 	if n < MinMailKeepDays || n > MaxMailKeepDays {
-		return fmt.Errorf("mail_keep_days must be an integer between %d and %d", MinMailKeepDays, MaxMailKeepDays)
+		return mailKeepDaysInvalid()
 	}
 	return nil
+}
+
+func mailKeepDaysInvalid() error {
+	return message.New("validation.common.numberOutOfRange",
+		fmt.Sprintf("mail_keep_days must be an integer between %d and %d", MinMailKeepDays, MaxMailKeepDays)).
+		With("min", MinMailKeepDays).With("max", MaxMailKeepDays)
 }
 
 // ParseMailKeepDays parses the retention given as text.
 func ParseMailKeepDays(s string) (int, error) {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
-		return 0, fmt.Errorf("mail_keep_days must be an integer between %d and %d", MinMailKeepDays, MaxMailKeepDays)
+		return 0, mailKeepDaysInvalid()
 	}
 	if err := ValidateMailKeepDays(n); err != nil {
 		return 0, err
@@ -375,13 +391,13 @@ func ParseCheckTimes(inputs []string) ([]string, error) {
 			}
 			hh, mm, ok := strings.Cut(s, ":")
 			if !ok {
-				return nil, fmt.Errorf("invalid check time %q (use HH:MM)", s)
+				return nil, message.New("validation.common.timeFormat", fmt.Sprintf("invalid check time %q (use HH:MM)", s))
 			}
 			h, err1 := strconv.Atoi(hh)
 			m, err2 := strconv.Atoi(mm)
 			if err1 != nil || err2 != nil || len(mm) != 2 || len(hh) == 0 || len(hh) > 2 ||
 				h < 0 || h > 23 || m < 0 || m > 59 {
-				return nil, fmt.Errorf("invalid check time %q (use HH:MM, 00:00-23:59)", s)
+				return nil, message.New("validation.common.timeFormat", fmt.Sprintf("invalid check time %q (use HH:MM, 00:00-23:59)", s))
 			}
 			norm := fmt.Sprintf("%02d:%02d", h, m)
 			if !seen[norm] {

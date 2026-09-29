@@ -16,7 +16,6 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
 import { BOUNCE_CATEGORIES, type GroupScope, type GroupState } from '../types';
 import { categoryLabel } from '../utils/category';
-import { errorMessage } from '../utils/errors';
 import { mailboxLabel } from '../utils/format';
 
 const STATES: GroupState[] = ['open', 'resolved', 'ignored'];
@@ -45,7 +44,7 @@ export function AlertsGroupsPage() {
 
     const { mailboxes } = useMailboxes();
     const mailbox = useAsync(() => getMailbox(id), [id]);
-    useDocumentTitle(mailbox.data ? `${t('nav.alerts')} - ${mailbox.data.address}` : t('nav.alerts'));
+    useDocumentTitle(mailbox.data ? `${t('layout.nav.alerts')} - ${mailbox.data.address}` : t('layout.nav.alerts'));
     // Excluded groups have no states: their list is requested without one.
     const listState = scope === 'excluded' ? '' : state;
     const groups = useAsync(
@@ -91,10 +90,15 @@ export function AlertsGroupsPage() {
     function renderList(emptyTitle: string) {
         if (groups.loading) return <LoadingBlock />;
         if (groups.error) {
-            return <ErrorState message={errorMessage(groups.error, t)} onRetry={() => void groups.reload()} />;
+            return (
+                <ErrorState
+                    message={t(groups.error?.key ?? 'system.internal', groups.error?.params)}
+                    onRetry={() => void groups.reload()}
+                />
+            );
         }
         if (rows.length === 0) {
-            return <EmptyState title={emptyTitle} description={filtered ? t('alerts.emptyFiltered') : undefined} />;
+            return <EmptyState title={emptyTitle} description={filtered ? t('common.emptyFiltered') : undefined} />;
         }
         return (
             <ul className='flex flex-col gap-3' aria-live='polite'>
@@ -112,8 +116,8 @@ export function AlertsGroupsPage() {
     return (
         <PageContainer wide>
             <PageHeader
-                title={mailbox.data ? mailboxLabel(mailbox.data) : t('nav.alerts')}
-                crumbs={[{ label: t('nav.alerts'), to: '/alerts' }, { label: mailbox.data?.address ?? '...' }]}
+                title={mailbox.data ? mailboxLabel(mailbox.data) : t('layout.nav.alerts')}
+                crumbs={[{ label: t('layout.nav.alerts'), to: '/alerts' }, { label: mailbox.data?.address ?? '...' }]}
             />
 
             <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>
@@ -137,14 +141,14 @@ export function AlertsGroupsPage() {
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         onBlur={() => search.trim() !== q && update({ q: search.trim() })}
-                        placeholder={t('alerts.searchPlaceholder')}
+                        placeholder={t('page.alerts.searchPlaceholder')}
                         enterKeyHint='search'
                     />
                 </form>
             </div>
             <div className='mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3'>
                 <SelectField
-                    label={t('alerts.categoryFilter')}
+                    label={t('field.group.category')}
                     value={category}
                     onChange={e => update({ category: e.target.value })}
                 >
@@ -156,29 +160,29 @@ export function AlertsGroupsPage() {
                     ))}
                 </SelectField>
                 <SelectField
-                    label={t('alerts.responsibleFilter')}
+                    label={t('field.group.responsible')}
                     value={responsible}
                     onChange={e => update({ responsible: e.target.value })}
                 >
                     <option value=''>{t('common.all')}</option>
                     {RESPONSIBLES.map(r => (
                         <option key={r} value={r}>
-                            {t(`responsible.${r}`)}
+                            {t(`value.responsible.${r}`)}
                         </option>
                     ))}
                 </SelectField>
                 <SelectField label={t('common.sort')} value={sort} onChange={e => setSort(e.target.value as Sort)}>
-                    <option value='last_seen_desc'>{t('alerts.sortLastSeenDesc')}</option>
-                    <option value='last_seen_asc'>{t('alerts.sortLastSeenAsc')}</option>
-                    <option value='count_desc'>{t('alerts.sortCountDesc')}</option>
-                    <option value='severity'>{t('alerts.sortSeverity')}</option>
+                    <option value='last_seen_desc'>{t('page.alerts.sortLastSeenDesc')}</option>
+                    <option value='last_seen_asc'>{t('page.alerts.sortLastSeenAsc')}</option>
+                    <option value='count_desc'>{t('page.alerts.sortCountDesc')}</option>
+                    <option value='severity'>{t('field.group.severity')}</option>
                 </SelectField>
             </div>
 
             <div className='mt-5'>
                 <div
                     role='group'
-                    aria-label={t('alerts.scope')}
+                    aria-label={t('page.alerts.scope')}
                     className='inline-flex max-w-full flex-wrap gap-1 rounded-lg border border-line bg-well p-1'
                 >
                     {SCOPES.map(s => {
@@ -194,25 +198,27 @@ export function AlertsGroupsPage() {
                                 }`}
                             >
                                 <Icon name={s.icon} className='text-[18px]' />
-                                {t(s.key === 'actionable' ? 'alerts.scopeActionable' : 'alerts.scopeExcluded')}
+                                {t(
+                                    s.key === 'actionable' ? 'value.groupScope.actionable' : 'value.groupScope.excluded'
+                                )}
                             </button>
                         );
                     })}
                 </div>
-                {scope === 'excluded' && <p className='mt-2 text-sm text-muted'>{t('alerts.scopeExcludedHint')}</p>}
+                {scope === 'excluded' && <p className='mt-2 text-sm text-muted'>{t('page.alerts.excludedHint')}</p>}
             </div>
 
             {scope === 'excluded' ? (
-                <div className='mt-4'>{renderList(t('alerts.emptyExcluded'))}</div>
+                <div className='mt-4'>{renderList(t('page.alerts.empty.excluded'))}</div>
             ) : (
                 <div className='mt-4'>
                     <Tabs<GroupState>
-                        label={t('alerts.stateTabs')}
+                        label={t('field.group.state')}
                         value={state}
                         onChange={s => update({ state: s })}
                         tabs={STATES.map(s => ({
                             key: s,
-                            label: t(`groupState.${s}`),
+                            label: t(`value.groupState.${s}`),
                             icon:
                                 s === 'open'
                                     ? 'notifications_active'
@@ -224,7 +230,7 @@ export function AlertsGroupsPage() {
                     />
                     {STATES.map(s => (
                         <TabPanel key={s} id={s} active={state === s}>
-                            {renderList(t(`alerts.empty.${s}`))}
+                            {renderList(t(`page.alerts.empty.${s}`))}
                         </TabPanel>
                     ))}
                 </div>

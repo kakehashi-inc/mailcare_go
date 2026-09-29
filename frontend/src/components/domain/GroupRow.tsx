@@ -32,13 +32,13 @@ export function GroupRow({ group, to, mailboxAddress, showState = false }: Group
                     {showState && <GroupStateBadge state={group.state} />}
                     {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
                         <Badge tone='warning' icon='pending_actions'>
-                            {t('group.needsAnalysis')}
+                            {t('field.group.needsAnalysis')}
                         </Badge>
                     )}
                     {group.report_unanalyzable && group.report_status !== 'running' && <UnanalyzableBadge />}
                     {group.report_status === 'running' && (
                         <Badge tone='info' icon='autorenew'>
-                            {t('reportStatus.running')}
+                            {t('value.reportStatus.running')}
                         </Badge>
                     )}
                 </div>
@@ -61,12 +61,12 @@ export function GroupRow({ group, to, mailboxAddress, showState = false }: Group
                 )}
                 {group.report_summary && <p className='mt-2 line-clamp-2 text-sm text-ink'>{group.report_summary}</p>}
                 <div className='mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted'>
-                    <span>{t('group.messages', { count: group.message_count })}</span>
-                    <span>{t('group.recipients', { count: group.recipient_count })}</span>
-                    <span>{t('group.ips', { count: group.remote_ip_count })}</span>
+                    <span>{t('field.group.messageCountValue', { count: group.message_count })}</span>
+                    <span>{t('field.group.recipientCountValue', { count: group.recipient_count })}</span>
+                    <span>{t('field.group.ipCountValue', { count: group.remote_ip_count })}</span>
                     <span className='inline-flex items-center gap-1'>
                         <Icon name='schedule' className='text-[16px]' />
-                        {t('group.lastSeen')}: <DateTime value={group.last_seen} relative />
+                        {t('field.group.lastSeen')}: <DateTime value={group.last_seen} relative />
                     </span>
                 </div>
             </Link>

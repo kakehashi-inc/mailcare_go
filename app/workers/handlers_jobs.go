@@ -27,7 +27,7 @@ func requestedBy(r *http.Request) string {
 func (c *core) enqueueAndRespond(w http.ResponseWriter, r *http.Request, kind string, mailboxID int64, target string) {
 	job, created, err := c.jm.Enqueue(kind, mailboxID, target, requestedBy(r))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	status := http.StatusOK
@@ -42,7 +42,7 @@ func (c *core) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	if s := r.URL.Query().Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 || n > maxJobLimit {
-			writeError(w, http.StatusBadRequest, "invalid limit")
+			writeError(w, http.StatusBadRequest, "system.invalidRequest")
 			return
 		}
 		limit = n
@@ -63,11 +63,11 @@ func (c *core) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := modules.ValidateJobKind(body.Kind); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	if body.MailboxID < 0 {
-		writeError(w, http.StatusBadRequest, "invalid mailbox_id")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	c.enqueueAndRespond(w, r, body.Kind, body.MailboxID, body.Target)
@@ -81,7 +81,7 @@ func (c *core) jobFromPath(w http.ResponseWriter, r *http.Request) (*models.Job,
 	}
 	job, err := models.GetJobByID(c.db, id)
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return nil, false
 	}
 	if err != nil {
@@ -111,7 +111,7 @@ func (c *core) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !changed {
-		writeError(w, http.StatusConflict, "only queued jobs can be canceled")
+		writeError(w, http.StatusConflict, "result.job.notQueued")
 		return
 	}
 	fresh, err := models.GetJobByID(c.db, job.ID)

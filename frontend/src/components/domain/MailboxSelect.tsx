@@ -26,14 +26,14 @@ export function MailboxSelect({
     const { t } = useTranslation();
     return (
         <SelectField
-            label={label ?? t('mailbox.select')}
+            label={label ?? t('field.mailbox.address')}
             value={value}
             disabled={disabled}
             hint={hint}
             onChange={e => onChange(e.target.value)}
         >
-            {allowAll && <option value=''>{t('mailbox.all')}</option>}
-            {!allowAll && value === '' && <option value=''>{t('mailbox.choose')}</option>}
+            {allowAll && <option value=''>{t('component.mailboxSelect.all')}</option>}
+            {!allowAll && value === '' && <option value=''>{t('component.mailboxSelect.choose')}</option>}
             {mailboxes.map(mb => (
                 <option key={mb.id} value={String(mb.id)}>
                     {mailboxLabel(mb)}

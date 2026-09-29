@@ -206,7 +206,7 @@ func TestLoginThrottle(t *testing.T) {
 	// Now the pair must wait, even with the right password; other users of
 	// the same client and the same user from another client are not held.
 	rec := attempt("alice", "correct-horse", testRemoteAddr)
-	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "30" || !strings.Contains(rec.Body.String(), "try again in 30 seconds") {
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "30" || rec.Body.String() != `{"key":"result.session.tooManyAttempts","params":{"seconds":30}}`+"\n" {
 		t.Fatalf("during the wait: %d %v %s", rec.Code, rec.Header(), rec.Body.String())
 	}
 	if len(rec.Result().Cookies()) != 0 {

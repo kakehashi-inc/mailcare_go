@@ -40,7 +40,7 @@ func (c *core) messageFromPath(w http.ResponseWriter, r *http.Request) (*models.
 	}
 	key := r.PathValue("key")
 	if !messageKeyRe.MatchString(key) {
-		writeError(w, http.StatusBadRequest, "invalid message key")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return nil, nil, nil, false
 	}
 	idx, err := c.openIndex(r, mb)
@@ -51,7 +51,7 @@ func (c *core) messageFromPath(w http.ResponseWriter, r *http.Request) (*models.
 	m, err := models.GetMessageByKey(idx, key)
 	if err == sql.ErrNoRows {
 		idx.Close()
-		writeError(w, http.StatusNotFound, "message not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return nil, nil, nil, false
 	}
 	if err != nil {
@@ -72,7 +72,7 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	if s := q.Get("page"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 {
-			writeError(w, http.StatusBadRequest, "invalid page")
+			writeError(w, http.StatusBadRequest, "system.invalidRequest")
 			return
 		}
 		page = n
@@ -80,7 +80,7 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 	if s := q.Get("per_page"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 || n > maxPerPage {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("per_page must be between 1 and %d", maxPerPage))
+			writeError(w, http.StatusBadRequest, "system.invalidRequest")
 			return
 		}
 		perPage = n
@@ -91,7 +91,7 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		kind = models.MessageKindAll
 	case models.MessageKindBounce, models.MessageKindOther:
 	default:
-		writeError(w, http.StatusBadRequest, "kind must be all, bounce or other")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	filter := models.MessageFilter{
@@ -188,16 +188,16 @@ func (c *core) handleMessageHTML(w http.ResponseWriter, r *http.Request) {
 	idx.Close()
 	n, err := strconv.Atoi(r.PathValue("n"))
 	if err != nil || n < 1 {
-		writeError(w, http.StatusBadRequest, "invalid section number")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	if n > m.HTMLCount {
-		writeError(w, http.StatusNotFound, "this message has no such HTML part")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return
 	}
 	section, err := mailengine.ReadBodySection(c.mailsRoot, mb.Address, m.MessageKey, "html", n)
 	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "this message has no such HTML part")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return
 	}
 	if err != nil {
@@ -223,7 +223,7 @@ func (c *core) handleMessageRaw(w http.ResponseWriter, r *http.Request) {
 	idx.Close()
 	data, err := mailengine.ReadMessageFile(c.mailsRoot, mb.Address, m.MessageKey, "eml")
 	if errors.Is(err, os.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "the raw message file is missing")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return
 	}
 	if err != nil {

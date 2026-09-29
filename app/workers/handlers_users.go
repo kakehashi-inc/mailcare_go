@@ -2,7 +2,6 @@ package workers
 
 import (
 	"database/sql"
-	"errors"
 	"net/http"
 
 	"mailcare/app/models"
@@ -17,7 +16,7 @@ func (c *core) userFromPath(w http.ResponseWriter, r *http.Request) (*models.Use
 	}
 	u, err := models.GetUserByID(c.db, id)
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "user not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return nil, false
 	}
 	if err != nil {
@@ -69,7 +68,7 @@ func (c *core) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	u, err := modules.CreateUserFrom(c.db, modules.NewUser{Username: body.Username, DisplayName: body.DisplayName, Email: body.Email,
 		Language: body.Language, Timezone: body.Timezone, Theme: body.Theme, Password: body.Password, Role: body.Role})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"user": toUserDTO(u)})
@@ -99,21 +98,14 @@ func (c *core) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	displayName, email, language, timezone, theme, err := modules.ApplyProfile(u, modules.ProfileInput{
 		DisplayName: body.DisplayName, Email: body.Email, Language: body.Language, Timezone: body.Timezone, Theme: body.Theme})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := modules.CheckEmailAvailable(c.db, email, u.ID); errors.Is(err, modules.ErrEmailTaken) {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	} else if err != nil {
-		writeInternalError(w, "failed to check the email address", err)
+		writeErrorMessage(w, r, err)
 		return
 	}
 	if body.Role == "" {
 		body.Role = u.Role
 	}
 	if err := modules.ValidateRole(body.Role); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	if body.Role != modules.RoleAdmin {
@@ -123,12 +115,12 @@ func (c *core) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if last {
-			writeError(w, http.StatusBadRequest, "cannot demote the last administrator")
+			writeError(w, http.StatusBadRequest, "result.user.lastAdmin")
 			return
 		}
 	}
 	if err := models.UpdateUser(c.db, u.ID, displayName, email, language, timezone, theme, body.Role); err != nil {
-		writeInternalError(w, "failed to update user", err)
+		writeErrorMessage(w, r, err)
 		return
 	}
 	fresh, err := models.GetUserByID(c.db, u.ID)
@@ -152,7 +144,7 @@ func (c *core) handleSetUserPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	remember := c.sessionRemember(r)
 	if err := modules.ChangePassword(c.db, u.ID, body.NewPassword); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	if u.ID == userFrom(r).ID {
@@ -169,7 +161,7 @@ func (c *core) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if u.ID == userFrom(r).ID {
-		writeError(w, http.StatusBadRequest, "cannot delete yourself")
+		writeError(w, http.StatusBadRequest, "result.user.deleteSelf")
 		return
 	}
 	last, err := c.isLastAdmin(u)
@@ -178,7 +170,7 @@ func (c *core) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if last {
-		writeError(w, http.StatusBadRequest, "cannot delete the last administrator")
+		writeError(w, http.StatusBadRequest, "result.user.lastAdmin")
 		return
 	}
 	if err := models.DeleteUser(c.db, u.ID); err != nil {

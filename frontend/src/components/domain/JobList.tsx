@@ -19,7 +19,7 @@ interface JobListProps {
 export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProps) {
     const { t } = useTranslation();
     if (jobs.length === 0) {
-        return <EmptyState title={emptyTitle ?? t('jobs.empty')} />;
+        return <EmptyState title={emptyTitle ?? t('component.jobList.empty')} />;
     }
     return (
         <ul className='flex flex-col gap-2'>
@@ -28,24 +28,29 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                 const targetLabel =
                     job.kind === 'analyze'
                         ? job.target === '*'
-                            ? t('jobs.targetAll')
-                            : job.target || t('jobs.targetNeeds')
+                            ? t('component.jobList.targetAll')
+                            : job.target || t('component.jobList.targetNeeds')
                         : '';
                 return (
                     <li key={job.id} className='rounded-lg border border-line bg-surface p-3'>
                         <div className='flex flex-wrap items-start justify-between gap-2'>
                             <div className='min-w-0 flex-1'>
                                 <div className='flex flex-wrap items-center gap-2'>
-                                    <span className='font-medium text-ink'>{t(`jobKind.${job.kind}`)}</span>
+                                    <span className='font-medium text-ink'>{t(`value.jobKind.${job.kind}`)}</span>
                                     <JobStatusBadge status={job.status} />
                                     <span className='text-sm text-muted'>#{job.id}</span>
                                 </div>
                                 <p className='mt-1 break-all text-sm text-muted'>
                                     {job.mailbox_address ||
-                                        (job.mailbox_deleted ? t('jobs.deletedMailbox') : t('mailbox.all'))}
-                                    {job.mailbox_id === null && !job.mailbox_deleted && ` / ${t('jobs.expanded')}`}
+                                        (job.mailbox_deleted
+                                            ? t('component.jobList.deletedMailbox')
+                                            : t('component.mailboxSelect.all'))}
+                                    {job.mailbox_id === null &&
+                                        !job.mailbox_deleted &&
+                                        ` / ${t('component.jobList.expanded')}`}
                                     {targetLabel && ` / ${targetLabel}`}
-                                    {job.requested_by && ` / ${t('jobs.requestedBy', { name: job.requested_by })}`}
+                                    {job.requested_by &&
+                                        ` / ${t('component.jobList.requestedBy', { name: job.requested_by })}`}
                                 </p>
                             </div>
                             <div className='flex items-center gap-2 text-sm text-muted'>
@@ -53,7 +58,7 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                                 {onCancel && job.status === 'queued' && (
                                     <IconButton
                                         icon='cancel'
-                                        label={t('jobs.cancel')}
+                                        label={t('action.job.cancel')}
                                         loading={cancelingId === job.id}
                                         onClick={() => onCancel(job)}
                                     />
@@ -66,7 +71,7 @@ export function JobList({ jobs, onCancel, cancelingId, emptyTitle }: JobListProp
                                 {job.progress ? (
                                     <JobProgressLog text={job.progress} />
                                 ) : (
-                                    <span className='min-w-0 flex-1'>{t('jobs.waiting')}</span>
+                                    <span className='min-w-0 flex-1'>{t('component.jobList.waiting')}</span>
                                 )}
                             </div>
                         )}

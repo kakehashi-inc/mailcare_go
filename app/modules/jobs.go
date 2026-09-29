@@ -15,6 +15,7 @@ import (
 	"mailcare/app/models"
 	"mailcare/app/modules/agent"
 	"mailcare/app/modules/mailengine"
+	"mailcare/app/modules/message"
 )
 
 // Jobs (jobs table).
@@ -62,7 +63,7 @@ const (
 )
 
 // ErrJobKind is returned for an unknown job kind.
-var ErrJobKind = errors.New("unknown job kind")
+var ErrJobKind = message.New("system.invalidRequest", "unknown job kind")
 
 // ValidateJobKind reports whether kind is one of the known job kinds.
 func ValidateJobKind(kind string) error {
@@ -101,14 +102,14 @@ func normalizeNotifyTarget(target string) (string, error) {
 	}
 	raw, ok := strings.CutPrefix(target, notifyTestPrefix)
 	if !ok {
-		return "", fmt.Errorf("invalid notify target %q (use \"\" or \"test:<address>\")", target)
+		return "", message.New("system.invalidRequest", fmt.Sprintf("invalid notify target %q (use \"\" or \"test:<address>\")", target))
 	}
 	address, err := NormalizeEmail(raw)
 	if err != nil {
 		return "", err
 	}
 	if address == "" {
-		return "", errors.New("the test mail needs a recipient address")
+		return "", message.New("validation.notification.testRecipientRequired", "the test mail needs a recipient address")
 	}
 	return NotifyTestTarget(address), nil
 }
@@ -395,11 +396,11 @@ func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy st
 	switch kind {
 	case JobKindAnalyze:
 		if mailboxID == 0 && target != "" && target != analyzeAllTarget {
-			return nil, false, errors.New("analyze of one group requires a mailbox")
+			return nil, false, message.New("system.invalidRequest", "analyze of one group requires a mailbox")
 		}
 	case JobKindNotify:
 		if mailboxID != 0 {
-			return nil, false, errors.New("notify takes no mailbox")
+			return nil, false, message.New("system.invalidRequest", "notify takes no mailbox")
 		}
 		var err error
 		if target, err = normalizeNotifyTarget(target); err != nil {
@@ -410,7 +411,7 @@ func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy st
 	}
 	if mailboxID != 0 {
 		if _, err := models.GetMailboxByID(db, mailboxID); err == sql.ErrNoRows {
-			return nil, false, errors.New("mailbox not found")
+			return nil, false, message.New("system.notFound", "mailbox not found")
 		} else if err != nil {
 			return nil, false, err
 		}

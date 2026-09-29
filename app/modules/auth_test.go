@@ -2,8 +2,12 @@ package modules
 
 import (
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	"mailcare/app/models"
 )
 
 func TestAuthenticateUserByEmail(t *testing.T) {
@@ -34,19 +38,72 @@ func TestAuthenticateUserByEmail(t *testing.T) {
 	}
 
 	// Addresses are unique among users (case-insensitively).
-	if _, err := CreateUserFrom(db, NewUser{Username: "carol", Email: "alice@example.com", Password: "password789"}); !errors.Is(err, ErrEmailTaken) {
+	if _, err := CreateUserFrom(db, NewUser{Username: "carol", Email: "alice@example.com", Password: "password789"}); !errors.Is(err, models.ErrEmailTaken) {
 		t.Errorf("create with a taken address: %v", err)
 	}
 	taken := "ALICE@example.com"
-	if err := UpdateProfile(db, bob, ProfileInput{Email: &taken}); !errors.Is(err, ErrEmailTaken) {
+	if err := UpdateProfile(db, bob, ProfileInput{Email: &taken}); !errors.Is(err, models.ErrEmailTaken) {
 		t.Errorf("update to a taken address: %v", err)
 	}
 	same := "alice@example.com"
 	if err := UpdateProfile(db, alice, ProfileInput{Email: &same}); err != nil {
 		t.Errorf("keeping one's own address: %v", err)
 	}
-	if err := CheckEmailAvailable(db, "", bob.ID); err != nil {
+	empty := ""
+	if err := UpdateProfile(db, bob, ProfileInput{Email: &empty}); err != nil {
 		t.Errorf("empty address: %v", err)
+	}
+
+	// A user who shared the address before the rule existed can still change
+	// the other fields while keeping it, but cannot take it anew once cleared.
+	if _, err := db.Exec(`UPDATE users SET email = 'alice@example.com' WHERE id = ?`, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ = models.GetUserByID(db, bob.ID)
+	lang := "en"
+	if err := UpdateProfile(db, bob, ProfileInput{Language: &lang}); err != nil {
+		t.Errorf("legacy duplicate keeping its address: %v", err)
+	}
+	if err := models.UpdateUser(db, bob.ID, bob.DisplayName, bob.Email, "ja", bob.Timezone, bob.Theme, RoleAdmin); err != nil {
+		t.Errorf("legacy duplicate, administrator edit: %v", err)
+	}
+	if err := UpdateProfile(db, bob, ProfileInput{Email: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	bob, _ = models.GetUserByID(db, bob.ID)
+	if err := UpdateProfile(db, bob, ProfileInput{Email: &same}); !errors.Is(err, models.ErrEmailTaken) {
+		t.Errorf("re-taking a cleared duplicate: %v", err)
+	}
+	// Updating a user that no longer exists is not an address conflict.
+	if err := models.UpdateUserProfile(db, 9999, "x", "alice@example.com", "", "", ""); err != nil {
+		t.Errorf("missing user: %v", err)
+	}
+}
+
+func TestCreateUserEmailRace(t *testing.T) {
+	db := newTestDB(t)
+	const n = 8
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			_, err := CreateUserFrom(db, NewUser{Username: fmt.Sprintf("u%d", i), Email: "same@example.com", Password: "password123"})
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(errs)
+	created := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			created++
+		case !errors.Is(err, models.ErrEmailTaken):
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if created != 1 {
+		t.Errorf("created %d users with the same address, want 1", created)
 	}
 }
 

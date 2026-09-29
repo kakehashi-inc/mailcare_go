@@ -1,20 +1,19 @@
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ApiError } from '../api/client';
+import type { ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { Button } from '../components/ui/Button';
 import { InlineError } from '../components/ui/ErrorState';
 import { CheckboxField, InputField } from '../components/ui/Field';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { errorMessage } from '../utils/errors';
 import { safeNextPath } from '../utils/next';
 import { AuthShell } from './AuthShell';
 
 /** Username (or email address) + password login. "Keep me signed in" asks the server for a long-lived session. */
 export function LoginPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('login.title'));
+    useDocumentTitle(t('page.login.title'));
     const { login } = useAuth();
     const navigate = useNavigate();
     const [params] = useSearchParams();
@@ -35,24 +34,18 @@ export function LoginPage() {
             await login({ username: username.trim(), password, remember });
             navigate(safeNextPath(params.get('next')), { replace: true });
         } catch (err) {
-            if (err instanceof ApiError && (err.status === 401 || err.status === 400)) {
-                setError(t('login.errorInvalid'));
-            } else if (err instanceof ApiError && err.status === 429) {
-                setError(t('login.errorTooMany'));
-            } else {
-                setError(errorMessage(err, t));
-            }
+            setError(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSubmitting(false);
         }
     }
 
     return (
-        <AuthShell title={t('login.title')} description={t('login.description')}>
+        <AuthShell title={t('page.login.title')} description={t('page.login.description')}>
             <form onSubmit={handleSubmit} noValidate>
                 <div className='space-y-4'>
                     <InputField
-                        label={t('login.username')}
+                        label={t('page.login.loginName')}
                         autoComplete='username'
                         value={username}
                         onChange={e => setUsername(e.target.value)}
@@ -60,7 +53,7 @@ export function LoginPage() {
                         required
                     />
                     <InputField
-                        label={t('login.password')}
+                        label={t('field.user.password')}
                         type='password'
                         autoComplete='current-password'
                         value={password}
@@ -68,8 +61,8 @@ export function LoginPage() {
                         required
                     />
                     <CheckboxField
-                        label={t('login.remember')}
-                        hint={t('login.rememberHint')}
+                        label={t('page.login.remember')}
+                        hint={t('page.login.rememberHint')}
                         checked={remember}
                         onChange={e => setRemember(e.target.checked)}
                     />
@@ -88,7 +81,7 @@ export function LoginPage() {
                     disabled={!canSubmit}
                     icon='login'
                 >
-                    {t('login.submit')}
+                    {t('page.login.submit')}
                 </Button>
             </form>
         </AuthShell>

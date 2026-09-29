@@ -11,6 +11,51 @@ import (
 	"mailcare/app/modules/smtptest"
 )
 
+func TestDuplicateEmailAndUsernameRejected(t *testing.T) {
+	c := newTestCore(t)
+	h := c.webHandler()
+	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
+	admin := login(t, h, "admin", "password123")
+	const taken = `"key":"validation.user.emailTaken"`
+	rec := do(t, h, http.MethodPost, "/api/v1/users", map[string]string{"username": "carol", "password": "password123", "email": "carol@example.test"}, admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create carol: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodPost, "/api/v1/users", map[string]string{"username": "dave", "password": "password123"}, admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create dave: %d %s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		User UserDTO `json:"user"`
+	}
+	decode(t, rec.Body.Bytes(), &env)
+
+	// Administrator: create and edit with another user's address.
+	rec = do(t, h, http.MethodPost, "/api/v1/users", map[string]string{"username": "erin", "password": "password123", "email": "Carol@Example.test"}, admin)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), taken) {
+		t.Errorf("create with a taken address: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodPut, "/api/v1/users/"+itoa(env.User.ID), map[string]any{"email": "carol@example.test"}, admin)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), taken) {
+		t.Errorf("admin edit to a taken address: %d %s", rec.Code, rec.Body.String())
+	}
+	// Own profile.
+	rec = do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": "carol@example.test"}, admin)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), taken) {
+		t.Errorf("profile to a taken address: %d %s", rec.Code, rec.Body.String())
+	}
+	// Username.
+	rec = do(t, h, http.MethodPost, "/api/v1/users", map[string]string{"username": "carol", "password": "password123"}, admin)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"key":"validation.user.usernameTaken"`) {
+		t.Errorf("create with a taken username: %d %s", rec.Code, rec.Body.String())
+	}
+	// Login with the address.
+	rec = do(t, h, http.MethodPost, "/web/login", map[string]string{"username": "Carol@Example.test", "password": "password123"}, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"username":"carol"`) {
+		t.Errorf("login by email: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMeEmailAndUserEmailEndpoints(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
@@ -242,7 +287,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	} {
 		change["notify_interval_days"] = 5
 		rec := do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", change, s.admin)
-		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "smtp_password is required when the connection settings change") {
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"key":"validation.connection.passwordRequiredOnChange"`) {
 			t.Errorf("put %v without the password: %d %s", change, rec.Code, rec.Body.String())
 		}
 	}
@@ -284,7 +329,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 		t.Errorf("test mail received: %+v", msgs)
 	}
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", nil, s.admin)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no recipient") {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"key":"validation.notification.testRecipientRequired"`) {
 		t.Errorf("test without an own address: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(t, s.h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": "admin@example.test"}, s.admin); rec.Code != http.StatusOK {
@@ -313,7 +358,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 			body[k] = v
 		}
 		rec := do(t, s.h, http.MethodPost, "/api/v1/notifications/test", body, s.admin)
-		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "smtp_password is required when the connection settings change") {
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"key":"validation.connection.passwordRequiredOnChange"`) {
 			t.Errorf("test with %v and no password: %d %s", change, rec.Code, rec.Body.String())
 		}
 	}

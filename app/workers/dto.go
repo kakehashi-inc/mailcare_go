@@ -220,7 +220,10 @@ type ReportDTO struct {
 	// Unanalyzable is true for a failed run that settled its group (see
 	// GroupDTO.ReportUnanalyzable); false for a usage limit or a
 	// cancellation, and for every other status.
-	Unanalyzable bool    `json:"unanalyzable"`
+	Unanalyzable bool `json:"unanalyzable"`
+	// UsageLimited is true for a run refused by the agent's usage limit
+	// (agent.IsUsageLimitMessage), so the Web UI need not read ErrorMessage.
+	UsageLimited bool    `json:"usage_limited"`
 	StartedAt    *string `json:"started_at"`
 	FinishedAt   *string `json:"finished_at"`
 	CreatedAt    string  `json:"created_at"`
@@ -234,6 +237,7 @@ func toReportDTO(r *models.AgentReport) ReportDTO {
 		Model: stringOrNil(r.Model), ReasoningEffort: stringOrNil(r.ReasoningEffort),
 		TokensUsed: nullInt(r.TokensUsed), CommandCount: nullInt(r.CommandCount),
 		Unanalyzable: r.Status == "error" && agent.FailureSettles(r.ErrorMessage),
+		UsageLimited: r.Status == "error" && agent.IsUsageLimitMessage(r.ErrorMessage),
 		StartedAt:    nullTimeString(r.StartedAt), FinishedAt: nullTimeString(r.FinishedAt),
 		CreatedAt: timeString(r.CreatedAt),
 	}

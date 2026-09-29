@@ -1,7 +1,6 @@
 package workers
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -65,18 +64,18 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Workers != nil && (*body.Workers < 1 || *body.Workers > modules.MaxWorkers) {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("workers must be between 1 and %d", modules.MaxWorkers))
+		writeJSON(w, http.StatusBadRequest, apiMessage{Key: "validation.common.numberOutOfRange", Params: map[string]any{"min": 1, "max": modules.MaxWorkers}})
 		return
 	}
 	if body.AgentKeepDays != nil {
 		if err := modules.ValidateAgentKeepDays(*body.AgentKeepDays); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeErrorMessage(w, r, err)
 			return
 		}
 	}
 	if body.MailKeepDays != nil {
 		if err := modules.ValidateMailKeepDays(*body.MailKeepDays); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeErrorMessage(w, r, err)
 			return
 		}
 	}
@@ -84,7 +83,7 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if body.CheckTimes != nil {
 		var err error
 		if times, err = modules.ParseCheckTimes(*body.CheckTimes); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeErrorMessage(w, r, err)
 			return
 		}
 	}
@@ -92,7 +91,7 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if body.AgentProvider != nil {
 		provider = strings.TrimSpace(*body.AgentProvider)
 		if !agent.IsValidProvider(provider) {
-			writeError(w, http.StatusBadRequest, "unknown agent provider")
+			writeError(w, http.StatusBadRequest, "validation.agent.providerUnknown")
 			return
 		}
 	}
@@ -110,7 +109,7 @@ func (c *core) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			level = *body.AgentEffort
 		}
 		if err := modules.CheckAgentSettings(provider, model, level); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeErrorMessage(w, r, err)
 			return
 		}
 	}

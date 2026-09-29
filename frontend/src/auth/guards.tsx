@@ -26,7 +26,7 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
     if (!isAdmin) {
         return (
             <div className='mx-auto w-full max-w-3xl px-4 py-8'>
-                <ErrorState title={t('error.forbidden')} message={t('error.adminOnly')} icon='lock' />
+                <ErrorState title={t('system.forbidden')} message={t('system.adminOnly')} icon='lock' />
             </div>
         );
     }

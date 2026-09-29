@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ApiError } from '../api/client';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
 import { UserPreferenceFields } from '../components/domain/UserPreferenceFields';
@@ -10,7 +11,6 @@ import { InputField } from '../components/ui/Field';
 import { DEFAULT_LANG, MIN_PASSWORD_LENGTH, type Lang } from '../constants';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { applyLanguage } from '../i18n/i18n';
-import { errorMessage } from '../utils/errors';
 import { applyTheme, DEFAULT_THEME, type Theme } from '../utils/theme';
 import { DEFAULT_TIME_ZONE } from '../utils/timezone';
 import { isEmailAddress } from '../utils/validate';
@@ -23,7 +23,7 @@ import { AuthShell } from './AuthShell';
  */
 export function SetupPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('setup.title'));
+    useDocumentTitle(t('page.setup.title'));
     const { setup } = useAuth();
     const navigate = useNavigate();
     const [username, setUsername] = useState('');
@@ -60,42 +60,42 @@ export function SetupPage() {
             });
             navigate('/', { replace: true });
         } catch (err) {
-            setError(errorMessage(err, t));
+            setError(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSubmitting(false);
         }
     }
 
     return (
-        <AuthShell title={t('setup.title')} description={t('setup.description')}>
+        <AuthShell title={t('page.setup.title')} description={t('page.setup.description')}>
             <Alert tone='info' className='mb-4'>
-                {t('setup.hint')}
+                {t('page.setup.hint')}
             </Alert>
             <form onSubmit={handleSubmit} noValidate className='space-y-4'>
                 <InputField
-                    label={t('user.username')}
+                    label={t('field.user.username')}
                     autoComplete='username'
                     value={username}
                     onChange={e => setUsername(e.target.value)}
-                    hint={t('user.usernameHint')}
+                    hint={t('field.user.usernameHint')}
                     autoFocus
                     required
                 />
                 <InputField
-                    label={t('user.displayName')}
+                    label={t('field.common.displayName')}
                     autoComplete='name'
                     value={displayName}
                     onChange={e => setDisplayName(e.target.value)}
                 />
                 <InputField
-                    label={t('user.email')}
+                    label={t('field.user.email')}
                     type='email'
                     inputMode='email'
                     autoComplete='email'
                     value={email}
                     onChange={e => setEmail(e.target.value)}
-                    hint={t('user.emailHint')}
-                    error={emailInvalid ? t('user.emailInvalid') : undefined}
+                    hint={t('field.user.emailHint')}
+                    error={emailInvalid ? t('validation.common.emailFormat') : undefined}
                 />
                 <UserPreferenceFields
                     language={language}
@@ -112,22 +112,22 @@ export function SetupPage() {
                     }}
                 />
                 <InputField
-                    label={t('user.password')}
+                    label={t('field.user.password')}
                     type='password'
                     autoComplete='new-password'
                     value={password}
                     onChange={e => setPassword(e.target.value)}
-                    hint={t('user.passwordHint', { min: MIN_PASSWORD_LENGTH })}
-                    error={tooShort ? t('user.passwordTooShort', { min: MIN_PASSWORD_LENGTH }) : undefined}
+                    hint={t('field.user.passwordHint', { min: MIN_PASSWORD_LENGTH })}
+                    error={tooShort ? t('validation.user.passwordTooShort', { min: MIN_PASSWORD_LENGTH }) : undefined}
                     required
                 />
                 <InputField
-                    label={t('user.passwordConfirm')}
+                    label={t('field.user.passwordConfirm')}
                     type='password'
                     autoComplete='new-password'
                     value={confirm}
                     onChange={e => setConfirm(e.target.value)}
-                    error={mismatch ? t('user.passwordMismatch') : undefined}
+                    error={mismatch ? t('validation.user.passwordMismatch') : undefined}
                     required
                 />
                 {error && <InlineError message={error} />}
@@ -139,7 +139,7 @@ export function SetupPage() {
                     disabled={!canSubmit}
                     icon='person_add'
                 >
-                    {t('setup.submit')}
+                    {t('page.setup.submit')}
                 </Button>
             </form>
         </AuthShell>

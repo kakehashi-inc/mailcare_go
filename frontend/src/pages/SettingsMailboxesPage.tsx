@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { deleteMailbox, listMailboxes, testMailbox } from '../api/client';
+import { deleteMailbox, listMailboxes, testMailbox, ApiError } from '../api/client';
 import { EnabledBadge, CheckStatusBadge, fetchStatus } from '../components/domain/StatusBadges';
 import { Button, LinkButton } from '../components/ui/Button';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
@@ -16,11 +16,10 @@ import { useToast } from '../components/ui/Toast';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { MailboxDTO } from '../types';
-import { errorMessage } from '../utils/errors';
 
 export function SettingsMailboxesPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.settingsMailboxes'));
+    useDocumentTitle(t('layout.nav.settingsMailboxes'));
     const toast = useToast();
     const navigate = useNavigate();
     const list = useAsync(listMailboxes, []);
@@ -41,9 +40,9 @@ export function SettingsMailboxesPage() {
                 imap_username: mb.imap_username,
                 folder: mb.folder,
             });
-            toast.success(t('mailbox.testOk', { address: mb.address }));
+            toast.success(t('result.mailbox.testOk', { address: mb.address }));
         } catch (err) {
-            toast.error(t('mailbox.testFailed', { message: errorMessage(err, t) }));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setTesting(null);
         }
@@ -54,12 +53,12 @@ export function SettingsMailboxesPage() {
         setBusy(true);
         try {
             await deleteMailbox(deleting.id, keepData);
-            toast.success(t('mailbox.deleted', { address: deleting.address }));
+            toast.success(t('result.mailbox.deleted', { address: deleting.address }));
             setDeleting(null);
             setKeepData(false);
             await list.reload();
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setBusy(false);
         }
@@ -68,7 +67,7 @@ export function SettingsMailboxesPage() {
     const columns: Column<MailboxDTO>[] = [
         {
             key: 'address',
-            header: t('mailbox.address'),
+            header: t('field.mailbox.address'),
             primary: true,
             cell: mb => (
                 <span className='break-all'>
@@ -79,7 +78,7 @@ export function SettingsMailboxesPage() {
         },
         {
             key: 'server',
-            header: t('mailbox.server'),
+            header: t('field.mailbox.server'),
             cell: mb => (
                 <span className='break-all font-mono text-sm'>
                     <span className='block text-ink'>
@@ -91,30 +90,30 @@ export function SettingsMailboxesPage() {
         },
         {
             key: 'fetchDays',
-            header: t('mailbox.fetchDays'),
+            header: t('field.mailbox.fetchDays'),
             className: 'whitespace-nowrap',
-            cell: mb => t('mailbox.fetchDaysValue', { count: mb.recent_days }),
+            cell: mb => t('common.duration.days', { count: mb.recent_days }),
         },
         {
             key: 'serverKeep',
-            header: t('mailbox.serverKeepDays'),
+            header: t('field.mailbox.serverKeepDays'),
             className: 'whitespace-nowrap',
             cell: mb =>
                 mb.server_keep_days > 0
-                    ? t('mailbox.fetchDaysValue', { count: mb.server_keep_days })
-                    : t('mailbox.serverKeepNever'),
+                    ? t('common.duration.days', { count: mb.server_keep_days })
+                    : t('value.serverKeepDays.never'),
         },
         { key: 'enabled', header: t('common.status'), cell: mb => <EnabledBadge enabled={mb.enabled} /> },
         {
             key: 'check',
-            header: t('mailbox.lastChecked'),
+            header: t('field.mailbox.lastChecked'),
             cell: mb => (
                 <span className='flex flex-col gap-1'>
                     <CheckStatusBadge status={fetchStatus(mb)} />
                     <DateTime
                         value={mb.last_fetched_at}
                         relative
-                        empty={t('checkStatus.never')}
+                        empty={t('value.checkStatus.never')}
                         className='text-sm text-muted'
                     />
                 </span>
@@ -131,16 +130,16 @@ export function SettingsMailboxesPage() {
                         size='sm'
                         icon='network_check'
                         loading={testing === mb.id}
-                        aria-label={t('mailbox.testAria', { address: mb.address })}
+                        aria-label={t('action.mailbox.testFor', { address: mb.address })}
                         onClick={() => void test(mb)}
                     >
-                        {t('mailbox.test')}
+                        {t('action.mailbox.test')}
                     </Button>
                     <LinkButton
                         size='sm'
                         icon='edit'
                         to={`/settings/mailboxes/${mb.id}`}
-                        aria-label={t('mailbox.editAria', { address: mb.address })}
+                        aria-label={t('action.mailbox.editFor', { address: mb.address })}
                     >
                         {t('common.edit')}
                     </LinkButton>
@@ -148,7 +147,7 @@ export function SettingsMailboxesPage() {
                         size='sm'
                         icon='delete'
                         className='text-danger'
-                        aria-label={t('mailbox.deleteAria', { address: mb.address })}
+                        aria-label={t('action.mailbox.deleteFor', { address: mb.address })}
                         onClick={() => setDeleting(mb)}
                     >
                         {t('common.delete')}
@@ -161,33 +160,39 @@ export function SettingsMailboxesPage() {
     return (
         <PageContainer wide>
             <PageHeader
-                title={t('nav.settingsMailboxes')}
-                description={t('settings.menu.mailboxes')}
-                crumbs={[{ label: t('nav.settings'), to: '/settings' }, { label: t('nav.settingsMailboxes') }]}
+                title={t('layout.nav.settingsMailboxes')}
+                description={t('page.settings.menu.mailboxes')}
+                crumbs={[
+                    { label: t('layout.nav.settings'), to: '/settings' },
+                    { label: t('layout.nav.settingsMailboxes') },
+                ]}
                 actions={
                     <LinkButton to='/settings/mailboxes/new' variant='primary' icon='add'>
-                        {t('mailbox.add')}
+                        {t('action.mailbox.add')}
                     </LinkButton>
                 }
             />
             {list.loading ? (
                 <LoadingBlock />
             ) : list.error || !list.data ? (
-                <ErrorState message={errorMessage(list.error, t)} onRetry={() => void list.reload()} />
+                <ErrorState
+                    message={t(list.error?.key ?? 'system.internal', list.error?.params)}
+                    onRetry={() => void list.reload()}
+                />
             ) : (
                 <Table
                     columns={columns}
                     rows={list.data}
                     rowKey={mb => mb.id}
-                    caption={t('nav.settingsMailboxes')}
+                    caption={t('layout.nav.settingsMailboxes')}
                     onRowClick={mb => navigate(`/settings/mailboxes/${mb.id}`)}
-                    rowAriaLabel={mb => t('mailbox.editAria', { address: mb.address })}
+                    rowAriaLabel={mb => t('action.mailbox.editFor', { address: mb.address })}
                     emptyState={
                         <EmptyState
-                            title={t('mailbox.emptyTitle')}
+                            title={t('component.mailboxPicker.empty')}
                             action={
                                 <LinkButton to='/settings/mailboxes/new' variant='primary' icon='add'>
-                                    {t('mailbox.add')}
+                                    {t('action.mailbox.add')}
                                 </LinkButton>
                             }
                         />
@@ -196,14 +201,14 @@ export function SettingsMailboxesPage() {
             )}
             <ConfirmDialog
                 open={deleting !== null}
-                title={t('mailbox.deleteTitle')}
+                title={t('action.mailbox.delete')}
                 message={
                     deleting && (
                         <div className='flex flex-col gap-3'>
-                            <p>{t('mailbox.deleteMessage', { address: deleting.address })}</p>
+                            <p>{t('action.mailbox.deleteConfirm', { address: deleting.address })}</p>
                             <CheckboxField
-                                label={t('mailbox.keepData')}
-                                hint={t('mailbox.keepDataHint')}
+                                label={t('action.mailbox.keepData')}
+                                hint={t('action.mailbox.keepDataHint')}
                                 checked={keepData}
                                 onChange={e => setKeepData(e.target.checked)}
                             />

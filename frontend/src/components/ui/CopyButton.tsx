@@ -28,12 +28,12 @@ export function CopyButton({ text, label, size = 'sm', className = '' }: CopyBut
         }
     }
 
-    const title = label ?? t('common.copy');
+    const title = label ?? t('component.copyButton.copy');
     return (
         <button
             type='button'
             onClick={copy}
-            aria-label={copied ? t('common.copied') : title}
+            aria-label={copied ? t('component.copyButton.copied') : title}
             title={title}
             className={`inline-flex min-h-tap shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-muted hover:bg-well hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                 size === 'sm' ? 'text-sm' : 'text-base'
@@ -41,7 +41,11 @@ export function CopyButton({ text, label, size = 'sm', className = '' }: CopyBut
         >
             <Icon name={copied ? 'check' : failed ? 'error_outline' : 'content_copy'} className='text-[18px]' />
             <span aria-live='polite'>
-                {copied ? t('common.copied') : failed ? t('common.copyFailed') : t('common.copy')}
+                {copied
+                    ? t('component.copyButton.copied')
+                    : failed
+                      ? t('component.copyButton.failed')
+                      : t('component.copyButton.copy')}
             </span>
         </button>
     );

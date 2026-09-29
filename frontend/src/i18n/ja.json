@@ -1,40 +1,39 @@
 {
-    "app": {
-        "title": "MailCare"
-    },
-    "header": {
-        "logout": "ログアウト",
-        "openMenu": "メニューを開く",
-        "closeMenu": "メニューを閉じる",
-        "mainNav": "メインナビゲーション",
-        "userMenu": "{{name}} のメニュー",
-        "skipToContent": "本文へ移動"
-    },
-    "lang": {
-        "ja": "日本語",
-        "en": "English"
-    },
-    "theme": {
-        "auto": "自動（ブラウザの設定に従う）",
-        "light": "ライト",
-        "dark": "ダーク"
-    },
-    "nav": {
-        "dashboard": "ダッシュボード",
-        "alerts": "アラート",
-        "mails": "メール",
-        "tools": "ツール",
-        "settings": "設定",
-        "settingsGeneral": "一般設定",
-        "settingsNotifications": "通知",
-        "settingsMailboxes": "メールアドレス",
-        "settingsUsers": "利用者",
-        "settingsTokens": "トークン",
-        "settingsProfile": "プロファイル"
+    "layout": {
+        "appName": "MailCare",
+        "header": {
+            "logout": "ログアウト",
+            "openMenu": "メニューを開く",
+            "closeMenu": "メニューを閉じる",
+            "mainNav": "メインナビゲーション",
+            "userMenu": "{{name}} のメニュー"
+        },
+        "skipToContent": "本文へ移動",
+        "nav": {
+            "dashboard": "ダッシュボード",
+            "alerts": "アラート",
+            "mails": "メール",
+            "tools": "ツール",
+            "settings": "設定",
+            "settingsGeneral": "一般設定",
+            "settingsNotifications": "通知",
+            "settingsMailboxes": "メールアドレス",
+            "settingsUsers": "利用者",
+            "settingsTokens": "トークン",
+            "settingsProfile": "プロファイル"
+        },
+        "renderError": {
+            "title": "画面の表示中にエラーが発生しました",
+            "hint": "ページを再読み込みしてください。解決しない場合は、しばらく待ってからもう一度ページを再読み込みしてください。",
+            "reload": "再読み込み"
+        },
+        "notFound": {
+            "title": "ページが見つかりません",
+            "description": "お探しのページは存在しないか、移動した可能性があります。",
+            "back": "ダッシュボードへ戻る"
+        }
     },
     "common": {
-        "loading": "読み込み中...",
-        "retry": "再試行",
         "refresh": "更新",
         "save": "保存",
         "create": "作成",
@@ -43,11 +42,7 @@
         "edit": "編集",
         "delete": "削除",
         "cancel": "キャンセル",
-        "confirm": "実行",
         "close": "閉じる",
-        "copy": "コピー",
-        "copied": "コピーしました",
-        "copyFailed": "コピーできません",
         "search": "検索",
         "sort": "並び順",
         "all": "すべて",
@@ -55,711 +50,805 @@
         "actions": "操作",
         "enabled": "有効",
         "disabled": "無効",
-        "createdAt": "作成日時",
+        "notSet": "未設定",
         "clearFilter": "絞り込みを解除",
         "showMore": "さらに {{count}} 件を表示",
         "showLess": "表示を減らす",
-        "showPassword": "パスワードを表示"
+        "showPassword": "パスワードを表示",
+        "emptyFiltered": "絞り込み条件を変えてみてください。",
+        "duration": {
+            "seconds": "{{count}} 秒",
+            "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
+            "hoursMinutes": "{{hours}} 時間 {{minutes}} 分",
+            "days": "{{count}} 日"
+        }
     },
-    "time": {
-        "seconds": "{{count}} 秒",
-        "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
-        "hoursMinutes": "{{hours}} 時間 {{minutes}} 分"
+    "component": {
+        "spinner": {
+            "loading": "読み込み中..."
+        },
+        "errorState": {
+            "title": "エラーが発生しました",
+            "retry": "再試行"
+        },
+        "confirmDialog": {
+            "confirm": "実行"
+        },
+        "copyButton": {
+            "copy": "コピー",
+            "copied": "コピーしました",
+            "failed": "コピーできません"
+        },
+        "pagination": {
+            "label": "ページ送り",
+            "prev": "前へ",
+            "next": "次へ",
+            "page": "{{page}} / {{pages}} ページ",
+            "range": "{{total}} 件中 {{from}}〜{{to}} 件"
+        },
+        "mailboxSelect": {
+            "choose": "メールアドレスを選択",
+            "all": "すべてのメールアドレス"
+        },
+        "mailboxPicker": {
+            "empty": "監視対象のメールアドレスはまだ登録されていません。"
+        },
+        "jobList": {
+            "empty": "ジョブはありません",
+            "waiting": "開始を待っています...",
+            "requestedBy": "実行者: {{name}}",
+            "targetAll": "全グループ",
+            "targetNeeds": "解析待ちのグループ",
+            "expanded": "アドレスごとに展開",
+            "deletedMailbox": "削除済みのメールアドレス"
+        },
+        "pageHeader": {
+            "breadcrumb": "パンくずリスト"
+        }
     },
-    "error": {
-        "title": "エラーが発生しました",
+    "system": {
         "network": "サーバーに接続できません。ネットワークを確認してください。",
         "unauthorized": "ログインが必要です。",
         "forbidden": "この操作を行う権限がありません。",
         "notFound": "対象が見つかりません。",
         "unavailable": "サーバーが準備中です。しばらくしてから再試行してください。",
-        "server": "サーバーでエラーが発生しました (HTTP {{status}})。",
-        "unknown": "不明なエラーが発生しました。",
-        "adminOnly": "このページは管理者のみ利用できます。",
-        "renderTitle": "画面の表示中にエラーが発生しました",
-        "renderHint": "ページを再読み込みしてください。解決しない場合は、しばらく待ってからもう一度ページを再読み込みしてください。",
-        "reload": "再読み込み"
+        "internal": "サーバーでエラーが発生しました。しばらくしてからもう一度お試しください。",
+        "invalidRequest": "要求を処理できませんでした。画面を再読み込みしてからもう一度お試しください。",
+        "adminOnly": "このページは管理者のみ利用できます。"
     },
-    "pagination": {
-        "label": "ページ送り",
-        "prev": "前へ",
-        "next": "次へ",
-        "page": "{{page}} / {{pages}} ページ",
-        "range": "{{total}} 件中 {{from}}〜{{to}} 件"
-    },
-    "notFound": {
-        "title": "ページが見つかりません",
-        "description": "お探しのページは存在しないか、移動した可能性があります。",
-        "back": "ダッシュボードへ戻る"
-    },
-    "login": {
-        "title": "ログイン",
-        "description": "ユーザー名またはメールアドレスとパスワードでログインします。",
-        "username": "ユーザー名またはメールアドレス",
-        "password": "パスワード",
-        "remember": "ログインを保持する",
-        "rememberHint": "共有端末では使用しないでください。",
-        "submit": "ログイン",
-        "errorInvalid": "ログイン情報またはパスワードが正しくありません。",
-        "errorTooMany": "ログインの失敗が続いたため、しばらく待ってから再試行してください。"
-    },
-    "setup": {
-        "title": "初期設定",
-        "description": "最初の管理者アカウントを作成します。言語とテーマはすぐに画面に反映されます。",
-        "hint": "まだ利用者が登録されていません。ここで作成したアカウントは管理者になり、そのままログインします。",
-        "submit": "管理者を作成してログイン"
-    },
-    "role": {
-        "admin": "管理者",
-        "user": "一般利用者"
-    },
-    "groupState": {
-        "open": "未対応",
-        "resolved": "対応済",
-        "ignored": "無視"
-    },
-    "severity": {
-        "high": "重大度: 高",
-        "medium": "重大度: 中",
-        "low": "重大度: 低",
-        "unknown": "重大度: 未分析"
-    },
-    "responsible": {
-        "sender": "送信側のメール管理者",
-        "recipient": "宛先アドレスの所有者",
-        "domain": "宛先ドメインの管理者",
-        "unknown": "担当不明"
-    },
-    "jobStatus": {
-        "queued": "待機中",
-        "running": "実行中",
-        "done": "完了",
-        "error": "エラー",
-        "canceled": "取消"
-    },
-    "jobKind": {
-        "sync": "同期",
-        "fetch": "受信",
-        "group": "纏め",
-        "analyze": "解析",
-        "reindex": "再索引",
-        "reclassify": "再判定",
-        "cleanup": "クリーンアップ",
-        "notify": "通知メール送信"
-    },
-    "checkStatus": {
-        "never": "未同期",
-        "ok": "正常",
-        "error": "エラー",
-        "running": "同期中"
-    },
-    "reportStatus": {
-        "none": "報告なし",
-        "running": "解析中",
-        "completed": "解析済",
-        "error": "解析エラー"
-    },
-    "bounceKind": {
-        "none": "通常メール",
-        "failed": "配信失敗",
-        "delayed": "配信遅延",
-        "auto_reply": "自動返信",
-        "other": "その他の通知"
-    },
-    "imapSecurity": {
-        "ssl": "SSL/TLS (IMAPS)",
-        "starttls": "STARTTLS",
-        "none": "暗号化なし"
-    },
-    "smtpSecurity": {
-        "ssl": "SSL/TLS (SMTPS)",
-        "starttls": "STARTTLS",
-        "none": "暗号化なし"
-    },
-    "dashboard": {
-        "description": "監視中のメールアドレスと、対応が必要なバウンスの状況です。",
-        "totals": "合計",
-        "totalMailboxes": "メールアドレス",
-        "totalOpenGroups": "未対応グループ",
-        "totalBounces": "バウンス",
-        "totalMessages": "取得メール",
-        "totalUnclassified": "纏め待ち",
-        "mailboxes": "メールアドレス",
-        "recentGroups": "直近の纏めグループ",
-        "recentGroupsHint": "すべてのメールアドレスから、最近更新された対応対象のグループを表示します。",
-        "noRecentGroups": "最近のバウンスはありません。",
-        "schedule": "スケジュール",
-        "nextCheck": "次回同期",
-        "checkTimes": "同期時刻",
-        "noSchedule": "スケジュール未設定",
-        "agent": "エージェント",
-        "activeJobs": "実行中のジョブ",
-        "noActiveJobs": "実行中のジョブはありません。",
-        "recentJobs": "最近のジョブ",
-        "allJobs": "すべてのジョブ",
-        "agentDisabledTitle": "エージェント分析は無効です",
-        "agentDisabled": "バウンスの原因分析は行われません。有効にするには一般設定を変更してください。",
-        "agentUnavailableTitle": "エージェント CLI が見つかりません",
-        "agentUnavailable": "プロバイダー「{{provider}}」のコマンドがサーバーで見つかりません。分析は失敗します。"
-    },
-    "mailbox": {
-        "sectionServerKeep": "サーバー上のメールの削除",
-        "sectionServerKeepHint": "対応済・無視にしたグループのメールを、日次のクリーンアップで IMAP サーバーから完全に削除します。削除したメールは元に戻せません。MailCare の手元のコピーはメールの保持日数まで残ります。",
-        "serverKeepDays": "サーバー上の保持日数",
-        "serverKeepDaysHint": "メールの日付からこの日数を過ぎたものを削除します。0 でサーバーから削除しません。",
-        "serverKeepDaysInvalid": "0〜{{max}} の整数を入力してください。",
-        "serverKeepNever": "削除しない",
-        "select": "メールアドレス",
-        "choose": "メールアドレスを選択",
-        "all": "すべてのメールアドレス",
-        "add": "メールアドレスを追加",
-        "edit": "メールアドレスを編集",
-        "emptyTitle": "監視対象のメールアドレスはまだ登録されていません。",
-        "openAria": "{{address}}を開く",
-        "editAria": "{{address}}を編集",
-        "openGroups": "未対応グループ",
-        "bounces": "バウンス",
-        "unclassified": "纏め待ち",
-        "messages": "取得メール",
-        "lastChecked": "最終同期",
-        "disabledNote": "このメールアドレスは無効化されており、自動同期の対象外です。",
-        "address": "メールアドレス",
-        "addressHint": "監視対象のアドレスです。登録後は小文字で保存されます。",
-        "addressInvalid": "メールアドレスの形式が正しくありません。",
-        "displayName": "表示名",
-        "enabled": "監視を有効にする",
-        "enabledHint": "無効にするとスケジュールによる自動同期の対象外になります。",
-        "server": "サーバー",
-        "host": "IMAP ホスト名",
-        "port": "ポート",
-        "portInvalid": "1〜65535 の数値を入力してください。",
-        "security": "接続方式",
-        "securityNoneWarning": "暗号化なしでは、パスワードとメール本文が平文でネットワークを流れます。同じネットワーク内の信頼できるサーバーにだけ使ってください。",
-        "username": "IMAP ユーザー名",
-        "password": "IMAP パスワード",
-        "passwordKeepHint": "空欄のままにすると、保存済みのパスワードを据え置きます。",
-        "passwordRequiredOnChange": "接続設定 (ホスト、ポート、接続方式、ユーザー名) を変更するときは、IMAP パスワードをもう一度入力してください。",
-        "folder": "フォルダー",
-        "sectionBasic": "基本情報",
-        "sectionImap": "IMAP 接続",
-        "sectionImapHint": "受信サーバーへの接続情報です。パスワードは暗号化して保存されます。",
-        "sectionRange": "取得範囲",
-        "sectionRangeHint": "初回は initial_days、2 回目以降は recent_days の期間を対象に未取得メールを探します。",
-        "initialDays": "初回取得日数",
-        "initialDaysHint": "初回同期で遡る日数 (既定 90 日)",
-        "recentDays": "通常取得日数",
-        "recentDaysHint": "2 回目以降の同期で遡る日数 (既定 30 日)",
-        "fetchDays": "取得日数",
-        "fetchDaysValue": "{{count}} 日",
-        "daysInvalid": "1 以上の整数を入力してください。",
-        "test": "接続テスト",
-        "testOk": "{{address}}に接続できました。",
-        "testOkShort": "接続に成功しました。",
-        "testFailed": "接続に失敗しました: {{message}}",
-        "created": "{{address}}を登録しました。",
-        "updated": "{{address}}を更新しました。",
-        "deleted": "{{address}}を削除しました。",
-        "deleteTitle": "メールアドレスを削除",
-        "deleteMessage": "{{address}}を削除します。索引と纏めグループも削除され、元に戻せません。",
-        "keepData": "原文ファイルを残す",
-        "keepDataHint": "チェックした場合、保存済みのメール原文はディスクに残ります。",
-        "testAria": "{{address}}の接続テスト",
-        "deleteAria": "{{address}}を削除"
-    },
-    "alerts": {
-        "chooseMailbox": "アラートを確認するメールアドレスを選択してください。",
-        "scope": "表示範囲",
-        "scopeActionable": "対応対象",
-        "scopeExcluded": "対象外（宛先側の問題）",
-        "scopeExcludedHint": "存在しないアドレスや容量超過など、宛先側で解決される問題です。解析は行われません。",
-        "categoryFilter": "カテゴリ",
-        "searchPlaceholder": "対応単位、判断主体、ドメイン、診断文で検索",
-        "responsibleFilter": "対応者区分",
-        "stateTabs": "対応状態",
-        "sortLastSeenDesc": "最終日時 (新しい順)",
-        "sortLastSeenAsc": "最終日時 (古い順)",
-        "sortCountDesc": "件数 (多い順)",
-        "sortSeverity": "重大度",
-        "empty": {
-            "open": "未対応のグループはありません",
-            "resolved": "対応済のグループはありません",
-            "ignored": "無視したグループはありません"
+    "validation": {
+        "common": {
+            "numberOutOfRange": "{{min}}〜{{max}} の整数を入力してください。",
+            "emailFormat": "メールアドレスの形式が正しくありません。",
+            "timeFormat": "時刻は HH:MM 形式で指定してください。",
+            "timeDuplicate": "同じ時刻が重複しています。",
+            "urlFormat": "http:// または https:// で始まる URL を指定してください。",
+            "displayNameTooLong": "表示名は {{max}} 文字以内にしてください。"
         },
-        "emptyFiltered": "絞り込み条件を変えてみてください。",
-        "emptyExcluded": "対象外のグループはありません"
-    },
-    "group": {
-        "detail": "グループ詳細",
-        "overview": "概要",
-        "stats": "統計",
-        "needsAnalysis": "分析待ち",
-        "messages": "メール {{count}} 件",
-        "recipients": "宛先 {{count}} 件",
-        "ips": "IP {{count}} 件",
-        "lastSeen": "最終日時",
-        "firstSeen": "初回日時",
-        "stateUpdated": "状態の更新日時",
-        "recipientDomain": "宛先ドメイン",
-        "statusCode": "状態コード",
-        "messageCount": "メール数",
-        "recipientCount": "宛先数",
-        "ipCount": "IP 数",
-        "diagnosticTemplate": "診断テンプレート",
-        "key": "グループキー",
-        "changeState": "対応状態を変更",
-        "markAs": {
-            "open": "未対応に戻す",
-            "resolved": "対応済にする",
-            "ignored": "無視する"
+        "user": {
+            "usernameInvalid": "ユーザー名は 1〜64 文字の半角英数字と「_」「.」「-」で入力してください。",
+            "usernameTaken": "そのユーザー名はすでに使われています。",
+            "passwordTooShort": "パスワードは {{min}} 文字以上にしてください。",
+            "passwordTooLong": "パスワードが長すぎます。半角 {{max}} 文字以内にしてください。",
+            "passwordMismatch": "パスワードが一致しません。",
+            "currentPasswordWrong": "現在のパスワードが正しくありません。",
+            "emailTooLong": "メールアドレスは {{max}} 文字以内にしてください。",
+            "emailTaken": "そのメールアドレスはほかの利用者が使っています。",
+            "timezoneInvalid": "タイムゾーンが正しくありません。",
+            "languageInvalid": "言語が正しくありません。",
+            "themeInvalid": "テーマが正しくありません。"
         },
-        "stateChanged": "状態を「{{state}}」に変更しました。",
-        "recipientsList": "宛先アドレス",
-        "ipsList": "送信元 IP",
-        "mtasList": "リモート MTA",
-        "copyAll": "{{what}}をすべてコピー",
-        "copyValue": "{{value}}をコピー",
-        "messagesTitle": "元メール ({{count}} 件)",
-        "noMessages": "このグループにメールはありません。",
-        "category": "カテゴリ",
-        "unitValue": "対応単位",
-        "authority": "判断主体",
-        "actionable": "対応対象",
-        "excluded": "対象外（宛先側の問題）",
-        "headline": "{{label}}: {{unit}}",
-        "headlineWithAuthority": "{{label}}: {{unit}}（{{authority}}）",
-        "copyUnit": "対応単位「{{value}}」をコピー",
-        "headlineNoUnit": "{{label}}（{{where}}）"
-    },
-    "report": {
-        "analyze": "解析",
-        "needsReview": "要確認",
-        "model": "モデル",
-        "reasoning": "推論レベル",
-        "tokens": "トークン",
-        "commands": "コマンド実行",
-        "title": "解析報告",
-        "reanalyze": "再解析",
-        "running": "解析中",
-        "runningHint": "エージェントが解析しています。完了すると自動で表示が更新されます。",
-        "queued": "解析ジョブを投入しました。",
-        "completed": "解析が完了しました。",
-        "failed": "解析に失敗しました。",
-        "latestFailed": "最新の再解析は失敗しました: {{message}}（{{time}}）",
-        "none": "解析報告はまだありません",
-        "noneHint": "「解析」を押すとエージェントが原因と対応方法を作成します。",
-        "noneHintMember": "管理者が解析を実行すると、原因と対応方法がここに表示されます。",
-        "noBody": "報告本文はありません。",
-        "provider": "プロバイダー",
-        "sampled": "参照メール {{count}} 件",
-        "history": "過去の報告 ({{count}} 件)",
-        "excludedTitle": "このグループは自動では解析しません",
-        "excluded": "宛先側の問題（存在しないアドレス、容量超過など）は送信側で対応できないため、自動の解析の対象外です。",
-        "excludedMoveHint": "「対応済にする」または「無視する」を選ぶと、対応対象の一覧に移ります。",
-        "excludedReturnHint": "「未対応に戻す」を選ぶと、対象外の一覧に戻ります。",
-        "unanalyzable": "解析不能",
-        "latestFailedUnanalyzable": "解析できませんでした: {{message}}（{{time}}）。新しいパターンの通知が届くまで、このグループは自動では解析しません。",
-        "latestFailedLimit": "エージェントの利用上限のため解析できませんでした（{{time}}）。解析待ちのまま、次回に解析します。"
-    },
-    "mails": {
-        "kindTabs": "メールの種類",
-        "kind": {
-            "all": "すべて",
-            "bounce": "バウンス",
-            "other": "その他"
+        "connection": {
+            "hostRequired": "サーバー（ホスト名）を入力してください。",
+            "hostInvalid": "ホスト名または IP アドレスだけを入力してください（ポート番号は別の欄に入力します）。",
+            "usernameRequired": "ユーザー名を入力してください。",
+            "passwordRequired": "パスワードを入力してください。",
+            "passwordRequiredOnChange": "接続設定 (ホスト、ポート、接続方式、ユーザー名) を変更するときは、パスワードをもう一度入力してください。"
         },
-        "chooseMailbox": "メールを閲覧するメールアドレスを選択してください。",
-        "searchPlaceholder": "件名、差出人、宛先で検索",
-        "groupFilter": "グループ",
-        "empty": "メールはありません",
-        "emptyFiltered": "絞り込み条件を変えてみてください。"
-    },
-    "mail": {
-        "serverDeletedAt": "サーバーから削除",
-        "detail": "メール詳細",
-        "subject": "件名",
-        "noSubject": "(件名なし)",
-        "from": "差出人",
-        "to": "宛先",
-        "date": "日時",
-        "receivedAt": "受信日時",
-        "messageId": "Message-ID",
-        "folder": "フォルダー",
-        "size": "サイズ",
-        "kind": "種類",
-        "key": "メールキー",
-        "openAria": "メール「{{subject}}」を開く",
-        "downloadRaw": "原文をダウンロード",
-        "openGroup": "所属グループ",
-        "bodyTabs": "本文の表示形式",
-        "tabText": "テキスト",
-        "tabHtml": "HTML",
-        "tabHeaders": "ヘッダー",
-        "tabTextN": "テキスト {{index}}",
-        "tabHtmlN": "HTML {{index}}",
-        "noBody": "本文はありません",
-        "noBodyHint": "テキスト本文も HTML 本文も空です。ヘッダーの確認と原文のダウンロードはできます。",
-        "noHeaders": "ヘッダー情報はありません",
-        "htmlSandboxNote": "HTML はサニタイズ済みで、スクリプトや外部画像は無効化された状態で表示しています。"
-    },
-    "bounce": {
-        "title": "バウンス抽出結果",
-        "bodySource": "判定に使用した本文",
-        "bodySource_text": "テキスト",
-        "bodySource_html": "HTML",
-        "bodySource_none": "なし",
-        "none": "抽出結果はありません",
-        "notBounce": "このメールはバウンスとして判定されていません。",
-        "originalRecipient": "元の宛先",
-        "recipientDomain": "宛先ドメイン",
-        "action": "アクション",
-        "statusCode": "状態コード / SMTP コード",
-        "responsible": "対応者区分",
-        "remoteMta": "リモート MTA",
-        "remoteIp": "リモート IP",
-        "reportingMta": "報告 MTA",
-        "diagnostic": "診断文",
-        "originalSubject": "元メールの件名",
-        "originalFrom": "元メールの差出人",
-        "originalDate": "元メールの日時",
-        "originalMessageId": "元メールの Message-ID"
-    },
-    "jobs": {
-        "empty": "ジョブはありません",
-        "waiting": "開始を待っています...",
-        "cancel": "ジョブを取り消す",
-        "canceled": "ジョブを取り消しました。",
-        "requestedBy": "実行者: {{name}}",
-        "targetAll": "全グループ",
-        "targetNeeds": "解析待ちのグループ",
-        "alreadyActive": "同じジョブがすでに待機中または実行中です。",
-        "expanded": "アドレスごとに展開",
-        "deletedMailbox": "削除済みのメールアドレス"
-    },
-    "tools": {
-        "description": "受信・纏め・解析を個別に、またはまとめて実行します。索引の再構築や判定のやり直し、保持日数によるクリーンアップもここから行います。",
-        "adminOnlyTitle": "ツールの実行は管理者のみ行えます",
-        "adminOnly": "一般利用者はジョブ履歴の閲覧のみできます。",
-        "readOnly": "操作は管理者のみ行えます",
-        "target": "対象アドレス",
-        "targetAll": "すべて",
-        "allNote": "「すべて」を選ぶと、メールアドレスごとに 1 件ずつジョブが展開され、ワーカー数の範囲で並列に実行されます。",
-        "analyzeScope": "解析の範囲",
-        "scopeNeeds": "解析待ちのみ",
-        "scopeAll": "全グループ",
-        "run": "実行",
-        "queued": "{{tool}}を投入しました。",
-        "confirmTitle": "{{tool}}を実行しますか？",
-        "confirmMessage": "対象: {{target}}。{{tool}}をバックグラウンドで実行します。",
-        "jobs": "ジョブ履歴",
-        "jobsHint": "実行中のジョブは自動で更新されます。「すべて」で投入したジョブは、アドレスごとの子ジョブとして表示されます。",
-        "sync": {
-            "title": "全アドレス同期（受信 → 纏め → 解析）",
-            "description": "メールを受信し、新しいバウンスを纏め、対応対象のグループを解析します。スケジュールで実行されるのと同じ処理です。",
-            "warning": ""
+        "mailbox": {
+            "addressRequired": "メールアドレスを入力してください。",
+            "addressTaken": "そのメールアドレスはすでに登録されています。",
+            "addressConflicts": "このメールアドレスは、登録済みの {{other}} とデータの保存先が同じ名前になるため登録できません。",
+            "folderInvalid": "フォルダー名に改行は使えません。"
         },
-        "fetch": {
-            "title": "受信のみ",
-            "description": "IMAP サーバーから未取得のメールを保存します。纏めと解析は行いません。",
-            "warning": ""
+        "agent": {
+            "providerUnknown": "選択したエージェントは使用できません。",
+            "modelInvalid": "モデル名は英数字で始まり、英数字と . _ : / @ + - だけを使った {{max}} 文字以内で入力してください。",
+            "reasoningInvalid": "選択中のモデルでは使えない推論レベルです。選び直すか、未設定に戻してください。",
+            "reasoningUnsupported": "このエージェントでは推論レベルを指定できません。未設定にしてください。"
+        },
+        "notification": {
+            "publicUrlQuery": "URL に「?」や「#」以降の部分は含めないでください。",
+            "recipientsTooMany": "通知先は {{max}} 人まで選べます。",
+            "recipientNotFound": "通知先に選んだ利用者が見つかりません。画面を再読み込みしてから選び直してください。",
+            "testRecipientRequired": "テストメールの送信先を入力してください。"
+        },
+        "token": {
+            "nameRequired": "名前を入力してください。",
+            "identifierInvalid": "識別子は {{max}} 文字以内の半角英数字と「_」「-」で入力してください。",
+            "identifierTaken": "その識別子はすでに使われています。",
+            "expiresInvalid": "有効期限は未来の日時で指定してください。"
+        }
+    },
+    "result": {
+        "session": {
+            "loginFailed": "ログイン情報またはパスワードが正しくありません。",
+            "tooManyAttempts": "ログインの失敗が続いたため、{{seconds}} 秒ほど待ってから再試行してください。",
+            "setupDone": "初期設定はすでに完了しています。ログイン画面からログインしてください。"
+        },
+        "user": {
+            "created": "{{username}}を作成しました。",
+            "updated": "{{username}}を更新しました。",
+            "passwordReset": "{{username}}のパスワードを再設定しました。",
+            "deleted": "{{username}}を削除しました。",
+            "deleteSelf": "自分自身は削除できません。",
+            "lastAdmin": "最後の管理者は削除・降格できません。",
+            "profileSaved": "プロフィールを保存しました。",
+            "passwordChanged": "パスワードを変更しました。"
+        },
+        "mailbox": {
+            "created": "{{address}}を登録しました。",
+            "updated": "{{address}}を更新しました。",
+            "deleted": "{{address}}を削除しました。",
+            "busy": "このメールアドレスの処理を実行中のため、変更・削除できません。処理が終わってからもう一度お試しください。",
+            "dataExists": "変更後のメールアドレスのデータがすでにサーバー上にあるため、変更できません。サーバー管理者に確認してください。",
+            "testOk": "{{address}}に接続できました。",
+            "testFailed": "メールサーバーに接続できませんでした（{{detail}}）。"
+        },
+        "notification": {
+            "smtpNotConfigured": "先に SMTP サーバーと送信元アドレスを設定してください。",
+            "testSent": "{{to}} にテストメールを送信しました。",
+            "testFailed": "テストメールを送信できませんでした（{{detail}}）。",
+            "sendQueued": "通知メールの送信を開始しました。結果はツールのジョブ履歴で確認できます。",
+            "sendAlreadyQueued": "通知メールの送信はすでに待機中です。"
+        },
+        "job": {
+            "queued": "{{tool}}を投入しました。",
+            "alreadyActive": "同じジョブがすでに待機中または実行中です。",
+            "canceled": "ジョブを取り消しました。",
+            "notQueued": "このジョブはすでに開始しているため取り消せません。"
+        },
+        "setting": {
+            "saved": "設定を保存しました。"
         },
         "group": {
-            "title": "纏めのみ",
-            "description": "受信済みで纏め待ちのメールを判定してグループに纏め、解析待ちのグループを解析します。",
-            "warning": ""
+            "stateChanged": "状態を「{{state}}」に変更しました。"
         },
-        "analyze": {
-            "title": "解析のみ",
-            "description": "エージェントによる原因分析を実行します。解析待ちのグループのみ、または対応対象の全グループを対象にできます。",
-            "warning": ""
+        "report": {
+            "queued": "解析ジョブを投入しました。",
+            "completed": "解析が完了しました。",
+            "failed": "解析に失敗しました。"
         },
-        "reindex": {
-            "title": "再索引",
-            "description": "索引 DB を作り直し、保存済みの原文からメールの解析・判定・纏めをすべてやり直します。",
-            "warning": "時間がかかります。グループの状態と分析報告は、同じグループが再び現れた場合のみ引き継がれます。"
-        },
-        "reclassify": {
-            "title": "再判定",
-            "description": "メールを残したまま、バウンス判定と纏めだけをやり直します。判定ルールの更新後に使います。",
-            "warning": ""
-        },
-        "cleanup": {
-            "title": "クリーンアップ",
-            "description": "メールアドレスごとの設定に従い対応済・無視のグループのメールを IMAP サーバーから削除したうえで、保持日数を過ぎたメール（原文・本文セクション・索引の行）、エージェントの古い作業ディレクトリ、完了から 30 日を過ぎたジョブ履歴を削除します。サーバーでは日付が変わるたびに自動で実行されます。",
-            "warning": "IMAP サーバーから削除したメールは元に戻せません。メールが無くなった纏めグループは分析報告ごと削除されます。"
-        },
-        "runAria": "{{tool}}を開始"
+        "token": {
+            "created": "トークン「{{name}}」を発行しました",
+            "deleted": "トークン「{{name}}」を削除しました。"
+        }
     },
-    "settings": {
-        "description": "システムの設定を管理します。自分のプロファイルは右上のユーザー名から開けます。",
-        "adminOnly": "管理者のみ",
-        "menu": {
-            "general": "同期時刻、ワーカー数、エージェント、サーバー情報",
-            "notifications": "SMTP サーバーと、通知メールの時刻・間隔・通知先",
-            "mailboxes": "監視するメールアドレスの登録・編集・接続テスト",
-            "users": "利用者の追加、役割の変更、パスワードのリセット",
-            "tokens": "将来の API 連携用トークンの発行と削除"
+    "action": {
+        "mailbox": {
+            "add": "メールアドレスを追加",
+            "edit": "メールアドレスを編集",
+            "openFor": "{{address}}を開く",
+            "editFor": "{{address}}を編集",
+            "test": "接続テスト",
+            "testFor": "{{address}}の接続テスト",
+            "delete": "メールアドレスを削除",
+            "deleteFor": "{{address}}を削除",
+            "deleteConfirm": "{{address}}を削除します。索引と纏めグループも削除され、元に戻せません。",
+            "keepData": "原文ファイルを残す",
+            "keepDataHint": "チェックした場合、保存済みのメール原文はディスクに残ります。"
         },
-        "saved": "設定を保存しました。",
-        "checkTimes": "同期時刻",
-        "checkTimesHint": "指定した時刻に、有効な全メールアドレスを自動で同期します。",
-        "serverTimeZone": "サーバーのローカル時刻（{{zone}}）で実行されます。",
-        "noCheckTimes": "同期時刻が設定されていません。自動同期は行われません。",
-        "addTime": "時刻を追加",
-        "addTimeHint": "HH:MM 形式 (例: 09:00)",
-        "removeTime": "{{time}}を削除",
-        "invalidTime": "時刻は HH:MM 形式で指定してください。",
-        "duplicateTime": "同じ時刻が重複しています。",
-        "mailRetention": "メールの保持",
-        "mailRetentionHint": "受信したメール（原文と本文セクション、索引の行）を残す期間の設定です。",
-        "mailKeepDays": "メールの保持日数",
-        "mailKeepDaysHint": "メールの日付からこの日数を過ぎたメールを、日付が変わるたびに実行されるクリーンアップで削除します（ツール画面からも実行できます）。所属していた纏めグループは件数を数え直し、メールが無くなったグループは分析報告ごと削除されます。",
-        "mailKeepDaysInvalid": "1〜3650 の整数を入力してください。",
-        "jobs": "ジョブの実行",
-        "jobsHint": "バックグラウンドで実行するジョブの設定です。",
-        "workers": "ワーカー数",
-        "workersHint": "同時に実行するジョブ数。同じ IMAP サーバーのアカウントは自動的に順番に処理されます。",
-        "workersInvalid": "1〜16 の整数を入力してください。",
-        "agent": "エージェント",
-        "agentHint": "バウンスの原因を分析する外部 CLI の設定です。",
-        "agentProvider": "プロバイダー",
-        "providerStatus": "利用可否",
-        "providerAvailable": "利用可能",
-        "providerUnavailable": "利用不可",
-        "providerUnknown": "不明",
-        "providerUnavailableHint": "{{provider}}のコマンドがサーバーで見つかりません。インストールするか、別のプロバイダーを選んでください。",
-        "agentModel": "モデル",
-        "agentModelPlaceholder": "未指定（CLI の既定のモデル）",
-        "agentModelExamples": "指定できるモデルの例（クリックで入力）",
-        "agentModelUnsupported": "このプロバイダーはモデルの指定に対応していません。",
-        "agentModelInvalid": "モデル名は英数字で始まり、英数字と . _ : / @ + - だけを使った 100 文字以内で入力してください。",
-        "agentReasoning": "推論レベル",
-        "agentReasoningUnset": "未設定（CLI の設定に従う）",
-        "agentReasoningUnsupported": "このプロバイダーは推論レベルの指定に対応していません。",
-        "agentReasoningInvalid": "選択中のモデルでは使えない推論レベルです。選び直すか、未設定に戻してください。",
-        "agentEnabled": "エージェント分析を有効にする",
-        "agentEnabledHint": "有効にすると、同期で新しいバウンスが見つかったときに自動で分析します。",
-        "agentKeepDays": "作業ディレクトリの保持日数",
-        "agentKeepDaysHint": "解析の実行ごとに作られる作業ディレクトリ（プロンプト、CLI の出力、報告）を残す日数。日付が変わるたびに実行されるクリーンアップで、これより古いものを削除します。",
-        "agentKeepDaysInvalid": "1〜365 の整数を入力してください。",
-        "server": "サーバー情報",
-        "serverHint": "起動パラメータで決まる値です。ここでは変更できません。",
-        "webListen": "待受アドレス",
-        "webPort": "待受ポート",
-        "dataDir": "データディレクトリ"
+        "user": {
+            "add": "利用者を追加",
+            "editFor": "{{username}}を編集",
+            "resetPassword": "パスワード再設定",
+            "resetPasswordFor": "{{username}}のパスワードを再設定",
+            "delete": "利用者を削除",
+            "deleteFor": "{{username}}を削除",
+            "deleteConfirm": "{{username}}を削除します。この操作は元に戻せません。",
+            "changePassword": "パスワードを変更"
+        },
+        "token": {
+            "create": "トークンを発行",
+            "copy": "トークンをコピー",
+            "delete": "トークンを削除",
+            "deleteFor": "トークン「{{name}}」を削除",
+            "deleteConfirm": "トークン「{{name}}」を削除します。このトークンは使えなくなります。"
+        },
+        "mail": {
+            "openFor": "メール「{{subject}}」を開く",
+            "downloadRaw": "原文をダウンロード",
+            "openGroup": "所属グループ"
+        },
+        "group": {
+            "changeState": "対応状態を変更",
+            "markAs": {
+                "open": "未対応に戻す",
+                "resolved": "対応済にする",
+                "ignored": "無視する"
+            },
+            "copyAll": "{{what}}をすべてコピー",
+            "copyValue": "{{value}}をコピー",
+            "copyUnit": "対応単位「{{value}}」をコピー"
+        },
+        "report": {
+            "analyze": "解析",
+            "reanalyze": "再解析"
+        },
+        "job": {
+            "cancel": "ジョブを取り消す"
+        },
+        "notification": {
+            "test": "テスト送信",
+            "sendNow": "今すぐ送信"
+        },
+        "setting": {
+            "addTime": "時刻を追加",
+            "removeTime": "{{time}}を削除"
+        }
     },
-    "user": {
-        "username": "ユーザー名",
-        "usernameHint": "ログインに使う ID です。",
-        "displayName": "表示名",
-        "role": "役割",
-        "roleHint": "管理者は設定・利用者・メールアドレスの管理と、再索引・再判定の実行ができます。",
-        "email": "メールアドレス",
-        "emailHint": "通知メールの宛先 (任意)。設定するとログインにも使えます。空欄の利用者には通知が送られません。",
-        "emailNone": "未設定",
-        "emailInvalid": "メールアドレスの形式が正しくありません。",
-        "language": "言語",
-        "languageHint": "画面と通知メールの言語",
-        "timezone": "タイムゾーン",
-        "timezoneHint": "画面と通知メールの日時を表示するタイムゾーン",
-        "theme": "テーマ",
-        "themeHint": "画面の配色",
-        "password": "パスワード",
-        "passwordConfirm": "パスワード (確認)",
-        "passwordHint": "{{min}} 文字以上",
-        "passwordTooShort": "パスワードは {{min}} 文字以上にしてください。",
-        "passwordMismatch": "パスワードが一致しません。",
-        "lastLogin": "最終ログイン",
-        "neverLoggedIn": "未ログイン",
-        "you": "自分",
-        "add": "利用者を追加",
-        "empty": "利用者はいません",
-        "editTitle": "{{username}}を編集",
-        "resetPassword": "パスワード再設定",
-        "resetPasswordTitle": "{{username}}のパスワードを再設定",
-        "created": "{{username}}を作成しました。",
-        "updated": "{{username}}を更新しました。",
-        "passwordReset": "{{username}}のパスワードを再設定しました。",
-        "deleted": "{{username}}を削除しました。",
-        "deleteTitle": "利用者を削除",
-        "deleteMessage": "{{username}}を削除します。この操作は元に戻せません。",
-        "cannotDeleteSelf": "自分自身は削除できません。",
-        "cannotDeleteLastAdmin": "最後の管理者は削除できません。",
-        "cannotDemoteLastAdmin": "最後の管理者を一般利用者に変更することはできません。",
-        "editAria": "{{username}}を編集",
-        "resetPasswordAria": "{{username}}のパスワードを再設定",
-        "deleteAria": "{{username}}を削除"
+    "value": {
+        "language": {
+            "ja": "日本語",
+            "en": "English"
+        },
+        "theme": {
+            "auto": "自動（ブラウザの設定に従う）",
+            "light": "ライト",
+            "dark": "ダーク"
+        },
+        "role": {
+            "admin": "管理者",
+            "user": "一般利用者"
+        },
+        "groupState": {
+            "open": "未対応",
+            "resolved": "対応済",
+            "ignored": "無視"
+        },
+        "groupScope": {
+            "actionable": "対応対象",
+            "excluded": "対象外（宛先側の問題）"
+        },
+        "severity": {
+            "high": "重大度: 高",
+            "medium": "重大度: 中",
+            "low": "重大度: 低",
+            "unknown": "重大度: 未分析"
+        },
+        "responsible": {
+            "sender": "送信側のメール管理者",
+            "recipient": "宛先アドレスの所有者",
+            "domain": "宛先ドメインの管理者",
+            "unknown": "担当不明"
+        },
+        "jobStatus": {
+            "queued": "待機中",
+            "running": "実行中",
+            "done": "完了",
+            "error": "エラー",
+            "canceled": "取消"
+        },
+        "jobKind": {
+            "sync": "同期",
+            "fetch": "受信",
+            "group": "纏め",
+            "analyze": "解析",
+            "reindex": "再索引",
+            "reclassify": "再判定",
+            "cleanup": "クリーンアップ",
+            "notify": "通知メール送信"
+        },
+        "checkStatus": {
+            "never": "未同期",
+            "ok": "正常",
+            "error": "エラー",
+            "running": "同期中"
+        },
+        "reportStatus": {
+            "none": "報告なし",
+            "running": "解析中",
+            "completed": "解析済",
+            "error": "解析エラー",
+            "unanalyzable": "解析不能"
+        },
+        "reportConfidence": {
+            "low": "要確認"
+        },
+        "bounceKind": {
+            "none": "通常メール",
+            "failed": "配信失敗",
+            "delayed": "配信遅延",
+            "auto_reply": "自動返信",
+            "other": "その他の通知"
+        },
+        "connectionSecurity": {
+            "ssl": "SSL/TLS",
+            "starttls": "STARTTLS",
+            "none": "暗号化なし"
+        },
+        "notifyInterval": {
+            "daily": "毎日",
+            "days": "{{count}} 日ごと"
+        },
+        "tokenExpiry": {
+            "never": "無期限",
+            "days": "{{count}} 日後",
+            "custom": "日時を指定",
+            "expired": "期限切れ"
+        },
+        "serverKeepDays": {
+            "never": "削除しない"
+        },
+        "category": {
+            "ip_blocked": {
+                "label": "送信 IP のブロック",
+                "description": "送信サーバーの IP がブラックリストに登録されています。登録先（判断主体）のサイトで解除を申請し、原因となった送信内容を見直してください。"
+            },
+            "rate_limited": {
+                "label": "送信レート制限",
+                "description": "宛先ドメインが短時間の大量送信を制限しています。送信速度や同時接続数を下げ、時間をおいて再送してください。"
+            },
+            "auth_failure": {
+                "label": "送信ドメイン認証の失敗",
+                "description": "SPF / DKIM / DMARC や逆引き DNS の検証に失敗しています。送信ドメインの DNS レコードと送信サーバーの設定を確認してください。"
+            },
+            "sender_blocked": {
+                "label": "送信元アドレスの拒否",
+                "description": "宛先ドメインがこの送信元アドレスからのメールを拒否しています。宛先側の管理者に解除を依頼するか、送信元アドレスを見直してください。"
+            },
+            "content_rejected": {
+                "label": "内容による拒否",
+                "description": "本文や添付ファイルがスパム・ウイルス・ポリシーなどの理由で拒否されています。送信内容と添付ファイルを見直してください。"
+            },
+            "message_too_large": {
+                "label": "サイズ超過",
+                "description": "メールのサイズが宛先の上限を超えています。添付ファイルを小さくするか、別の手段で共有してください。"
+            },
+            "server_config": {
+                "label": "送信サーバーの設定不備",
+                "description": "リレー・TLS・HELO などの設定が宛先の要件を満たしていません。送信サーバー（MTA）の設定を確認してください。"
+            },
+            "unknown_failure": {
+                "label": "原因不明の失敗",
+                "description": "既知のパターンに当てはまらない配信失敗です。診断文と元メールを確認し、必要に応じて分析報告を参照してください。"
+            },
+            "user_unknown": {
+                "label": "宛先アドレスが存在しない",
+                "description": "宛先アドレスが存在しません。宛先リストから該当アドレスを除外するか、相手に正しいアドレスを確認してください。"
+            },
+            "mailbox_full": {
+                "label": "宛先の容量超過",
+                "description": "宛先のメールボックスが容量上限に達しています。送信側でできることはなく、相手が整理するまで届きません。"
+            },
+            "mailbox_disabled": {
+                "label": "宛先アドレスの停止",
+                "description": "宛先アドレスが無効化・停止されています。宛先リストから除外するか、相手に別の連絡先を確認してください。"
+            },
+            "domain_not_found": {
+                "label": "宛先ドメインが見つからない",
+                "description": "宛先ドメインの DNS（MX）が見つかりません。ドメインの綴りを確認し、誤りでなければ宛先側の DNS 復旧を待ちます。"
+            },
+            "delivery_delay": {
+                "label": "配信の遅延",
+                "description": "宛先サーバーに一時的に接続できず配信が遅れています。通常は自動で再送されるため、長引く場合のみ宛先側に確認してください。"
+            }
+        },
+        "bodySource": {
+            "text": "テキスト",
+            "html": "HTML",
+            "none": "なし"
+        }
     },
-    "token": {
-        "description": "トークンは、将来の API 連携のために予約された機能です。Web のログインには使いません。",
-        "futureNote": "トークンが 1 つもないときは、サーバーが「default」トークンを自動で作成します。",
-        "create": "トークンを発行",
-        "name": "名前",
-        "nameHint": "用途がわかる名前 (例: 監視スクリプト)",
-        "identifier": "識別子",
-        "identifierHint": "空欄のときはサーバーが自動で決めます。",
-        "isDefault": "既定",
-        "unnamed": "(名前なし)",
-        "expires": "有効期限",
-        "expiresAt": "有効期限の日時",
-        "neverExpires": "無期限",
-        "expiresDays": "{{count}} 日後",
-        "expiresCustom": "日時を指定",
-        "expiresInvalid": "未来の日時を指定してください。",
-        "expired": "期限切れ",
-        "createdTitle": "トークン「{{name}}」を発行しました",
-        "createdOnce": "この値は今回だけ表示されます。安全な場所に保存してください。",
-        "copy": "トークンをコピー",
-        "empty": "トークンはありません",
-        "emptyHint": "「トークンを発行」から作成できます。",
-        "deleted": "トークン「{{name}}」を削除しました。",
-        "deleteTitle": "トークンを削除",
-        "deleteMessage": "トークン「{{name}}」を削除します。このトークンは使えなくなります。",
-        "deleteAria": "トークン「{{name}}」を削除"
+    "field": {
+        "common": {
+            "displayName": "表示名",
+            "createdAt": "作成日時",
+            "folder": "フォルダー",
+            "recipientDomain": "宛先ドメイン",
+            "remoteMta": "リモート MTA"
+        },
+        "user": {
+            "username": "ユーザー名",
+            "usernameHint": "ログインに使う ID です。",
+            "role": "役割",
+            "roleHint": "管理者は設定・利用者・メールアドレスの管理と、再索引・再判定の実行ができます。",
+            "email": "メールアドレス",
+            "emailHint": "通知メールの宛先 (任意)。設定するとログインにも使えます。空欄の利用者には通知が送られません。",
+            "language": "言語",
+            "languageHint": "画面と通知メールの言語",
+            "timezone": "タイムゾーン",
+            "timezoneHint": "画面と通知メールの日時を表示するタイムゾーン",
+            "theme": "テーマ",
+            "themeHint": "画面の配色",
+            "password": "パスワード",
+            "passwordConfirm": "パスワード (確認)",
+            "passwordHint": "{{min}} 文字以上",
+            "currentPassword": "現在のパスワード",
+            "newPassword": "新しいパスワード",
+            "lastLogin": "最終ログイン",
+            "lastLoginNever": "未ログイン"
+        },
+        "connection": {
+            "host": "ホスト名",
+            "port": "ポート",
+            "security": "接続方式",
+            "securityNoneWarning": "暗号化なしでは、パスワードとメール本文が平文でネットワークを流れます。同じネットワーク内の信頼できるサーバーにだけ使ってください。",
+            "username": "ユーザー名",
+            "password": "パスワード",
+            "passwordSet": "設定済み",
+            "passwordKeepHint": "空欄のままにすると、保存済みのパスワードを据え置きます。"
+        },
+        "mailbox": {
+            "address": "メールアドレス",
+            "addressHint": "監視対象のアドレスです。登録後は小文字で保存されます。",
+            "enabled": "監視を有効にする",
+            "enabledHint": "無効にするとスケジュールによる自動同期の対象外になります。",
+            "server": "サーバー",
+            "initialDays": "初回取得日数",
+            "initialDaysHint": "初回同期で遡る日数 (既定 90 日)",
+            "recentDays": "通常取得日数",
+            "recentDaysHint": "2 回目以降の同期で遡る日数 (既定 30 日)",
+            "fetchDays": "取得日数",
+            "serverKeepDays": "サーバー上の保持日数",
+            "serverKeepDaysHint": "メールの日付からこの日数を過ぎたものを削除します。0 でサーバーから削除しません。",
+            "lastChecked": "最終同期",
+            "openGroups": "未対応グループ",
+            "bounces": "バウンス",
+            "messages": "取得メール",
+            "unclassified": "纏め待ち"
+        },
+        "mail": {
+            "subject": "件名",
+            "subjectNone": "(件名なし)",
+            "from": "差出人",
+            "to": "宛先",
+            "date": "日時",
+            "receivedAt": "受信日時",
+            "messageId": "Message-ID",
+            "size": "サイズ",
+            "kind": "種類",
+            "key": "メールキー",
+            "serverDeletedAt": "サーバーから削除"
+        },
+        "bounce": {
+            "bodySource": "判定に使用した本文",
+            "originalRecipient": "元の宛先",
+            "action": "アクション",
+            "statusCode": "状態コード / SMTP コード",
+            "remoteIp": "リモート IP",
+            "reportingMta": "報告 MTA",
+            "diagnostic": "診断文",
+            "originalSubject": "元メールの件名",
+            "originalFrom": "元メールの差出人",
+            "originalDate": "元メールの日時",
+            "originalMessageId": "元メールの Message-ID"
+        },
+        "group": {
+            "key": "グループキー",
+            "category": "カテゴリ",
+            "state": "対応状態",
+            "responsible": "対応者区分",
+            "severity": "重大度",
+            "unitValue": "対応単位",
+            "authority": "判断主体",
+            "statusCode": "状態コード",
+            "diagnosticTemplate": "診断テンプレート",
+            "needsAnalysis": "分析待ち",
+            "firstSeen": "初回日時",
+            "lastSeen": "最終日時",
+            "stateUpdated": "状態の更新日時",
+            "messageCount": "メール数",
+            "recipientCount": "宛先数",
+            "ipCount": "IP 数",
+            "messageCountValue": "メール {{count}} 件",
+            "recipientCountValue": "宛先 {{count}} 件",
+            "ipCountValue": "IP {{count}} 件",
+            "recipients": "宛先アドレス",
+            "ips": "送信元 IP",
+            "title": "{{label}}: {{unit}}",
+            "titleWithAuthority": "{{label}}: {{unit}}（{{authority}}）",
+            "titleNoUnit": "{{label}}（{{where}}）"
+        },
+        "agent": {
+            "provider": "プロバイダー",
+            "model": "モデル",
+            "reasoning": "推論レベル"
+        },
+        "report": {
+            "tokens": "トークン",
+            "commands": "コマンド実行",
+            "sampled": "参照メール {{count}} 件"
+        },
+        "job": {
+            "target": "対象アドレス"
+        },
+        "setting": {
+            "checkTimes": "同期時刻",
+            "checkTimesHint": "指定した時刻に、有効な全メールアドレスを自動で同期します。",
+            "mailKeepDays": "メールの保持日数",
+            "mailKeepDaysHint": "メールの日付からこの日数を過ぎたメールを、日付が変わるたびに実行されるクリーンアップで削除します（ツール画面からも実行できます）。所属していた纏めグループは件数を数え直し、メールが無くなったグループは分析報告ごと削除されます。",
+            "workers": "ワーカー数",
+            "workersHint": "同時に実行するジョブ数。同じ IMAP サーバーのアカウントは自動的に順番に処理されます。",
+            "agentModelPlaceholder": "未指定（CLI の既定のモデル）",
+            "agentModelExamples": "指定できるモデルの例（クリックで入力）",
+            "agentModelUnsupported": "このプロバイダーはモデルの指定に対応していません。",
+            "agentReasoningUnset": "未設定（CLI の設定に従う）",
+            "agentReasoningUnsupported": "このプロバイダーは推論レベルの指定に対応していません。",
+            "agentEnabled": "エージェント分析を有効にする",
+            "agentEnabledHint": "有効にすると、同期で新しいバウンスが見つかったときに自動で分析します。",
+            "agentKeepDays": "作業ディレクトリの保持日数",
+            "agentKeepDaysHint": "解析の実行ごとに作られる作業ディレクトリ（プロンプト、CLI の出力、報告）を残す日数。日付が変わるたびに実行されるクリーンアップで、これより古いものを削除します。",
+            "webListen": "待受アドレス",
+            "webPort": "待受ポート",
+            "dataDir": "データディレクトリ"
+        },
+        "notification": {
+            "host": "SMTP ホスト",
+            "authHint": "認証しない場合は空欄にします。",
+            "from": "送信元アドレス",
+            "fromHint": "通知メールの差出人 (From) に使うアドレスです。",
+            "testTo": "送信先",
+            "testToHint": "空欄のときは自分のメールアドレスに送ります。",
+            "enabled": "通知を有効にする",
+            "enabledHint": "有効にすると、通知時刻に対応対象で未対応のグループの要約を送ります。対象が 0 件のときは送りません。",
+            "time": "通知時刻",
+            "timeHint": "HH:MM 形式 (サーバーのローカル時刻)",
+            "interval": "通知間隔",
+            "intervalHint": "前回の送信から何日おきに送るかです。",
+            "recipients": "通知先",
+            "recipientsHint": "通知メールを受け取る利用者を選びます。メールアドレスが未設定の利用者は選べますが、登録されるまで送られません。",
+            "publicUrl": "公開 URL",
+            "publicUrlHint": "通知メール内のリンクの元になる、ブラウザで開く MailCare の URL です。空欄のときはサーバーの待受アドレスを使います。",
+            "lastSent": "最終送信",
+            "lastSentNever": "未送信",
+            "nextSend": "次回送信",
+            "nextSendNone": "予定なし"
+        },
+        "token": {
+            "name": "名前",
+            "nameHint": "用途がわかる名前 (例: 監視スクリプト)",
+            "nameNone": "(名前なし)",
+            "identifier": "識別子",
+            "identifierHint": "空欄のときはサーバーが自動で決めます。",
+            "isDefault": "既定",
+            "expires": "有効期限",
+            "expiresAt": "有効期限の日時"
+        }
     },
-    "profile": {
-        "profile": "プロフィール",
-        "profileHint": "表示名、通知用メールアドレス、言語、タイムゾーン、テーマを変更できます。",
-        "saved": "プロフィールを保存しました。",
-        "emailHint": "通知メールの宛先です。管理者が通知先に選ぶと、このアドレスにアラートの要約が届きます。ログインにも使えます。空欄で解除します。",
-        "changePassword": "パスワードを変更",
-        "changePasswordHint": "現在のパスワードを確認したうえで新しいパスワードに変更します。",
-        "sessionNote": "パスワードを変更すると、他の端末のログインは無効になります。",
-        "currentPassword": "現在のパスワード",
-        "newPassword": "新しいパスワード",
-        "passwordChanged": "パスワードを変更しました。"
-    },
-    "notify": {
-        "description": "対応が必要なアラートの要約を、通知先の利用者へメールで送ります。",
-        "status": {
-            "blockedTitle": "通知メールは送信されません",
-            "readyTitle": "通知は有効です",
-            "disabled": "通知が無効になっています。有効にして保存すると、通知時刻に通知先へメールを送ります。",
-            "smtpIncomplete": "SMTP ホストと送信元アドレスが設定されていません。SMTP 設定を入力して保存してください。",
-            "noRecipients": "メールアドレスが設定された通知先がいません。通知先を選ぶか、利用者にメールアドレスを登録してください。",
-            "ready": "{{time}} に{{interval}}、未対応のグループがあれば通知先へメールを送ります。",
-            "unsaved": "未保存の変更があります。保存すると、この判定も更新されます。"
+    "page": {
+        "alerts": {
+            "scope": "表示範囲",
+            "chooseMailbox": "アラートを確認するメールアドレスを選択してください。",
+            "excludedHint": "存在しないアドレスや容量超過など、宛先側で解決される問題です。解析は行われません。",
+            "searchPlaceholder": "対応単位、判断主体、ドメイン、診断文で検索",
+            "sortLastSeenDesc": "最終日時 (新しい順)",
+            "sortLastSeenAsc": "最終日時 (古い順)",
+            "sortCountDesc": "件数 (多い順)",
+            "empty": {
+                "open": "未対応のグループはありません",
+                "resolved": "対応済のグループはありません",
+                "ignored": "無視したグループはありません",
+                "excluded": "対象外のグループはありません"
+            }
         },
-        "smtp": "SMTP 設定",
-        "smtpHint": "通知メールの送信に使うメールサーバーです。",
-        "host": "SMTP ホスト",
-        "port": "ポート",
-        "portInvalid": "1〜65535 の整数を入力してください。",
-        "security": "接続方式",
-        "securityNoneWarning": "暗号化なしでは、パスワードとメール本文が平文でネットワークを流れます。同じネットワーク内の信頼できるサーバーにだけ使ってください。",
-        "username": "ユーザー名",
-        "usernameHint": "認証しない場合は空欄にします。",
-        "password": "パスワード",
-        "passwordSet": "設定済み",
-        "passwordHint": "認証しない場合は空欄にします。",
-        "passwordKeepHint": "空欄のままなら変更しません。",
-        "passwordRequiredOnChange": "接続設定 (ホスト、ポート、接続方式、ユーザー名) を変更するときは、パスワードをもう一度入力してください。",
-        "from": "送信元アドレス",
-        "fromHint": "通知メールの差出人 (From) に使うアドレスです。",
-        "fromInvalid": "メールアドレスの形式が正しくありません。",
-        "test": "テスト送信",
-        "testHint": "保存済みの SMTP 設定で、短い確認メールを送ります。",
-        "testTo": "送信先",
-        "testToHint": "空欄のときは自分のメールアドレスに送ります。",
-        "testNoAddress": "自分のメールアドレスが未登録です。送信先を入力するか、アカウント設定で登録してください。",
-        "testNeedsSmtp": "SMTP ホストと送信元アドレスを入力して保存すると、テスト送信できます。",
-        "testSaveFirst": "SMTP 設定を変更しています。先に保存してからテスト送信してください。",
-        "testSent": "{{to}} にテストメールを送信しました。",
-        "testFailed": "テスト送信に失敗しました: {{message}}",
-        "settings": "通知設定",
-        "settingsHint": "通知メールを送る条件と宛先です。",
-        "enabled": "通知を有効にする",
-        "enabledHint": "有効にすると、通知時刻に対応対象で未対応のグループの要約を送ります。対象が 0 件のときは送りません。",
-        "time": "通知時刻",
-        "timeHint": "HH:MM 形式 (サーバーのローカル時刻)",
-        "timeInvalid": "時刻は HH:MM 形式で指定してください。",
-        "interval": "通知間隔",
-        "intervalHint": "前回の送信から何日おきに送るかです。",
-        "intervalDaily": "毎日",
-        "intervalDays": "{{count}} 日ごと",
-        "recipients": "通知先",
-        "recipientsHint": "通知メールを受け取る利用者を選びます。メールアドレスが未設定の利用者は選べますが、登録されるまで送られません。",
-        "recipientsSelected": "送信対象: {{count}} 人",
-        "recipientsWithoutEmail": "(メールアドレス未設定: {{count}} 人)",
-        "noEmail": "メールアドレス未設定",
-        "noUsers": "利用者がいません。",
-        "publicUrl": "公開 URL",
-        "publicUrlHint": "通知メール内のリンクの元になる、ブラウザで開く MailCare の URL です。空欄のときはサーバーの待受アドレスを使います。",
-        "publicUrlEffective": "実際に使われる URL:",
-        "publicUrlInvalid": "http:// または https:// で始まる URL を指定してください。",
-        "lastSent": "最終送信",
-        "nextSend": "次回送信",
-        "neverSent": "未送信",
-        "noNextSend": "予定なし",
-        "sendNow": "今すぐ送信",
-        "sendNowHint": "通知時刻を待たずに、保存済みの設定で通知メールを送ります。",
-        "sendBlocked": "現在の保存済み設定では送信できません。上の案内を確認してください。",
-        "sendQueued": "通知メールの送信を開始しました。結果はツールのジョブ履歴で確認できます。",
-        "sendAlreadyQueued": "通知メールの送信はすでに待機中です。"
-    },
-    "serverError": {
-        "currentPasswordWrong": "現在のパスワードが正しくありません。",
-        "usernameExists": "そのユーザー名はすでに使われています。",
-        "mailboxExists": "そのメールアドレスはすでに登録されています。",
-        "invalidCredentials": "ログイン情報またはパスワードが正しくありません。",
-        "emailExists": "そのメールアドレスはほかの利用者が使っています。",
-        "lastAdmin": "最後の管理者は削除・降格できません。",
-        "deleteSelf": "自分自身は削除できません。",
-        "jobNotQueued": "このジョブはすでに開始しているため取り消せません。",
-        "passwordTooShort": "パスワードが短すぎます。",
-        "invalidTime": "時刻の形式が正しくありません。"
-    },
-    "category": {
-        "ip_blocked": {
-            "label": "送信 IP のブロック",
-            "description": "送信サーバーの IP がブラックリストに登録されています。登録先（判断主体）のサイトで解除を申請し、原因となった送信内容を見直してください。"
+        "login": {
+            "title": "ログイン",
+            "description": "ユーザー名またはメールアドレスとパスワードでログインします。",
+            "loginName": "ユーザー名またはメールアドレス",
+            "remember": "ログインを保持する",
+            "rememberHint": "共有端末では使用しないでください。",
+            "submit": "ログイン"
         },
-        "rate_limited": {
-            "label": "送信レート制限",
-            "description": "宛先ドメインが短時間の大量送信を制限しています。送信速度や同時接続数を下げ、時間をおいて再送してください。"
+        "setup": {
+            "title": "初期設定",
+            "description": "最初の管理者アカウントを作成します。言語とテーマはすぐに画面に反映されます。",
+            "hint": "まだ利用者が登録されていません。ここで作成したアカウントは管理者になり、そのままログインします。",
+            "submit": "管理者を作成してログイン"
         },
-        "auth_failure": {
-            "label": "送信ドメイン認証の失敗",
-            "description": "SPF / DKIM / DMARC や逆引き DNS の検証に失敗しています。送信ドメインの DNS レコードと送信サーバーの設定を確認してください。"
+        "dashboard": {
+            "description": "監視中のメールアドレスと、対応が必要なバウンスの状況です。",
+            "totals": "合計",
+            "mailboxes": "メールアドレス",
+            "mailboxDisabled": "このメールアドレスは無効化されており、自動同期の対象外です。",
+            "recentGroups": "直近の纏めグループ",
+            "recentGroupsHint": "すべてのメールアドレスから、最近更新された対応対象のグループを表示します。",
+            "noRecentGroups": "最近のバウンスはありません。",
+            "schedule": "スケジュール",
+            "nextCheck": "次回同期",
+            "noSchedule": "スケジュール未設定",
+            "agent": "エージェント",
+            "activeJobs": "実行中のジョブ",
+            "noActiveJobs": "実行中のジョブはありません。",
+            "recentJobs": "最近のジョブ",
+            "allJobs": "すべてのジョブ",
+            "agentDisabledTitle": "エージェント分析は無効です",
+            "agentDisabled": "バウンスの原因分析は行われません。有効にするには一般設定を変更してください。",
+            "agentUnavailableTitle": "エージェント CLI が見つかりません",
+            "agentUnavailable": "プロバイダー「{{provider}}」のコマンドがサーバーで見つかりません。分析は失敗します。"
         },
-        "sender_blocked": {
-            "label": "送信元アドレスの拒否",
-            "description": "宛先ドメインがこの送信元アドレスからのメールを拒否しています。宛先側の管理者に解除を依頼するか、送信元アドレスを見直してください。"
+        "groupDetail": {
+            "title": "グループ詳細",
+            "overview": "概要",
+            "stats": "統計",
+            "messagesTitle": "元メール ({{count}} 件)",
+            "noMessages": "このグループにメールはありません。",
+            "report": {
+                "title": "解析報告",
+                "runningHint": "エージェントが解析しています。完了すると自動で表示が更新されます。",
+                "latestFailed": "最新の再解析は失敗しました: {{message}}（{{time}}）",
+                "latestFailedUnanalyzable": "解析できませんでした: {{message}}（{{time}}）。新しいパターンの通知が届くまで、このグループは自動では解析しません。",
+                "latestFailedLimit": "エージェントの利用上限のため解析できませんでした（{{time}}）。解析待ちのまま、次回に解析します。",
+                "none": "解析報告はまだありません",
+                "noneHint": "「解析」を押すとエージェントが原因と対応方法を作成します。",
+                "noneHintMember": "管理者が解析を実行すると、原因と対応方法がここに表示されます。",
+                "noBody": "報告本文はありません。",
+                "history": "過去の報告 ({{count}} 件)",
+                "excludedTitle": "このグループは自動では解析しません",
+                "excluded": "宛先側の問題（存在しないアドレス、容量超過など）は送信側で対応できないため、自動の解析の対象外です。",
+                "excludedMoveHint": "「対応済にする」または「無視する」を選ぶと、対応対象の一覧に移ります。",
+                "excludedReturnHint": "「未対応に戻す」を選ぶと、対象外の一覧に戻ります。"
+            }
         },
-        "content_rejected": {
-            "label": "内容による拒否",
-            "description": "本文や添付ファイルがスパム・ウイルス・ポリシーなどの理由で拒否されています。送信内容と添付ファイルを見直してください。"
+        "mails": {
+            "chooseMailbox": "メールを閲覧するメールアドレスを選択してください。",
+            "kindTabs": "メールの種類",
+            "kind": {
+                "all": "すべて",
+                "bounce": "バウンス",
+                "other": "その他"
+            },
+            "searchPlaceholder": "件名、差出人、宛先で検索",
+            "groupFilter": "グループ",
+            "empty": "メールはありません"
         },
-        "message_too_large": {
-            "label": "サイズ超過",
-            "description": "メールのサイズが宛先の上限を超えています。添付ファイルを小さくするか、別の手段で共有してください。"
+        "mailDetail": {
+            "title": "メール詳細",
+            "bodyTabs": "本文の表示形式",
+            "tabText": "テキスト",
+            "tabHtml": "HTML",
+            "tabHeaders": "ヘッダー",
+            "tabTextN": "テキスト {{index}}",
+            "tabHtmlN": "HTML {{index}}",
+            "noBody": "本文はありません",
+            "noBodyHint": "テキスト本文も HTML 本文も空です。ヘッダーの確認と原文のダウンロードはできます。",
+            "noHeaders": "ヘッダー情報はありません",
+            "htmlSandboxNote": "HTML はサニタイズ済みで、スクリプトや外部画像は無効化された状態で表示しています。",
+            "bounce": {
+                "title": "バウンス抽出結果",
+                "none": "抽出結果はありません",
+                "notBounce": "このメールはバウンスとして判定されていません。"
+            }
         },
-        "server_config": {
-            "label": "送信サーバーの設定不備",
-            "description": "リレー・TLS・HELO などの設定が宛先の要件を満たしていません。送信サーバー（MTA）の設定を確認してください。"
+        "tools": {
+            "description": "受信・纏め・解析を個別に、またはまとめて実行します。索引の再構築や判定のやり直し、保持日数によるクリーンアップもここから行います。",
+            "adminOnlyTitle": "ツールの実行は管理者のみ行えます",
+            "adminOnly": "一般利用者はジョブ履歴の閲覧のみできます。",
+            "readOnly": "操作は管理者のみ行えます",
+            "allNote": "「すべて」を選ぶと、メールアドレスごとに 1 件ずつジョブが展開され、ワーカー数の範囲で並列に実行されます。",
+            "analyzeScope": "解析の範囲",
+            "scopeNeeds": "解析待ちのみ",
+            "run": "実行",
+            "runFor": "{{tool}}を開始",
+            "confirmTitle": "{{tool}}を実行しますか？",
+            "confirmMessage": "対象: {{target}}。{{tool}}をバックグラウンドで実行します。",
+            "jobs": "ジョブ履歴",
+            "jobsHint": "実行中のジョブは自動で更新されます。「すべて」で投入したジョブは、アドレスごとの子ジョブとして表示されます。",
+            "tool": {
+                "sync": {
+                    "title": "全アドレス同期（受信 → 纏め → 解析）",
+                    "description": "メールを受信し、新しいバウンスを纏め、対応対象のグループを解析します。スケジュールで実行されるのと同じ処理です。"
+                },
+                "fetch": {
+                    "title": "受信のみ",
+                    "description": "IMAP サーバーから未取得のメールを保存します。纏めと解析は行いません。"
+                },
+                "group": {
+                    "title": "纏めのみ",
+                    "description": "受信済みで纏め待ちのメールを判定してグループに纏め、解析待ちのグループを解析します。"
+                },
+                "analyze": {
+                    "title": "解析のみ",
+                    "description": "エージェントによる原因分析を実行します。解析待ちのグループのみ、または対応対象の全グループを対象にできます。"
+                },
+                "reindex": {
+                    "title": "再索引",
+                    "description": "索引 DB を作り直し、保存済みの原文からメールの解析・判定・纏めをすべてやり直します。",
+                    "warning": "時間がかかります。グループの状態と分析報告は、同じグループが再び現れた場合のみ引き継がれます。"
+                },
+                "reclassify": {
+                    "title": "再判定",
+                    "description": "メールを残したまま、バウンス判定と纏めだけをやり直します。判定ルールの更新後に使います。"
+                },
+                "cleanup": {
+                    "title": "クリーンアップ",
+                    "description": "メールアドレスごとの設定に従い対応済・無視のグループのメールを IMAP サーバーから削除したうえで、保持日数を過ぎたメール（原文・本文セクション・索引の行）、エージェントの古い作業ディレクトリ、完了から 30 日を過ぎたジョブ履歴を削除します。サーバーでは日付が変わるたびに自動で実行されます。",
+                    "warning": "IMAP サーバーから削除したメールは元に戻せません。メールが無くなった纏めグループは分析報告ごと削除されます。"
+                }
+            }
         },
-        "unknown_failure": {
-            "label": "原因不明の失敗",
-            "description": "既知のパターンに当てはまらない配信失敗です。診断文と元メールを確認し、必要に応じて分析報告を参照してください。"
+        "settings": {
+            "description": "システムの設定を管理します。自分のプロファイルは右上のユーザー名から開けます。",
+            "adminOnly": "管理者のみ",
+            "menu": {
+                "general": "同期時刻、ワーカー数、エージェント、サーバー情報",
+                "notifications": "SMTP サーバーと、通知メールの時刻・間隔・通知先",
+                "mailboxes": "監視するメールアドレスの登録・編集・接続テスト",
+                "users": "利用者の追加、役割の変更、パスワードのリセット",
+                "tokens": "将来の API 連携用トークンの発行と削除"
+            }
         },
-        "user_unknown": {
-            "label": "宛先アドレスが存在しない",
-            "description": "宛先アドレスが存在しません。宛先リストから該当アドレスを除外するか、相手に正しいアドレスを確認してください。"
+        "settingsGeneral": {
+            "serverTimeZone": "サーバーのローカル時刻（{{zone}}）で実行されます。",
+            "noCheckTimes": "同期時刻が設定されていません。自動同期は行われません。",
+            "addTimeHint": "HH:MM 形式 (例: 09:00)",
+            "mailRetention": "メールの保持",
+            "mailRetentionHint": "受信したメール（原文と本文セクション、索引の行）を残す期間の設定です。",
+            "jobs": "ジョブの実行",
+            "jobsHint": "バックグラウンドで実行するジョブの設定です。",
+            "agent": "エージェント",
+            "agentHint": "バウンスの原因を分析する外部 CLI の設定です。",
+            "providerStatus": "利用可否",
+            "providerAvailable": "利用可能",
+            "providerUnavailable": "利用不可",
+            "providerUnknown": "不明",
+            "providerUnavailableHint": "{{provider}}のコマンドがサーバーで見つかりません。インストールするか、別のプロバイダーを選んでください。",
+            "server": "サーバー情報",
+            "serverHint": "起動パラメータで決まる値です。ここでは変更できません。"
         },
-        "mailbox_full": {
-            "label": "宛先の容量超過",
-            "description": "宛先のメールボックスが容量上限に達しています。送信側でできることはなく、相手が整理するまで届きません。"
+        "mailboxes": {
+            "sectionBasic": "基本情報",
+            "sectionImap": "IMAP 接続",
+            "sectionImapHint": "受信サーバーへの接続情報です。パスワードは暗号化して保存されます。",
+            "sectionRange": "取得範囲",
+            "sectionRangeHint": "初回は initial_days、2 回目以降は recent_days の期間を対象に未取得メールを探します。",
+            "sectionServerKeep": "サーバー上のメールの削除",
+            "sectionServerKeepHint": "対応済・無視にしたグループのメールを、日次のクリーンアップで IMAP サーバーから完全に削除します。削除したメールは元に戻せません。MailCare の手元のコピーはメールの保持日数まで残ります。"
         },
-        "mailbox_disabled": {
-            "label": "宛先アドレスの停止",
-            "description": "宛先アドレスが無効化・停止されています。宛先リストから除外するか、相手に別の連絡先を確認してください。"
+        "notifications": {
+            "description": "対応が必要なアラートの要約を、通知先の利用者へメールで送ります。",
+            "status": {
+                "blockedTitle": "通知メールは送信されません",
+                "readyTitle": "通知は有効です",
+                "disabled": "通知が無効になっています。有効にして保存すると、通知時刻に通知先へメールを送ります。",
+                "smtpIncomplete": "SMTP ホストと送信元アドレスが設定されていません。SMTP 設定を入力して保存してください。",
+                "noRecipients": "メールアドレスが設定された通知先がいません。通知先を選ぶか、利用者にメールアドレスを登録してください。",
+                "ready": "{{time}} に{{interval}}、未対応のグループがあれば通知先へメールを送ります。",
+                "unsaved": "未保存の変更があります。保存すると、この判定も更新されます。"
+            },
+            "smtp": "SMTP 設定",
+            "smtpHint": "通知メールの送信に使うメールサーバーです。",
+            "testHint": "保存済みの SMTP 設定で、短い確認メールを送ります。",
+            "testNoAddress": "自分のメールアドレスが未登録です。送信先を入力するか、アカウント設定で登録してください。",
+            "testNeedsSmtp": "SMTP ホストと送信元アドレスを入力して保存すると、テスト送信できます。",
+            "testSaveFirst": "SMTP 設定を変更しています。先に保存してからテスト送信してください。",
+            "settings": "通知設定",
+            "settingsHint": "通知メールを送る条件と宛先です。",
+            "recipientsSelected": "送信対象: {{count}} 人",
+            "recipientsWithoutEmail": "(メールアドレス未設定: {{count}} 人)",
+            "noEmail": "メールアドレス未設定",
+            "noUsers": "利用者がいません。",
+            "publicUrlEffective": "実際に使われる URL:",
+            "sendNowHint": "通知時刻を待たずに、保存済みの設定で通知メールを送ります。",
+            "sendBlocked": "現在の保存済み設定では送信できません。上の案内を確認してください。"
         },
-        "domain_not_found": {
-            "label": "宛先ドメインが見つからない",
-            "description": "宛先ドメインの DNS（MX）が見つかりません。ドメインの綴りを確認し、誤りでなければ宛先側の DNS 復旧を待ちます。"
+        "users": {
+            "you": "自分",
+            "empty": "利用者はいません"
         },
-        "delivery_delay": {
-            "label": "配信の遅延",
-            "description": "宛先サーバーに一時的に接続できず配信が遅れています。通常は自動で再送されるため、長引く場合のみ宛先側に確認してください。"
+        "tokens": {
+            "description": "トークンは、将来の API 連携のために予約された機能です。Web のログインには使いません。",
+            "futureNote": "トークンが 1 つもないときは、サーバーが「default」トークンを自動で作成します。",
+            "createdOnce": "この値は今回だけ表示されます。安全な場所に保存してください。",
+            "empty": "トークンはありません",
+            "emptyHint": "「トークンを発行」から作成できます。"
+        },
+        "profile": {
+            "profile": "プロフィール",
+            "profileHint": "表示名、通知用メールアドレス、言語、タイムゾーン、テーマを変更できます。",
+            "emailHint": "通知メールの宛先です。管理者が通知先に選ぶと、このアドレスにアラートの要約が届きます。ログインにも使えます。空欄で解除します。",
+            "changePasswordHint": "現在のパスワードを確認したうえで新しいパスワードに変更します。",
+            "sessionNote": "パスワードを変更すると、他の端末のログインは無効になります。"
         }
     }
 }

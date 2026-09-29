@@ -13,7 +13,7 @@ export function Spinner({ size = 18, className = '', label }: SpinnerProps) {
             className={`inline-block animate-spin rounded-full border-2 border-current border-t-transparent ${className}`}
             style={{ width: size, height: size }}
             role='status'
-            aria-label={label ?? t('common.loading')}
+            aria-label={label ?? t('component.spinner.loading')}
         />
     );
 }
@@ -23,8 +23,8 @@ export function LoadingBlock({ label }: { label?: string }) {
     const { t } = useTranslation();
     return (
         <div className='flex items-center justify-center gap-3 py-12 text-muted' role='status'>
-            <Spinner size={22} label={label ?? t('common.loading')} />
-            <span className='text-sm'>{label ?? t('common.loading')}</span>
+            <Spinner size={22} label={label ?? t('component.spinner.loading')} />
+            <span className='text-sm'>{label ?? t('component.spinner.loading')}</span>
         </div>
     );
 }
@@ -33,7 +33,7 @@ export function FullPageSpinner() {
     const { t } = useTranslation();
     return (
         <div className='flex min-h-screen items-center justify-center bg-canvas text-muted'>
-            <Spinner size={28} label={t('common.loading')} />
+            <Spinner size={28} label={t('component.spinner.loading')} />
         </div>
     );
 }

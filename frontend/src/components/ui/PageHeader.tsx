@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { Icon } from './Icon';
 
@@ -15,10 +16,11 @@ interface PageHeaderProps {
 }
 
 export function PageHeader({ title, description, crumbs, actions }: PageHeaderProps) {
+    const { t } = useTranslation();
     return (
         <div className='mb-6'>
             {crumbs && crumbs.length > 0 && (
-                <nav aria-label='breadcrumb' className='mb-2'>
+                <nav aria-label={t('component.pageHeader.breadcrumb')} className='mb-2'>
                     <ol className='flex flex-wrap items-center gap-1 text-sm text-muted'>
                         {crumbs.map((c, i) => (
                             <li key={i} className='flex items-center gap-1'>

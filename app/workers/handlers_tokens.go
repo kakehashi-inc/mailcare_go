@@ -41,12 +41,12 @@ func (c *core) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	expiresAt, err := modules.ParseExpiry(body.Expires)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	tok, err := modules.CreateToken(c.db, body.Name, body.Identifier, expiresAt, false)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	// CreateToken fills only the id; re-read the row for created_at.
@@ -62,7 +62,7 @@ func (c *core) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 func (c *core) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	identifier := r.PathValue("identifier")
 	if _, err := models.GetTokenByIdentifier(c.db, identifier); err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "token not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return
 	} else if err != nil {
 		writeInternalError(w, "failed to load token", err)

@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
-import { createMailbox, deleteMailbox, getMailbox, testMailbox, updateMailbox } from '../api/client';
+import { createMailbox, deleteMailbox, getMailbox, testMailbox, updateMailbox, ApiError } from '../api/client';
 import { Alert } from '../components/ui/Alert';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
@@ -18,12 +18,12 @@ import {
     DEFAULT_INITIAL_DAYS,
     DEFAULT_RECENT_DAYS,
     DEFAULT_SERVER_KEEP_DAYS,
+    MAX_FETCH_DAYS,
     MAX_SERVER_KEEP_DAYS,
 } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { ImapSecurity, MailboxDTO, MailboxInput } from '../types';
-import { errorMessage } from '../utils/errors';
 
 interface FormState {
     address: string;
@@ -82,7 +82,7 @@ export function MailboxEditPage() {
     const { id: idParam } = useParams();
     const isNew = idParam === undefined || idParam === 'new';
     const id = isNew ? 0 : Number(idParam);
-    useDocumentTitle(isNew ? t('mailbox.add') : t('mailbox.edit'));
+    useDocumentTitle(isNew ? t('action.mailbox.add') : t('action.mailbox.edit'));
     const navigate = useNavigate();
     const toast = useToast();
     const existing = useAsync(() => (isNew ? Promise.resolve(null) : getMailbox(id)), [isNew, id]);
@@ -120,20 +120,22 @@ export function MailboxEditPage() {
     const port = Number(form.imap_port);
     const portError =
         form.imap_port !== '' && (!Number.isInteger(port) || port < 1 || port > 65535)
-            ? t('mailbox.portInvalid')
+            ? t('validation.common.numberOutOfRange', { min: 1, max: 65535 })
             : undefined;
     const emailError =
         form.address !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.address)
-            ? t('mailbox.addressInvalid')
+            ? t('validation.common.emailFormat')
             : undefined;
     const daysError = (v: string) =>
-        v !== '' && (!Number.isInteger(Number(v)) || Number(v) < 1) ? t('mailbox.daysInvalid') : undefined;
+        v !== '' && (!Number.isInteger(Number(v)) || Number(v) < 1 || Number(v) > MAX_FETCH_DAYS)
+            ? t('validation.common.numberOutOfRange', { min: 1, max: MAX_FETCH_DAYS })
+            : undefined;
     const serverKeepError =
         form.server_keep_days === '' ||
         !Number.isInteger(Number(form.server_keep_days)) ||
         Number(form.server_keep_days) < 0 ||
         Number(form.server_keep_days) > MAX_SERVER_KEEP_DAYS
-            ? t('mailbox.serverKeepDaysInvalid', { max: MAX_SERVER_KEEP_DAYS })
+            ? t('validation.common.numberOutOfRange', { min: 0, max: MAX_SERVER_KEEP_DAYS })
             : undefined;
     const passwordRequired = isNew && form.imap_password === '';
     // The server uses the stored password only for the server it was saved
@@ -147,7 +149,9 @@ export function MailboxEditPage() {
             form.imap_security !== saved.imap_security ||
             form.imap_username.trim() !== saved.imap_username);
     const passwordError =
-        !isNew && connectionChanged && form.imap_password === '' ? t('mailbox.passwordRequiredOnChange') : undefined;
+        !isNew && connectionChanged && form.imap_password === ''
+            ? t('validation.connection.passwordRequiredOnChange')
+            : undefined;
     const valid =
         form.address.trim() !== '' &&
         !emailError &&
@@ -185,7 +189,7 @@ export function MailboxEditPage() {
             await testMailbox(toInput());
             setTestResult({ ok: true });
         } catch (err) {
-            setTestResult({ ok: false, message: errorMessage(err, t) });
+            setTestResult({ ok: false, message: t((err as ApiError).key, (err as ApiError).params) });
         } finally {
             setTesting(false);
         }
@@ -199,14 +203,14 @@ export function MailboxEditPage() {
         try {
             if (isNew) {
                 const created = await createMailbox(toInput());
-                toast.success(t('mailbox.created', { address: created?.address ?? form.address }));
+                toast.success(t('result.mailbox.created', { address: created?.address ?? form.address }));
             } else {
                 await updateMailbox(id, toInput());
-                toast.success(t('mailbox.updated', { address: form.address }));
+                toast.success(t('result.mailbox.updated', { address: form.address }));
             }
             navigate('/settings/mailboxes');
         } catch (err) {
-            setError(errorMessage(err, t));
+            setError(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSaving(false);
         }
@@ -216,10 +220,10 @@ export function MailboxEditPage() {
         setDeleting(true);
         try {
             await deleteMailbox(id, keepData);
-            toast.success(t('mailbox.deleted', { address: form.address }));
+            toast.success(t('result.mailbox.deleted', { address: form.address }));
             navigate('/settings/mailboxes');
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
             setDeleting(false);
         }
     }
@@ -228,7 +232,10 @@ export function MailboxEditPage() {
     if (!isNew && (existing.error || !existing.data)) {
         return (
             <PageContainer>
-                <ErrorState message={errorMessage(existing.error, t)} onRetry={() => void existing.reload()} />
+                <ErrorState
+                    message={t(existing.error?.key ?? 'system.internal', existing.error?.params)}
+                    onRetry={() => void existing.reload()}
+                />
             </PageContainer>
         );
     }
@@ -236,36 +243,36 @@ export function MailboxEditPage() {
     return (
         <PageContainer>
             <PageHeader
-                title={isNew ? t('mailbox.add') : form.address || t('mailbox.edit')}
+                title={isNew ? t('action.mailbox.add') : form.address || t('action.mailbox.edit')}
                 crumbs={[
-                    { label: t('nav.settings'), to: '/settings' },
-                    { label: t('nav.settingsMailboxes'), to: '/settings/mailboxes' },
+                    { label: t('layout.nav.settings'), to: '/settings' },
+                    { label: t('layout.nav.settingsMailboxes'), to: '/settings/mailboxes' },
                     { label: isNew ? t('common.new') : t('common.edit') },
                 ]}
             />
             <form onSubmit={handleSubmit} noValidate className='flex flex-col gap-6'>
                 <Card>
-                    <CardHeader title={t('mailbox.sectionBasic')} />
+                    <CardHeader title={t('page.mailboxes.sectionBasic')} />
                     <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                         <InputField
-                            label={t('mailbox.address')}
+                            label={t('field.mailbox.address')}
                             type='email'
                             autoComplete='off'
                             value={form.address}
                             onChange={e => set('address', e.target.value)}
                             error={emailError}
-                            hint={t('mailbox.addressHint')}
+                            hint={t('field.mailbox.addressHint')}
                             required
                         />
                         <InputField
-                            label={t('mailbox.displayName')}
+                            label={t('field.common.displayName')}
                             value={form.display_name}
                             onChange={e => set('display_name', e.target.value)}
                         />
                         <div className='md:col-span-2'>
                             <ToggleField
-                                label={t('mailbox.enabled')}
-                                hint={t('mailbox.enabledHint')}
+                                label={t('field.mailbox.enabled')}
+                                hint={t('field.mailbox.enabledHint')}
                                 checked={form.enabled}
                                 onChange={v => set('enabled', v)}
                             />
@@ -274,10 +281,13 @@ export function MailboxEditPage() {
                 </Card>
 
                 <Card>
-                    <CardHeader title={t('mailbox.sectionImap')} description={t('mailbox.sectionImapHint')} />
+                    <CardHeader
+                        title={t('page.mailboxes.sectionImap')}
+                        description={t('page.mailboxes.sectionImapHint')}
+                    />
                     <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                         <InputField
-                            label={t('mailbox.host')}
+                            label={t('field.connection.host')}
                             autoComplete='off'
                             value={form.imap_host}
                             onChange={e => set('imap_host', e.target.value)}
@@ -286,16 +296,16 @@ export function MailboxEditPage() {
                         />
                         <div className='grid grid-cols-2 gap-4'>
                             <SelectField
-                                label={t('mailbox.security')}
+                                label={t('field.connection.security')}
                                 value={form.imap_security}
                                 onChange={e => setSecurity(e.target.value as ImapSecurity)}
                             >
-                                <option value='ssl'>{t('imapSecurity.ssl')}</option>
-                                <option value='starttls'>{t('imapSecurity.starttls')}</option>
-                                <option value='none'>{t('imapSecurity.none')}</option>
+                                <option value='ssl'>{t('value.connectionSecurity.ssl')}</option>
+                                <option value='starttls'>{t('value.connectionSecurity.starttls')}</option>
+                                <option value='none'>{t('value.connectionSecurity.none')}</option>
                             </SelectField>
                             <InputField
-                                label={t('mailbox.port')}
+                                label={t('field.connection.port')}
                                 type='number'
                                 inputMode='numeric'
                                 min={1}
@@ -307,11 +317,11 @@ export function MailboxEditPage() {
                         </div>
                         {form.imap_security === 'none' && (
                             <div className='md:col-span-2'>
-                                <Alert tone='warning'>{t('mailbox.securityNoneWarning')}</Alert>
+                                <Alert tone='warning'>{t('field.connection.securityNoneWarning')}</Alert>
                             </div>
                         )}
                         <InputField
-                            label={t('mailbox.username')}
+                            label={t('field.connection.username')}
                             autoComplete='off'
                             value={form.imap_username}
                             onChange={e => set('imap_username', e.target.value)}
@@ -319,12 +329,12 @@ export function MailboxEditPage() {
                         />
                         <div>
                             <InputField
-                                label={t('mailbox.password')}
+                                label={t('field.connection.password')}
                                 type={showPassword ? 'text' : 'password'}
                                 autoComplete='new-password'
                                 value={form.imap_password}
                                 onChange={e => set('imap_password', e.target.value)}
-                                hint={isNew ? undefined : t('mailbox.passwordKeepHint')}
+                                hint={isNew ? undefined : t('field.connection.passwordKeepHint')}
                                 error={passwordError}
                                 required={isNew}
                             />
@@ -336,7 +346,7 @@ export function MailboxEditPage() {
                             />
                         </div>
                         <InputField
-                            label={t('mailbox.folder')}
+                            label={t('field.common.folder')}
                             autoComplete='off'
                             value={form.folder}
                             onChange={e => set('folder', e.target.value)}
@@ -356,40 +366,43 @@ export function MailboxEditPage() {
                                 }
                                 onClick={() => void test()}
                             >
-                                {t('mailbox.test')}
+                                {t('action.mailbox.test')}
                             </Button>
                         </div>
                         {testResult && (
                             <Alert tone={testResult.ok ? 'success' : 'danger'}>
                                 {testResult.ok
-                                    ? t('mailbox.testOkShort')
-                                    : t('mailbox.testFailed', { message: testResult.message })}
+                                    ? t('result.mailbox.testOk', { address: form.address })
+                                    : testResult.message}
                             </Alert>
                         )}
                     </div>
                 </Card>
 
                 <Card>
-                    <CardHeader title={t('mailbox.sectionRange')} description={t('mailbox.sectionRangeHint')} />
+                    <CardHeader
+                        title={t('page.mailboxes.sectionRange')}
+                        description={t('page.mailboxes.sectionRangeHint')}
+                    />
                     <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                         <InputField
-                            label={t('mailbox.initialDays')}
+                            label={t('field.mailbox.initialDays')}
                             type='number'
                             inputMode='numeric'
                             min={1}
                             value={form.initial_days}
                             onChange={e => set('initial_days', e.target.value)}
-                            hint={t('mailbox.initialDaysHint')}
+                            hint={t('field.mailbox.initialDaysHint')}
                             error={daysError(form.initial_days)}
                         />
                         <InputField
-                            label={t('mailbox.recentDays')}
+                            label={t('field.mailbox.recentDays')}
                             type='number'
                             inputMode='numeric'
                             min={1}
                             value={form.recent_days}
                             onChange={e => set('recent_days', e.target.value)}
-                            hint={t('mailbox.recentDaysHint')}
+                            hint={t('field.mailbox.recentDaysHint')}
                             error={daysError(form.recent_days)}
                         />
                     </div>
@@ -397,11 +410,11 @@ export function MailboxEditPage() {
 
                 <Card>
                     <CardHeader
-                        title={t('mailbox.sectionServerKeep')}
-                        description={t('mailbox.sectionServerKeepHint')}
+                        title={t('page.mailboxes.sectionServerKeep')}
+                        description={t('page.mailboxes.sectionServerKeepHint')}
                     />
                     <InputField
-                        label={t('mailbox.serverKeepDays')}
+                        label={t('field.mailbox.serverKeepDays')}
                         type='number'
                         inputMode='numeric'
                         min={0}
@@ -409,7 +422,7 @@ export function MailboxEditPage() {
                         step={1}
                         value={form.server_keep_days}
                         onChange={e => set('server_keep_days', e.target.value)}
-                        hint={t('mailbox.serverKeepDaysHint')}
+                        hint={t('field.mailbox.serverKeepDaysHint')}
                         error={serverKeepError}
                         width='short'
                     />
@@ -441,13 +454,13 @@ export function MailboxEditPage() {
 
             <ConfirmDialog
                 open={confirmDelete}
-                title={t('mailbox.deleteTitle')}
+                title={t('action.mailbox.delete')}
                 message={
                     <div className='flex flex-col gap-3'>
-                        <p>{t('mailbox.deleteMessage', { address: form.address })}</p>
+                        <p>{t('action.mailbox.deleteConfirm', { address: form.address })}</p>
                         <CheckboxField
-                            label={t('mailbox.keepData')}
-                            hint={t('mailbox.keepDataHint')}
+                            label={t('action.mailbox.keepData')}
+                            hint={t('action.mailbox.keepDataHint')}
                             checked={keepData}
                             onChange={e => setKeepData(e.target.checked)}
                         />

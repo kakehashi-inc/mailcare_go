@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getSettings, updateSettings } from '../api/client';
+import { getSettings, updateSettings, ApiError } from '../api/client';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
 import { Button, IconButton } from '../components/ui/Button';
@@ -13,7 +13,6 @@ import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { errorMessage } from '../utils/errors';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const WORKERS_MIN = 1;
@@ -43,7 +42,7 @@ function reasoningChoices(levels: Record<string, string[]>, model: string): { op
 
 export function SettingsGeneralPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.settingsGeneral'));
+    useDocumentTitle(t('layout.nav.settingsGeneral'));
     const toast = useToast();
     const settings = useAsync(getSettings, []);
     const [times, setTimes] = useState<string[]>([]);
@@ -128,10 +127,10 @@ export function SettingsGeneralPage() {
                 mail_keep_days: mailKeepDaysValue,
                 workers: workersValue,
             });
-            toast.success(t('settings.saved'));
+            toast.success(t('result.setting.saved'));
             await settings.reload();
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSaving(false);
         }
@@ -141,7 +140,10 @@ export function SettingsGeneralPage() {
     if (settings.error || !settings.data) {
         return (
             <PageContainer>
-                <ErrorState message={errorMessage(settings.error, t)} onRetry={() => void settings.reload()} />
+                <ErrorState
+                    message={t(settings.error?.key ?? 'system.internal', settings.error?.params)}
+                    onRetry={() => void settings.reload()}
+                />
             </PageContainer>
         );
     }
@@ -149,8 +151,11 @@ export function SettingsGeneralPage() {
     return (
         <PageContainer>
             <PageHeader
-                title={t('nav.settingsGeneral')}
-                crumbs={[{ label: t('nav.settings'), to: '/settings' }, { label: t('nav.settingsGeneral') }]}
+                title={t('layout.nav.settingsGeneral')}
+                crumbs={[
+                    { label: t('layout.nav.settings'), to: '/settings' },
+                    { label: t('layout.nav.settingsGeneral') },
+                ]}
                 actions={
                     <Button
                         variant='primary'
@@ -167,15 +172,15 @@ export function SettingsGeneralPage() {
             <div className='flex flex-col gap-6'>
                 <Card>
                     <CardHeader
-                        title={t('settings.checkTimes')}
-                        description={`${t('settings.checkTimesHint')} ${t('settings.serverTimeZone', { zone: settings.data.server_timezone || '-' })}`}
+                        title={t('field.setting.checkTimes')}
+                        description={`${t('field.setting.checkTimesHint')} ${t('page.settingsGeneral.serverTimeZone', { zone: settings.data.server_timezone || '-' })}`}
                     />
                     {times.length === 0 ? (
-                        <p className='text-sm text-muted'>{t('settings.noCheckTimes')}</p>
+                        <p className='text-sm text-muted'>{t('page.settingsGeneral.noCheckTimes')}</p>
                     ) : (
                         <ul
                             className={`flex flex-col gap-2 ${CONTROL_WIDTH.short}`}
-                            aria-label={t('settings.checkTimes')}
+                            aria-label={t('field.setting.checkTimes')}
                         >
                             {times.map((time, i) => (
                                 <li
@@ -189,7 +194,7 @@ export function SettingsGeneralPage() {
                                     </span>
                                     <IconButton
                                         icon='delete'
-                                        label={t('settings.removeTime', { time })}
+                                        label={t('action.setting.removeTime', { time })}
                                         onClick={() => removeTime(i)}
                                     />
                                 </li>
@@ -198,7 +203,9 @@ export function SettingsGeneralPage() {
                     )}
                     {(invalidTimes.length > 0 || duplicate) && (
                         <Alert tone='danger' className='mt-3'>
-                            {invalidTimes.length > 0 ? t('settings.invalidTime') : t('settings.duplicateTime')}
+                            {invalidTimes.length > 0
+                                ? t('validation.common.timeFormat')
+                                : t('validation.common.timeDuplicate')}
                         </Alert>
                     )}
                     <form
@@ -209,7 +216,7 @@ export function SettingsGeneralPage() {
                         }}
                     >
                         <label htmlFor='new-check-time' className='mb-1 block text-sm font-medium text-ink'>
-                            {t('settings.addTime')}
+                            {t('action.setting.addTime')}
                         </label>
                         <div className='flex items-center gap-2'>
                             <input
@@ -235,15 +242,20 @@ export function SettingsGeneralPage() {
                             id='new-check-time-hint'
                             className={`mt-1 text-sm ${newTimeDuplicate ? 'text-danger' : 'text-muted'}`}
                         >
-                            {newTimeDuplicate ? t('settings.duplicateTime') : t('settings.addTimeHint')}
+                            {newTimeDuplicate
+                                ? t('validation.common.timeDuplicate')
+                                : t('page.settingsGeneral.addTimeHint')}
                         </p>
                     </form>
                 </Card>
 
                 <Card>
-                    <CardHeader title={t('settings.mailRetention')} description={t('settings.mailRetentionHint')} />
+                    <CardHeader
+                        title={t('page.settingsGeneral.mailRetention')}
+                        description={t('page.settingsGeneral.mailRetentionHint')}
+                    />
                     <InputField
-                        label={t('settings.mailKeepDays')}
+                        label={t('field.setting.mailKeepDays')}
                         type='number'
                         inputMode='numeric'
                         min={MAIL_KEEP_DAYS_MIN}
@@ -254,16 +266,26 @@ export function SettingsGeneralPage() {
                             setMailKeepDays(e.target.value);
                             setDirty(true);
                         }}
-                        hint={t('settings.mailKeepDaysHint')}
-                        error={mailKeepDaysValid ? undefined : t('settings.mailKeepDaysInvalid')}
+                        hint={t('field.setting.mailKeepDaysHint')}
+                        error={
+                            mailKeepDaysValid
+                                ? undefined
+                                : t('validation.common.numberOutOfRange', {
+                                      min: MAIL_KEEP_DAYS_MIN,
+                                      max: MAIL_KEEP_DAYS_MAX,
+                                  })
+                        }
                         width='short'
                     />
                 </Card>
 
                 <Card>
-                    <CardHeader title={t('settings.jobs')} description={t('settings.jobsHint')} />
+                    <CardHeader
+                        title={t('page.settingsGeneral.jobs')}
+                        description={t('page.settingsGeneral.jobsHint')}
+                    />
                     <InputField
-                        label={t('settings.workers')}
+                        label={t('field.setting.workers')}
                         type='number'
                         inputMode='numeric'
                         min={WORKERS_MIN}
@@ -274,17 +296,24 @@ export function SettingsGeneralPage() {
                             setWorkers(e.target.value);
                             setDirty(true);
                         }}
-                        hint={t('settings.workersHint')}
-                        error={workersValid ? undefined : t('settings.workersInvalid')}
+                        hint={t('field.setting.workersHint')}
+                        error={
+                            workersValid
+                                ? undefined
+                                : t('validation.common.numberOutOfRange', { min: WORKERS_MIN, max: WORKERS_MAX })
+                        }
                         width='short'
                     />
                 </Card>
 
                 <Card>
-                    <CardHeader title={t('settings.agent')} description={t('settings.agentHint')} />
+                    <CardHeader
+                        title={t('page.settingsGeneral.agent')}
+                        description={t('page.settingsGeneral.agentHint')}
+                    />
                     <div className='flex flex-col gap-4'>
                         <SelectField
-                            label={t('settings.agentProvider')}
+                            label={t('field.agent.provider')}
                             width='medium'
                             value={provider}
                             onChange={e => {
@@ -306,53 +335,55 @@ export function SettingsGeneralPage() {
                             )}
                             {settings.data.providers.map(p => (
                                 <option key={p.name} value={p.name}>
-                                    {p.label} {p.available ? '' : `(${t('settings.providerUnavailable')})`}
+                                    {p.label} {p.available ? '' : `(${t('page.settingsGeneral.providerUnavailable')})`}
                                 </option>
                             ))}
                         </SelectField>
                         <div className='flex flex-wrap items-center gap-2'>
-                            <span className='text-sm text-muted'>{t('settings.providerStatus')}:</span>
+                            <span className='text-sm text-muted'>{t('page.settingsGeneral.providerStatus')}:</span>
                             {selectedProvider ? (
                                 <Badge
                                     tone={selectedProvider.available ? 'success' : 'warning'}
                                     icon={selectedProvider.available ? 'check_circle' : 'warning'}
                                 >
                                     {selectedProvider.available
-                                        ? t('settings.providerAvailable')
-                                        : t('settings.providerUnavailable')}
+                                        ? t('page.settingsGeneral.providerAvailable')
+                                        : t('page.settingsGeneral.providerUnavailable')}
                                 </Badge>
                             ) : (
                                 <Badge tone='neutral' icon='help_outline'>
-                                    {t('settings.providerUnknown')}
+                                    {t('page.settingsGeneral.providerUnknown')}
                                 </Badge>
                             )}
                         </div>
                         {selectedProvider && !selectedProvider.available && (
                             <Alert tone='warning'>
-                                {t('settings.providerUnavailableHint', { provider: selectedProvider.label })}
+                                {t('page.settingsGeneral.providerUnavailableHint', {
+                                    provider: selectedProvider.label,
+                                })}
                             </Alert>
                         )}
                         <InputField
-                            label={t('settings.agentModel')}
+                            label={t('field.agent.model')}
                             value={modelSupported ? model : ''}
                             onChange={e => {
                                 setModel(e.target.value);
                                 setDirty(true);
                             }}
                             disabled={!modelSupported}
-                            placeholder={modelSupported ? t('settings.agentModelPlaceholder') : undefined}
+                            placeholder={modelSupported ? t('field.setting.agentModelPlaceholder') : undefined}
                             autoComplete='off'
                             spellCheck={false}
                             maxLength={MODEL_MAX}
                             width='medium'
                             className='font-mono'
-                            error={modelValid ? undefined : t('settings.agentModelInvalid')}
+                            error={modelValid ? undefined : t('validation.agent.modelInvalid', { max: MODEL_MAX })}
                             hint={
                                 !modelSupported ? (
-                                    t('settings.agentModelUnsupported')
+                                    t('field.setting.agentModelUnsupported')
                                 ) : selectedProvider && selectedProvider.models.length > 0 ? (
                                     <span className='flex flex-wrap items-center gap-1'>
-                                        <span>{t('settings.agentModelExamples')}:</span>
+                                        <span>{t('field.setting.agentModelExamples')}:</span>
                                         {selectedProvider.models.map(m => (
                                             <button
                                                 key={m}
@@ -371,7 +402,7 @@ export function SettingsGeneralPage() {
                             }
                         />
                         <SelectField
-                            label={t('settings.agentReasoning')}
+                            label={t('field.agent.reasoning')}
                             width='medium'
                             value={reasoningSupported ? effort : ''}
                             onChange={e => {
@@ -379,10 +410,10 @@ export function SettingsGeneralPage() {
                                 setDirty(true);
                             }}
                             disabled={!reasoningSupported}
-                            error={effortValid ? undefined : t('settings.agentReasoningInvalid')}
-                            hint={reasoningSupported ? undefined : t('settings.agentReasoningUnsupported')}
+                            error={effortValid ? undefined : t('validation.agent.reasoningInvalid')}
+                            hint={reasoningSupported ? undefined : t('field.setting.agentReasoningUnsupported')}
                         >
-                            <option value=''>{t('settings.agentReasoningUnset')}</option>
+                            <option value=''>{t('field.setting.agentReasoningUnset')}</option>
                             {reasoningSupported && effort !== '' && !reasoning.options.includes(effort) && (
                                 <option value={effort}>{effort}</option>
                             )}
@@ -394,8 +425,8 @@ export function SettingsGeneralPage() {
                                 ))}
                         </SelectField>
                         <ToggleField
-                            label={t('settings.agentEnabled')}
-                            hint={t('settings.agentEnabledHint')}
+                            label={t('field.setting.agentEnabled')}
+                            hint={t('field.setting.agentEnabledHint')}
                             checked={enabled}
                             onChange={v => {
                                 setEnabled(v);
@@ -403,7 +434,7 @@ export function SettingsGeneralPage() {
                             }}
                         />
                         <InputField
-                            label={t('settings.agentKeepDays')}
+                            label={t('field.setting.agentKeepDays')}
                             type='number'
                             inputMode='numeric'
                             min={KEEP_DAYS_MIN}
@@ -414,27 +445,37 @@ export function SettingsGeneralPage() {
                                 setKeepDays(e.target.value);
                                 setDirty(true);
                             }}
-                            hint={t('settings.agentKeepDaysHint')}
-                            error={keepDaysValid ? undefined : t('settings.agentKeepDaysInvalid')}
+                            hint={t('field.setting.agentKeepDaysHint')}
+                            error={
+                                keepDaysValid
+                                    ? undefined
+                                    : t('validation.common.numberOutOfRange', {
+                                          min: KEEP_DAYS_MIN,
+                                          max: KEEP_DAYS_MAX,
+                                      })
+                            }
                             width='short'
                         />
                     </div>
                 </Card>
 
                 <Card>
-                    <CardHeader title={t('settings.server')} description={t('settings.serverHint')} />
+                    <CardHeader
+                        title={t('page.settingsGeneral.server')}
+                        description={t('page.settingsGeneral.serverHint')}
+                    />
                     <DescriptionList
                         items={[
                             {
-                                label: t('settings.webListen'),
+                                label: t('field.setting.webListen'),
                                 value: <code className='font-mono'>{settings.data.web_listen || '-'}</code>,
                             },
                             {
-                                label: t('settings.webPort'),
+                                label: t('field.setting.webPort'),
                                 value: <code className='font-mono'>{settings.data.web_port ?? '-'}</code>,
                             },
                             {
-                                label: t('settings.dataDir'),
+                                label: t('field.setting.dataDir'),
                                 value: <code className='break-all font-mono'>{settings.data.data_dir || '-'}</code>,
                                 wide: true,
                             },

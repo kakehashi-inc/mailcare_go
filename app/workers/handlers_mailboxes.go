@@ -2,7 +2,6 @@ package workers
 
 import (
 	"database/sql"
-	"errors"
 	"log"
 	"net/http"
 
@@ -66,7 +65,7 @@ func (c *core) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 	}
 	mb, err := modules.CreateMailbox(c.db, c.key, &in)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"mailbox": toMailboxDTO(mb)})
@@ -92,11 +91,7 @@ func (c *core) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := modules.UpdateMailbox(c.db, c.key, c.mailsRoot, c.agentRoot, mb, &in); err != nil {
-		if errors.Is(err, modules.ErrMailboxBusy) {
-			writeError(w, http.StatusConflict, err.Error())
-			return
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"mailbox": toMailboxDTO(mb)})
@@ -109,11 +104,7 @@ func (c *core) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 	}
 	keep := r.URL.Query().Get("keep_data") == "1"
 	if err := modules.DeleteMailbox(c.db, c.mailsRoot, c.agentRoot, mb, keep); err != nil {
-		if errors.Is(err, modules.ErrMailboxBusy) {
-			writeError(w, http.StatusConflict, err.Error())
-			return
-		}
-		writeInternalError(w, "failed to delete mailbox", err)
+		writeErrorMessage(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -127,7 +118,7 @@ func (c *core) handleTestMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := modules.TestMailboxConnection(r.Context(), c.db, c.key, &in); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErrorMessage(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

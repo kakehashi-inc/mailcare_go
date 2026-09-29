@@ -19,7 +19,7 @@ export function AuthShell({
                 <div className='w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8'>
                     <div className='flex items-center gap-2'>
                         <Icon name='mark_email_read' className='text-[28px] text-accent' />
-                        <span className='text-xl font-bold text-ink'>{t('app.title')}</span>
+                        <span className='text-xl font-bold text-ink'>{t('layout.appName')}</span>
                     </div>
                     <h1 className='mt-4 text-2xl font-bold tracking-tight text-ink'>{title}</h1>
                     {description && <p className='mt-1 text-base text-muted'>{description}</p>}

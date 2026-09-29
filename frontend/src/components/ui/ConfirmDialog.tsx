@@ -94,7 +94,7 @@ export function ConfirmDialog({
                         {cancelLabel ?? t('common.cancel')}
                     </Button>
                     <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} loading={busy}>
-                        {confirmLabel ?? t('common.confirm')}
+                        {confirmLabel ?? t('component.confirmDialog.confirm')}
                     </Button>
                 </div>
             </div>

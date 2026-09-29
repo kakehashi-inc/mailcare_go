@@ -60,9 +60,9 @@ export function Header() {
     }, [drawerOpen]);
 
     const primary: NavEntry[] = [
-        { to: '/alerts', label: t('nav.alerts'), icon: 'notifications' },
-        { to: '/mails', label: t('nav.mails'), icon: 'mail' },
-        { to: '/tools', label: t('nav.tools'), icon: 'build' },
+        { to: '/alerts', label: t('layout.nav.alerts'), icon: 'notifications' },
+        { to: '/mails', label: t('layout.nav.mails'), icon: 'mail' },
+        { to: '/tools', label: t('layout.nav.tools'), icon: 'build' },
     ];
     // Settings is a plain link to the menu page (administrators only; direct URLs show the "admins only" screen).
     const settingsActive = location.pathname.startsWith('/settings') && location.pathname !== '/settings/profile';
@@ -83,7 +83,7 @@ export function Header() {
                     {!wide && (
                         <button
                             type='button'
-                            aria-label={drawerOpen ? t('header.closeMenu') : t('header.openMenu')}
+                            aria-label={drawerOpen ? t('layout.header.closeMenu') : t('layout.header.openMenu')}
                             aria-expanded={drawerOpen}
                             aria-controls='mobile-nav'
                             onClick={() => setDrawerOpen(v => !v)}
@@ -98,13 +98,13 @@ export function Header() {
                         className='flex min-h-tap shrink-0 items-center rounded px-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
                     >
                         <span className='flex items-center gap-2 text-lg font-bold leading-none text-ink'>
-                            {t('app.title')}
+                            {t('layout.appName')}
                             {me && <span className='text-xs font-normal text-muted'>{formatVersion(me.version)}</span>}
                         </span>
                     </Link>
 
                     {wide && (
-                        <nav aria-label={t('header.mainNav')} className='ml-6 flex items-center gap-1'>
+                        <nav aria-label={t('layout.header.mainNav')} className='ml-6 flex items-center gap-1'>
                             {primary.map(entry => (
                                 <NavLink
                                     key={entry.to}
@@ -118,7 +118,7 @@ export function Header() {
                             {isAdmin && (
                                 <NavLink to='/settings' className={`${NAV_CLASS} ${settingsActive ? NAV_ACTIVE : ''}`}>
                                     <Icon name='settings' className='text-[20px]' />
-                                    {t('nav.settings')}
+                                    {t('layout.nav.settings')}
                                 </NavLink>
                             )}
                         </nav>
@@ -131,7 +131,7 @@ export function Header() {
                             <div className='relative min-w-0' ref={userRef}>
                                 <button
                                     type='button'
-                                    aria-label={t('header.userMenu', { name: userName })}
+                                    aria-label={t('layout.header.userMenu', { name: userName })}
                                     aria-haspopup='menu'
                                     aria-expanded={userOpen}
                                     title={userName}
@@ -154,7 +154,7 @@ export function Header() {
                                             }
                                         >
                                             <Icon name='manage_accounts' className='text-[20px]' />
-                                            {t('nav.settingsProfile')}
+                                            {t('layout.nav.settingsProfile')}
                                         </NavLink>
                                         <button
                                             type='button'
@@ -163,7 +163,7 @@ export function Header() {
                                             className={`${MENU_ITEM_CLASS} text-ink`}
                                         >
                                             <Icon name='logout' className='text-[20px]' />
-                                            {t('header.logout')}
+                                            {t('layout.header.logout')}
                                         </button>
                                     </div>
                                 )}
@@ -181,7 +181,7 @@ export function Header() {
                 >
                     <nav
                         id='mobile-nav'
-                        aria-label={t('header.mainNav')}
+                        aria-label={t('layout.header.mainNav')}
                         className='max-h-full overflow-y-auto border-b border-line bg-surface px-4 pb-4 pt-2 shadow-xl'
                         onClick={e => e.stopPropagation()}
                     >
@@ -193,7 +193,7 @@ export function Header() {
                                     className={({ isActive }) => `${NAV_CLASS} w-full ${isActive ? NAV_ACTIVE : ''}`}
                                 >
                                     <Icon name='dashboard' className='text-[20px]' />
-                                    {t('nav.dashboard')}
+                                    {t('layout.nav.dashboard')}
                                 </NavLink>
                             </li>
                             {primary.map(entry => (
@@ -216,7 +216,7 @@ export function Header() {
                                         className={`${NAV_CLASS} w-full ${settingsActive ? NAV_ACTIVE : ''}`}
                                     >
                                         <Icon name='settings' className='text-[20px]' />
-                                        {t('nav.settings')}
+                                        {t('layout.nav.settings')}
                                     </NavLink>
                                 </li>
                             )}

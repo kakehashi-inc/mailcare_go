@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { changeMyPassword, updateMyProfile } from '../api/client';
+import { changeMyPassword, updateMyProfile, ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { RoleBadge } from '../components/domain/StatusBadges';
 import { UserPreferenceFields } from '../components/domain/UserPreferenceFields';
@@ -15,7 +15,6 @@ import { DEFAULT_LANG, MIN_PASSWORD_LENGTH, type Lang } from '../constants';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { isLang } from '../i18n/i18n';
 import type { ProfileInput, UserDTO } from '../types';
-import { errorMessage } from '../utils/errors';
 import { DEFAULT_THEME, isTheme, type Theme } from '../utils/theme';
 import { DEFAULT_TIME_ZONE } from '../utils/timezone';
 import { isEmailAddress } from '../utils/validate';
@@ -57,7 +56,7 @@ function diff(form: ProfileForm, saved: ProfileForm): ProfileInput {
  */
 export function SettingsProfilePage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.settingsProfile'));
+    useDocumentTitle(t('layout.nav.settingsProfile'));
     const { me, refresh } = useAuth();
     const toast = useToast();
     const saved = fromUser(me?.user);
@@ -90,10 +89,10 @@ export function SettingsProfilePage() {
         setSaveError(null);
         try {
             await updateMyProfile(changes);
-            toast.success(t('profile.saved'));
+            toast.success(t('result.user.profileSaved'));
             await refresh();
         } catch (err) {
-            setSaveError(errorMessage(err, t));
+            setSaveError(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSaving(false);
         }
@@ -110,7 +109,7 @@ export function SettingsProfilePage() {
         setError(null);
         try {
             await changeMyPassword(current, next);
-            toast.success(t('profile.passwordChanged'));
+            toast.success(t('result.user.passwordChanged'));
             setCurrent('');
             setNext('');
             setConfirm('');
@@ -118,7 +117,7 @@ export function SettingsProfilePage() {
             // find out whether ours survived.
             await refresh();
         } catch (err) {
-            setError(errorMessage(err, t));
+            setError(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSubmitting(false);
         }
@@ -127,30 +126,38 @@ export function SettingsProfilePage() {
     return (
         <PageContainer>
             <PageHeader
-                title={t('nav.settingsProfile')}
-                crumbs={[{ label: t('nav.settings'), to: '/settings' }, { label: t('nav.settingsProfile') }]}
+                title={t('layout.nav.settingsProfile')}
+                crumbs={[
+                    { label: t('layout.nav.settings'), to: '/settings' },
+                    { label: t('layout.nav.settingsProfile') },
+                ]}
             />
             <div className='flex flex-col gap-6'>
                 <Card>
-                    <CardHeader title={t('profile.profile')} description={t('profile.profileHint')} />
+                    <CardHeader title={t('page.profile.profile')} description={t('page.profile.profileHint')} />
                     <form onSubmit={saveProfile} noValidate className='flex max-w-md flex-col gap-4'>
-                        <InputField label={t('user.username')} value={me?.user.username ?? ''} readOnly disabled />
                         <InputField
-                            label={t('user.displayName')}
+                            label={t('field.user.username')}
+                            value={me?.user.username ?? ''}
+                            readOnly
+                            disabled
+                        />
+                        <InputField
+                            label={t('field.common.displayName')}
                             autoComplete='name'
                             value={form.display_name}
                             onChange={e => set('display_name', e.target.value)}
                         />
                         <InputField
-                            label={t('user.email')}
+                            label={t('field.user.email')}
                             type='email'
                             inputMode='email'
                             autoComplete='email'
                             value={form.email}
                             onChange={e => set('email', e.target.value)}
                             placeholder='you@example.com'
-                            hint={t('profile.emailHint')}
-                            error={emailInvalid ? t('user.emailInvalid') : undefined}
+                            hint={t('page.profile.emailHint')}
+                            error={emailInvalid ? t('validation.common.emailFormat') : undefined}
                         />
                         <UserPreferenceFields
                             language={form.language}
@@ -162,7 +169,7 @@ export function SettingsProfilePage() {
                         />
                         {me && (
                             <p className='text-sm text-muted'>
-                                {t('user.role')}: <RoleBadge role={me.user.role} />
+                                {t('field.user.role')}: <RoleBadge role={me.user.role} />
                             </p>
                         )}
                         {saveError && <InlineError message={saveError} />}
@@ -174,13 +181,16 @@ export function SettingsProfilePage() {
                     </form>
                 </Card>
                 <Card>
-                    <CardHeader title={t('profile.changePassword')} description={t('profile.changePasswordHint')} />
+                    <CardHeader
+                        title={t('action.user.changePassword')}
+                        description={t('page.profile.changePasswordHint')}
+                    />
                     <Alert tone='info' className='mb-4'>
-                        {t('profile.sessionNote')}
+                        {t('page.profile.sessionNote')}
                     </Alert>
                     <form onSubmit={handleSubmit} noValidate className='flex max-w-md flex-col gap-4'>
                         <InputField
-                            label={t('profile.currentPassword')}
+                            label={t('field.user.currentPassword')}
                             type='password'
                             autoComplete='current-password'
                             value={current}
@@ -188,22 +198,26 @@ export function SettingsProfilePage() {
                             required
                         />
                         <InputField
-                            label={t('profile.newPassword')}
+                            label={t('field.user.newPassword')}
                             type='password'
                             autoComplete='new-password'
                             value={next}
                             onChange={e => setNext(e.target.value)}
-                            hint={t('user.passwordHint', { min: MIN_PASSWORD_LENGTH })}
-                            error={tooShort ? t('user.passwordTooShort', { min: MIN_PASSWORD_LENGTH }) : undefined}
+                            hint={t('field.user.passwordHint', { min: MIN_PASSWORD_LENGTH })}
+                            error={
+                                tooShort
+                                    ? t('validation.user.passwordTooShort', { min: MIN_PASSWORD_LENGTH })
+                                    : undefined
+                            }
                             required
                         />
                         <InputField
-                            label={t('user.passwordConfirm')}
+                            label={t('field.user.passwordConfirm')}
                             type='password'
                             autoComplete='new-password'
                             value={confirm}
                             onChange={e => setConfirm(e.target.value)}
-                            error={mismatch ? t('user.passwordMismatch') : undefined}
+                            error={mismatch ? t('validation.user.passwordMismatch') : undefined}
                             required
                         />
                         {error && <InlineError message={error} />}
@@ -215,7 +229,7 @@ export function SettingsProfilePage() {
                                 loading={submitting}
                                 disabled={!canSubmit}
                             >
-                                {t('profile.changePassword')}
+                                {t('action.user.changePassword')}
                             </Button>
                         </div>
                     </form>

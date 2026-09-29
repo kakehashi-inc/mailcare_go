@@ -21,6 +21,7 @@ import (
 	"mailcare/app/models"
 	"mailcare/app/modules"
 	"mailcare/app/modules/mailengine"
+	"mailcare/app/modules/message"
 )
 
 func init() {
@@ -279,15 +280,51 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError writes the JSON error shape {"error": msg}.
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// apiMessage is the shape of a message in the Web API: {"key": ...,
+// "params": {...}}. Key is a full key of the Web UI's language files and
+// Params the values its wording needs; the API carries no English
+// text (the Web UI words every message for its users in their language).
+// The control endpoints used by the CLI answer English text instead
+// (writeControlError).
+type apiMessage struct {
+	Key    string         `json:"key"`
+	Params map[string]any `json:"params,omitempty"`
 }
 
-// writeInternalError logs the cause and answers 500 with a generic message.
+// writeError answers an error with a message without parameters.
+func writeError(w http.ResponseWriter, status int, key string) {
+	writeJSON(w, status, apiMessage{Key: key})
+}
+
+// writeErrorMessage answers err: a message (package message) with its key
+// and parameters, 404 for system.notFound, 409 for result.mailbox.busy and 400 otherwise;
+// any other error is logged with the request and answered as internal.
+func writeErrorMessage(w http.ResponseWriter, r *http.Request, err error) {
+	m, ok := message.As(err)
+	if !ok {
+		writeInternalError(w, r.Method+" "+r.URL.Path, err)
+		return
+	}
+	status := http.StatusBadRequest
+	switch m.Key {
+	case "system.notFound":
+		status = http.StatusNotFound
+	case "result.mailbox.busy":
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, apiMessage{Key: m.Key, Params: m.Params})
+}
+
+// writeInternalError logs the cause and answers 500.
 func writeInternalError(w http.ResponseWriter, what string, err error) {
 	log.Printf("%s: %v", what, err)
-	writeError(w, http.StatusInternalServerError, what)
+	writeError(w, http.StatusInternalServerError, "system.internal")
+}
+
+// writeControlError writes the error shape of the control endpoints,
+// {"error": msg}: English text the CLI prints as it is.
+func writeControlError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 // decodeJSON reads a JSON body into v. It returns false (after answering
@@ -295,7 +332,7 @@ func writeInternalError(w http.ResponseWriter, what string, err error) {
 func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxJSONBody))
 	if err := dec.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return false
 	}
 	return true
@@ -305,7 +342,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil || id <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid "+name)
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return 0, false
 	}
 	return id, true
@@ -319,7 +356,7 @@ func (c *core) mailboxFromPath(w http.ResponseWriter, r *http.Request) (*models.
 	}
 	mb, err := models.GetMailboxByID(c.db, id)
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "mailbox not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return nil, false
 	}
 	if err != nil {

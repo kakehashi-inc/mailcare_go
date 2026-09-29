@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type DependencyList } from 'react';
+import type { ApiError } from '../api/client';
 
 export interface AsyncState<T> {
     data: T | null;
-    error: unknown;
+    /** The failure of the last load (loaders are API calls, which throw ApiError). */
+    error: ApiError | null;
     /** True while the first load (or a reload with `reset`) is in flight. */
     loading: boolean;
     /** True while any load is in flight, including background reloads. */
@@ -18,7 +20,7 @@ export interface AsyncState<T> {
  */
 export function useAsync<T>(loader: () => Promise<T>, deps: DependencyList): AsyncState<T> {
     const [data, setDataState] = useState<T | null>(null);
-    const [error, setError] = useState<unknown>(null);
+    const [error, setError] = useState<ApiError | null>(null);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const seq = useRef(0);
@@ -39,7 +41,7 @@ export function useAsync<T>(loader: () => Promise<T>, deps: DependencyList): Asy
             setError(null);
         } catch (e) {
             if (id !== seq.current) return;
-            setError(e);
+            setError(e as ApiError);
         } finally {
             if (id === seq.current) {
                 setLoading(false);

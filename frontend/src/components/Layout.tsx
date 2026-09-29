@@ -12,7 +12,7 @@ export function Layout() {
                 href='#main'
                 className='sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-accent focus:px-4 focus:py-2 focus:text-accent-contrast'
             >
-                {t('header.skipToContent')}
+                {t('layout.skipToContent')}
             </a>
             <Header />
             <main id='main' className='flex flex-1 flex-col'>

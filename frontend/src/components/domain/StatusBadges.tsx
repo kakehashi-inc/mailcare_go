@@ -14,7 +14,7 @@ export function GroupStateBadge({ state }: { state: GroupState }) {
     const s = GROUP_STATE[state] ?? GROUP_STATE.open;
     return (
         <Badge tone={s.tone} icon={s.icon}>
-            {t(`groupState.${state}`)}
+            {t(`value.groupState.${state}`)}
         </Badge>
     );
 }
@@ -31,13 +31,13 @@ export function SeverityBadge({ severity }: { severity: string }) {
     if (!s) {
         return (
             <Badge tone='neutral' icon='help_outline'>
-                {t('severity.unknown')}
+                {t('value.severity.unknown')}
             </Badge>
         );
     }
     return (
         <Badge tone={s.tone} icon={s.icon}>
-            {t(`severity.${severity as 'high' | 'medium' | 'low'}`)}
+            {t(`value.severity.${severity as 'high' | 'medium' | 'low'}`)}
         </Badge>
     );
 }
@@ -47,7 +47,7 @@ export function UnanalyzableBadge() {
     const { t } = useTranslation();
     return (
         <Badge tone='danger' icon='error_outline'>
-            {t('report.unanalyzable')}
+            {t('value.reportStatus.unanalyzable')}
         </Badge>
     );
 }
@@ -57,7 +57,7 @@ export function NeedsReviewBadge() {
     const { t } = useTranslation();
     return (
         <Badge tone='warning' icon='fact_check'>
-            {t('report.needsReview')}
+            {t('value.reportConfidence.low')}
         </Badge>
     );
 }
@@ -75,7 +75,7 @@ export function ResponsibleBadge({ responsible }: { responsible: string }) {
         'sender' | 'recipient' | 'domain' | 'unknown';
     return (
         <Badge tone={key === 'unknown' ? 'neutral' : 'accent'} icon={RESPONSIBLE_ICON[key]}>
-            {t(`responsible.${key}`)}
+            {t(`value.responsible.${key}`)}
         </Badge>
     );
 }
@@ -99,7 +99,7 @@ export function ActionableBadge({ actionable }: { actionable: boolean }) {
     const { t } = useTranslation();
     return (
         <Badge tone={actionable ? 'accent' : 'neutral'} icon={actionable ? 'build' : 'do_not_disturb_on'}>
-            {t(actionable ? 'group.actionable' : 'group.excluded')}
+            {t(actionable ? 'value.groupScope.actionable' : 'value.groupScope.excluded')}
         </Badge>
     );
 }
@@ -117,7 +117,7 @@ export function JobStatusBadge({ status }: { status: JobStatus }) {
     const s = JOB_STATUS[status] ?? JOB_STATUS.queued;
     return (
         <Badge tone={s.tone} icon={s.icon}>
-            {t(`jobStatus.${status}`)}
+            {t(`value.jobStatus.${status}`)}
         </Badge>
     );
 }
@@ -141,7 +141,7 @@ export function CheckStatusBadge({ status }: { status: CheckStatus }) {
     const key = status === '' ? 'never' : status;
     return (
         <Badge tone={s.tone} icon={s.icon}>
-            {t(`checkStatus.${key}`)}
+            {t(`value.checkStatus.${key}`)}
         </Badge>
     );
 }
@@ -159,7 +159,7 @@ export function ReportStatusBadge({ status }: { status: ReportStatus | string })
     const s = REPORT_STATUS[key];
     return (
         <Badge tone={s.tone} icon={s.icon}>
-            {t(`reportStatus.${key === '' ? 'none' : key}`)}
+            {t(`value.reportStatus.${key === '' ? 'none' : key}`)}
         </Badge>
     );
 }
@@ -169,7 +169,7 @@ export function BounceKindBadge({ kind, isBounce }: { kind: string; isBounce: bo
     if (!isBounce) {
         return (
             <Badge tone='neutral' icon='mail'>
-                {t('bounceKind.none')}
+                {t('value.bounceKind.none')}
             </Badge>
         );
     }
@@ -187,7 +187,7 @@ export function BounceKindBadge({ kind, isBounce }: { kind: string; isBounce: bo
                 : 'help_outline';
     return (
         <Badge tone={tone} icon={icon}>
-            {t(`bounceKind.${key}`)}
+            {t(`value.bounceKind.${key}`)}
         </Badge>
     );
 }
@@ -197,7 +197,7 @@ export function RoleBadge({ role }: { role: string }) {
     const admin = role === 'admin';
     return (
         <Badge tone={admin ? 'accent' : 'neutral'} icon={admin ? 'admin_panel_settings' : 'person'}>
-            {t(admin ? 'role.admin' : 'role.user')}
+            {t(admin ? 'value.role.admin' : 'value.role.user')}
         </Badge>
     );
 }

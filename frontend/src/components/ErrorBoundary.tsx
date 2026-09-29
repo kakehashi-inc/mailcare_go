@@ -46,8 +46,8 @@ function ErrorCard({ error }: { error: Error }) {
                 className='flex flex-col items-center rounded-xl border border-danger/40 bg-danger-soft px-4 py-8 text-center'
             >
                 <Icon name='error_outline' className='text-[40px] text-danger' />
-                <p className='mt-3 text-base font-semibold text-ink'>{t('error.renderTitle')}</p>
-                <p className='mt-1 max-w-md break-words text-sm text-ink'>{t('error.renderHint')}</p>
+                <p className='mt-3 text-base font-semibold text-ink'>{t('layout.renderError.title')}</p>
+                <p className='mt-1 max-w-md break-words text-sm text-ink'>{t('layout.renderError.hint')}</p>
                 <code className='mt-2 max-w-full break-words rounded-md bg-surface px-2 py-1 font-mono text-xs text-muted'>
                     {error.message}
                 </code>
@@ -56,7 +56,7 @@ function ErrorCard({ error }: { error: Error }) {
                     className='mt-4 inline-flex min-h-tap items-center gap-2 rounded-md bg-accent px-4 py-2 text-base font-medium text-accent-contrast hover:bg-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
                 >
                     <Icon name='refresh' className='text-[20px]' />
-                    {t('error.reload')}
+                    {t('layout.renderError.reload')}
                 </a>
             </div>
         </div>

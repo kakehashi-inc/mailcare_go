@@ -20,7 +20,6 @@ import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { usePolling } from '../hooks/usePolling';
 import type { JobKind, MailboxDTO } from '../types';
-import { errorMessage } from '../utils/errors';
 import { formatNumber } from '../utils/format';
 
 /** Job kinds that read or rewrite a mailbox's mails, shown as "syncing" on its card. */
@@ -28,7 +27,7 @@ const MAILBOX_JOBS: readonly JobKind[] = ['sync', 'fetch', 'group', 'reindex', '
 
 export function DashboardPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.dashboard'));
+    useDocumentTitle(t('layout.nav.dashboard'));
     const { isAdmin } = useAuth();
     const { data, error, loading, reload } = useAsync(getDashboard, []);
 
@@ -44,30 +43,30 @@ export function DashboardPage() {
     if (error || !data) {
         return (
             <PageContainer>
-                <ErrorState message={errorMessage(error, t)} onRetry={() => void reload()} />
+                <ErrorState message={t(error?.key ?? 'system.internal', error?.params)} onRetry={() => void reload()} />
             </PageContainer>
         );
     }
 
     const totals = [
         {
-            label: t('dashboard.totalMailboxes'),
+            label: t('page.dashboard.mailboxes'),
             value: data.totals.mailboxes,
             icon: 'alternate_email',
             tone: 'text-ink',
         },
         {
-            label: t('dashboard.totalOpenGroups'),
+            label: t('field.mailbox.openGroups'),
             value: data.totals.open_groups,
             icon: 'notifications_active',
             tone: data.totals.open_groups > 0 ? 'text-danger' : 'text-ink',
         },
-        { label: t('dashboard.totalBounces'), value: data.totals.bounces, icon: 'report', tone: 'text-ink' },
-        { label: t('dashboard.totalMessages'), value: data.totals.messages, icon: 'mail', tone: 'text-ink' },
+        { label: t('field.mailbox.bounces'), value: data.totals.bounces, icon: 'report', tone: 'text-ink' },
+        { label: t('field.mailbox.messages'), value: data.totals.messages, icon: 'mail', tone: 'text-ink' },
     ];
     if (data.totals.unclassified > 0) {
         totals.push({
-            label: t('dashboard.totalUnclassified'),
+            label: t('field.mailbox.unclassified'),
             value: data.totals.unclassified,
             icon: 'pending',
             tone: 'text-warning',
@@ -76,25 +75,25 @@ export function DashboardPage() {
 
     return (
         <PageContainer wide>
-            <PageHeader title={t('nav.dashboard')} description={t('dashboard.description')} />
+            <PageHeader title={t('layout.nav.dashboard')} description={t('page.dashboard.description')} />
 
             {/* Agent notices are for administrators, who can act on them; members only see the badge state. */}
             {isAdmin && !data.agent.enabled && (
-                <Alert tone='info' className='mb-4' title={t('dashboard.agentDisabledTitle')}>
-                    {t('dashboard.agentDisabled')}{' '}
+                <Alert tone='info' className='mb-4' title={t('page.dashboard.agentDisabledTitle')}>
+                    {t('page.dashboard.agentDisabled')}{' '}
                     <Link to='/settings/general' className='font-medium text-accent underline underline-offset-2'>
-                        {t('nav.settingsGeneral')}
+                        {t('layout.nav.settingsGeneral')}
                     </Link>
                 </Alert>
             )}
             {isAdmin && data.agent.enabled && !data.agent.available && (
-                <Alert tone='warning' className='mb-4' title={t('dashboard.agentUnavailableTitle')}>
-                    {t('dashboard.agentUnavailable', { provider: data.agent.provider })}
+                <Alert tone='warning' className='mb-4' title={t('page.dashboard.agentUnavailableTitle')}>
+                    {t('page.dashboard.agentUnavailable', { provider: data.agent.provider })}
                 </Alert>
             )}
 
             <section
-                aria-label={t('dashboard.totals')}
+                aria-label={t('page.dashboard.totals')}
                 className={`grid grid-cols-2 gap-3 ${totals.length > 4 ? 'md:grid-cols-3 lg:grid-cols-5' : 'md:grid-cols-4'}`}
             >
                 {totals.map(item => (
@@ -111,14 +110,14 @@ export function DashboardPage() {
             <div className='mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3'>
                 <div className='flex flex-col gap-6 lg:col-span-2'>
                     <section>
-                        <CardHeader title={t('dashboard.mailboxes')} />
+                        <CardHeader title={t('page.dashboard.mailboxes')} />
                         {data.mailboxes.length === 0 ? (
                             <EmptyState
-                                title={t('mailbox.emptyTitle')}
+                                title={t('component.mailboxPicker.empty')}
                                 action={
                                     isAdmin ? (
                                         <LinkButton to='/settings/mailboxes/new' variant='primary' icon='add'>
-                                            {t('mailbox.add')}
+                                            {t('action.mailbox.add')}
                                         </LinkButton>
                                     ) : undefined
                                 }
@@ -142,7 +141,7 @@ export function DashboardPage() {
                                                 </div>
                                                 {syncActive(mb) ? (
                                                     <Badge tone='info' icon='autorenew'>
-                                                        {t('checkStatus.running')}
+                                                        {t('value.checkStatus.running')}
                                                     </Badge>
                                                 ) : (
                                                     <CheckStatusBadge status={fetchStatus(mb)} />
@@ -150,7 +149,7 @@ export function DashboardPage() {
                                             </div>
                                             <dl className='grid grid-cols-2 gap-2 text-sm'>
                                                 <div>
-                                                    <dt className='text-muted'>{t('mailbox.openGroups')}</dt>
+                                                    <dt className='text-muted'>{t('field.mailbox.openGroups')}</dt>
                                                     <dd
                                                         className={`text-xl font-bold ${mb.stats?.groups.open ? 'text-danger' : 'text-ink'}`}
                                                     >
@@ -158,26 +157,28 @@ export function DashboardPage() {
                                                     </dd>
                                                 </div>
                                                 <div>
-                                                    <dt className='text-muted'>{t('mailbox.bounces')}</dt>
+                                                    <dt className='text-muted'>{t('field.mailbox.bounces')}</dt>
                                                     <dd className='text-xl font-bold text-ink'>
                                                         {mb.stats ? formatNumber(mb.stats.bounces) : '-'}
                                                     </dd>
                                                 </div>
                                                 {(mb.stats?.unclassified ?? 0) > 0 && (
                                                     <div>
-                                                        <dt className='text-muted'>{t('mailbox.unclassified')}</dt>
+                                                        <dt className='text-muted'>
+                                                            {t('field.mailbox.unclassified')}
+                                                        </dt>
                                                         <dd className='text-xl font-bold text-warning'>
                                                             {formatNumber(mb.stats?.unclassified ?? 0)}
                                                         </dd>
                                                     </div>
                                                 )}
                                                 <div className='col-span-2'>
-                                                    <dt className='text-muted'>{t('mailbox.lastChecked')}</dt>
+                                                    <dt className='text-muted'>{t('field.mailbox.lastChecked')}</dt>
                                                     <dd className='text-ink'>
                                                         <DateTime
                                                             value={mb.last_fetched_at}
                                                             relative
-                                                            empty={t('checkStatus.never')}
+                                                            empty={t('value.checkStatus.never')}
                                                         />
                                                     </dd>
                                                 </div>
@@ -188,14 +189,16 @@ export function DashboardPage() {
                                                 </p>
                                             )}
                                             {!mb.enabled && (
-                                                <p className='text-sm text-muted'>{t('mailbox.disabledNote')}</p>
+                                                <p className='text-sm text-muted'>
+                                                    {t('page.dashboard.mailboxDisabled')}
+                                                </p>
                                             )}
                                             <div className='mt-auto flex flex-wrap gap-2'>
                                                 <LinkButton size='sm' to={`/alerts/${mb.id}`} icon='notifications'>
-                                                    {t('nav.alerts')}
+                                                    {t('layout.nav.alerts')}
                                                 </LinkButton>
                                                 <LinkButton size='sm' to={`/mails/${mb.id}`} icon='mail'>
-                                                    {t('nav.mails')}
+                                                    {t('layout.nav.mails')}
                                                 </LinkButton>
                                             </div>
                                         </Card>
@@ -206,9 +209,12 @@ export function DashboardPage() {
                     </section>
 
                     <section>
-                        <CardHeader title={t('dashboard.recentGroups')} description={t('dashboard.recentGroupsHint')} />
+                        <CardHeader
+                            title={t('page.dashboard.recentGroups')}
+                            description={t('page.dashboard.recentGroupsHint')}
+                        />
                         {data.recent_groups.length === 0 ? (
-                            <EmptyState title={t('dashboard.noRecentGroups')} />
+                            <EmptyState title={t('page.dashboard.noRecentGroups')} />
                         ) : (
                             <ul className='flex flex-col gap-3'>
                                 {data.recent_groups.map(g => (
@@ -227,10 +233,10 @@ export function DashboardPage() {
 
                 <aside className='flex flex-col gap-6'>
                     <Card>
-                        <CardHeader title={t('dashboard.schedule')} as='h2' />
+                        <CardHeader title={t('page.dashboard.schedule')} as='h2' />
                         <dl className='space-y-3 text-base'>
                             <div>
-                                <dt className='text-sm text-muted'>{t('dashboard.nextCheck')}</dt>
+                                <dt className='text-sm text-muted'>{t('page.dashboard.nextCheck')}</dt>
                                 <dd className='text-ink'>
                                     {data.next_check_at ? (
                                         <>
@@ -240,15 +246,15 @@ export function DashboardPage() {
                                             </span>
                                         </>
                                     ) : (
-                                        t('dashboard.noSchedule')
+                                        t('page.dashboard.noSchedule')
                                     )}
                                 </dd>
                             </div>
                             <div>
-                                <dt className='text-sm text-muted'>{t('dashboard.checkTimes')}</dt>
+                                <dt className='text-sm text-muted'>{t('field.setting.checkTimes')}</dt>
                                 <dd className='flex flex-wrap gap-2'>
                                     {data.check_times.length === 0 ? (
-                                        <span className='text-muted'>{t('dashboard.noSchedule')}</span>
+                                        <span className='text-muted'>{t('page.dashboard.noSchedule')}</span>
                                     ) : (
                                         data.check_times.map(time => (
                                             <span
@@ -262,7 +268,7 @@ export function DashboardPage() {
                                 </dd>
                             </div>
                             <div>
-                                <dt className='text-sm text-muted'>{t('dashboard.agent')}</dt>
+                                <dt className='text-sm text-muted'>{t('page.dashboard.agent')}</dt>
                                 <dd
                                     className='inline-flex items-center gap-1 text-ink'
                                     title={data.agent.enabled ? t('common.enabled') : t('common.disabled')}
@@ -289,25 +295,25 @@ export function DashboardPage() {
                         </dl>
                         {isAdmin && (
                             <LinkButton to='/settings/general' size='sm' icon='tune' className='mt-4'>
-                                {t('nav.settingsGeneral')}
+                                {t('layout.nav.settingsGeneral')}
                             </LinkButton>
                         )}
                     </Card>
 
                     <Card>
                         <CardHeader
-                            title={t('dashboard.activeJobs')}
+                            title={t('page.dashboard.activeJobs')}
                             actions={
                                 <LinkButton to='/tools' size='sm' icon='list'>
-                                    {t('dashboard.allJobs')}
+                                    {t('page.dashboard.allJobs')}
                                 </LinkButton>
                             }
                         />
-                        <JobList jobs={data.active_jobs} emptyTitle={t('dashboard.noActiveJobs')} />
+                        <JobList jobs={data.active_jobs} emptyTitle={t('page.dashboard.noActiveJobs')} />
                         {data.recent_jobs.length > 0 && (
                             <details className='mt-4'>
                                 <summary className='cursor-pointer text-sm font-medium text-muted hover:text-ink'>
-                                    {t('dashboard.recentJobs')}
+                                    {t('page.dashboard.recentJobs')}
                                 </summary>
                                 <div className='mt-2'>
                                     <JobList jobs={data.recent_jobs} />

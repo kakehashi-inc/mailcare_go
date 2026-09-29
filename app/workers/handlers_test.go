@@ -540,10 +540,13 @@ func TestJobsEndpoints(t *testing.T) {
 		t.Errorf("duplicate: %+v created %v", dup.Job, dup.Created)
 	}
 	for _, bad := range []map[string]any{{"kind": "bogus"}, {"kind": "analyze", "target": "0123456789abcdef"},
-		{"kind": "sync", "mailbox_id": 999}, {"kind": "sync", "mailbox_id": -1}} {
+		{"kind": "sync", "mailbox_id": -1}} {
 		if rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", bad, s.admin); rec.Code != http.StatusBadRequest {
 			t.Errorf("%v: %d, want 400", bad, rec.Code)
 		}
+	}
+	if rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "sync", "mailbox_id": 999}, s.admin); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown mailbox: %d, want 404", rec.Code)
 	}
 	rec = do(t, s.h, http.MethodGet, "/api/v1/jobs?limit=1", nil, s.user)
 	if rec.Code != http.StatusOK || strings.Count(rec.Body.String(), `"kind":`) != 1 {

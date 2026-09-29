@@ -24,11 +24,11 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
     if (mailboxes.length === 0) {
         return (
             <EmptyState
-                title={t('mailbox.emptyTitle')}
+                title={t('component.mailboxPicker.empty')}
                 action={
                     isAdmin ? (
                         <LinkButton to='/settings/mailboxes/new' variant='primary' icon='add'>
-                            {t('mailbox.add')}
+                            {t('action.mailbox.add')}
                         </LinkButton>
                     ) : undefined
                 }
@@ -47,7 +47,7 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                         <Link
                             to={linkTo(mb)}
                             className='flex h-full flex-col gap-3 rounded-xl border border-line bg-surface p-4 shadow-sm transition-colors hover:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
-                            aria-label={t('mailbox.openAria', { address: mb.address })}
+                            aria-label={t('action.mailbox.openFor', { address: mb.address })}
                         >
                             <div className='flex items-start justify-between gap-3'>
                                 <div className='min-w-0'>
@@ -65,7 +65,9 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                             <div className='mt-auto flex items-end justify-between gap-3'>
                                 <div>
                                     <p className='text-sm text-muted'>
-                                        {highlight === 'open' ? t('mailbox.openGroups') : t('mailbox.messages')}
+                                        {highlight === 'open'
+                                            ? t('field.mailbox.openGroups')
+                                            : t('field.mailbox.messages')}
                                     </p>
                                     <p
                                         className={`text-2xl font-bold ${highlight === 'open' && value ? 'text-danger' : 'text-ink'}`}
@@ -74,9 +76,13 @@ export function MailboxPicker({ mailboxes, linkTo, highlight }: MailboxPickerPro
                                     </p>
                                 </div>
                                 <p className='text-right text-sm text-muted'>
-                                    {t('mailbox.lastChecked')}
+                                    {t('field.mailbox.lastChecked')}
                                     <br />
-                                    <DateTime value={mb.last_fetched_at} relative empty={t('checkStatus.never')} />
+                                    <DateTime
+                                        value={mb.last_fetched_at}
+                                        relative
+                                        empty={t('value.checkStatus.never')}
+                                    />
                                 </p>
                             </div>
                         </Link>

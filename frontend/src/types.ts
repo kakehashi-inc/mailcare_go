@@ -196,6 +196,8 @@ export interface ReportDTO {
     command_count: number | null;
     /** A failed run that settled its group (not a usage limit or a cancellation). */
     unanalyzable: boolean;
+    /** A run refused by the agent's usage limit. */
+    usage_limited: boolean;
     started_at: string | null;
     finished_at: string | null;
     created_at: string;

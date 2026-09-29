@@ -6,20 +6,19 @@ import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import { errorMessage } from '../utils/errors';
 
 export function AlertsIndexPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.alerts'));
+    useDocumentTitle(t('layout.nav.alerts'));
     const { data, error, loading, reload } = useAsync(() => listMailboxes(true), []);
 
     return (
         <PageContainer wide>
-            <PageHeader title={t('nav.alerts')} description={t('alerts.chooseMailbox')} />
+            <PageHeader title={t('layout.nav.alerts')} description={t('page.alerts.chooseMailbox')} />
             {loading ? (
                 <LoadingBlock />
             ) : error || !data ? (
-                <ErrorState message={errorMessage(error, t)} onRetry={() => void reload()} />
+                <ErrorState message={t(error?.key ?? 'system.internal', error?.params)} onRetry={() => void reload()} />
             ) : (
                 <MailboxPicker mailboxes={data} linkTo={mb => `/alerts/${mb.id}`} highlight='open' />
             )}

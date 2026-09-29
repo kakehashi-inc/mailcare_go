@@ -27,7 +27,7 @@ func TestMailboxBusyAnswersConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := do(t, s.h, http.MethodDelete, "/api/v1/mailboxes/"+itoa(s.mb.ID), nil, s.admin)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "a job is running") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"key":"result.mailbox.busy"`) {
 		t.Errorf("delete while running: %d %s", rec.Code, rec.Body.String())
 	}
 	body := map[string]any{"address": "renamed@example.test", "imap_host": "imap.example.test", "imap_username": "u"}

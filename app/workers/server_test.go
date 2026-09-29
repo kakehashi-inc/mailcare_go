@@ -133,8 +133,8 @@ func TestSPAAndPublicEndpoints(t *testing.T) {
 		{"/manifest.webmanifest", http.StatusOK, "{}", "application/manifest+json"},
 		{"/api/v1/health", http.StatusOK, `"version"`, "application/json"},
 		{"/api/v1/setup", http.StatusOK, `"needs_setup":true`, "application/json"},
-		{"/api/v1/me", http.StatusUnauthorized, `"unauthorized"`, "application/json"},
-		{"/api/v1/nope", http.StatusUnauthorized, `"unauthorized"`, "application/json"},
+		{"/api/v1/me", http.StatusUnauthorized, `"system.unauthorized"`, "application/json"},
+		{"/api/v1/nope", http.StatusUnauthorized, `"system.unauthorized"`, "application/json"},
 	}
 	for _, tc := range cases {
 		rec := do(t, h, http.MethodGet, tc.path, nil, nil)
@@ -286,7 +286,7 @@ func TestAdminOnlyEndpoints(t *testing.T) {
 	user := login(t, h, "bob", "password123")
 
 	rec := do(t, h, http.MethodGet, "/api/v1/users", nil, user)
-	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"forbidden"`) {
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"system.forbidden"`) {
 		t.Errorf("GET /api/v1/users as user: status %d, body %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, h, http.MethodGet, "/api/v1/users", nil, admin)

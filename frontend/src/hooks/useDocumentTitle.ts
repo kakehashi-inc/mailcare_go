@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 export function useDocumentTitle(title: string | undefined): void {
     const { t } = useTranslation();
     useEffect(() => {
-        const app = t('app.title');
+        const app = t('layout.appName');
         document.title = title ? `${title} - ${app}` : app;
         return () => {
             document.title = app;

@@ -2,7 +2,6 @@ package modules
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -15,6 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/message"
 )
 
 // bcryptCost is the work factor for password hashes.
@@ -27,7 +27,7 @@ const dummyPasswordHash = "$2a$12$hU6M9KWBs4epQ45MC43i2.C7ThAbeorfWt51.wt5qKZoPk
 
 // ErrInvalidCredentials is returned by the login helpers for any wrong
 // username, password or token so that callers cannot tell them apart.
-var ErrInvalidCredentials = errors.New("invalid credentials")
+var ErrInvalidCredentials = message.New("result.session.loginFailed", "invalid credentials")
 
 var (
 	usernameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
@@ -44,7 +44,7 @@ const MaxEmailLength = 254
 // ValidateUsername checks the character set and length of a username.
 func ValidateUsername(username string) error {
 	if !usernameRe.MatchString(username) {
-		return errors.New("username must be 1-64 characters of [A-Za-z0-9_.-]")
+		return message.New("validation.user.usernameInvalid", "username must be 1-64 characters of [A-Za-z0-9_.-]")
 	}
 	return nil
 }
@@ -52,7 +52,7 @@ func ValidateUsername(username string) error {
 // ValidateRole checks that role is admin or user.
 func ValidateRole(role string) error {
 	if role != RoleAdmin && role != RoleUser {
-		return fmt.Errorf("role must be %q or %q", RoleAdmin, RoleUser)
+		return message.New("system.invalidRequest", fmt.Sprintf("role must be %q or %q", RoleAdmin, RoleUser))
 	}
 	return nil
 }
@@ -62,10 +62,11 @@ func ValidateRole(role string) error {
 // silently ignored).
 func ValidatePassword(password string) error {
 	if utf8.RuneCountInString(password) < PasswordMinLength {
-		return fmt.Errorf("password must be at least %d characters", PasswordMinLength)
+		return message.New("validation.user.passwordTooShort", fmt.Sprintf("password must be at least %d characters", PasswordMinLength)).
+			With("min", PasswordMinLength)
 	}
 	if len(password) > 72 {
-		return errors.New("password must be 72 bytes or fewer (bcrypt limit)")
+		return message.New("validation.user.passwordTooLong", "password must be 72 bytes or fewer (bcrypt limit)").With("max", 72)
 	}
 	return nil
 }
@@ -88,10 +89,11 @@ func NormalizeEmail(email string) (string, error) {
 		return "", nil
 	}
 	if len(email) > MaxEmailLength {
-		return "", fmt.Errorf("email must be %d characters or fewer", MaxEmailLength)
+		return "", message.New("validation.user.emailTooLong", fmt.Sprintf("email must be %d characters or fewer", MaxEmailLength)).
+			With("max", MaxEmailLength)
 	}
 	if !emailRe.MatchString(email) {
-		return "", fmt.Errorf("invalid email address %q", email)
+		return "", message.New("validation.common.emailFormat", fmt.Sprintf("invalid email address %q", email))
 	}
 	return email, nil
 }
@@ -105,11 +107,8 @@ func NormalizeTimezone(tz string) (string, error) {
 	if tz == "" {
 		return models.DefaultTimezone, nil
 	}
-	if tz == "Local" {
-		return "", fmt.Errorf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz)
-	}
-	if _, err := time.LoadLocation(tz); err != nil {
-		return "", fmt.Errorf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz)
+	if _, err := time.LoadLocation(tz); err != nil || tz == "Local" {
+		return "", message.New("validation.user.timezoneInvalid", fmt.Sprintf("invalid timezone %q (use an IANA name such as Asia/Tokyo)", tz))
 	}
 	return tz, nil
 }
@@ -148,7 +147,7 @@ func NormalizeLanguage(lang string) (string, error) {
 		return models.DefaultLanguage, nil
 	}
 	if !slices.Contains(KnownLanguages, lang) {
-		return "", fmt.Errorf("invalid language %q (use %s)", lang, strings.Join(KnownLanguages, " or "))
+		return "", message.New("validation.user.languageInvalid", fmt.Sprintf("invalid language %q (use %s)", lang, strings.Join(KnownLanguages, " or ")))
 	}
 	return lang, nil
 }
@@ -161,7 +160,7 @@ func NormalizeTheme(theme string) (string, error) {
 		return models.DefaultTheme, nil
 	}
 	if !slices.Contains(KnownThemes, theme) {
-		return "", fmt.Errorf("invalid theme %q (use %s)", theme, strings.Join(KnownThemes, ", "))
+		return "", message.New("validation.user.themeInvalid", fmt.Sprintf("invalid theme %q (use %s)", theme, strings.Join(KnownThemes, ", ")))
 	}
 	return theme, nil
 }
@@ -200,8 +199,8 @@ func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
 	if displayName == "" {
 		displayName = username
 	}
-	if utf8.RuneCountInString(displayName) > 128 {
-		return nil, errors.New("display name must be 128 characters or fewer")
+	if utf8.RuneCountInString(displayName) > MaxDisplayNameLength {
+		return nil, errDisplayNameTooLong
 	}
 	email, err := NormalizeEmail(in.Email)
 	if err != nil {
@@ -220,11 +219,8 @@ func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
 		return nil, err
 	}
 	if _, err := models.GetUserByUsername(db, username); err == nil {
-		return nil, fmt.Errorf("user %q already exists", username)
+		return nil, usernameTaken(username)
 	} else if err != sql.ErrNoRows {
-		return nil, err
-	}
-	if err := CheckEmailAvailable(db, email, 0); err != nil {
 		return nil, err
 	}
 	hash, err := HashPassword(in.Password)
@@ -234,6 +230,11 @@ func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
 	u := &models.User{Username: username, DisplayName: displayName, Email: email, Language: language, Timezone: timezone,
 		Theme: theme, PasswordHash: hash, Role: role}
 	if err := models.InsertUser(db, u); err != nil {
+		// A concurrent create of the same username passes the check above
+		// and is stopped by the UNIQUE constraint; report it the same way.
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: users.username") {
+			return nil, usernameTaken(username)
+		}
 		return nil, err
 	}
 	return u, nil
@@ -260,8 +261,8 @@ func ApplyProfile(u *models.User, in ProfileInput) (displayName, email, language
 		if displayName == "" {
 			displayName = u.Username
 		}
-		if utf8.RuneCountInString(displayName) > 128 {
-			return "", "", "", "", "", errors.New("display name must be 128 characters or fewer")
+		if utf8.RuneCountInString(displayName) > MaxDisplayNameLength {
+			return "", "", "", "", "", errDisplayNameTooLong
 		}
 	}
 	if in.Email != nil {
@@ -287,37 +288,20 @@ func ApplyProfile(u *models.User, in ProfileInput) (displayName, email, language
 	return displayName, email, language, timezone, theme, nil
 }
 
-// ErrEmailTaken is returned when a mail address is already set on another
-// user. Addresses are unique among users because they can be used to log in.
-var ErrEmailTaken = errors.New("email address is already used by another user")
+// MaxDisplayNameLength bounds a display name (users and mailboxes).
+const MaxDisplayNameLength = 128
 
-// CheckEmailAvailable returns ErrEmailTaken when email (already normalized)
-// belongs to a user other than exceptID. An empty address is always
-// available.
-func CheckEmailAvailable(db *sql.DB, email string, exceptID int64) error {
-	if email == "" {
-		return nil
-	}
-	other, err := models.GetUserByEmail(db, email)
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if other.ID != exceptID {
-		return ErrEmailTaken
-	}
-	return nil
+var errDisplayNameTooLong = message.New("validation.common.displayNameTooLong",
+	fmt.Sprintf("display name must be %d characters or fewer", MaxDisplayNameLength)).With("max", MaxDisplayNameLength)
+
+func usernameTaken(username string) error {
+	return message.New("validation.user.usernameTaken", fmt.Sprintf("user %q already exists", username))
 }
 
 // UpdateProfile validates and stores the profile fields of a user.
 func UpdateProfile(db *sql.DB, u *models.User, in ProfileInput) error {
 	displayName, email, language, timezone, theme, err := ApplyProfile(u, in)
 	if err != nil {
-		return err
-	}
-	if err := CheckEmailAvailable(db, email, u.ID); err != nil {
 		return err
 	}
 	return models.UpdateUserProfile(db, u.ID, displayName, email, language, timezone, theme)

@@ -7,38 +7,38 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 export function SettingsMenuPage() {
     const { t } = useTranslation();
-    useDocumentTitle(t('nav.settings'));
+    useDocumentTitle(t('layout.nav.settings'));
 
     const entries = [
         {
             to: '/settings/general',
             icon: 'tune',
-            label: t('nav.settingsGeneral'),
-            description: t('settings.menu.general'),
+            label: t('layout.nav.settingsGeneral'),
+            description: t('page.settings.menu.general'),
         },
         {
             to: '/settings/notifications',
             icon: 'mark_email_unread',
-            label: t('nav.settingsNotifications'),
-            description: t('settings.menu.notifications'),
+            label: t('layout.nav.settingsNotifications'),
+            description: t('page.settings.menu.notifications'),
         },
         {
             to: '/settings/mailboxes',
             icon: 'alternate_email',
-            label: t('nav.settingsMailboxes'),
-            description: t('settings.menu.mailboxes'),
+            label: t('layout.nav.settingsMailboxes'),
+            description: t('page.settings.menu.mailboxes'),
         },
         {
             to: '/settings/users',
             icon: 'group',
-            label: t('nav.settingsUsers'),
-            description: t('settings.menu.users'),
+            label: t('layout.nav.settingsUsers'),
+            description: t('page.settings.menu.users'),
         },
         {
             to: '/settings/tokens',
             icon: 'key',
-            label: t('nav.settingsTokens'),
-            description: t('settings.menu.tokens'),
+            label: t('layout.nav.settingsTokens'),
+            description: t('page.settings.menu.tokens'),
         },
     ];
 
@@ -47,13 +47,13 @@ export function SettingsMenuPage() {
             <PageHeader
                 title={
                     <span className='inline-flex flex-wrap items-center gap-3'>
-                        {t('nav.settings')}
+                        {t('layout.nav.settings')}
                         <Badge tone='accent' icon='admin_panel_settings'>
-                            {t('settings.adminOnly')}
+                            {t('page.settings.adminOnly')}
                         </Badge>
                     </span>
                 }
-                description={t('settings.description')}
+                description={t('page.settings.description')}
             />
             <ul className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                 {entries.map(entry => (

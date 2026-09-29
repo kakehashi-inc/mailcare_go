@@ -22,7 +22,7 @@ func (c *core) groupFromPath(w http.ResponseWriter, r *http.Request) (*models.Ma
 	}
 	key := r.PathValue("key")
 	if !groupKeyRe.MatchString(key) {
-		writeError(w, http.StatusBadRequest, "invalid group key")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return nil, nil, nil, false
 	}
 	idx, err := c.openIndex(r, mb)
@@ -33,7 +33,7 @@ func (c *core) groupFromPath(w http.ResponseWriter, r *http.Request) (*models.Ma
 	g, err := models.GetGroup(idx, key)
 	if err == sql.ErrNoRows {
 		idx.Close()
-		writeError(w, http.StatusNotFound, "group not found")
+		writeError(w, http.StatusNotFound, "system.notFound")
 		return nil, nil, nil, false
 	}
 	if err != nil {
@@ -71,24 +71,24 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		Query: q.Get("q")}
 	scope, ok := modules.GroupListScope(q.Get("scope"))
 	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid scope")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	filter.Scope = scope
 	if filter.Category != "" && !modules.IsKnownCategory(filter.Category) {
-		writeError(w, http.StatusBadRequest, "invalid category")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	switch filter.State {
 	case "", modules.GroupStateOpen, modules.GroupStateResolved, modules.GroupStateIgnored:
 	default:
-		writeError(w, http.StatusBadRequest, "invalid state")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	switch filter.Responsible {
 	case "", modules.ResponsibleSender, modules.ResponsibleRecipient, modules.ResponsibleDomain, modules.ResponsibleUnknown:
 	default:
-		writeError(w, http.StatusBadRequest, "invalid responsible")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	idx, err := c.openIndex(r, mb)
@@ -177,7 +177,7 @@ func (c *core) handleSetGroupState(w http.ResponseWriter, r *http.Request) {
 	switch body.State {
 	case modules.GroupStateOpen, modules.GroupStateResolved, modules.GroupStateIgnored:
 	default:
-		writeError(w, http.StatusBadRequest, "invalid state")
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
 	_, idx, g, ok := c.groupFromPath(w, r)

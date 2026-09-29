@@ -8,8 +8,10 @@ import "io/fs"
 //   - FrontendFS:   root contains "frontend/dist/**" (the built SPA).
 //   - TemplatesFS:  root contains "templates/agent/<provider>/**" (workspace
 //     skeletons copied into the agent workspace of a group; the agent
-//     package names that directory) and "templates/mail/*.txt" (the
-//     notification mail templates, see notify.go).
+//     package names that directory), "templates/mail/*.txt" (the
+//     notification mail templates, see notify.go) and
+//     "frontend/src/i18n/<language>.json" (the language files of the Web
+//     UI; the mails take the category names from them).
 //
 // They are package-level variables (mirroring the StartServer pattern) so that
 // modules/workers can reach the binary-embedded assets without an import cycle

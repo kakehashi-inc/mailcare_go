@@ -18,11 +18,11 @@ export function ErrorState({ title, message, icon = 'error_outline', onRetry }: 
             className='flex flex-col items-center rounded-xl border border-danger/40 bg-danger-soft px-4 py-8 text-center'
         >
             <Icon name={icon} className='text-[40px] text-danger' />
-            <p className='mt-3 text-base font-semibold text-ink'>{title ?? t('error.title')}</p>
+            <p className='mt-3 text-base font-semibold text-ink'>{title ?? t('component.errorState.title')}</p>
             <p className='mt-1 max-w-md break-words text-sm text-ink'>{message}</p>
             {onRetry && (
                 <Button className='mt-4' icon='refresh' onClick={onRetry}>
-                    {t('common.retry')}
+                    {t('component.errorState.retry')}
                 </Button>
             )}
         </div>

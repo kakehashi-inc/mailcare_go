@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
-import { analyzeGroup, getGroup, getJob, getMailbox, setGroupState } from '../api/client';
+import { analyzeGroup, getGroup, getJob, getMailbox, setGroupState, ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { JobProgressLog } from '../components/domain/JobProgressLog';
 import {
@@ -36,12 +36,9 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { usePolling } from '../hooks/usePolling';
 import type { GroupState, JobDTO, MessageDTO, ReportDTO } from '../types';
 import { categoryDescription, groupHeadline } from '../utils/category';
-import { errorMessage } from '../utils/errors';
 import { formatDateTime } from '../utils/format';
 
 const STATES: GroupState[] = ['open', 'resolved', 'ignored'];
-// Start of the error message of a run refused by the agent's usage limit (agent.IsUsageLimitMessage).
-const USAGE_LIMIT_PREFIX = 'usage limit reached';
 
 function StatChips({ title, icon, values }: { title: string; icon: string; values: string[] }) {
     const { t } = useTranslation();
@@ -56,7 +53,7 @@ function StatChips({ title, icon, values }: { title: string; icon: string; value
                     {title} ({values.length})
                 </h3>
                 {values.length > 0 && (
-                    <CopyButton text={values.join('\n')} label={t('group.copyAll', { what: title })} />
+                    <CopyButton text={values.join('\n')} label={t('action.group.copyAll', { what: title })} />
                 )}
             </div>
             {values.length === 0 ? (
@@ -69,7 +66,7 @@ function StatChips({ title, icon, values }: { title: string; icon: string; value
                             className='inline-flex max-w-full items-center rounded-md bg-well pl-2 font-mono text-sm text-ink'
                         >
                             <span className='truncate py-1'>{v}</span>
-                            <CopyButton text={v} label={t('group.copyValue', { value: v })} />
+                            <CopyButton text={v} label={t('action.group.copyValue', { value: v })} />
                         </li>
                     ))}
                     {values.length > LIMIT && (
@@ -104,19 +101,19 @@ function ReportUsage({ report }: { report: ReportDTO }) {
     return (
         <div className='mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted'>
             <span>
-                {t('report.model')}: <span className='font-mono'>{report.model ?? '-'}</span>
+                {t('field.agent.model')}: <span className='font-mono'>{report.model ?? '-'}</span>
                 {report.reasoning_effort && (
                     <>
                         {' '}
-                        ({t('report.reasoning')}: <span className='font-mono'>{report.reasoning_effort}</span>)
+                        ({t('field.agent.reasoning')}: <span className='font-mono'>{report.reasoning_effort}</span>)
                     </>
                 )}
             </span>
             <span>
-                {t('report.tokens')}: <span className='tabular-nums'>{count(report.tokens_used)}</span>
+                {t('field.report.tokens')}: <span className='tabular-nums'>{count(report.tokens_used)}</span>
             </span>
             <span>
-                {t('report.commands')}: <span className='tabular-nums'>{count(report.command_count)}</span>
+                {t('field.report.commands')}: <span className='tabular-nums'>{count(report.command_count)}</span>
             </span>
         </div>
     );
@@ -132,9 +129,9 @@ function ReportView({ report }: { report: ReportDTO }) {
                 {report.severity && <SeverityBadge severity={report.severity} />}
                 {report.responsible && <ResponsibleBadge responsible={report.responsible} />}
                 <span>
-                    {t('report.provider')}: {report.provider || '-'}
+                    {t('field.agent.provider')}: {report.provider || '-'}
                 </span>
-                <span>{t('report.sampled', { count: report.message_count })}</span>
+                <span>{t('field.report.sampled', { count: report.message_count })}</span>
                 <span>
                     <DateTime value={report.finished_at ?? report.created_at} />
                 </span>
@@ -151,7 +148,9 @@ function ReportView({ report }: { report: ReportDTO }) {
                     <Markdown source={report.report_markdown} />
                 </div>
             ) : (
-                report.status !== 'running' && <p className='mt-3 text-sm text-muted'>{t('report.noBody')}</p>
+                report.status !== 'running' && (
+                    <p className='mt-3 text-sm text-muted'>{t('page.groupDetail.report.noBody')}</p>
+                )
             )}
         </div>
     );
@@ -171,7 +170,7 @@ export function AlertGroupDetailPage() {
     const [changing, setChanging] = useState<GroupState | null>(null);
     const group = detail.data?.group;
     const headline = group ? groupHeadline(group, t) : '';
-    useDocumentTitle(headline || t('nav.alerts'));
+    useDocumentTitle(headline || t('layout.nav.alerts'));
     const reportRunning =
         group?.report_status === 'running' || (job !== null && (job.status === 'queued' || job.status === 'running'));
 
@@ -183,8 +182,8 @@ export function AlertGroupDetailPage() {
                 setJob(j);
                 if (j.status === 'done' || j.status === 'error' || j.status === 'canceled') {
                     await detail.reload();
-                    if (j.status === 'error') toast.error(j.error_message || t('report.failed'));
-                    else if (j.status === 'done') toast.success(t('report.completed'));
+                    if (j.status === 'error') toast.error(j.error_message || t('result.report.failed'));
+                    else if (j.status === 'done') toast.success(t('result.report.completed'));
                     setJob(null);
                 }
             } else {
@@ -204,9 +203,9 @@ export function AlertGroupDetailPage() {
         try {
             const r = await analyzeGroup(id, groupKey);
             setJob(r.job);
-            toast.info(r.created ? t('report.queued') : t('jobs.alreadyActive'));
+            toast.info(r.created ? t('result.report.queued') : t('result.job.alreadyActive'));
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setAnalyzing(false);
         }
@@ -224,9 +223,9 @@ export function AlertGroupDetailPage() {
                       }
                     : prev
             );
-            toast.success(t('group.stateChanged', { state: t(`groupState.${state}`) }));
+            toast.success(t('result.group.stateChanged', { state: t(`value.groupState.${state}`) }));
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setChanging(null);
         }
@@ -236,7 +235,10 @@ export function AlertGroupDetailPage() {
     if (detail.error || !detail.data || !group) {
         return (
             <PageContainer>
-                <ErrorState message={errorMessage(detail.error, t)} onRetry={() => void detail.reload()} />
+                <ErrorState
+                    message={t(detail.error?.key ?? 'system.internal', detail.error?.params)}
+                    onRetry={() => void detail.reload()}
+                />
             </PageContainer>
         );
     }
@@ -253,20 +255,20 @@ export function AlertGroupDetailPage() {
     const messageColumns: Column<MessageDTO>[] = [
         {
             key: 'date',
-            header: t('mail.date'),
+            header: t('field.mail.date'),
             cell: m => <DateTime value={m.date || m.received_at} />,
             className: 'whitespace-nowrap',
         },
         {
             key: 'subject',
-            header: t('mail.subject'),
-            cell: m => <span className='break-words'>{m.subject || t('mail.noSubject')}</span>,
+            header: t('field.mail.subject'),
+            cell: m => <span className='break-words'>{m.subject || t('field.mail.subjectNone')}</span>,
             primary: true,
         },
-        { key: 'from', header: t('mail.from'), cell: m => <span className='break-all'>{m.from_address}</span> },
+        { key: 'from', header: t('field.mail.from'), cell: m => <span className='break-all'>{m.from_address}</span> },
         {
             key: 'kind',
-            header: t('mail.kind'),
+            header: t('field.mail.kind'),
             cell: m => <BounceKindBadge kind={m.bounce_kind} isBounce={m.is_bounce} />,
         },
     ];
@@ -276,16 +278,16 @@ export function AlertGroupDetailPage() {
             <PageHeader
                 title={headline}
                 crumbs={[
-                    { label: t('nav.alerts'), to: '/alerts' },
+                    { label: t('layout.nav.alerts'), to: '/alerts' },
                     {
                         label: mailbox.data?.address ?? '...',
                         to: excludedOpen ? `/alerts/${id}?scope=excluded` : `/alerts/${id}`,
                     },
-                    { label: t('group.detail') },
+                    { label: t('page.groupDetail.title') },
                 ]}
                 actions={
                     isAdmin && (
-                        <div className='flex flex-wrap gap-2' role='group' aria-label={t('group.changeState')}>
+                        <div className='flex flex-wrap gap-2' role='group' aria-label={t('action.group.changeState')}>
                             {STATES.filter(s => s !== group.state).map(s => (
                                 <Button
                                     key={s}
@@ -296,7 +298,7 @@ export function AlertGroupDetailPage() {
                                     disabled={changing !== null}
                                     onClick={() => void changeState(s)}
                                 >
-                                    {t(`group.markAs.${s}`)}
+                                    {t(`action.group.markAs.${s}`)}
                                 </Button>
                             ))}
                         </div>
@@ -307,7 +309,7 @@ export function AlertGroupDetailPage() {
             <div className='grid grid-cols-1 gap-6 lg:grid-cols-3'>
                 <div className='flex flex-col gap-6 lg:col-span-2'>
                     <Card>
-                        <CardHeader title={t('group.overview')} />
+                        <CardHeader title={t('page.groupDetail.overview')} />
                         <div className='mb-4 flex flex-wrap gap-2'>
                             <CategoryBadge category={group.category} />
                             <ActionableBadge actionable={group.actionable} />
@@ -318,7 +320,7 @@ export function AlertGroupDetailPage() {
                             {group.report_unanalyzable && group.report_status !== 'running' && <UnanalyzableBadge />}
                             {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
                                 <Badge tone='warning' icon='pending_actions'>
-                                    {t('group.needsAnalysis')}
+                                    {t('field.group.needsAnalysis')}
                                 </Badge>
                             )}
                         </div>
@@ -331,13 +333,13 @@ export function AlertGroupDetailPage() {
                         <DescriptionList
                             items={[
                                 {
-                                    label: t('group.unitValue'),
+                                    label: t('field.group.unitValue'),
                                     value: group.unit_value ? (
                                         <span className='inline-flex max-w-full items-center gap-1'>
                                             <code className='break-all font-mono text-base'>{group.unit_value}</code>
                                             <CopyButton
                                                 text={group.unit_value}
-                                                label={t('group.copyUnit', { value: group.unit_value })}
+                                                label={t('action.group.copyUnit', { value: group.unit_value })}
                                             />
                                         </span>
                                     ) : (
@@ -345,26 +347,29 @@ export function AlertGroupDetailPage() {
                                     ),
                                 },
                                 {
-                                    label: t('group.authority'),
+                                    label: t('field.group.authority'),
                                     value: group.authority ? (
                                         <code className='break-all font-mono text-base'>{group.authority}</code>
                                     ) : (
                                         '-'
                                     ),
                                 },
-                                { label: t('group.recipientDomain'), value: group.recipient_domain || '-' },
+                                { label: t('field.common.recipientDomain'), value: group.recipient_domain || '-' },
                                 {
-                                    label: t('group.statusCode'),
+                                    label: t('field.group.statusCode'),
                                     value: group.status_code || '-',
                                 },
-                                { label: t('group.messageCount'), value: group.message_count },
-                                { label: t('group.recipientCount'), value: group.recipient_count },
-                                { label: t('group.ipCount'), value: group.remote_ip_count },
-                                { label: t('group.firstSeen'), value: <DateTime value={group.first_seen} /> },
-                                { label: t('group.lastSeen'), value: <DateTime value={group.last_seen} /> },
-                                { label: t('group.stateUpdated'), value: <DateTime value={group.state_updated_at} /> },
+                                { label: t('field.group.messageCount'), value: group.message_count },
+                                { label: t('field.group.recipientCount'), value: group.recipient_count },
+                                { label: t('field.group.ipCount'), value: group.remote_ip_count },
+                                { label: t('field.group.firstSeen'), value: <DateTime value={group.first_seen} /> },
+                                { label: t('field.group.lastSeen'), value: <DateTime value={group.last_seen} /> },
                                 {
-                                    label: t('group.diagnosticTemplate'),
+                                    label: t('field.group.stateUpdated'),
+                                    value: <DateTime value={group.state_updated_at} />,
+                                },
+                                {
+                                    label: t('field.group.diagnosticTemplate'),
                                     value: (
                                         <code className='block break-words rounded-md bg-well p-2 font-mono text-sm'>
                                             {group.diagnostic_template || '-'}
@@ -373,7 +378,7 @@ export function AlertGroupDetailPage() {
                                     wide: true,
                                 },
                                 {
-                                    label: t('group.key'),
+                                    label: t('field.group.key'),
                                     value: <code className='font-mono text-sm'>{group.group_key}</code>,
                                     wide: true,
                                 },
@@ -383,7 +388,7 @@ export function AlertGroupDetailPage() {
 
                     <Card>
                         <CardHeader
-                            title={t('report.title')}
+                            title={t('page.groupDetail.report.title')}
                             actions={
                                 isAdmin ? (
                                     <Button
@@ -395,10 +400,10 @@ export function AlertGroupDetailPage() {
                                         onClick={() => void analyze()}
                                     >
                                         {reportRunning
-                                            ? t('report.running')
+                                            ? t('value.reportStatus.running')
                                             : report
-                                              ? t('report.reanalyze')
-                                              : t('report.analyze')}
+                                              ? t('action.report.reanalyze')
+                                              : t('action.report.analyze')}
                                     </Button>
                                 ) : undefined
                             }
@@ -407,22 +412,26 @@ export function AlertGroupDetailPage() {
                             <Alert tone={latestFailed.unanalyzable ? 'danger' : 'warning'} className='mb-4'>
                                 {t(
                                     latestFailed.unanalyzable
-                                        ? 'report.latestFailedUnanalyzable'
-                                        : latestFailed.error_message.startsWith(USAGE_LIMIT_PREFIX)
-                                          ? 'report.latestFailedLimit'
-                                          : 'report.latestFailed',
+                                        ? 'page.groupDetail.report.latestFailedUnanalyzable'
+                                        : latestFailed.usage_limited
+                                          ? 'page.groupDetail.report.latestFailedLimit'
+                                          : 'page.groupDetail.report.latestFailed',
                                     {
-                                        message: latestFailed.error_message || t('report.failed'),
+                                        message: latestFailed.error_message || t('result.report.failed'),
                                         time: formatDateTime(latestFailed.finished_at ?? latestFailed.created_at),
                                     }
                                 )}
                             </Alert>
                         )}
                         {!group.actionable && (
-                            <Alert tone='info' className='mb-4' title={t('report.excludedTitle')}>
-                                <p>{t('report.excluded')}</p>
+                            <Alert tone='info' className='mb-4' title={t('page.groupDetail.report.excludedTitle')}>
+                                <p>{t('page.groupDetail.report.excluded')}</p>
                                 <p className='mt-1'>
-                                    {t(excludedOpen ? 'report.excludedMoveHint' : 'report.excludedReturnHint')}
+                                    {t(
+                                        excludedOpen
+                                            ? 'page.groupDetail.report.excludedMoveHint'
+                                            : 'page.groupDetail.report.excludedReturnHint'
+                                    )}
                                 </p>
                             </Alert>
                         )}
@@ -433,7 +442,9 @@ export function AlertGroupDetailPage() {
                                     {job?.progress ? (
                                         <JobProgressLog text={job.progress} />
                                     ) : (
-                                        <span className='min-w-0 flex-1'>{t('report.runningHint')}</span>
+                                        <span className='min-w-0 flex-1'>
+                                            {t('page.groupDetail.report.runningHint')}
+                                        </span>
                                     )}
                                 </div>
                             </Alert>
@@ -443,15 +454,19 @@ export function AlertGroupDetailPage() {
                         ) : (
                             !reportRunning && (
                                 <EmptyState
-                                    title={t('report.none')}
-                                    description={isAdmin ? t('report.noneHint') : t('report.noneHintMember')}
+                                    title={t('page.groupDetail.report.none')}
+                                    description={
+                                        isAdmin
+                                            ? t('page.groupDetail.report.noneHint')
+                                            : t('page.groupDetail.report.noneHintMember')
+                                    }
                                 />
                             )
                         )}
                         {history.length > 0 && (
                             <details className='mt-6'>
                                 <summary className='cursor-pointer text-base font-medium text-muted hover:text-ink'>
-                                    {t('report.history', { count: history.length })}
+                                    {t('page.groupDetail.report.history', { count: history.length })}
                                 </summary>
                                 <ul className='mt-3 flex flex-col gap-3'>
                                     {history.map(r => (
@@ -477,15 +492,17 @@ export function AlertGroupDetailPage() {
                     </Card>
 
                     <section>
-                        <CardHeader title={t('group.messagesTitle', { count: messages.length })} />
+                        <CardHeader title={t('page.groupDetail.messagesTitle', { count: messages.length })} />
                         <Table
                             columns={messageColumns}
                             rows={messages}
                             rowKey={m => m.message_key}
-                            caption={t('group.messagesTitle', { count: messages.length })}
+                            caption={t('page.groupDetail.messagesTitle', { count: messages.length })}
                             onRowClick={m => navigate(`/mails/${id}/${encodeURIComponent(m.message_key)}`)}
-                            rowAriaLabel={m => t('mail.openAria', { subject: m.subject || t('mail.noSubject') })}
-                            emptyState={<EmptyState title={t('group.noMessages')} />}
+                            rowAriaLabel={m =>
+                                t('action.mail.openFor', { subject: m.subject || t('field.mail.subjectNone') })
+                            }
+                            emptyState={<EmptyState title={t('page.groupDetail.noMessages')} />}
                             dense
                         />
                     </section>
@@ -493,10 +510,10 @@ export function AlertGroupDetailPage() {
 
                 <aside>
                     <Card className='flex flex-col gap-5'>
-                        <CardHeader title={t('group.stats')} />
-                        <StatChips title={t('group.recipientsList')} icon='person' values={stats.recipients} />
-                        <StatChips title={t('group.ipsList')} icon='router' values={stats.remote_ips} />
-                        <StatChips title={t('group.mtasList')} icon='dns' values={stats.remote_mtas} />
+                        <CardHeader title={t('page.groupDetail.stats')} />
+                        <StatChips title={t('field.group.recipients')} icon='person' values={stats.recipients} />
+                        <StatChips title={t('field.group.ips')} icon='router' values={stats.remote_ips} />
+                        <StatChips title={t('field.common.remoteMta')} icon='dns' values={stats.remote_mtas} />
                     </Card>
                 </aside>
             </div>

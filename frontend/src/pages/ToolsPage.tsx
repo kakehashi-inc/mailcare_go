@@ -1,6 +1,7 @@
+import type { ParseKeys } from 'i18next';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { cancelJob, createJob, listJobs } from '../api/client';
+import { cancelJob, createJob, listJobs, ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { JobList } from '../components/domain/JobList';
 import { MailboxSelect } from '../components/domain/MailboxSelect';
@@ -20,7 +21,6 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
 import { usePolling } from '../hooks/usePolling';
 import { JOB_KINDS, type JobDTO, type ToolKind } from '../types';
-import { errorMessage } from '../utils/errors';
 
 type AnalyzeScope = 'needs' | 'all';
 
@@ -40,8 +40,13 @@ function emptyTargets(): Record<ToolKind, string> {
 }
 
 export function ToolsPage() {
-    const { t } = useTranslation();
-    useDocumentTitle(t('nav.tools'));
+    const { t, i18n } = useTranslation();
+    // Only the tools that need a warning have one in the language files.
+    const toolWarning = (kind: ToolKind): string | null => {
+        const key = `page.tools.tool.${kind}.warning` as ParseKeys;
+        return i18n.exists(key) ? String(t(key)) : null;
+    };
+    useDocumentTitle(t('layout.nav.tools'));
     const { isAdmin } = useAuth();
     const toast = useToast();
     const { mailboxes } = useMailboxes();
@@ -56,11 +61,11 @@ export function ToolsPage() {
     const hasActive = (jobs.data ?? []).some(j => j.status === 'queued' || j.status === 'running');
     usePolling(jobs.reload, !jobs.loading, hasActive ? JOB_POLL_INTERVAL_MS : JOB_POLL_INTERVAL_MS * 5);
 
-    const toolTitle = (kind: ToolKind) => t(`tools.${kind}.title`);
+    const toolTitle = (kind: ToolKind) => t(`page.tools.tool.${kind}.title`);
     const canRun = () => isAdmin && mailboxes.length > 0;
     const targetLabel = (kind: ToolKind) => {
         const v = targets[kind];
-        return v ? (mailboxes.find(mb => String(mb.id) === v)?.address ?? v) : t('mailbox.all');
+        return v ? (mailboxes.find(mb => String(mb.id) === v)?.address ?? v) : t('component.mailboxSelect.all');
     };
 
     async function run(kind: ToolKind) {
@@ -70,12 +75,12 @@ export function ToolsPage() {
             const target = kind === 'analyze' ? (scope === 'all' ? '*' : '') : undefined;
             // One job per click: with mailbox_id null the server expands it to one child job per address.
             const r = await createJob({ kind, mailbox_id: mailboxId, target });
-            if (r.created) toast.success(t('tools.queued', { tool: toolTitle(kind) }));
-            else toast.info(t('jobs.alreadyActive'));
+            if (r.created) toast.success(t('result.job.queued', { tool: toolTitle(kind) }));
+            else toast.info(t('result.job.alreadyActive'));
             setPending(null);
             await jobs.reload();
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setSubmitting(false);
         }
@@ -85,10 +90,10 @@ export function ToolsPage() {
         setCanceling(job.id);
         try {
             await cancelJob(job.id);
-            toast.success(t('jobs.canceled'));
+            toast.success(t('result.job.canceled'));
             await jobs.reload();
         } catch (err) {
-            toast.error(errorMessage(err, t));
+            toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
             setCanceling(null);
         }
@@ -96,18 +101,18 @@ export function ToolsPage() {
 
     return (
         <PageContainer wide>
-            <PageHeader title={t('nav.tools')} description={t('tools.description')} />
+            <PageHeader title={t('layout.nav.tools')} description={t('page.tools.description')} />
 
             {!isAdmin && (
-                <Alert tone='info' className='mb-4' title={t('tools.adminOnlyTitle')}>
-                    {t('tools.adminOnly')}
+                <Alert tone='info' className='mb-4' title={t('page.tools.adminOnlyTitle')}>
+                    {t('page.tools.adminOnly')}
                 </Alert>
             )}
 
             <ul className='grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3'>
                 {JOB_KINDS.map(kind => {
                     const meta = TOOL_META[kind];
-                    const warning = t(`tools.${kind}.warning`);
+                    const warning = toolWarning(kind);
                     return (
                         <li key={kind}>
                             <Card className='flex h-full flex-col gap-3'>
@@ -117,7 +122,7 @@ export function ToolsPage() {
                                         <h2 className='text-lg font-semibold text-ink'>{toolTitle(kind)}</h2>
                                     </div>
                                 </div>
-                                <p className='text-sm text-muted'>{t(`tools.${kind}.description`)}</p>
+                                <p className='text-sm text-muted'>{t(`page.tools.tool.${kind}.description`)}</p>
                                 {warning && (
                                     <p className='inline-flex items-start gap-1 text-sm text-warning'>
                                         <Icon name='warning' className='mt-0.5 shrink-0 text-[18px]' />
@@ -131,16 +136,16 @@ export function ToolsPage() {
                                             value={targets[kind]}
                                             onChange={v => setTargets(prev => ({ ...prev, [kind]: v }))}
                                             allowAll
-                                            label={t('tools.target')}
+                                            label={t('field.job.target')}
                                         />
                                         {kind === 'analyze' && (
                                             <SelectField
-                                                label={t('tools.analyzeScope')}
+                                                label={t('page.tools.analyzeScope')}
                                                 value={scope}
                                                 onChange={e => setScope(e.target.value as AnalyzeScope)}
                                             >
-                                                <option value='needs'>{t('tools.scopeNeeds')}</option>
-                                                <option value='all'>{t('tools.scopeAll')}</option>
+                                                <option value='needs'>{t('page.tools.scopeNeeds')}</option>
+                                                <option value='all'>{t('component.jobList.targetAll')}</option>
                                             </SelectField>
                                         )}
                                         <Button
@@ -148,15 +153,15 @@ export function ToolsPage() {
                                             icon='play_arrow'
                                             disabled={!canRun()}
                                             onClick={() => setPending(kind)}
-                                            aria-label={t('tools.runAria', { tool: toolTitle(kind) })}
+                                            aria-label={t('page.tools.runFor', { tool: toolTitle(kind) })}
                                         >
-                                            {t('tools.run')}
+                                            {t('page.tools.run')}
                                         </Button>
                                     </div>
                                 ) : (
                                     <p className='mt-auto inline-flex items-center gap-1 text-sm text-muted'>
                                         <Icon name='lock' className='text-[18px]' />
-                                        {t('tools.readOnly')}
+                                        {t('page.tools.readOnly')}
                                     </p>
                                 )}
                             </Card>
@@ -167,8 +172,8 @@ export function ToolsPage() {
 
             <section className='mt-8'>
                 <CardHeader
-                    title={t('tools.jobs')}
-                    description={t('tools.jobsHint')}
+                    title={t('page.tools.jobs')}
+                    description={t('page.tools.jobsHint')}
                     actions={
                         <Button size='sm' icon='refresh' loading={jobs.refreshing} onClick={() => void jobs.reload()}>
                             {t('common.refresh')}
@@ -178,7 +183,10 @@ export function ToolsPage() {
                 {jobs.loading ? (
                     <LoadingBlock />
                 ) : jobs.error || !jobs.data ? (
-                    <ErrorState message={errorMessage(jobs.error, t)} onRetry={() => void jobs.reload()} />
+                    <ErrorState
+                        message={t(jobs.error?.key ?? 'system.internal', jobs.error?.params)}
+                        onRetry={() => void jobs.reload()}
+                    />
                 ) : (
                     <JobList jobs={jobs.data} onCancel={isAdmin ? cancel : undefined} cancelingId={canceling} />
                 )}
@@ -186,21 +194,22 @@ export function ToolsPage() {
 
             <ConfirmDialog
                 open={pending !== null}
-                title={pending ? t('tools.confirmTitle', { tool: toolTitle(pending) }) : ''}
+                title={pending ? t('page.tools.confirmTitle', { tool: toolTitle(pending) }) : ''}
                 message={
                     pending && (
                         <>
                             <p>
-                                {t('tools.confirmMessage', { tool: toolTitle(pending), target: targetLabel(pending) })}
+                                {t('page.tools.confirmMessage', {
+                                    tool: toolTitle(pending),
+                                    target: targetLabel(pending),
+                                })}
                             </p>
-                            {!targets[pending] && <p className='mt-2'>{t('tools.allNote')}</p>}
-                            {t(`tools.${pending}.warning`) && (
-                                <p className='mt-2 text-warning'>{t(`tools.${pending}.warning`)}</p>
-                            )}
+                            {!targets[pending] && <p className='mt-2'>{t('page.tools.allNote')}</p>}
+                            {toolWarning(pending) && <p className='mt-2 text-warning'>{toolWarning(pending)}</p>}
                         </>
                     )
                 }
-                confirmLabel={t('tools.run')}
+                confirmLabel={t('page.tools.run')}
                 danger={pending !== null && TOOL_META[pending].danger}
                 busy={submitting}
                 onConfirm={() => pending && void run(pending)}
