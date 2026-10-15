@@ -177,13 +177,12 @@ export interface MailboxDTO {
     server_keep_days: number;
     /** Host name of the SMTP server that sends the mail of this address (one of the own sending servers); "" = not set. Blanked ("") for non-administrators, like the IMAP connection. */
     smtp_host: string;
-    /** SMTP server the probe mails of this address are sent through; "" = the address sends no probe mail. Blanked for non-administrators. */
-    probe_smtp_host: string;
-    probe_smtp_port: number;
-    probe_smtp_security: SmtpSecurity | '';
-    probe_smtp_username: string;
+    /** The rest of the SMTP connection of smtp_host, through which the probe mails are sent. Blanked for non-administrators. */
+    smtp_port: number;
+    smtp_security: SmtpSecurity | '';
+    smtp_username: string;
     /** The password itself is never returned; only whether one is stored. */
-    probe_smtp_password_set: boolean;
+    smtp_password_set: boolean;
     /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
     last_fetched_at: string | null;
     last_fetch_error: string;
@@ -209,13 +208,13 @@ export interface MailboxInput {
     server_keep_days?: number;
     /** SMTP server (sending) host name; "" clears it. Omitted: not set for a new mailbox, unchanged on update. Needs no password. */
     smtp_host?: string;
-    /** Probe SMTP server; "" removes the probe SMTP connection. Omitted: not set for a new mailbox, unchanged on update (the other probe_smtp_* fields are then ignored). */
-    probe_smtp_host?: string;
-    probe_smtp_port?: number;
-    probe_smtp_security?: SmtpSecurity;
-    probe_smtp_username?: string;
+    /** The rest of the SMTP connection; used only with smtp_host ("" clears them all). */
+    smtp_port?: number;
+    smtp_security?: SmtpSecurity;
+    /** Empty = no authentication. */
+    smtp_username?: string;
     /** Empty keeps the stored one, but only while host, port, security and username stay the same. */
-    probe_smtp_password?: string;
+    smtp_password?: string;
 }
 
 export interface GroupDTO {

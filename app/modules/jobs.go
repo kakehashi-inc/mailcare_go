@@ -1363,6 +1363,12 @@ func (m *JobManager) runProbe(ctx context.Context, job *models.Job, progress fun
 	}
 	line := fmt.Sprintf("checked %d probe mail(s): %d arrived, %d arrived late, %d missing (%d newly delayed, %d newly failed)",
 		res.Checked, res.Arrived, res.Recovered, res.Missing, res.Delayed, res.Failed)
+	if res.Deleted > 0 {
+		line += fmt.Sprintf(", %d deleted from the probe server", res.Deleted)
+	}
+	if res.DeleteError != "" {
+		line += "; " + res.DeleteError
+	}
 	if !res.NextAt.IsZero() {
 		line += "; next check " + res.NextAt.In(time.Local).Format("2006-01-02 15:04")
 	}

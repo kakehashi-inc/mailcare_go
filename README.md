@@ -40,8 +40,9 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
   "Delayed", one not arrived within the failure threshold (120 minutes by default) is a "Failure". Both show on
   the dashboard and the Alerts screen, and failures are mailed to the notification recipients. The subject names
   the date and time of the send and the address, so a missing mail can be traced. A mail that arrives late is
-  shown as "Recovered" and keeps that it was delayed or failed; administrators can mark a missing mail resolved
-  with a reason.
+  shown as "Recovered" and keeps that it was delayed or failed; a missing mail can be marked resolved with a
+  reason (by any user, like an alert). Probe mails whose arrival is confirmed are deleted from the probe server
+  to free space.
 - **Junk detection** - typical phishing (a sender name that impersonates the monitored domain or another
   organization, a link to an outside site that carries the monitored address, a forged From of the monitored
   domain, a fake "delivery failed" notice that carries links to other sites or fails the sender check) and mail
@@ -116,9 +117,10 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
      names; a host name here counts for every address) and the DNS check
    - "Settings -> Notifications": SMTP server, recipient users, notification time and interval
    - "Settings -> Delivery probe": the probe address and the probe server (IMAP) that receives it, the send times,
-     the delay and failure thresholds. For each mail address that sends probe mails, set its SMTP server under
-     "Probe mail sending (SMTP)" in "Settings -> Mail addresses" ("Send a test mail" checks it reaches the probe
-     address). Use an address reserved for the probe
+     the delay and failure thresholds. For each mail address that sends probe mails, set its SMTP server (the
+     host name, connection security, port, username and password) under "Sending server" in "Settings -> Mail
+     addresses" ("Send a test mail" checks it reaches the probe address). Use an address reserved for the probe
+     (the account must be allowed to delete mail: confirmed probe mails are deleted)
    - "Settings -> Users": users and their roles
 
 `mailcare service start` runs in the foreground. To keep it running, register it as an OS service. Linux
@@ -171,7 +173,7 @@ Stop it with `mailcare service stop` and check it with `mailcare service status`
 ### 1.6 Outbound connections
 
 Besides the IMAP servers of the monitored addresses and the SMTP server of the notification mails (with the
-delivery probe, also the probe SMTP server of each address and the probe server), MailCare connects to the
+delivery probe, also the sending server (SMTP) of each address and the probe server), MailCare connects to the
 following.
 
 - **DNS check (on by default).** MailCare sends plain, unencrypted DNS queries (UDP, and TCP for long answers;
@@ -221,7 +223,7 @@ While the server is running, command line operations are handed to it. Main comm
 | `mailcare settings set dns_check_enabled 0` | Switch the DNS check off (`dns_check_resolvers` sets the resolvers, `dns_check_system_resolver_only 1` uses only the operating system's resolver) |
 | `mailcare cleanup` | Apply the retentions now: delete old notices and junk mails from the IMAP server, remove old mail, temporary files, agent workspaces and job history |
 | `mailcare probe send` / `mailcare probe check` | Send the probe mails now / check the arrival of the missing ones now |
-| `mailcare settings set probe_send_times 07:00,11:00,15:00,19:00` | Change a delivery probe setting (`probe_enabled`, `probe_address`, `probe_imap_host` and the other `probe_*` keys; the SMTP server of a mail address with `mailbox update A --probe-smtp-host H` and so on) |
+| `mailcare settings set probe_send_times 07:00,11:00,15:00,19:00` | Change a delivery probe setting (`probe_enabled`, `probe_address`, `probe_imap_host` and the other `probe_*` keys; the SMTP server of a mail address with `mailbox update A --smtp-host H --smtp-port N` and so on) |
 | `mailcare jobs list` | Show the task history |
 
 `mailcare --help` lists every command.

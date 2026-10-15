@@ -17,9 +17,10 @@ import (
 
 // Delivery probe (the system design document (Documents) 7.6).
 //
-// At every probe send time each enabled mailbox with a probe SMTP connection
-// sends one probe mail to the probe address, and the probe server (the
-// mailbox of that address, read over IMAP) is checked for them:
+// At every probe send time each enabled mailbox with an SMTP connection (its
+// smtp_host and the rest of the connection) sends one probe mail to the
+// probe address, and the probe server (the mailbox of that address, over
+// IMAP) is checked for them:
 //
 //   - The first arrival check runs DelayMinutes after the latest send and
 //     looks for every probe mail that has not arrived yet, of every send
@@ -37,10 +38,13 @@ import (
 //     a user can close a missing mail by hand with a reason ("resolved").
 //   - A mail that becomes a failure (or that the SMTP server refused) is
 //     mailed once to the notification recipients.
+//   - A probe mail whose arrival is recorded is deleted from the probe
+//     server (the probe mailbox is reserved for the probe and would fill
+//     up otherwise).
 //
-// The probe settings live in the settings table (SettingProbe*), the probe
-// SMTP connection of a mailbox in its detail_info, the probe mails in the
-// probe_mails table of the master database.
+// The probe settings live in the settings table (SettingProbe*), the SMTP
+// connection of a mailbox in its detail_info (smtp_host and the rest), the
+// probe mails in the probe_mails table of the master database.
 
 // Mail templates of the probe (templates/mail/<kind>_<language>.txt): the
 // body of a probe mail and the failure mail to the notification recipients.
@@ -508,23 +512,24 @@ func ApplyProbeCheck(p *models.ProbeMail, arrivedAt, now time.Time, delay, failu
 // --- Probe mails ---
 
 // ProbeParticipates reports whether a mailbox sends probe mails: it is
-// enabled and has a probe SMTP host.
+// enabled and has an SMTP host (smtp_host).
 func ProbeParticipates(mb *models.Mailbox) bool {
-	return mb.Enabled && strings.TrimSpace(mb.ProbeSmtpHost) != ""
+	return mb.Enabled && strings.TrimSpace(mb.SmtpHost) != ""
 }
 
 // probeSMTPConfig builds the SMTP configuration of the probe mails of a
-// mailbox (password decrypted with key).
+// mailbox from its SMTP connection (password decrypted with key; a port or
+// security saved as 0 / "" takes the default).
 func probeSMTPConfig(key []byte, mb *models.Mailbox) (SMTPConfig, error) {
-	cfg := SMTPConfig{Host: mb.ProbeSmtpHost, Port: mb.ProbeSmtpPort, Security: mb.ProbeSmtpSecurity,
-		Username: mb.ProbeSmtpUsername, From: mb.Address}
+	cfg := SMTPConfig{Host: mb.SmtpHost, Port: mb.SmtpPort, Security: mb.SmtpSecurity,
+		Username: mb.SmtpUsername, From: mb.Address}
 	if cfg.Security == "" {
 		cfg.Security = DefaultSMTPSecurity
 	}
-	if mb.ProbeSmtpUsername != "" && mb.ProbeSmtpPasswordEnc != "" {
-		password, err := DecryptSecret(key, mb.ProbeSmtpPasswordEnc)
+	if mb.SmtpUsername != "" && mb.SmtpPasswordEnc != "" {
+		password, err := DecryptSecret(key, mb.SmtpPasswordEnc)
 		if err != nil {
-			return SMTPConfig{}, fmt.Errorf("probe SMTP password: %w", err)
+			return SMTPConfig{}, fmt.Errorf("SMTP password: %w", err)
 		}
 		cfg.Password = password
 	}
@@ -583,16 +588,16 @@ func probeSlotLabel(slot string, now time.Time) string {
 	return now.In(time.Local).Format("2006-01-02 15:04")
 }
 
-// TestProbeSMTP sends a test mail through the probe SMTP connection of a
-// mailbox input to the probe address (no probe mail is recorded: the
+// TestProbeSMTP sends a test mail through the SMTP connection of a mailbox
+// input to the probe address (no probe mail is recorded: the
 // subject carries no token). An empty password uses the stored one when the
 // input names a stored mailbox and the same connection.
 func TestProbeSMTP(ctx context.Context, db *sql.DB, key []byte, in *MailboxInput) error {
 	if err := ValidateMailboxInput(in); err != nil {
 		return err
 	}
-	if in.ProbeSmtpHost == nil || *in.ProbeSmtpHost == "" {
-		return wording.New("validation.connection.hostRequired", "probe_smtp_host is required")
+	if in.SmtpHost == nil || *in.SmtpHost == "" {
+		return wording.New("validation.connection.hostRequired", "smtp_host is required")
 	}
 	settings, err := ResolveProbeSettings(db, nil)
 	if err != nil {
@@ -605,7 +610,7 @@ func TestProbeSMTP(ctx context.Context, db *sql.DB, key []byte, in *MailboxInput
 	if err := applyMailboxInput(key, mb, in); err != nil {
 		return err
 	}
-	if in.ProbeSmtpPassword == "" && in.ProbeSmtpUsername != "" {
+	if in.SmtpPassword == "" && in.SmtpUsername != "" {
 		if in.ID == 0 {
 			return errIMAPPasswordRequired
 		}
@@ -616,13 +621,13 @@ func TestProbeSMTP(ctx context.Context, db *sql.DB, key []byte, in *MailboxInput
 		if err != nil {
 			return err
 		}
-		if stored.ProbeSmtpPasswordEnc == "" {
+		if stored.SmtpPasswordEnc == "" {
 			return errIMAPPasswordRequired
 		}
-		if !sameProbeConnection(stored, in) {
-			return ErrProbeSMTPPasswordRequired
+		if !sameSMTPConnection(stored, in) {
+			return ErrSMTPConnectionPasswordRequired
 		}
-		mb.ProbeSmtpPasswordEnc = stored.ProbeSmtpPasswordEnc
+		mb.SmtpPasswordEnc = stored.SmtpPasswordEnc
 	}
 	cfg, err := probeSMTPConfig(key, mb)
 	if err != nil {
@@ -650,7 +655,7 @@ type ProbeSendResult struct {
 // "skipped: <reason>").
 const (
 	SkipProbeNotConfigured = "the probe server is not set"
-	SkipProbeNoMailbox     = "no enabled mail address has a probe SMTP server"
+	SkipProbeNoMailbox     = "no enabled mail address has an SMTP server (smtp_host)"
 	SkipProbeNothingToSee  = "no probe mail is waiting"
 )
 
@@ -756,7 +761,11 @@ type ProbeCheckResult struct {
 	Delayed   int // newly delayed
 	Failed    int // newly failed
 	Missing   int // still missing after the check
-	NextAt    time.Time
+	Deleted   int // confirmed probe mails deleted from the probe server
+	// DeleteError is why the confirmed probe mails could not be deleted
+	// from the probe server ("" when they were, or none had to be).
+	DeleteError string
+	NextAt      time.Time
 }
 
 // CheckProbes looks for every waiting probe mail on the probe server and
@@ -807,18 +816,46 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 		return res, nil
 	}
 	res.Checked = len(waiting)
-	since := waiting[0].SentAt.Add(-24 * time.Hour)
 	progress(fmt.Sprintf("looking for %d probe mails on %s", len(waiting), settings.Conn.ImapHost))
+	// The arrivals are recorded before anything is deleted from the server:
+	// a message is removed only once its arrival is in the database.
+	record := func(arrivals map[string]time.Time) (map[string]bool, error) {
+		now = time.Now()
+		if err := recordProbeArrivals(db, waiting, arrivals, now, settings, res, progress); err != nil {
+			return nil, err
+		}
+		return probeTokensToDelete(db, arrivals, now)
+	}
 	ictx, cancel := context.WithTimeout(ctx, IMAPTimeout)
-	arrivals, err := mailengine.FindProbeArrivals(ictx, &settings.Conn, settings.Password, since, ProbeSubjectMarker, ProbeHeader)
+	deleted, err := mailengine.CheckProbeServer(ictx, &settings.Conn, settings.Password, ProbeSubjectMarker, ProbeHeader, record)
 	cancel()
-	if err != nil {
+	res.Deleted = deleted
+	switch {
+	case errors.Is(err, mailengine.ErrProbeDelete):
+		// The check itself succeeded; the next one deletes them.
+		res.DeleteError = err.Error()
+		progress(err.Error())
+	case err != nil:
 		return res, fmt.Errorf("probe server %s: %w", settings.Conn.ImapHost, err)
 	}
-	now = time.Now()
+	if deleted > 0 {
+		progress(fmt.Sprintf("deleted %d confirmed probe mail(s) from the probe server", deleted))
+	}
+	if res.Missing > 0 {
+		res.NextAt = NextProbeCheckAt(settings.LastSendAt.Time, now, settings.Delay(), settings.Failure())
+	}
+	notifyProbeFailures(ctx, db, key, baseURL, progress)
+	return res, nil
+}
+
+// recordProbeArrivals applies what the probe server showed (arrivals:
+// token -> arrival time) to the waiting probe mails (ApplyProbeCheck) in one
+// transaction and counts the outcome in res.
+func recordProbeArrivals(db *sql.DB, waiting []*models.ProbeMail, arrivals map[string]time.Time, now time.Time,
+	settings *ProbeSettings, res *ProbeCheckResult, progress func(string)) error {
 	tx, err := db.Begin()
 	if err != nil {
-		return res, err
+		return err
 	}
 	defer tx.Rollback()
 	for _, p := range waiting {
@@ -841,17 +878,35 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 			}
 		}
 		if err := models.UpdateProbeMailCheck(tx, p); err != nil {
-			return res, err
+			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return res, err
+	return tx.Commit()
+}
+
+// probeTokensToDelete returns the tokens found on the probe server whose
+// messages are deleted there: those of a recorded probe mail (whatever its
+// status: an arrival is recorded above, and a mail resolved by hand that
+// arrives later needs no further look), and the unknown ones that arrived
+// more than ProbeKeepDays ago (their record was removed by the retention).
+// An unknown recent token is left alone.
+func probeTokensToDelete(db *sql.DB, arrivals map[string]time.Time, now time.Time) (map[string]bool, error) {
+	tokens := make([]string, 0, len(arrivals))
+	for token := range arrivals {
+		tokens = append(tokens, token)
 	}
-	if res.Missing > 0 {
-		res.NextAt = NextProbeCheckAt(settings.LastSendAt.Time, now, settings.Delay(), settings.Failure())
+	known, err := models.KnownProbeTokens(db, tokens)
+	if err != nil {
+		return nil, err
 	}
-	notifyProbeFailures(ctx, db, key, baseURL, progress)
-	return res, nil
+	expired := now.AddDate(0, 0, -ProbeKeepDays)
+	remove := map[string]bool{}
+	for token, at := range arrivals {
+		if known[token] || (!at.IsZero() && at.Before(expired)) {
+			remove[token] = true
+		}
+	}
+	return remove, nil
 }
 
 // formatProbeDelay renders seconds as "1h05m" / "12m" (job progress and

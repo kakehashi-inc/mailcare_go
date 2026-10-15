@@ -12,9 +12,10 @@ import (
 )
 
 // Delivery probe (the system design document (Documents) 7.6, 9.2). The
-// probe settings and the actions are for administrators; the state of the
-// probe mails (the summary and the list) is shown to every user, without
-// the connection of the probe server.
+// probe settings and the send / check actions are for administrators; the
+// state of the probe mails (the summary and the list) is shown to every
+// user, without the connection of the probe server, and every user can
+// resolve a probe mail by hand, like the state of an alert.
 
 const (
 	defaultProbePage = 50
@@ -37,7 +38,7 @@ type ProbeSettingsDTO struct {
 	SendTimes       []string `json:"send_times"`
 	DelayMinutes    int      `json:"delay_minutes"`
 	FailureMinutes  int      `json:"failure_minutes"`
-	// Mailboxes is the number of enabled mailboxes with a probe SMTP
+	// Mailboxes is the number of enabled mailboxes with an SMTP
 	// server (the ones that send probe mails).
 	Mailboxes int `json:"mailboxes"`
 }
@@ -253,7 +254,7 @@ func (c *core) handleTestProbeSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleTestMailboxProbe sends a test mail through the probe SMTP
+// handleTestMailboxProbe sends a test mail through the SMTP
 // connection of a mailbox input to the probe address.
 func (c *core) handleTestMailboxProbe(w http.ResponseWriter, r *http.Request) {
 	var in modules.MailboxInput
@@ -330,8 +331,8 @@ type probeResolveInput struct {
 	Note   string `json:"note"`
 }
 
-// handleResolveProbe closes an open probe mail by hand with a reason
-// (administrators only).
+// handleResolveProbe closes an open probe mail by hand with a reason (every
+// user, like the state of an alert).
 func (c *core) handleResolveProbe(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id < 1 {

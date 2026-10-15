@@ -16,7 +16,7 @@ func TestProbeEndpoints(t *testing.T) {
 	for _, req := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/settings/probe"}, {http.MethodPut, "/api/v1/settings/probe"},
 		{http.MethodPost, "/api/v1/settings/probe/test"}, {http.MethodPost, "/api/v1/probes/send"},
-		{http.MethodPost, "/api/v1/probes/check"}, {http.MethodPut, "/api/v1/probes/1/resolve"},
+		{http.MethodPost, "/api/v1/probes/check"},
 		{http.MethodPost, "/api/v1/mailboxes/probe-test"},
 	} {
 		if rec := do(t, s.h, req.method, req.path, map[string]any{}, s.user); rec.Code != http.StatusForbidden {
@@ -56,22 +56,23 @@ func TestProbeEndpoints(t *testing.T) {
 		t.Errorf("saved %+v / %s", dto, rec.Body.String())
 	}
 
-	// The probe SMTP connection of a mailbox is shown to administrators
+	// The SMTP connection of a mailbox is shown to administrators
 	// only; the password never.
 	host := "smtp.example.test"
 	in := modules.MailboxInputFrom(s.mb)
-	in.ProbeSmtpHost, in.ProbeSmtpUsername, in.ProbeSmtpPassword = &host, "ops", "smtp-pass"
+	in.SmtpHost, in.SmtpUsername, in.SmtpPassword = &host, "ops", "smtp-pass"
 	rec = do(t, s.h, http.MethodPut, "/api/v1/mailboxes/1", in, s.admin)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"probe_smtp_host":"smtp.example.test"`) ||
-		!strings.Contains(rec.Body.String(), `"probe_smtp_password_set":true`) || strings.Contains(rec.Body.String(), "smtp-pass") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"smtp_host":"smtp.example.test"`) ||
+		!strings.Contains(rec.Body.String(), `"smtp_password_set":true`) || strings.Contains(rec.Body.String(), "smtp-pass") {
 		t.Fatalf("update mailbox: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodGet, "/api/v1/mailboxes/1", nil, s.user)
 	if strings.Contains(rec.Body.String(), "smtp.example.test") {
-		t.Errorf("probe SMTP host shown to a member: %s", rec.Body.String())
+		t.Errorf("SMTP host shown to a member: %s", rec.Body.String())
 	}
 
-	// A failure is listed for every user and resolved by an administrator.
+	// A failure is listed for every user and can be resolved by any user,
+	// like the state of an alert.
 	p := &models.ProbeMail{MailboxID: s.mb.ID, Address: s.mb.Address, Token: "MCPROBE-0123", Slot: "2026-10-15 07:00",
 		Subject: "s", SentAt: time.Now().Add(-3 * time.Hour), Status: models.ProbeStatusFailure, Level: models.ProbeLevelFailure}
 	if err := models.InsertProbeMail(s.db, p); err != nil {
@@ -93,9 +94,12 @@ func TestProbeEndpoints(t *testing.T) {
 	if rec := do(t, s.h, http.MethodPut, path, map[string]any{"reason": ""}, s.admin); rec.Code != http.StatusBadRequest {
 		t.Errorf("no reason: %d", rec.Code)
 	}
-	rec = do(t, s.h, http.MethodPut, path, map[string]any{"reason": "maintenance", "note": "planned"}, s.admin)
+	if rec := do(t, s.h, http.MethodPut, path, map[string]any{"reason": "maintenance"}, nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("resolve anonymous: %d", rec.Code)
+	}
+	rec = do(t, s.h, http.MethodPut, path, map[string]any{"reason": "maintenance", "note": "planned"}, s.user)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"resolved"`) ||
-		!strings.Contains(rec.Body.String(), `"resolved_by":"admin"`) {
+		!strings.Contains(rec.Body.String(), `"resolved_by":"bob"`) {
 		t.Fatalf("resolve: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(t, s.h, http.MethodPut, path, map[string]any{"reason": "maintenance"}, s.admin); rec.Code != http.StatusConflict {

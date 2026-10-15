@@ -89,7 +89,7 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings/probe", c.requireAdmin(c.handleUpdateProbeSettings))
 	mux.HandleFunc("POST /api/v1/settings/probe/test", c.requireAdmin(c.handleTestProbeSettings))
 	mux.HandleFunc("GET /api/v1/probes", c.handleListProbes)
-	mux.HandleFunc("PUT /api/v1/probes/{id}/resolve", c.requireAdmin(c.handleResolveProbe))
+	mux.HandleFunc("PUT /api/v1/probes/{id}/resolve", c.handleResolveProbe)
 	mux.HandleFunc("POST /api/v1/probes/send", c.requireAdmin(c.handleSendProbes))
 	mux.HandleFunc("POST /api/v1/probes/check", c.requireAdmin(c.handleCheckProbes))
 

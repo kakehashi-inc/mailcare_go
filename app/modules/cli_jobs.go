@@ -433,7 +433,7 @@ func (c *NotifyCmd) Run() error {
 // for the missing ones on the probe server now. Like the other job
 // commands they go through the running server when there is one.
 type ProbeCmd struct {
-	Send  ProbeSendCmd  `cmd:"" help:"Send a probe mail from every enabled address with a probe SMTP server now"`
+	Send  ProbeSendCmd  `cmd:"" help:"Send a probe mail from every enabled address with an SMTP server (smtp host) now"`
 	Check ProbeCheckCmd `cmd:"" help:"Look for the probe mails not arrived yet on the probe server now"`
 }
 

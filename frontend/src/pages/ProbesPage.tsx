@@ -39,8 +39,8 @@ function slotLabel(p: ProbeMailDTO, manual: string): string {
 
 /**
  * Delivery probe: the state of the probe mails sent from every mail address to the probe server. Every user sees
- * the counts, the newest probe mail of each address and the list (URL `filter` and `page`); administrators can send
- * or check now and resolve an open probe mail with a reason.
+ * the counts, the newest probe mail of each address and the list (URL `filter` and `page`) and can resolve an open
+ * probe mail with a reason, like the state of an alert; administrators can also send or check now.
  */
 export function ProbesPage() {
     const { t } = useTranslation();
@@ -139,9 +139,7 @@ export function ProbesPage() {
             className: 'max-w-xs',
             cell: p => <ProbeDetail probe={p} />,
         },
-    ];
-    if (isAdmin) {
-        columns.push({
+        {
             key: 'actions',
             header: <span className='sr-only'>{t('common.actions')}</span>,
             hideLabelInCard: true,
@@ -154,8 +152,8 @@ export function ProbesPage() {
                         {t('action.probe.resolve')}
                     </Button>
                 ) : null,
-        });
-    }
+        },
+    ];
 
     const actions = isAdmin ? (
         <div className='flex flex-wrap gap-2'>
@@ -222,9 +220,11 @@ export function ProbesPage() {
                                                         <span className='font-mono'>
                                                             {slotLabel(mb.latest, manual)}
                                                         </span>{' '}
-                                                        {mb.latest.status !== 'send_failed' && (
-                                                            <ProbeDelay probe={mb.latest} />
-                                                        )}
+                                                        {mb.latest.status !== 'send_failed' &&
+                                                            (mb.latest.arrived_at !== null ||
+                                                                mb.latest.delay_seconds > 0) && (
+                                                                <ProbeDelay probe={mb.latest} />
+                                                            )}
                                                     </p>
                                                 )}
                                             </div>

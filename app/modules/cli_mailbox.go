@@ -63,14 +63,20 @@ func printMailbox(mb *models.Mailbox) {
 		smtpHost = "(not set)"
 	}
 	fmt.Printf("smtp host:     %s\n", smtpHost)
-	probe := "(not set: sends no probe mail)"
-	if mb.ProbeSmtpHost != "" {
-		probe = fmt.Sprintf("%s:%d (%s)", mb.ProbeSmtpHost, mb.ProbeSmtpPort, mb.ProbeSmtpSecurity)
-		if mb.ProbeSmtpUsername != "" {
-			probe += " as " + mb.ProbeSmtpUsername
+	if mb.SmtpHost != "" {
+		port, sec := mb.SmtpPort, mb.SmtpSecurity
+		if port == 0 {
+			port = DefaultSMTPPort
 		}
+		if sec == "" {
+			sec = DefaultSMTPSecurity
+		}
+		conn := fmt.Sprintf("port %d (%s)", port, sec)
+		if mb.SmtpUsername != "" {
+			conn += " as " + mb.SmtpUsername
+		}
+		fmt.Printf("smtp send:     %s\n", conn)
 	}
-	fmt.Printf("probe smtp:    %s\n", probe)
 	fmt.Printf("last fetch:    %s (%s)\n", formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
 	if mb.LastFetchError != "" {
 		fmt.Printf("last error:    %s\n", mb.LastFetchError)
@@ -93,36 +99,32 @@ type MailboxAddCmd struct {
 	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of your own sending servers; not the server of the notification mails; default: not set)" name:"smtp-host"`
 	DisplayName    string `help:"Display name" name:"display-name"`
 	Disabled       bool   `help:"Register as disabled (not checked automatically)"`
-	probeSMTPFlags
+	smtpConnectionFlags
 }
 
-// probeSMTPFlags are the flags of the probe SMTP connection of a mailbox
-// (the server the probe mails of the address are sent through).
-type probeSMTPFlags struct {
-	// ProbeSMTPHost: nil = unchanged (not set on add), "" removes it.
-	ProbeSMTPHost     *string `help:"SMTP server the probe mails of this address are sent through (\"\" removes it: the address sends no probe mail)" name:"probe-smtp-host"`
-	ProbeSMTPPort     int     `help:"Port of the probe SMTP server (default: ${default_smtp_port})" name:"probe-smtp-port" default:"0"`
-	ProbeSMTPSecurity string  `help:"Connection security of the probe SMTP server (default: starttls)" name:"probe-smtp-security" enum:",ssl,starttls,none" default:""`
-	ProbeSMTPUsername *string `help:"Username of the probe SMTP server (\"\" = no authentication)" name:"probe-smtp-username"`
-	ProbeSMTPPassword string  `help:"Password of the probe SMTP server" name:"probe-smtp-password"`
+// smtpConnectionFlags are the flags of the rest of the SMTP connection of
+// a mailbox (with --smtp-host, the server the probe mails of the address
+// are sent through). They apply only together with a host.
+type smtpConnectionFlags struct {
+	SMTPPort     int     `help:"Port of the SMTP server (default: ${default_smtp_port})" name:"smtp-port" default:"0"`
+	SMTPSecurity string  `help:"Connection security of the SMTP server (default: starttls)" name:"smtp-security" enum:",ssl,starttls,none" default:""`
+	SMTPUsername *string `help:"Username of the SMTP server (\"\" = no authentication)" name:"smtp-username"`
+	SMTPPassword string  `help:"Password of the SMTP server" name:"smtp-password"`
 }
 
 // apply copies the given flags onto an input.
-func (f *probeSMTPFlags) apply(in *MailboxInput) {
-	if f.ProbeSMTPHost != nil {
-		in.ProbeSmtpHost = f.ProbeSMTPHost
+func (f *smtpConnectionFlags) apply(in *MailboxInput) {
+	if f.SMTPPort != 0 {
+		in.SmtpPort = f.SMTPPort
 	}
-	if f.ProbeSMTPPort != 0 {
-		in.ProbeSmtpPort = f.ProbeSMTPPort
+	if f.SMTPSecurity != "" {
+		in.SmtpSecurity = f.SMTPSecurity
 	}
-	if f.ProbeSMTPSecurity != "" {
-		in.ProbeSmtpSecurity = f.ProbeSMTPSecurity
+	if f.SMTPUsername != nil {
+		in.SmtpUsername = *f.SMTPUsername
 	}
-	if f.ProbeSMTPUsername != nil {
-		in.ProbeSmtpUsername = *f.ProbeSMTPUsername
-	}
-	if f.ProbeSMTPPassword != "" {
-		in.ProbeSmtpPassword = f.ProbeSMTPPassword
+	if f.SMTPPassword != "" {
+		in.SmtpPassword = f.SMTPPassword
 	}
 }
 
@@ -154,7 +156,7 @@ func (c *MailboxAddCmd) Run() error {
 	if c.SmtpHost != "" {
 		in.SmtpHost = &c.SmtpHost
 	}
-	c.probeSMTPFlags.apply(in)
+	c.smtpConnectionFlags.apply(in)
 	mb, err := CreateMailbox(db, key, in)
 	if err != nil {
 		return NewExitError(ExitArgument, err.Error())
@@ -258,11 +260,11 @@ type MailboxUpdateCmd struct {
 	// ServerKeepDays: -1 = unchanged.
 	ServerKeepDays int `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never" name:"server-keep-days" default:"-1"`
 	// SmtpHost: nil = unchanged, "" clears it.
-	SmtpHost    *string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (not the server of the notification mails; \"\" clears it; no password needed)" name:"smtp-host"`
+	SmtpHost    *string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (not the server of the notification mails; \"\" clears it and the rest of the SMTP connection)" name:"smtp-host"`
 	DisplayName string  `help:"Display name" name:"display-name"`
 	Enabled     bool    `help:"Enable the mailbox"`
 	Disabled    bool    `help:"Disable the mailbox"`
-	probeSMTPFlags
+	smtpConnectionFlags
 }
 
 func (c *MailboxUpdateCmd) Run() error {
@@ -324,7 +326,7 @@ func (c *MailboxUpdateCmd) Run() error {
 	if c.SmtpHost != nil {
 		in.SmtpHost = c.SmtpHost
 	}
-	c.probeSMTPFlags.apply(in)
+	c.smtpConnectionFlags.apply(in)
 	if c.DisplayName != "" {
 		in.DisplayName = c.DisplayName
 	}
@@ -339,8 +341,8 @@ func (c *MailboxUpdateCmd) Run() error {
 		if errors.Is(err, ErrPasswordRequired) {
 			return NewExitErrorf(ExitArgument, "%s (pass --password or --ask-password)", err)
 		}
-		if errors.Is(err, ErrProbeSMTPPasswordRequired) {
-			return NewExitErrorf(ExitArgument, "%s (pass --probe-smtp-password)", err)
+		if errors.Is(err, ErrSMTPConnectionPasswordRequired) {
+			return NewExitErrorf(ExitArgument, "%s (pass --smtp-password)", err)
 		}
 		return NewExitError(ExitArgument, err.Error())
 	}

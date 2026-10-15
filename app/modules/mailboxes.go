@@ -53,27 +53,26 @@ type MailboxInput struct {
 	// when shorter) on creation, the stored value on update.
 	ServerKeepDays *int `json:"server_keep_days"`
 	// SmtpHost is the host name of the SMTP server that sends the mail of
-	// the address (normalizeOwnHost; "" = not set). nil = not set on
-	// creation, the stored value on update. It is no connection setting:
-	// changing it needs no password.
-	SmtpHost *string `json:"smtp_host"`
-	// The SMTP connection the probe mails of the address are sent through
-	// (probe.go). ProbeSmtpHost nil = not set on creation, the stored
-	// connection on update (the other probe fields are then ignored); ""
-	// removes it. The port defaults to DefaultSMTPPort, the security to
-	// DefaultSMTPSecurity. An empty password keeps the stored one, but only
-	// while host, port, security and username stay the same.
-	ProbeSmtpHost     *string `json:"probe_smtp_host"`
-	ProbeSmtpPort     int     `json:"probe_smtp_port"`
-	ProbeSmtpSecurity string  `json:"probe_smtp_security"`
-	ProbeSmtpUsername string  `json:"probe_smtp_username"`
-	ProbeSmtpPassword string  `json:"probe_smtp_password"`
+	// the address (normalizeOwnHost; "" = not set) and, with the fields
+	// below, the SMTP connection the probe mails of the address are sent
+	// through (probe.go). nil = not set on creation, the stored connection
+	// on update (the other SMTP fields are then ignored); "" removes the
+	// whole connection. The port defaults to DefaultSMTPPort, the security
+	// to DefaultSMTPSecurity, an empty username means no authentication. An
+	// empty password keeps the stored one, but only while host, port,
+	// security and username stay the same (ErrSMTPConnectionPasswordRequired
+	// otherwise).
+	SmtpHost     *string `json:"smtp_host"`
+	SmtpPort     int     `json:"smtp_port"`
+	SmtpSecurity string  `json:"smtp_security"`
+	SmtpUsername string  `json:"smtp_username"`
+	SmtpPassword string  `json:"smtp_password"`
 }
 
-// ErrProbeSMTPPasswordRequired is returned when the probe SMTP connection
-// of a mailbox changes while a password is stored for it and no password is
+// ErrSMTPConnectionPasswordRequired is returned when the SMTP connection of
+// a mailbox changes while a password is stored for it and no password is
 // given (the stored one is never pointed at another server).
-var ErrProbeSMTPPasswordRequired = wording.New("validation.connection.passwordRequiredOnChange", "probe_smtp_password is required when the probe SMTP connection changes")
+var ErrSMTPConnectionPasswordRequired = wording.New("validation.connection.passwordRequiredOnChange", "smtp_password is required when the SMTP connection changes")
 
 // MailboxInputFrom builds an input pre-filled from a stored mailbox (without
 // the password) so a partial update can override single fields.
@@ -81,14 +80,12 @@ func MailboxInputFrom(mb *models.Mailbox) *MailboxInput {
 	enabled := mb.Enabled
 	serverKeep := mb.ServerKeepDays
 	smtpHost := mb.SmtpHost
-	probeHost := mb.ProbeSmtpHost
 	return &MailboxInput{
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost,
 		ImapPort: mb.ImapPort, ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername,
 		Folder: mb.Folder, Enabled: &enabled, InitialDays: mb.InitialDays, RecentDays: mb.RecentDays,
-		ServerKeepDays: &serverKeep, SmtpHost: &smtpHost,
-		ProbeSmtpHost: &probeHost, ProbeSmtpPort: mb.ProbeSmtpPort, ProbeSmtpSecurity: mb.ProbeSmtpSecurity,
-		ProbeSmtpUsername: mb.ProbeSmtpUsername,
+		ServerKeepDays: &serverKeep, SmtpHost: &smtpHost, SmtpPort: mb.SmtpPort, SmtpSecurity: mb.SmtpSecurity,
+		SmtpUsername: mb.SmtpUsername,
 	}
 }
 
@@ -178,59 +175,65 @@ func ValidateMailboxInput(in *MailboxInput) error {
 		}
 		in.SmtpHost = &host
 	}
-	return validateProbeSMTPInput(in)
+	return validateSMTPConnectionInput(in)
 }
 
-// validateProbeSMTPInput normalizes the probe SMTP connection of an input:
-// no host clears every other field; with a host the port and the security
-// get their defaults and are checked.
-func validateProbeSMTPInput(in *MailboxInput) error {
-	if in.ProbeSmtpHost == nil {
+// validateSMTPConnectionInput normalizes the rest of the SMTP connection of
+// an input (the host is checked above): no host clears every other field;
+// with a host the port and the security get their defaults and are checked.
+func validateSMTPConnectionInput(in *MailboxInput) error {
+	if in.SmtpHost == nil {
 		return nil
 	}
-	host := strings.TrimSpace(*in.ProbeSmtpHost)
-	in.ProbeSmtpHost = &host
-	if host == "" {
-		in.ProbeSmtpPort, in.ProbeSmtpSecurity, in.ProbeSmtpUsername, in.ProbeSmtpPassword = 0, "", "", ""
+	if *in.SmtpHost == "" {
+		in.SmtpPort, in.SmtpSecurity, in.SmtpUsername, in.SmtpPassword = 0, "", "", ""
 		return nil
 	}
-	if !validIMAPHost(host) {
-		return wording.New("validation.connection.hostInvalid", "probe_smtp_host is not a valid host name")
+	if in.SmtpPort == 0 {
+		in.SmtpPort = DefaultSMTPPort
 	}
-	if in.ProbeSmtpPort == 0 {
-		in.ProbeSmtpPort = DefaultSMTPPort
-	}
-	if in.ProbeSmtpPort < 1 || in.ProbeSmtpPort > 65535 {
+	if in.SmtpPort < 1 || in.SmtpPort > 65535 {
 		return errSMTPPortInvalid
 	}
-	in.ProbeSmtpSecurity = strings.ToLower(strings.TrimSpace(in.ProbeSmtpSecurity))
-	if in.ProbeSmtpSecurity == "" {
-		in.ProbeSmtpSecurity = DefaultSMTPSecurity
+	in.SmtpSecurity = strings.ToLower(strings.TrimSpace(in.SmtpSecurity))
+	if in.SmtpSecurity == "" {
+		in.SmtpSecurity = DefaultSMTPSecurity
 	}
-	if err := ValidateSMTPSecurity(in.ProbeSmtpSecurity); err != nil {
+	if err := ValidateSMTPSecurity(in.SmtpSecurity); err != nil {
 		return err
 	}
-	in.ProbeSmtpUsername = strings.TrimSpace(in.ProbeSmtpUsername)
+	in.SmtpUsername = strings.TrimSpace(in.SmtpUsername)
+	if in.SmtpUsername == "" {
+		in.SmtpPassword = ""
+	}
 	return nil
 }
 
-// sameProbeConnection reports whether the input names the probe SMTP
-// connection stored for the mailbox (an input without ProbeSmtpHost keeps
-// it, so it is the same).
-func sameProbeConnection(stored *models.Mailbox, in *MailboxInput) bool {
-	if in.ProbeSmtpHost == nil {
+// sameSMTPConnection reports whether the input names the SMTP connection
+// stored for the mailbox (an input without SmtpHost keeps it, so it is the
+// same). A stored port or security of 0 / "" (saved before the settings
+// existed) counts as the default.
+func sameSMTPConnection(stored *models.Mailbox, in *MailboxInput) bool {
+	if in.SmtpHost == nil {
 		return true
 	}
-	return strings.EqualFold(stored.ProbeSmtpHost, *in.ProbeSmtpHost) && stored.ProbeSmtpPort == in.ProbeSmtpPort &&
-		stored.ProbeSmtpSecurity == in.ProbeSmtpSecurity && stored.ProbeSmtpUsername == in.ProbeSmtpUsername
+	port, sec := stored.SmtpPort, stored.SmtpSecurity
+	if port == 0 {
+		port = DefaultSMTPPort
+	}
+	if sec == "" {
+		sec = DefaultSMTPSecurity
+	}
+	return strings.EqualFold(stored.SmtpHost, *in.SmtpHost) && port == in.SmtpPort &&
+		sec == in.SmtpSecurity && stored.SmtpUsername == in.SmtpUsername
 }
 
-// probeSMTPPasswordMissing reports whether an update changes the probe SMTP
-// connection away from one that has a stored password without giving a new
-// password while the new connection authenticates (a username is set).
-func probeSMTPPasswordMissing(stored *models.Mailbox, in *MailboxInput) bool {
-	return in.ProbeSmtpHost != nil && *in.ProbeSmtpHost != "" && in.ProbeSmtpUsername != "" &&
-		in.ProbeSmtpPassword == "" && stored.ProbeSmtpPasswordEnc != "" && !sameProbeConnection(stored, in)
+// smtpPasswordMissing reports whether an update changes the SMTP connection
+// away from one that has a stored password without giving a new password
+// while the new connection authenticates (a username is set).
+func smtpPasswordMissing(stored *models.Mailbox, in *MailboxInput) bool {
+	return in.SmtpHost != nil && *in.SmtpHost != "" && in.SmtpUsername != "" &&
+		in.SmtpPassword == "" && stored.SmtpPasswordEnc != "" && !sameSMTPConnection(stored, in)
 }
 
 var errAddressInvalid = wording.New("validation.common.emailFormat", "address is not a valid mail address")
@@ -291,20 +294,16 @@ func applyMailboxInput(key []byte, mb *models.Mailbox, in *MailboxInput) error {
 		mb.ServerKeepDays = *in.ServerKeepDays
 	}
 	if in.SmtpHost != nil {
-		mb.SmtpHost = *in.SmtpHost
-	}
-	if in.ProbeSmtpHost != nil {
-		mb.ProbeSmtpHost, mb.ProbeSmtpPort = *in.ProbeSmtpHost, in.ProbeSmtpPort
-		mb.ProbeSmtpSecurity, mb.ProbeSmtpUsername = in.ProbeSmtpSecurity, in.ProbeSmtpUsername
+		mb.SmtpHost, mb.SmtpPort, mb.SmtpSecurity, mb.SmtpUsername = *in.SmtpHost, in.SmtpPort, in.SmtpSecurity, in.SmtpUsername
 		// Empty: models.UpdateMailbox keeps the stored password while a
 		// host and a username are set.
-		mb.ProbeSmtpPasswordEnc = ""
-		if in.ProbeSmtpPassword != "" && *in.ProbeSmtpHost != "" {
-			enc, err := EncryptSecret(key, in.ProbeSmtpPassword)
+		mb.SmtpPasswordEnc = ""
+		if in.SmtpPassword != "" && *in.SmtpHost != "" {
+			enc, err := EncryptSecret(key, in.SmtpPassword)
 			if err != nil {
 				return err
 			}
-			mb.ProbeSmtpPasswordEnc = enc
+			mb.SmtpPasswordEnc = enc
 		}
 	}
 	mb.ImapPasswordEnc = ""
@@ -403,8 +402,8 @@ func UpdateMailbox(db *sql.DB, key []byte, mailsRoot, agentRoot string, mb *mode
 	if in.ImapPassword == "" && mb.ImapPasswordEnc != "" && !sameConnection(mb, in) {
 		return ErrPasswordRequired
 	}
-	if probeSMTPPasswordMissing(mb, in) {
-		return ErrProbeSMTPPasswordRequired
+	if smtpPasswordMissing(mb, in) {
+		return ErrSMTPConnectionPasswordRequired
 	}
 	if err := checkAddressAvailable(db, in.Address, mb.ID); err != nil {
 		return err
@@ -424,7 +423,7 @@ func UpdateMailbox(db *sql.DB, key []byte, mailsRoot, agentRoot string, mb *mode
 		}
 	}
 	storedEnc := mb.ImapPasswordEnc
-	storedProbeEnc := mb.ProbeSmtpPasswordEnc
+	storedSMTPEnc := mb.SmtpPasswordEnc
 	if err := applyMailboxInput(key, mb, in); err != nil {
 		return err
 	}
@@ -446,8 +445,8 @@ func UpdateMailbox(db *sql.DB, key []byte, mailsRoot, agentRoot string, mb *mode
 	if mb.ImapPasswordEnc == "" {
 		mb.ImapPasswordEnc = storedEnc
 	}
-	if mb.ProbeSmtpPasswordEnc == "" && mb.ProbeSmtpHost != "" && mb.ProbeSmtpUsername != "" {
-		mb.ProbeSmtpPasswordEnc = storedProbeEnc
+	if mb.SmtpPasswordEnc == "" && mb.SmtpHost != "" && mb.SmtpUsername != "" {
+		mb.SmtpPasswordEnc = storedSMTPEnc
 	}
 	return nil
 }

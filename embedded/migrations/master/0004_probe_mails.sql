@@ -1,6 +1,6 @@
 -- +goose Up
 -- Delivery probe (system design document 7.6): at each probe send time
--- every enabled mailbox that has probe SMTP settings sends one probe mail to
+-- every enabled mailbox that has an SMTP connection sends one probe mail to
 -- the probe server (the probe_* settings), and the arrival check looks for
 -- them on the probe server over IMAP. One row per probe mail: its own send
 -- time, so the delay of every mail is measured on its own. A row stays open

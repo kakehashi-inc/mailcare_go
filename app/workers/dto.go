@@ -141,18 +141,18 @@ type MailboxDTO struct {
 	RecentDays     int    `json:"recent_days"`
 	ServerKeepDays int    `json:"server_keep_days"` // 0 = the mails stay on the server
 	SmtpHost       string `json:"smtp_host"`        // "" = not set
-	// The probe SMTP connection ("" host = the address sends no probe
-	// mail); the password is never returned, only whether one is stored.
-	ProbeSmtpHost        string           `json:"probe_smtp_host"`
-	ProbeSmtpPort        int              `json:"probe_smtp_port"`
-	ProbeSmtpSecurity    string           `json:"probe_smtp_security"`
-	ProbeSmtpUsername    string           `json:"probe_smtp_username"`
-	ProbeSmtpPasswordSet bool             `json:"probe_smtp_password_set"`
-	LastFetchedAt        *string          `json:"last_fetched_at"`
-	LastFetchError       string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
-	CreatedAt            string           `json:"created_at"`
-	UpdatedAt            string           `json:"updated_at"`
-	Stats                *MailboxStatsDTO `json:"stats,omitempty"`
+	// The rest of the SMTP connection of smtp_host (the probe mails are
+	// sent through it); the password is never returned, only whether one
+	// is stored. A port or security saved as 0 / "" is shown as the default.
+	SmtpPort        int              `json:"smtp_port"`
+	SmtpSecurity    string           `json:"smtp_security"`
+	SmtpUsername    string           `json:"smtp_username"`
+	SmtpPasswordSet bool             `json:"smtp_password_set"`
+	LastFetchedAt   *string          `json:"last_fetched_at"`
+	LastFetchError  string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
+	CreatedAt       string           `json:"created_at"`
+	UpdatedAt       string           `json:"updated_at"`
+	Stats           *MailboxStatsDTO `json:"stats,omitempty"`
 }
 
 func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
@@ -160,9 +160,9 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost, ImapPort: mb.ImapPort,
 		ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername, Folder: mb.Folder, Enabled: mb.Enabled,
 		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, ServerKeepDays: mb.ServerKeepDays,
-		SmtpHost:      mb.SmtpHost,
-		ProbeSmtpHost: mb.ProbeSmtpHost, ProbeSmtpPort: mb.ProbeSmtpPort, ProbeSmtpSecurity: mb.ProbeSmtpSecurity,
-		ProbeSmtpUsername: mb.ProbeSmtpUsername, ProbeSmtpPasswordSet: mb.ProbeSmtpPasswordEnc != "",
+		SmtpHost: mb.SmtpHost,
+		SmtpPort: orDefault(mb.SmtpPort, modules.DefaultSMTPPort), SmtpSecurity: orDefaultStr(mb.SmtpSecurity, modules.DefaultSMTPSecurity),
+		SmtpUsername: mb.SmtpUsername, SmtpPasswordSet: mb.SmtpPasswordEnc != "",
 		LastFetchedAt:  nullTimeString(mb.LastFetchedAt),
 		LastFetchError: mb.LastFetchError,
 		CreatedAt:      timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
@@ -185,8 +185,7 @@ func redactMailboxDTO(dto *MailboxDTO) {
 	dto.ImapHost, dto.ImapPort, dto.ImapSecurity, dto.ImapUsername, dto.Folder = "", 0, "", "", ""
 	dto.InitialDays, dto.RecentDays, dto.ServerKeepDays = 0, 0, 0
 	dto.SmtpHost = ""
-	dto.ProbeSmtpHost, dto.ProbeSmtpPort, dto.ProbeSmtpSecurity, dto.ProbeSmtpUsername = "", 0, "", ""
-	dto.ProbeSmtpPasswordSet = false
+	dto.SmtpPort, dto.SmtpSecurity, dto.SmtpUsername, dto.SmtpPasswordSet = 0, "", "", false
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.
@@ -569,4 +568,21 @@ func toDMARCRecordDTO(r *models.DMARCRecord) DMARCRecordDTO {
 		MessageCount: r.MessageCount, Disposition: r.Disposition, DKIMResult: r.DKIMResult, SPFResult: r.SPFResult,
 		DKIMAuth: r.DKIMAuth, SPFAuth: r.SPFAuth,
 	}
+}
+
+// orDefault returns v, or def when v is 0 (a value saved before the setting
+// existed).
+func orDefault(v, def int) int {
+	if v == 0 {
+		return def
+	}
+	return v
+}
+
+// orDefaultStr is orDefault for text.
+func orDefaultStr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }

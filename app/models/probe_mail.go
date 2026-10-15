@@ -285,6 +285,35 @@ func LatestProbeMails(db *sql.DB) (map[int64]*ProbeMail, error) {
 	return out, nil
 }
 
+// KnownProbeTokens returns which of the tokens belong to a recorded probe
+// mail (any status).
+func KnownProbeTokens(db *sql.DB, tokens []string) (map[string]bool, error) {
+	known := map[string]bool{}
+	for start := 0; start < len(tokens); start += 500 {
+		batch := tokens[start:min(start+500, len(tokens))]
+		args := make([]any, 0, len(batch))
+		for _, t := range batch {
+			args = append(args, t)
+		}
+		rows, err := db.Query(`SELECT token FROM probe_mails WHERE token IN (`+placeholders(len(batch))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var t string
+			if err := rows.Scan(&t); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			known[t] = true
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return known, nil
+}
+
 // DeleteOldProbeMails removes the closed probe mails (arrived, recovered,
 // resolved) sent before the given time.
 func DeleteOldProbeMails(db *sql.DB, before time.Time) (int64, error) {
