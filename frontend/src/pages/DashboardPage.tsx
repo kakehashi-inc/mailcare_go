@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { getDashboard } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { JobList } from '../components/domain/JobList';
+import { ProbeBadges } from '../components/domain/ProbeBadges';
 import { CheckStatusBadge, fetchStatus } from '../components/domain/StatusBadges';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
@@ -18,8 +19,8 @@ import { DASHBOARD_REFRESH_MS, JOB_POLL_INTERVAL_MS } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { usePolling } from '../hooks/usePolling';
-import type { MailboxDTO } from '../types';
-import { formatNumber } from '../utils/format';
+import type { MailboxDTO, ProbeMailDTO } from '../types';
+import { formatMinutes, formatNumber } from '../utils/format';
 
 export function DashboardPage() {
     const { t } = useTranslation();
@@ -74,6 +75,9 @@ export function DashboardPage() {
         },
         { label: t('field.mailbox.junkMessages'), value: data.totals.junk_messages, icon: 'block', tone: 'text-ink' },
     ];
+    const probe = data.probe;
+    const probeFailures = probe.counts.failure + probe.counts.send_failed;
+    const probeLatest = new Map(probe.mailboxes.map(m => [m.mailbox_id, m.latest]));
     if (data.totals.unclassified > 0) {
         totals.push({
             label: t('field.mailbox.unclassified'),
@@ -99,6 +103,23 @@ export function DashboardPage() {
             {isAdmin && data.agent.enabled && !data.agent.available && (
                 <Alert tone='warning' className='mb-4' title={t('page.dashboard.agentUnavailableTitle')}>
                     {t('page.dashboard.agentUnavailable', { provider: data.agent.provider })}
+                </Alert>
+            )}
+
+            {probeFailures > 0 && (
+                <Alert tone='danger' className='mb-4' title={t('page.dashboard.probeFailureTitle')}>
+                    <p>{t('page.dashboard.probeFailure', { count: probeFailures })}</p>
+                    <LinkButton size='sm' to='/alerts/probes' icon='forward_to_inbox' className='mt-2'>
+                        {t('action.probe.open')}
+                    </LinkButton>
+                </Alert>
+            )}
+            {probe.counts.delayed > 0 && (
+                <Alert tone='warning' className='mb-4' title={t('page.dashboard.probeDelayTitle')}>
+                    <p>{t('page.dashboard.probeDelay', { count: probe.counts.delayed })}</p>
+                    <LinkButton size='sm' to='/alerts/probes?filter=open' icon='forward_to_inbox' className='mt-2'>
+                        {t('action.probe.open')}
+                    </LinkButton>
                 </Alert>
             )}
 
@@ -213,6 +234,7 @@ export function DashboardPage() {
                                                     </dd>
                                                 </div>
                                             </dl>
+                                            <MailboxProbe latest={probeLatest.get(mb.id)} />
                                             {mb.last_fetch_error && (
                                                 <p className='break-words text-sm text-danger' role='alert'>
                                                     {mb.last_fetch_error}
@@ -308,6 +330,64 @@ export function DashboardPage() {
                         )}
                     </Card>
 
+                    {(probe.configured || probe.mailboxes.length > 0) && (
+                        <Card>
+                            <CardHeader title={t('page.dashboard.probe')} as='h2' />
+                            <dl className='space-y-3 text-base'>
+                                <div>
+                                    <dt className='text-sm text-muted'>{t('field.probe.status')}</dt>
+                                    <dd className='flex flex-wrap gap-2'>
+                                        {probeFailures > 0 && (
+                                            <Badge tone='danger' icon='error'>
+                                                {t('value.probeStatus.failure')}: {formatNumber(probeFailures)}
+                                            </Badge>
+                                        )}
+                                        {probe.counts.delayed > 0 && (
+                                            <Badge tone='warning' icon='hourglass_bottom'>
+                                                {t('value.probeStatus.delayed')}: {formatNumber(probe.counts.delayed)}
+                                            </Badge>
+                                        )}
+                                        {probeFailures + probe.counts.delayed === 0 && (
+                                            <span className='text-ink'>
+                                                {probe.enabled
+                                                    ? t('page.dashboard.probeOk')
+                                                    : t('page.dashboard.probeOff')}
+                                            </span>
+                                        )}
+                                    </dd>
+                                </div>
+                                {probe.enabled && (
+                                    <>
+                                        <div>
+                                            <dt className='text-sm text-muted'>{t('field.probe.nextSend')}</dt>
+                                            <dd className='text-ink'>
+                                                <DateTime value={probe.next_send_at} relative empty='-' />
+                                            </dd>
+                                        </div>
+                                        <div>
+                                            <dt className='text-sm text-muted'>{t('field.probe.nextCheck')}</dt>
+                                            <dd className='text-ink'>
+                                                <DateTime value={probe.next_check_at} relative empty='-' />
+                                            </dd>
+                                        </div>
+                                        <div>
+                                            <dt className='text-sm text-muted'>{t('field.probe.thresholds')}</dt>
+                                            <dd className='text-ink'>
+                                                {t('field.probe.thresholdsValue', {
+                                                    delay: formatMinutes(probe.delay_minutes, t),
+                                                    failure: formatMinutes(probe.failure_minutes, t),
+                                                })}
+                                            </dd>
+                                        </div>
+                                    </>
+                                )}
+                            </dl>
+                            <LinkButton to='/alerts/probes' size='sm' icon='forward_to_inbox' className='mt-4'>
+                                {t('action.probe.open')}
+                            </LinkButton>
+                        </Card>
+                    )}
+
                     {isAdmin && (
                         <Card>
                             <CardHeader
@@ -334,5 +414,17 @@ export function DashboardPage() {
                 </aside>
             </div>
         </PageContainer>
+    );
+}
+
+/** The newest probe mail of a mailbox, on its card (nothing when it never sent one). */
+function MailboxProbe({ latest }: { latest: ProbeMailDTO | null | undefined }) {
+    const { t } = useTranslation();
+    if (!latest) return null;
+    return (
+        <div className='flex flex-wrap items-center gap-2 text-sm'>
+            <span className='text-muted'>{t('page.dashboard.probe')}</span>
+            <ProbeBadges probe={latest} />
+        </div>
     );
 }

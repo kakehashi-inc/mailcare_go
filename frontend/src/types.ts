@@ -38,9 +38,19 @@ export type Severity = 'high' | 'medium' | 'low' | '';
 export type Confidence = 'high' | 'medium' | 'low';
 export type ImapSecurity = 'ssl' | 'starttls' | 'none';
 export type SmtpSecurity = 'ssl' | 'starttls' | 'none';
-export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify' | 'cleanup' | 'notify';
-/** Job kinds that the tools page offers (notify is started from the notification settings). */
-export type ToolKind = Exclude<JobKind, 'notify'>;
+export type JobKind =
+    | 'sync'
+    | 'fetch'
+    | 'group'
+    | 'analyze'
+    | 'reindex'
+    | 'reclassify'
+    | 'cleanup'
+    | 'notify'
+    | 'probe_send'
+    | 'probe_check';
+/** Job kinds that the tools page offers (notify is started from the notification settings, the probe jobs from the probe screens). */
+export type ToolKind = Exclude<JobKind, 'notify' | 'probe_send' | 'probe_check'>;
 /** Tool job kinds, in the order the tools page lists them. */
 export const JOB_KINDS: readonly ToolKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify', 'cleanup'];
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled';
@@ -167,6 +177,13 @@ export interface MailboxDTO {
     server_keep_days: number;
     /** Host name of the SMTP server that sends the mail of this address (one of the own sending servers); "" = not set. Blanked ("") for non-administrators, like the IMAP connection. */
     smtp_host: string;
+    /** SMTP server the probe mails of this address are sent through; "" = the address sends no probe mail. Blanked for non-administrators. */
+    probe_smtp_host: string;
+    probe_smtp_port: number;
+    probe_smtp_security: SmtpSecurity | '';
+    probe_smtp_username: string;
+    /** The password itself is never returned; only whether one is stored. */
+    probe_smtp_password_set: boolean;
     /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
     last_fetched_at: string | null;
     last_fetch_error: string;
@@ -192,6 +209,13 @@ export interface MailboxInput {
     server_keep_days?: number;
     /** SMTP server (sending) host name; "" clears it. Omitted: not set for a new mailbox, unchanged on update. Needs no password. */
     smtp_host?: string;
+    /** Probe SMTP server; "" removes the probe SMTP connection. Omitted: not set for a new mailbox, unchanged on update (the other probe_smtp_* fields are then ignored). */
+    probe_smtp_host?: string;
+    probe_smtp_port?: number;
+    probe_smtp_security?: SmtpSecurity;
+    probe_smtp_username?: string;
+    /** Empty keeps the stored one, but only while host, port, security and username stay the same. */
+    probe_smtp_password?: string;
 }
 
 export interface GroupDTO {
@@ -396,6 +420,7 @@ export interface DashboardDTO {
     next_check_at: string | null;
     check_times: string[];
     agent: { provider: string; enabled: boolean; available: boolean };
+    probe: ProbeSummary;
 }
 
 export interface ProviderStatus {
@@ -663,4 +688,135 @@ export interface TokenInput {
 export interface TokenCreateResponse {
     token: TokenDTO;
     value: string;
+}
+
+// --- Delivery probe ---
+
+/**
+ * Status of a probe mail: pending (sent, not overdue yet), delayed / failure (not arrived for the delay / failure
+ * threshold), send_failed (the SMTP server did not accept it), arrived (in time), recovered (arrived after the delay
+ * threshold), resolved (closed by hand before it arrived).
+ */
+export type ProbeStatus = 'pending' | 'delayed' | 'failure' | 'send_failed' | 'arrived' | 'recovered' | 'resolved';
+/** The worst level a probe mail reached ("" = none). */
+export type ProbeLevel = '' | 'delayed' | 'failure';
+/** Filters of the probe mail list: still open, every problem (open or closed), every mail. */
+export const PROBE_FILTERS = ['open', 'issues', 'all'] as const;
+export type ProbeFilter = (typeof PROBE_FILTERS)[number];
+/** Why a probe mail was resolved by hand (value.probeResolveReason), in the order the dialog offers them ("other" last). */
+export const PROBE_RESOLVE_REASONS = [
+    'server_recovered',
+    'arrived_elsewhere',
+    'maintenance',
+    'config_error',
+    'probe_server_issue',
+    'other',
+] as const;
+export type ProbeResolveReason = (typeof PROBE_RESOLVE_REASONS)[number];
+
+export interface ProbeMailDTO {
+    id: number;
+    mailbox_id: number;
+    address: string;
+    token: string;
+    /** "YYYY-MM-DD HH:MM" of the send time (server time, as in the subject); for a mail sent by hand the time it was sent. */
+    slot: string;
+    /** Sent by hand (not at a send time). */
+    manual: boolean;
+    subject: string;
+    sent_at: string;
+    status: ProbeStatus;
+    level: ProbeLevel;
+    /** Arrival minus sending once arrived, else the time without arrival at the latest check. */
+    delay_seconds: number;
+    arrived_at: string | null;
+    last_checked_at: string | null;
+    error_message: string;
+    notified_at: string | null;
+    resolved_at: string | null;
+    resolved_by: string;
+    resolve_reason: ProbeResolveReason | '';
+    resolve_note: string;
+}
+
+export interface ProbeCounts {
+    pending: number;
+    delayed: number;
+    failure: number;
+    send_failed: number;
+    /** Arrived late within the last recent_days. */
+    recovered: number;
+    /** Resolved by hand within the last recent_days. */
+    resolved: number;
+}
+
+export interface ProbeMailboxState {
+    mailbox_id: number;
+    address: string;
+    display_name: string;
+    /** Enabled and has a probe SMTP server. */
+    sending: boolean;
+    latest: ProbeMailDTO | null;
+}
+
+/** State of the delivery probe (dashboard and probe screen). */
+export interface ProbeSummary {
+    enabled: boolean;
+    configured: boolean;
+    send_times: string[];
+    delay_minutes: number;
+    failure_minutes: number;
+    next_send_at: string | null;
+    next_check_at: string | null;
+    last_send_at: string | null;
+    last_check_at: string | null;
+    /** The error of the latest check (only "error" for non-administrators). */
+    last_check_error: string;
+    counts: ProbeCounts;
+    recent_days: number;
+    mailboxes: ProbeMailboxState[];
+}
+
+/** GET /api/v1/probes */
+export interface ProbeListResponse {
+    summary: ProbeSummary;
+    probes: ProbeMailDTO[];
+    total: number;
+    page: number;
+    per_page: number;
+    filter: ProbeFilter;
+}
+
+/** GET /api/v1/settings/probe */
+export interface ProbeSettingsDTO {
+    enabled: boolean;
+    /** The recipient address of the probe mails (the mailbox of the probe server). */
+    address: string;
+    imap_host: string;
+    imap_port: number;
+    imap_security: ImapSecurity;
+    imap_username: string;
+    imap_password_set: boolean;
+    imap_folder: string;
+    /** HH:MM, server local time. */
+    send_times: string[];
+    delay_minutes: number;
+    failure_minutes: number;
+    /** Enabled mail addresses with a probe SMTP server. */
+    mailboxes: number;
+}
+
+/** PUT /api/v1/settings/probe: only the fields present are changed; an empty imap_password keeps the stored one. */
+export interface ProbeSettingsInput {
+    enabled?: boolean;
+    address?: string;
+    imap_host?: string;
+    imap_port?: number;
+    imap_security?: ImapSecurity;
+    imap_username?: string;
+    imap_password?: string;
+    imap_folder?: string;
+    send_times?: string[];
+    delay_minutes?: number;
+    failure_minutes?: number;
 }

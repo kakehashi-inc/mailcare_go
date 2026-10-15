@@ -1,0 +1,39 @@
+{{/*
+  Delivery probe failure mail (Japanese). Sent to the notification
+  recipients when probe mails did not arrive within the failure threshold
+  or could not be sent. Fields:
+    .Date     date and time the mail is built (recipient's time zone)
+    .Total    number of probe mails listed
+    .URL      the probe screen of MailCare
+    .BaseURL  the public URL of MailCare
+    .Entries  one entry per probe mail:
+      .Address .Slot (send time, server time as in the subject) .Manual
+      (sent by hand) .SentAt (recipient's time zone)
+      .SendFailed (the SMTP server did not accept it) .Error
+      .Hours .Minutes (time without arrival)
+*/ -}}
+{{define "subject" -}}
+[MailCare] 確認メールの障害 {{.Total}} 件 ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+MailCare からのお知らせです。
+確認メールが障害判断時間を過ぎても届いていない、または送信できませんでした（{{.Date}} 時点、{{.Total}} 件）。
+メールの送受信に障害が起きている可能性があります。
+{{range .Entries}}
+■ {{.Address}}
+   送信時刻: {{.Slot}}{{if .Manual}}（手動）{{end}}
+{{- if .SendFailed}}
+   状態: 送信できませんでした
+   エラー: {{.Error}}
+{{- else}}
+   状態: 未着（{{.Hours}} 時間 {{.Minutes}} 分経過）
+{{- end}}
+{{end}}
+状況の確認と解決済みにする操作は次の URL から行えます。
+{{.URL}}
+
+--------------------------------------------------
+このメールは MailCare が自動送信しています。
+通知の設定は {{.BaseURL}}/settings/notifications から変更できます。
+{{- end}}

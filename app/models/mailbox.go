@@ -43,6 +43,15 @@ type Mailbox struct {
 	// of every mailbox are our own sending servers (app/modules
 	// ResolveOwnSending).
 	SmtpHost string `json:"smtp_host"`
+	// The SMTP connection the probe mails of this address are sent through
+	// (app/modules/probe.go). ProbeSmtpHost "" = the address sends no probe
+	// mail (also the value of a row saved before the setting existed). The
+	// password is encrypted like the IMAP one.
+	ProbeSmtpHost        string `json:"probe_smtp_host"`
+	ProbeSmtpPort        int    `json:"probe_smtp_port"`
+	ProbeSmtpSecurity    string `json:"probe_smtp_security"` // ssl | starttls | none
+	ProbeSmtpUsername    string `json:"probe_smtp_username"`
+	ProbeSmtpPasswordEnc string `json:"-"`
 }
 
 // ProtocolIMAP is the value of the "protocol" key in mailboxes.detail_info.
@@ -65,6 +74,19 @@ type mailboxDetails struct {
 	// SmtpHost: absent in rows saved before the setting existed, which
 	// reads as "" (not set).
 	SmtpHost string `json:"smtp_host"`
+	// Probe SMTP connection: absent in rows saved before the setting
+	// existed, which reads as "" (no probe mail is sent).
+	ProbeSmtp *probeSMTPDetails `json:"probe_smtp,omitempty"`
+}
+
+// probeSMTPDetails is the JSON shape of the probe SMTP connection inside
+// mailboxes.detail_info.
+type probeSMTPDetails struct {
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Security    string `json:"security"`
+	Username    string `json:"username"`
+	PasswordEnc string `json:"password_enc"`
 }
 
 func (m *Mailbox) detailsJSON() string {
@@ -72,8 +94,18 @@ func (m *Mailbox) detailsJSON() string {
 		Protocol: ProtocolIMAP, Host: m.ImapHost, Port: m.ImapPort, Security: m.ImapSecurity,
 		Username: m.ImapUsername, PasswordEnc: m.ImapPasswordEnc,
 		Folder: m.Folder, InitialDays: m.InitialDays, RecentDays: m.RecentDays, ServerKeepDays: m.ServerKeepDays,
-		SmtpHost: m.SmtpHost,
+		SmtpHost: m.SmtpHost, ProbeSmtp: m.probeSMTPDetails(),
 	})
+}
+
+// probeSMTPDetails returns the probe SMTP connection to store (nil when no
+// host is set: nothing else of it is kept then).
+func (m *Mailbox) probeSMTPDetails() *probeSMTPDetails {
+	if m.ProbeSmtpHost == "" {
+		return nil
+	}
+	return &probeSMTPDetails{Host: m.ProbeSmtpHost, Port: m.ProbeSmtpPort, Security: m.ProbeSmtpSecurity,
+		Username: m.ProbeSmtpUsername, PasswordEnc: m.ProbeSmtpPasswordEnc}
 }
 
 func (m *Mailbox) applyDetails(raw string) {
@@ -82,6 +114,11 @@ func (m *Mailbox) applyDetails(raw string) {
 	m.ImapHost, m.ImapPort, m.ImapSecurity, m.ImapUsername = j.Host, j.Port, j.Security, j.Username
 	m.ImapPasswordEnc, m.Folder, m.InitialDays, m.RecentDays = j.PasswordEnc, j.Folder, j.InitialDays, j.RecentDays
 	m.ServerKeepDays, m.SmtpHost = j.ServerKeepDays, j.SmtpHost
+	m.ProbeSmtpHost, m.ProbeSmtpPort, m.ProbeSmtpSecurity, m.ProbeSmtpUsername, m.ProbeSmtpPasswordEnc = "", 0, "", "", ""
+	if p := j.ProbeSmtp; p != nil {
+		m.ProbeSmtpHost, m.ProbeSmtpPort, m.ProbeSmtpSecurity, m.ProbeSmtpUsername = p.Host, p.Port, p.Security, p.Username
+		m.ProbeSmtpPasswordEnc = p.PasswordEnc
+	}
 }
 
 const mailboxColumns = `id, address, display_name, enabled, detail_info, last_fetched_at, last_fetch_error, created_at, updated_at`
@@ -103,14 +140,23 @@ func InsertMailbox(db *sql.DB, m *Mailbox) error {
 }
 
 // UpdateMailbox updates every editable field of a mailbox. When
-// ImapPasswordEnc is empty the stored password is kept.
+// ImapPasswordEnc is empty the stored password is kept, and so is the stored
+// probe SMTP password when ProbeSmtpPasswordEnc is empty while a probe SMTP
+// host and username are set (with no host the probe SMTP connection is
+// removed, with no username its password).
 func UpdateMailbox(db *sql.DB, m *Mailbox) error {
-	if m.ImapPasswordEnc == "" {
+	keepProbe := m.ProbeSmtpPasswordEnc == "" && m.ProbeSmtpHost != "" && m.ProbeSmtpUsername != ""
+	if m.ImapPasswordEnc == "" || keepProbe {
 		cur, err := GetMailboxByID(db, m.ID)
 		if err != nil {
 			return err
 		}
-		m.ImapPasswordEnc = cur.ImapPasswordEnc
+		if m.ImapPasswordEnc == "" {
+			m.ImapPasswordEnc = cur.ImapPasswordEnc
+		}
+		if keepProbe {
+			m.ProbeSmtpPasswordEnc = cur.ProbeSmtpPasswordEnc
+		}
 	}
 	now := time.Now().UTC()
 	_, err := db.Exec(

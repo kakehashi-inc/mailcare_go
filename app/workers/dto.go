@@ -128,24 +128,31 @@ type MailboxStatsDTO struct {
 // settings show to administrators only as well) are shown to
 // administrators only; redactMailboxDTO blanks them for other users.
 type MailboxDTO struct {
-	ID             int64            `json:"id"`
-	Address        string           `json:"address"`
-	DisplayName    string           `json:"display_name"`
-	ImapHost       string           `json:"imap_host"`
-	ImapPort       int              `json:"imap_port"`
-	ImapSecurity   string           `json:"imap_security"`
-	ImapUsername   string           `json:"imap_username"`
-	Folder         string           `json:"folder"`
-	Enabled        bool             `json:"enabled"`
-	InitialDays    int              `json:"initial_days"`
-	RecentDays     int              `json:"recent_days"`
-	ServerKeepDays int              `json:"server_keep_days"` // 0 = the mails stay on the server
-	SmtpHost       string           `json:"smtp_host"`        // "" = not set
-	LastFetchedAt  *string          `json:"last_fetched_at"`
-	LastFetchError string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
-	CreatedAt      string           `json:"created_at"`
-	UpdatedAt      string           `json:"updated_at"`
-	Stats          *MailboxStatsDTO `json:"stats,omitempty"`
+	ID             int64  `json:"id"`
+	Address        string `json:"address"`
+	DisplayName    string `json:"display_name"`
+	ImapHost       string `json:"imap_host"`
+	ImapPort       int    `json:"imap_port"`
+	ImapSecurity   string `json:"imap_security"`
+	ImapUsername   string `json:"imap_username"`
+	Folder         string `json:"folder"`
+	Enabled        bool   `json:"enabled"`
+	InitialDays    int    `json:"initial_days"`
+	RecentDays     int    `json:"recent_days"`
+	ServerKeepDays int    `json:"server_keep_days"` // 0 = the mails stay on the server
+	SmtpHost       string `json:"smtp_host"`        // "" = not set
+	// The probe SMTP connection ("" host = the address sends no probe
+	// mail); the password is never returned, only whether one is stored.
+	ProbeSmtpHost        string           `json:"probe_smtp_host"`
+	ProbeSmtpPort        int              `json:"probe_smtp_port"`
+	ProbeSmtpSecurity    string           `json:"probe_smtp_security"`
+	ProbeSmtpUsername    string           `json:"probe_smtp_username"`
+	ProbeSmtpPasswordSet bool             `json:"probe_smtp_password_set"`
+	LastFetchedAt        *string          `json:"last_fetched_at"`
+	LastFetchError       string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
+	CreatedAt            string           `json:"created_at"`
+	UpdatedAt            string           `json:"updated_at"`
+	Stats                *MailboxStatsDTO `json:"stats,omitempty"`
 }
 
 func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
@@ -153,7 +160,9 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost, ImapPort: mb.ImapPort,
 		ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername, Folder: mb.Folder, Enabled: mb.Enabled,
 		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, ServerKeepDays: mb.ServerKeepDays,
-		SmtpHost:       mb.SmtpHost,
+		SmtpHost:      mb.SmtpHost,
+		ProbeSmtpHost: mb.ProbeSmtpHost, ProbeSmtpPort: mb.ProbeSmtpPort, ProbeSmtpSecurity: mb.ProbeSmtpSecurity,
+		ProbeSmtpUsername: mb.ProbeSmtpUsername, ProbeSmtpPasswordSet: mb.ProbeSmtpPasswordEnc != "",
 		LastFetchedAt:  nullTimeString(mb.LastFetchedAt),
 		LastFetchError: mb.LastFetchError,
 		CreatedAt:      timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
@@ -176,6 +185,8 @@ func redactMailboxDTO(dto *MailboxDTO) {
 	dto.ImapHost, dto.ImapPort, dto.ImapSecurity, dto.ImapUsername, dto.Folder = "", 0, "", "", ""
 	dto.InitialDays, dto.RecentDays, dto.ServerKeepDays = 0, 0, 0
 	dto.SmtpHost = ""
+	dto.ProbeSmtpHost, dto.ProbeSmtpPort, dto.ProbeSmtpSecurity, dto.ProbeSmtpUsername = "", 0, "", ""
+	dto.ProbeSmtpPasswordSet = false
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.
@@ -430,6 +441,8 @@ type DashboardDTO struct {
 	NextCheckAt *string           `json:"next_check_at"`
 	CheckTimes  []string          `json:"check_times"`
 	Agent       DashboardAgentDTO `json:"agent"`
+	// Probe is the state of the delivery probe (every user).
+	Probe ProbeSummaryDTO `json:"probe"`
 }
 
 // DashboardTotalsDTO sums the per-mailbox counters (the same ones as the

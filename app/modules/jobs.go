@@ -21,7 +21,7 @@ import (
 // Jobs (jobs table).
 //
 // A job is one unit of background work: sync / fetch / group / analyze /
-// reindex / reclassify / notify / cleanup. Jobs are queued in the master database and executed
+// reindex / reclassify / notify / cleanup / probe_send / probe_check. Jobs are queued in the master database and executed
 // by the JobManager, which runs up to "workers" jobs at once. Jobs that touch
 // the same IMAP server, the same mailbox index or the agent CLI hold resource
 // keys (see resourceKeys) and are serialized against each other. A job
@@ -54,6 +54,7 @@ const (
 const (
 	lockAgent         = "agent"
 	lockNotify        = "notify"
+	lockProbe         = "probe"
 	lockHostPrefix    = "host:"
 	lockMailboxPrefix = "mailbox:"
 	lockAnalyzePrefix = "analyze:"
@@ -71,7 +72,8 @@ var ErrJobKind = wording.New("system.invalidRequest", "unknown job kind")
 // ValidateJobKind reports whether kind is one of the known job kinds.
 func ValidateJobKind(kind string) error {
 	switch kind {
-	case JobKindSync, JobKindFetch, JobKindGroup, JobKindAnalyze, JobKindReindex, JobKindReclassify, JobKindNotify, JobKindCleanup:
+	case JobKindSync, JobKindFetch, JobKindGroup, JobKindAnalyze, JobKindReindex, JobKindReclassify, JobKindNotify, JobKindCleanup,
+		JobKindProbeSend, JobKindProbeCheck:
 		return nil
 	}
 	return fmt.Errorf("%w %q", ErrJobKind, kind)
@@ -83,12 +85,31 @@ func ValidateJobKind(kind string) error {
 // which makes those rows look like expansion jobs. A job with a parent (a
 // child of an expansion job or a follow-up analysis) always had a mailbox,
 // and so did a queued job that was canceled without a result (the deletion
-// cancels the waiting jobs). Expansion jobs and notify jobs never have one.
+// cancels the waiting jobs). Expansion jobs, notify jobs and probe jobs
+// never have one.
 func JobOfDeletedMailbox(j *models.Job) bool {
-	if j.MailboxID.Valid || j.Kind == JobKindNotify {
+	if j.MailboxID.Valid || mailboxlessJobKind(j.Kind) {
 		return false
 	}
 	return j.ParentID != 0 || (j.Status == JobStatusCanceled && j.Result == "")
+}
+
+// mailboxlessJobKind reports whether a job kind never has a mailbox (and is
+// never expanded into one job per mailbox).
+func mailboxlessJobKind(kind string) bool {
+	return kind == JobKindNotify || kind == JobKindProbeSend || kind == JobKindProbeCheck
+}
+
+// normalizeProbeSendTarget validates a probe_send target: "" (sent by
+// hand) or the "YYYY-MM-DD HH:MM" of a send time.
+func normalizeProbeSendTarget(target string) (string, error) {
+	if target == "" {
+		return "", nil
+	}
+	if _, err := time.ParseInLocation("2006-01-02 15:04", target, time.Local); err != nil {
+		return "", wording.New("system.invalidRequest", fmt.Sprintf("invalid probe_send target %q (use \"\" or \"YYYY-MM-DD HH:MM\")", target))
+	}
+	return target, nil
 }
 
 // NotifyTestTarget builds the notify job target that sends a test mail to
@@ -293,8 +314,13 @@ func (m *JobManager) claimByID(id int64) (*models.Job, error) {
 // host and address are read from the mailboxes row at claim time; a job
 // whose mailbox is gone holds nothing (it fails when it runs).
 func (m *JobManager) resourceKeys(job *models.Job) []string {
-	if job.Kind == JobKindNotify {
+	switch job.Kind {
+	case JobKindNotify:
 		return []string{lockNotify}
+	case JobKindProbeSend, JobKindProbeCheck:
+		// A send and a check never overlap: the check would miss the
+		// mails being sent, and the send reschedules the check.
+		return []string{lockProbe}
 	}
 	if !job.MailboxID.Valid {
 		return nil
@@ -411,6 +437,18 @@ func EnqueueJob(db *sql.DB, kind string, mailboxID int64, target, requestedBy st
 		}
 		var err error
 		if target, err = normalizeNotifyTarget(target); err != nil {
+			return nil, false, err
+		}
+	case JobKindProbeSend, JobKindProbeCheck:
+		if mailboxID != 0 {
+			return nil, false, wording.New("system.invalidRequest", kind+" takes no mailbox")
+		}
+		if kind == JobKindProbeCheck {
+			target = ""
+			break
+		}
+		var err error
+		if target, err = normalizeProbeSendTarget(target); err != nil {
 			return nil, false, err
 		}
 	default:
@@ -633,6 +671,12 @@ func (m *JobManager) RunJob(ctx context.Context, job *models.Job, progress func(
 			return "", errors.New("notify takes no mailbox")
 		}
 		return m.runNotify(ctx, job, progress)
+	}
+	if job.Kind == JobKindProbeSend || job.Kind == JobKindProbeCheck {
+		if job.MailboxID.Valid {
+			return "", errors.New(job.Kind + " takes no mailbox")
+		}
+		return m.runProbe(ctx, job, progress)
 	}
 	if !job.MailboxID.Valid {
 		return m.runExpansion(ctx, job, progress)
@@ -1277,6 +1321,50 @@ func (m *JobManager) runNotify(ctx context.Context, job *models.Job, progress fu
 	line := fmt.Sprintf("sent %d group(s) to %s", res.Groups, strings.Join(res.Recipients, ", "))
 	if len(res.Failures) > 0 {
 		line += "; failed: " + strings.Join(res.Failures, "; ")
+	}
+	progress(line)
+	return line, nil
+}
+
+// runProbe runs a probe_send (SendProbes) or probe_check (CheckProbes) job.
+// A skipped run is no error: the result says why nothing was done.
+func (m *JobManager) runProbe(ctx context.Context, job *models.Job, progress func(string)) (string, error) {
+	baseURL := ""
+	if s, err := ResolveNotificationSettings(m.db, nil); err == nil {
+		baseURL = EffectiveBaseURL(m.db, s)
+	}
+	if job.Kind == JobKindProbeSend {
+		res, err := SendProbes(ctx, m.db, m.key, baseURL, job.Target, progress)
+		if err != nil {
+			progress(fmt.Sprintf("error: %v", err))
+			return "", err
+		}
+		if res.Skipped != "" {
+			line := "skipped: " + res.Skipped
+			progress(line)
+			return line, nil
+		}
+		line := fmt.Sprintf("sent %d probe mail(s)", res.Sent)
+		if res.Failed > 0 {
+			line += fmt.Sprintf(", %d could not be sent", res.Failed)
+		}
+		progress(line)
+		return line, nil
+	}
+	res, err := CheckProbes(ctx, m.db, m.key, baseURL, progress)
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return "", err
+	}
+	if res.Skipped != "" {
+		line := "skipped: " + res.Skipped
+		progress(line)
+		return line, nil
+	}
+	line := fmt.Sprintf("checked %d probe mail(s): %d arrived, %d arrived late, %d missing (%d newly delayed, %d newly failed)",
+		res.Checked, res.Arrived, res.Recovered, res.Missing, res.Delayed, res.Failed)
+	if !res.NextAt.IsZero() {
+		line += "; next check " + res.NextAt.In(time.Local).Format("2006-01-02 15:04")
 	}
 	progress(line)
 	return line, nil

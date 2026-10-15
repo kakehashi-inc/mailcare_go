@@ -50,6 +50,7 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/mailboxes", c.handleListMailboxes)
 	mux.HandleFunc("POST /api/v1/mailboxes", c.requireAdmin(c.handleCreateMailbox))
 	mux.HandleFunc("POST /api/v1/mailboxes/test", c.requireAdmin(c.handleTestMailbox))
+	mux.HandleFunc("POST /api/v1/mailboxes/probe-test", c.requireAdmin(c.handleTestMailboxProbe))
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}", c.handleGetMailbox)
 	mux.HandleFunc("PUT /api/v1/mailboxes/{id}", c.requireAdmin(c.handleUpdateMailbox))
 	mux.HandleFunc("DELETE /api/v1/mailboxes/{id}", c.requireAdmin(c.handleDeleteMailbox))
@@ -82,6 +83,15 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings/notifications", c.requireAdmin(c.handleUpdateNotificationSettings))
 	mux.HandleFunc("POST /api/v1/notifications/test", c.requireAdmin(c.handleTestNotification))
 	mux.HandleFunc("POST /api/v1/notifications/send", c.requireAdmin(c.handleSendNotification))
+
+	// Delivery probe.
+	mux.HandleFunc("GET /api/v1/settings/probe", c.requireAdmin(c.handleGetProbeSettings))
+	mux.HandleFunc("PUT /api/v1/settings/probe", c.requireAdmin(c.handleUpdateProbeSettings))
+	mux.HandleFunc("POST /api/v1/settings/probe/test", c.requireAdmin(c.handleTestProbeSettings))
+	mux.HandleFunc("GET /api/v1/probes", c.handleListProbes)
+	mux.HandleFunc("PUT /api/v1/probes/{id}/resolve", c.requireAdmin(c.handleResolveProbe))
+	mux.HandleFunc("POST /api/v1/probes/send", c.requireAdmin(c.handleSendProbes))
+	mux.HandleFunc("POST /api/v1/probes/check", c.requireAdmin(c.handleCheckProbes))
 
 	// Users (admin only).
 	mux.HandleFunc("GET /api/v1/users", c.requireAdmin(c.handleListUsers))

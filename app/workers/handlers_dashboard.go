@@ -79,6 +79,8 @@ func (c *core) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		dto.RecentJobs = toJobDTOs(recentJobs, addresses)
 	}
 
+	dto.Probe = c.dashboardProbe(u)
+
 	provider := modules.ResolveAgentProvider(c.db)
 	dto.Agent = DashboardAgentDTO{Provider: provider, Enabled: modules.ResolveAgentEnabled(c.db),
 		Available: agent.ProviderAvailable(provider)}

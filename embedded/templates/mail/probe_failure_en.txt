@@ -1,0 +1,39 @@
+{{/*
+  Delivery probe failure mail (English). Sent to the notification
+  recipients when probe mails did not arrive within the failure threshold
+  or could not be sent. Fields:
+    .Date     date and time the mail is built (recipient's time zone)
+    .Total    number of probe mails listed
+    .URL      the probe screen of MailCare
+    .BaseURL  the public URL of MailCare
+    .Entries  one entry per probe mail:
+      .Address .Slot (send time, server time as in the subject) .Manual
+      (sent by hand) .SentAt (recipient's time zone)
+      .SendFailed (the SMTP server did not accept it) .Error
+      .Hours .Minutes (time without arrival)
+*/ -}}
+{{define "subject" -}}
+[MailCare] Delivery probe failure: {{.Total}} ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+This is a notice from MailCare.
+Probe mails did not arrive within the failure threshold, or could not be sent ({{.Total}} as of {{.Date}}).
+Sending or receiving mail may be failing.
+{{range .Entries}}
+* {{.Address}}
+   Send time: {{.Slot}}{{if .Manual}} (by hand){{end}}
+{{- if .SendFailed}}
+   Status: could not be sent
+   Error: {{.Error}}
+{{- else}}
+   Status: not arrived ({{.Hours}} h {{.Minutes}} min)
+{{- end}}
+{{end}}
+Check the situation and mark the probe mails resolved at:
+{{.URL}}
+
+--------------------------------------------------
+This mail was sent automatically by MailCare.
+The notification settings can be changed at {{.BaseURL}}/settings/notifications.
+{{- end}}

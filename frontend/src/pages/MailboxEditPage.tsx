@@ -5,12 +5,15 @@ import {
     createMailbox,
     deleteMailbox,
     getMailbox,
+    getProbeSettings,
     getSettings,
     testMailbox,
+    testMailboxProbe,
     updateMailbox,
     ApiError,
 } from '../api/client';
 import { Alert } from '../components/ui/Alert';
+import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
@@ -26,12 +29,13 @@ import {
     DEFAULT_INITIAL_DAYS,
     DEFAULT_RECENT_DAYS,
     DEFAULT_SERVER_KEEP_DAYS,
+    DEFAULT_SMTP_PORT,
     MAX_FETCH_DAYS,
     MAX_SERVER_KEEP_DAYS,
 } from '../constants';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-import type { ImapSecurity, MailboxDTO, MailboxInput } from '../types';
+import type { ImapSecurity, MailboxDTO, MailboxInput, SmtpSecurity } from '../types';
 import { hostKey, trimSpace } from '../utils/addressList';
 
 interface FormState {
@@ -48,7 +52,21 @@ interface FormState {
     recent_days: string;
     server_keep_days: string;
     smtp_host: string;
+    probe_smtp_host: string;
+    probe_smtp_port: string;
+    probe_smtp_security: SmtpSecurity;
+    probe_smtp_username: string;
+    /** Only sent when typed; an empty field keeps the stored password. */
+    probe_smtp_password: string;
 }
+
+/** The probe SMTP fields that name the server the stored probe password belongs to. */
+const PROBE_CONNECTION_KEYS = [
+    'probe_smtp_host',
+    'probe_smtp_port',
+    'probe_smtp_security',
+    'probe_smtp_username',
+] as const;
 
 const EMPTY: FormState = {
     address: '',
@@ -64,6 +82,11 @@ const EMPTY: FormState = {
     recent_days: String(DEFAULT_RECENT_DAYS),
     server_keep_days: String(DEFAULT_SERVER_KEEP_DAYS),
     smtp_host: '',
+    probe_smtp_host: '',
+    probe_smtp_port: String(DEFAULT_SMTP_PORT),
+    probe_smtp_security: 'starttls',
+    probe_smtp_username: '',
+    probe_smtp_password: '',
 };
 
 // Every field is defaulted: the DTO never carries imap_password and the
@@ -84,6 +107,11 @@ function fromDto(mb: MailboxDTO): FormState {
         // 0 is a real value (never delete on the server), not "unset".
         server_keep_days: String(mb.server_keep_days ?? 0),
         smtp_host: mb.smtp_host ?? '',
+        probe_smtp_host: mb.probe_smtp_host ?? '',
+        probe_smtp_port: mb.probe_smtp_port ? String(mb.probe_smtp_port) : EMPTY.probe_smtp_port,
+        probe_smtp_security: mb.probe_smtp_security || EMPTY.probe_smtp_security,
+        probe_smtp_username: mb.probe_smtp_username ?? '',
+        probe_smtp_password: '',
     };
 }
 
@@ -104,6 +132,9 @@ export function MailboxEditPage() {
     // No host name saved in the general settings: an address without an SMTP host of its own is left out of the
     // judgement of notices about mail not sent from our servers (undefined while the settings load).
     const noGlobalHost = settings.data?.own_sending_hosts?.length === 0;
+    // The test mail of the probe SMTP server goes to the probe address.
+    const probe = useAsync(getProbeSettings, []);
+    const probeAddress = probe.data?.address ?? '';
     const [form, setForm] = useState<FormState>(EMPTY);
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
@@ -113,6 +144,9 @@ export function MailboxEditPage() {
     const [keepData, setKeepData] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
+    const [showProbePassword, setShowProbePassword] = useState(false);
+    const [probeTesting, setProbeTesting] = useState(false);
+    const [probeTestResult, setProbeTestResult] = useState<TestResult>(null);
 
     useEffect(() => {
         if (existing.data) setForm(fromDto(existing.data));
@@ -130,7 +164,17 @@ export function MailboxEditPage() {
 
     function set<K extends keyof FormState>(key: K, value: FormState[K]) {
         setForm(prev => ({ ...prev, [key]: value }));
-        setTestResult(null);
+        if (key.startsWith('probe_')) setProbeTestResult(null);
+        else setTestResult(null);
+    }
+
+    function setProbeSecurity(value: SmtpSecurity) {
+        setForm(prev => {
+            const wasDefault = ['25', '465', '587'].includes(prev.probe_smtp_port);
+            const port = wasDefault ? (value === 'ssl' ? '465' : String(DEFAULT_SMTP_PORT)) : prev.probe_smtp_port;
+            return { ...prev, probe_smtp_security: value, probe_smtp_port: port };
+        });
+        setProbeTestResult(null);
     }
 
     function setSecurity(value: ImapSecurity) {
@@ -176,6 +220,26 @@ export function MailboxEditPage() {
         smtpHost !== '' && hostKey(smtpHost) === null
             ? t('validation.mailbox.smtpHostInvalid', { value: smtpHost })
             : undefined;
+    const probeHost = form.probe_smtp_host.trim();
+    const probePort = Number(form.probe_smtp_port);
+    const probePortError =
+        probeHost !== '' && (!Number.isInteger(probePort) || probePort < 1 || probePort > 65535)
+            ? t('validation.common.numberOutOfRange', { min: 1, max: 65535 })
+            : undefined;
+    const probePasswordSet = existing.data?.probe_smtp_password_set ?? false;
+    const probeConnectionChanged =
+        existing.data !== null &&
+        existing.data !== undefined &&
+        PROBE_CONNECTION_KEYS.some(key => form[key].trim() !== fromDto(existing.data as MailboxDTO)[key]);
+    // Same rule as the IMAP password: a stored probe password serves only the server it was saved for.
+    const probePasswordError =
+        probeHost !== '' &&
+        form.probe_smtp_username.trim() !== '' &&
+        probePasswordSet &&
+        probeConnectionChanged &&
+        form.probe_smtp_password === ''
+            ? t('validation.connection.passwordRequiredOnChange')
+            : undefined;
     const passwordRequired = isNew && form.imap_password === '';
     // The server uses the stored password only for the server it was saved
     // for: a change of the host, port, connection mode or username of an
@@ -201,6 +265,8 @@ export function MailboxEditPage() {
         !daysError(form.recent_days) &&
         !serverKeepError &&
         !smtpHostError &&
+        !probePortError &&
+        !probePasswordError &&
         !passwordRequired &&
         !passwordError;
 
@@ -220,7 +286,26 @@ export function MailboxEditPage() {
             recent_days: form.recent_days === '' ? undefined : Number(form.recent_days),
             server_keep_days: Number(form.server_keep_days),
             smtp_host: smtpHost,
+            probe_smtp_host: probeHost,
+            probe_smtp_port: probeHost === '' ? undefined : probePort,
+            probe_smtp_security: probeHost === '' ? undefined : form.probe_smtp_security,
+            probe_smtp_username: probeHost === '' ? undefined : form.probe_smtp_username.trim(),
+            probe_smtp_password:
+                probeHost === '' || form.probe_smtp_password === '' ? undefined : form.probe_smtp_password,
         };
+    }
+
+    async function testProbe() {
+        setProbeTesting(true);
+        setProbeTestResult(null);
+        try {
+            await testMailboxProbe(toInput());
+            setProbeTestResult({ ok: true });
+        } catch (err) {
+            setProbeTestResult({ ok: false, message: t((err as ApiError).key, (err as ApiError).params) });
+        } finally {
+            setProbeTesting(false);
+        }
     }
 
     async function test() {
@@ -228,7 +313,7 @@ export function MailboxEditPage() {
         setTestResult(null);
         try {
             // The connection test concerns the IMAP settings only.
-            await testMailbox({ ...toInput(), smtp_host: undefined });
+            await testMailbox({ ...toInput(), smtp_host: undefined, probe_smtp_host: undefined });
             setTestResult({ ok: true });
         } catch (err) {
             setTestResult({ ok: false, message: t((err as ApiError).key, (err as ApiError).params) });
@@ -441,6 +526,119 @@ export function MailboxEditPage() {
                             {t('page.mailboxes.smtpHostMissing')}
                         </Alert>
                     )}
+                </Card>
+
+                <Card>
+                    <CardHeader
+                        title={t('page.mailboxes.sectionProbe')}
+                        description={t('page.mailboxes.sectionProbeHint')}
+                    />
+                    <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
+                        <InputField
+                            label={t('field.connection.host')}
+                            autoComplete='off'
+                            spellCheck={false}
+                            autoCapitalize='off'
+                            value={form.probe_smtp_host}
+                            onChange={e => set('probe_smtp_host', e.target.value)}
+                            placeholder='smtp.example.com'
+                        />
+                        <div className='grid grid-cols-2 gap-4'>
+                            <SelectField
+                                label={t('field.connection.security')}
+                                value={form.probe_smtp_security}
+                                onChange={e => setProbeSecurity(e.target.value as SmtpSecurity)}
+                                disabled={probeHost === ''}
+                            >
+                                <option value='ssl'>{t('value.connectionSecurity.ssl')}</option>
+                                <option value='starttls'>{t('value.connectionSecurity.starttls')}</option>
+                                <option value='none'>{t('value.connectionSecurity.none')}</option>
+                            </SelectField>
+                            <InputField
+                                label={t('field.connection.port')}
+                                type='number'
+                                inputMode='numeric'
+                                min={1}
+                                max={65535}
+                                value={form.probe_smtp_port}
+                                onChange={e => set('probe_smtp_port', e.target.value)}
+                                error={probePortError}
+                                disabled={probeHost === ''}
+                            />
+                        </div>
+                        {probeHost !== '' && form.probe_smtp_security === 'none' && (
+                            <div className='md:col-span-2'>
+                                <Alert tone='warning'>{t('field.connection.securityNoneWarning')}</Alert>
+                            </div>
+                        )}
+                        <InputField
+                            label={t('field.connection.username')}
+                            autoComplete='off'
+                            value={form.probe_smtp_username}
+                            onChange={e => set('probe_smtp_username', e.target.value)}
+                            hint={t('field.probe.smtpAuthHint')}
+                            disabled={probeHost === ''}
+                        />
+                        <div>
+                            <InputField
+                                label={
+                                    <span className='inline-flex flex-wrap items-center gap-2'>
+                                        {t('field.connection.password')}
+                                        {probePasswordSet && (
+                                            <Badge tone='success' icon='check_circle'>
+                                                {t('field.connection.passwordSet')}
+                                            </Badge>
+                                        )}
+                                    </span>
+                                }
+                                type={showProbePassword ? 'text' : 'password'}
+                                autoComplete='new-password'
+                                value={form.probe_smtp_password}
+                                onChange={e => set('probe_smtp_password', e.target.value)}
+                                hint={probePasswordSet ? t('field.connection.passwordKeepHint') : undefined}
+                                error={probePasswordError}
+                                disabled={probeHost === '' || form.probe_smtp_username.trim() === ''}
+                            />
+                            <CheckboxField
+                                className='mt-1'
+                                label={t('common.showPassword')}
+                                checked={showProbePassword}
+                                onChange={e => setShowProbePassword(e.target.checked)}
+                            />
+                        </div>
+                    </div>
+                    {probeHost !== '' && !form.enabled && (
+                        <p className='mt-3 text-sm text-muted'>{t('page.mailboxes.probeDisabledNote')}</p>
+                    )}
+                    <div className='mt-4 flex flex-col gap-3'>
+                        <div>
+                            <Button
+                                icon='send'
+                                loading={probeTesting}
+                                disabled={
+                                    probeHost === '' ||
+                                    !!probePortError ||
+                                    !!probePasswordError ||
+                                    probeAddress === '' ||
+                                    form.address.trim() === '' ||
+                                    !!emailError
+                                }
+                                onClick={() => void testProbe()}
+                            >
+                                {t('action.probe.smtpTest')}
+                            </Button>
+                        </div>
+                        {probeHost !== '' && probe.data && probeAddress === '' && (
+                            <Alert tone='info'>{t('page.mailboxes.probeNoAddress')}</Alert>
+                        )}
+                        {probeTestResult && (
+                            <Alert tone={probeTestResult.ok ? 'success' : 'danger'}>
+                                {probeTestResult.ok
+                                    ? t('result.probe.smtpTestSent', { to: probeAddress })
+                                    : probeTestResult.message}
+                            </Alert>
+                        )}
+                    </div>
                 </Card>
 
                 <Card>

@@ -21,7 +21,9 @@
             "settingsMailboxes": "Mailboxes",
             "settingsUsers": "Users",
             "settingsTokens": "Tokens",
-            "settingsProfile": "Profile"
+            "settingsProfile": "Profile",
+            "settingsProbe": "Delivery probe",
+            "probes": "Delivery probe"
         },
         "renderError": {
             "title": "The page failed to render",
@@ -62,7 +64,8 @@
             "minutesSeconds": "{{minutes}} min {{seconds}} s",
             "hoursMinutes": "{{hours}} h {{minutes}} min",
             "days": "{{count}} days",
-            "days_one": "{{count}} day"
+            "days_one": "{{count}} day",
+            "minutes": "{{count}} min"
         }
     },
     "component": {
@@ -191,6 +194,10 @@
             "resolverInvalid": "Line {{line}} (\"{{value}}\") is not a resolver IP address. Enter it without a port or CIDR (loopback addresses, 0.0.0.0 and :: are not accepted).",
             "resolversTooMany": "You can list up to {{max}} resolvers.",
             "noResolver": "To verify DNS failures, enter at least one resolver IP address or turn on \"Use only the OS resolver\"."
+        },
+        "probe": {
+            "failureNotAfterDelay": "The failure threshold must be longer than the delay threshold.",
+            "reasonRequired": "Choose the reason."
         }
     },
     "result": {
@@ -245,6 +252,16 @@
         "token": {
             "created": "Token \"{{name}}\" issued",
             "deleted": "Deleted token \"{{name}}\"."
+        },
+        "probe": {
+            "sendQueued": "Started sending the probe mails. See the Jobs page for the result.",
+            "checkQueued": "Started the arrival check. See the Jobs page for the result.",
+            "alreadyQueued": "The same work is already queued or running.",
+            "resolved": "The probe mail is marked resolved.",
+            "notConfigured": "Set the probe address and the probe server (host, username, password) first.",
+            "addressNotSet": "The probe address is not set (Settings - Delivery probe).",
+            "notOpen": "This probe mail already arrived or was resolved.",
+            "smtpTestSent": "Sent a test mail to {{to}}."
         }
     },
     "action": {
@@ -319,6 +336,14 @@
         "setting": {
             "addTime": "Add time",
             "removeTime": "Remove {{time}}"
+        },
+        "probe": {
+            "sendNow": "Send now",
+            "checkNow": "Check now",
+            "resolve": "Mark resolved",
+            "test": "Test connection",
+            "smtpTest": "Send a test mail",
+            "open": "Open delivery probe"
         }
     },
     "value": {
@@ -398,7 +423,9 @@
             "reindex": "Reindex",
             "reclassify": "Reclassify",
             "cleanup": "Cleanup",
-            "notify": "Notification mail"
+            "notify": "Notification mail",
+            "probe_send": "Probe send",
+            "probe_check": "Probe check"
         },
         "checkStatus": {
             "never": "Never synced",
@@ -521,6 +548,32 @@
             "text": "Text",
             "html": "HTML",
             "none": "None"
+        },
+        "probeStatus": {
+            "pending": "Waiting",
+            "delayed": "Delayed",
+            "failure": "Failure",
+            "send_failed": "Not sent",
+            "arrived": "Arrived",
+            "recovered": "Recovered",
+            "resolved": "Resolved"
+        },
+        "probeLevel": {
+            "delayed": "Was delayed",
+            "failure": "Was a failure"
+        },
+        "probeResolveReason": {
+            "server_recovered": "The mail server was confirmed to work again",
+            "arrived_elsewhere": "It arrived but was filed into another folder",
+            "maintenance": "Planned maintenance",
+            "config_error": "A setting was wrong and has been corrected",
+            "probe_server_issue": "A problem of the probe server",
+            "other": "Other"
+        },
+        "probeFilter": {
+            "open": "Unresolved",
+            "issues": "Delays and failures",
+            "all": "All"
         }
     },
     "field": {
@@ -730,6 +783,38 @@
             "isDefault": "Default",
             "expires": "Expires",
             "expiresAt": "Expiry date and time"
+        },
+        "probe": {
+            "enabled": "Enable the delivery probe",
+            "enabledHint": "At each send time every mail address sends a probe mail, and its arrival is checked.",
+            "address": "Probe address",
+            "addressHint": "The mail address the probe server receives. Every mail address sends its probe mails to it. Use an address reserved for the probe.",
+            "sendTimes": "Send times",
+            "sendTimesHint": "At these times every enabled mail address with a probe SMTP server sends one probe mail.",
+            "delayMinutes": "Delay threshold (minutes)",
+            "delayMinutesHint": "This long after the latest send, the arrival of every probe mail is checked at once. The ones not arrived become \"Delayed\".",
+            "failureMinutes": "Failure threshold (minutes)",
+            "failureMinutesHint": "A probe mail not arrived this long after it was sent becomes a \"Failure\" and is mailed to the notification recipients. While one is missing, the arrival is checked this long after the latest send and then at this interval.",
+            "mailboxes": "Mail addresses sending probe mails",
+            "sentAt": "Sent at",
+            "slot": "Send time",
+            "mailbox": "Mail address",
+            "status": "Status",
+            "delay": "Delay",
+            "arrivedAt": "Arrived at",
+            "lastChecked": "Last checked",
+            "detail": "Notes",
+            "lastSend": "Last send",
+            "nextSend": "Next send",
+            "nextCheck": "Next arrival check",
+            "lastCheck": "Last arrival check",
+            "thresholds": "Thresholds",
+            "thresholdsValue": "Delay {{delay}} / failure {{failure}}",
+            "resolveReason": "Reason",
+            "resolveNote": "Details",
+            "resolvedBy": "Resolved by {{user}} on {{date}}",
+            "smtpAuthHint": "Leave empty for a server that needs no authentication.",
+            "subject": "Subject"
         }
     },
     "page": {
@@ -748,7 +833,8 @@
                 "ignored": "No ignored groups",
                 "ignored_recheck": "No ignored groups to re-check",
                 "excluded": "No excluded groups"
-            }
+            },
+            "probeCard": "Delays and failures of sending and receiving mail, seen from the arrival of the probe mails."
         },
         "login": {
             "title": "Log in",
@@ -780,7 +866,16 @@
             "agentDisabledTitle": "Agent analysis is disabled",
             "agentDisabled": "Bounce causes will not be analyzed. Enable it under General settings.",
             "agentUnavailableTitle": "Agent CLI not found",
-            "agentUnavailable": "The command for provider \"{{provider}}\" was not found on the server. Analyses will fail."
+            "agentUnavailable": "The command for provider \"{{provider}}\" was not found on the server. Analyses will fail.",
+            "probe": "Delivery probe",
+            "probeFailureTitle": "Delivery probe failure",
+            "probeFailure": "{{count}} probe mails have not arrived within the failure threshold or could not be sent.",
+            "probeFailure_one": "{{count}} probe mail has not arrived within the failure threshold or could not be sent.",
+            "probeDelayTitle": "Delivery probe delay",
+            "probeDelay": "{{count}} probe mails have not arrived within the delay threshold.",
+            "probeDelay_one": "{{count}} probe mail has not arrived within the delay threshold.",
+            "probeOk": "No unresolved delay or failure.",
+            "probeOff": "The delivery probe is off."
         },
         "groupDetail": {
             "title": "Group detail",
@@ -915,7 +1010,8 @@
                 "notifications": "SMTP server and the time, interval and recipients of notification mails",
                 "mailboxes": "Register, edit and test monitored mailboxes",
                 "users": "Add users, change roles and reset passwords",
-                "tokens": "Issue and revoke tokens reserved for the future API"
+                "tokens": "Issue and revoke tokens reserved for the future API",
+                "probe": "The probe server (IMAP), the send times and the thresholds of delays and failures"
             }
         },
         "settingsGeneral": {
@@ -952,7 +1048,11 @@
             "sectionRange": "Fetch range",
             "sectionRangeHint": "The first check looks back the initial fetch days; later checks look back the regular fetch days. \"All time\" on the Tools page checks every mail regardless of the period.",
             "sectionServerKeep": "Deleting mails on the server",
-            "sectionServerKeepHint": "The daily cleanup deletes bounces, auto-replies, DMARC reports and similar notices, and junk mails, from the IMAP server for good. Notices recognized by subject or sender name alone, automatically generated messages and ordinary mail are not deleted. Deleted mails cannot be restored. MailCare keeps its own copy until the mail retention."
+            "sectionServerKeepHint": "The daily cleanup deletes bounces, auto-replies, DMARC reports and similar notices, and junk mails, from the IMAP server for good. Notices recognized by subject or sender name alone, automatically generated messages and ordinary mail are not deleted. Deleted mails cannot be restored. MailCare keeps its own copy until the mail retention.",
+            "sectionProbe": "Probe mail sending (SMTP)",
+            "sectionProbeHint": "The SMTP server the probe mails of this address are sent through. With no host name this address sends no probe mail. The password is stored encrypted.",
+            "probeNoAddress": "The probe address is not set, so no test mail can be sent (Settings - Delivery probe).",
+            "probeDisabledNote": "This mail address is disabled and sends no probe mail."
         },
         "notifications": {
             "description": "Sends a digest of the alerts that need attention to the selected users by mail.",
@@ -998,6 +1098,56 @@
             "emailHint": "Recipient of notification mails. When an administrator selects you as a recipient, the alert digest arrives here. It can also be used to log in. Leave empty to clear.",
             "changePasswordHint": "Confirm your current password, then set a new one.",
             "sessionNote": "Changing the password logs out every other device."
+        },
+        "probeSettings": {
+            "description": "Every mail address sends probe mails to the probe server, and their arrival is checked, so delays and failures of mail are noticed.",
+            "server": "Probe server (IMAP)",
+            "serverHint": "How to reach the mailbox that receives the probe mails. It is only read: no mail is moved or deleted. The password is stored encrypted.",
+            "schedule": "Sending and thresholds",
+            "scheduleHint": "The send times and the thresholds of delays and failures. When the next send time comes, the probe mails not arrived yet are looked for by the new arrival check as well.",
+            "noSendTimes": "No send time: probe mails are not sent automatically.",
+            "addTimeHint": "Add a time as HH:MM.",
+            "testOk": "Connected to the probe server.",
+            "testSaveFirst": "The connection test uses the values being edited.",
+            "mailboxesCount": "{{count}} mail addresses send probe mails.",
+            "mailboxesCount_one": "{{count}} mail address sends probe mails.",
+            "noMailboxes": "No enabled mail address has a probe SMTP server. Set one on each address under \"Mail addresses\".",
+            "notifyHint": "Failures are mailed to the notification recipients through the SMTP server of \"Notifications\" (whether the notification mail is on or off).",
+            "status": {
+                "readyTitle": "The delivery probe is on",
+                "ready": "Send times: {{times}}",
+                "blockedTitle": "No probe mail is sent",
+                "disabled": "The delivery probe is off.",
+                "notConfigured": "Set the probe address and the connection of the probe server (host, username, password) to switch it on.",
+                "unsaved": "There are unsaved changes."
+            }
+        },
+        "probes": {
+            "description": "The arrival of the probe mails sent from every mail address to the probe server.",
+            "counts": "Status",
+            "recentHint": "Recovered and resolved count the last {{days}} days.",
+            "mailboxes": "Latest probe mail per mail address",
+            "notSending": "Not sending",
+            "neverSent": "Not sent yet",
+            "list": "Probe mails",
+            "manual": "by hand",
+            "arrivedAfter": "Arrived after {{duration}}",
+            "missingFor": "Missing for {{duration}}",
+            "disabledTitle": "The delivery probe is off",
+            "disabled": "No probe mail is sent and no arrival is checked.",
+            "notConfiguredTitle": "The delivery probe is not set up",
+            "notConfigured": "Set the probe server and the probe address to watch for delays and failures of mail.",
+            "checkErrorTitle": "The latest arrival check failed",
+            "checkError": "The probe server could not be read ({{error}}). It is tried again shortly.",
+            "checkErrorMember": "The probe server could not be read. It is tried again shortly.",
+            "resolveTitle": "Mark the probe mail resolved",
+            "resolveFor": "{{address}} ({{slot}})",
+            "resolveHint": "Marks it resolved without waiting for its arrival. That it was delayed or failed is kept.",
+            "empty": {
+                "open": "No unresolved probe mail",
+                "issues": "No probe mail was delayed or failed",
+                "all": "No probe mail yet"
+            }
         }
     }
 }

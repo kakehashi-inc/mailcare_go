@@ -52,10 +52,31 @@ func (c SMTPConfig) Configured() bool {
 	return strings.TrimSpace(c.Host) != "" && strings.TrimSpace(c.From) != ""
 }
 
+// MailHeader is an extra header line of an outgoing message (ASCII name
+// and value).
+type MailHeader struct {
+	Name  string
+	Value string
+}
+
+// OutgoingMail is the content of one outgoing message.
+type OutgoingMail struct {
+	FromName string // display name of the sender ("" = SMTPFromName)
+	Subject  string
+	Body     string // UTF-8 plain text
+	Headers  []MailHeader
+}
+
 // SendMail delivers one UTF-8 text/plain mail through the configured server.
 // from is the envelope and header sender, to the envelope and header
 // recipients. The whole session is bounded by SMTPTimeout and by ctx.
 func SendMail(ctx context.Context, cfg SMTPConfig, from string, to []string, subject, textBody string) error {
+	return SendMessage(ctx, cfg, from, to, OutgoingMail{Subject: subject, Body: textBody})
+}
+
+// SendMessage is SendMail for a message with a display name of its own or
+// extra headers.
+func SendMessage(ctx context.Context, cfg SMTPConfig, from string, to []string, mail OutgoingMail) error {
 	if !cfg.Configured() {
 		return ErrSMTPNotConfigured
 	}
@@ -138,7 +159,7 @@ func SendMail(ctx context.Context, cfg SMTPConfig, from string, to []string, sub
 	if err != nil {
 		return fmt.Errorf("DATA: %w", err)
 	}
-	if _, err := w.Write([]byte(BuildMessage(from, recipients, subject, textBody, time.Now()))); err != nil {
+	if _, err := w.Write([]byte(buildMessage(from, recipients, mail, time.Now()))); err != nil {
 		w.Close()
 		return fmt.Errorf("send message: %w", err)
 	}
@@ -233,12 +254,29 @@ const maxLineLength = 998
 // Content-Type text/plain UTF-8 and the body as 8bit, or base64 when a line is
 // too long for 8bit. Lines end with CRLF.
 func BuildMessage(from string, to []string, subject, textBody string, now time.Time) string {
+	return buildMessage(from, to, OutgoingMail{Subject: subject, Body: textBody}, now)
+}
+
+// buildMessage is BuildMessage with the display name and the extra headers
+// of mail (header lines with a CR or LF in the name or value are dropped).
+func buildMessage(from string, to []string, mail OutgoingMail, now time.Time) string {
+	fromName := mail.FromName
+	if fromName == "" {
+		fromName = SMTPFromName
+	}
+	textBody := mail.Body
 	var b strings.Builder
 	b.WriteString("Date: " + now.Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("Message-ID: " + messageID(from, now) + "\r\n")
-	b.WriteString("From: " + SMTPFromName + " <" + from + ">\r\n")
+	b.WriteString("From: " + encodeHeader(fromName) + " <" + from + ">\r\n")
 	b.WriteString("To: " + strings.Join(to, ", ") + "\r\n")
-	b.WriteString("Subject: " + encodeHeader(subject) + "\r\n")
+	b.WriteString("Subject: " + encodeHeader(mail.Subject) + "\r\n")
+	for _, h := range mail.Headers {
+		if h.Name == "" || strings.ContainsAny(h.Name, ": \r\n") || strings.ContainsAny(h.Value, "\r\n") {
+			continue
+		}
+		b.WriteString(h.Name + ": " + h.Value + "\r\n")
+	}
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	body := strings.ReplaceAll(strings.ReplaceAll(textBody, "\r\n", "\n"), "\n", "\r\n")

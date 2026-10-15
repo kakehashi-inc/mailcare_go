@@ -13,10 +13,12 @@ import { MailDetailPage } from './pages/MailDetailPage';
 import { MailsIndexPage } from './pages/MailsIndexPage';
 import { MailsListPage } from './pages/MailsListPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { ProbesPage } from './pages/ProbesPage';
 import { SettingsGeneralPage } from './pages/SettingsGeneralPage';
 import { SettingsMailboxesPage } from './pages/SettingsMailboxesPage';
 import { SettingsMenuPage } from './pages/SettingsMenuPage';
 import { SettingsNotificationsPage } from './pages/SettingsNotificationsPage';
+import { SettingsProbePage } from './pages/SettingsProbePage';
 import { SettingsProfilePage } from './pages/SettingsProfilePage';
 import { SettingsTokensPage } from './pages/SettingsTokensPage';
 import { SettingsUsersPage } from './pages/SettingsUsersPage';
@@ -56,6 +58,7 @@ export default function App() {
                     >
                         <Route path='/' element={<DashboardPage />} />
                         <Route path='/alerts' element={<AlertsIndexPage />} />
+                        <Route path='/alerts/probes' element={<ProbesPage />} />
                         <Route path='/alerts/:mailboxId' element={<AlertsGroupsPage />} />
                         <Route path='/alerts/:mailboxId/groups/:groupKey' element={<AlertGroupDetailPage />} />
                         <Route path='/mails' element={<MailsIndexPage />} />
@@ -98,6 +101,14 @@ export default function App() {
                             element={
                                 <RequireAdmin>
                                     <SettingsNotificationsPage />
+                                </RequireAdmin>
+                            }
+                        />
+                        <Route
+                            path='/settings/probe'
+                            element={
+                                <RequireAdmin>
+                                    <SettingsProbePage />
                                 </RequireAdmin>
                             }
                         />

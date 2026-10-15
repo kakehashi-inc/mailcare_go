@@ -38,6 +38,7 @@ type CLI struct {
 	Reclassify modules.ReclassifyCmd `cmd:"" help:"Re-run bounce detection and grouping over every mail"`
 	Analyze    modules.AnalyzeCmd    `cmd:"" help:"Run the agent analysis over bounce groups"`
 	Notify     modules.NotifyCmd     `cmd:"" help:"Send the alert notification mail now, or an SMTP test mail (--test)"`
+	Probe      modules.ProbeCmd      `cmd:"" help:"Delivery probe: send the probe mails (probe send) or check their arrival (probe check) now"`
 	Cleanup    modules.CleanupCmd    `cmd:"" help:"Apply the retentions now: delete old notices and junk mails from the IMAP server, remove old mails, temporary files, agent workspaces and job history (runs daily on the server at cleanup_time)"`
 	Groups     modules.GroupsCmd     `cmd:"" help:"List the bounce groups of a mail address, show one group (ADDRESS KEY) or change its state (set-state)"`
 	Schedule   modules.ScheduleCmd   `cmd:"" help:"Show or set the daily check times"`
@@ -86,6 +87,7 @@ func main() {
 			"default_imap_port":        strconv.Itoa(modules.DefaultIMAPPort),
 			"default_initial_days":     strconv.Itoa(modules.DefaultInitialDays),
 			"default_server_keep_days": strconv.Itoa(modules.DefaultServerKeepDays),
+			"default_smtp_port":        strconv.Itoa(modules.DefaultSMTPPort),
 			"default_recent_days":      strconv.Itoa(modules.DefaultRecentDays),
 			"default_workers":          strconv.Itoa(modules.DefaultWorkers),
 			"max_workers":              strconv.Itoa(modules.MaxWorkers),

@@ -309,7 +309,7 @@ func writeErrorMessage(w http.ResponseWriter, r *http.Request, err error) {
 	switch m.Key {
 	case "system.notFound":
 		status = http.StatusNotFound
-	case "result.mailbox.busy":
+	case "result.mailbox.busy", "result.probe.notOpen":
 		status = http.StatusConflict
 	}
 	writeJSON(w, status, apiMessage{Key: m.Key, Params: m.Params})

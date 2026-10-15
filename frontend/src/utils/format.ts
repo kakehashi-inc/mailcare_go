@@ -103,9 +103,20 @@ export function formatDuration(startIso: string | null, endIso: string | null, t
     const start = new Date(startIso).getTime();
     const end = endIso ? new Date(endIso).getTime() : Date.now();
     if (Number.isNaN(start) || Number.isNaN(end)) return '';
-    const sec = Math.max(0, Math.round((end - start) / 1000));
+    return formatSeconds(Math.round((end - start) / 1000), t);
+}
+
+/** A number of seconds as "1m 23s" / "2h 05m" (negative counts as 0). */
+export function formatSeconds(seconds: number, t: TFunction): string {
+    const sec = Math.max(0, Math.round(seconds));
     if (sec < 60) return t('common.duration.seconds', { count: sec });
     const min = Math.floor(sec / 60);
     if (min < 60) return t('common.duration.minutesSeconds', { minutes: min, seconds: sec % 60 });
     return t('common.duration.hoursMinutes', { hours: Math.floor(min / 60), minutes: min % 60 });
+}
+
+/** A number of minutes as "30 min" / "2 h 0 min". */
+export function formatMinutes(minutes: number, t: TFunction): string {
+    if (minutes < 60) return t('common.duration.minutes', { count: minutes });
+    return t('common.duration.hoursMinutes', { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
 }

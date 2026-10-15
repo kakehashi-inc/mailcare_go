@@ -428,6 +428,34 @@ func (c *NotifyCmd) Run() error {
 	return runJobs(db, specs, true)
 }
 
+// ProbeCmd groups the delivery probe subcommands: "probe send" sends a
+// probe mail from every participating address now and "probe check" looks
+// for the missing ones on the probe server now. Like the other job
+// commands they go through the running server when there is one.
+type ProbeCmd struct {
+	Send  ProbeSendCmd  `cmd:"" help:"Send a probe mail from every enabled address with a probe SMTP server now"`
+	Check ProbeCheckCmd `cmd:"" help:"Look for the probe mails not arrived yet on the probe server now"`
+}
+
+// ProbeSendCmd queues a probe_send job (recorded without a send time).
+type ProbeSendCmd struct{}
+
+func (c *ProbeSendCmd) Run() error { return runProbeJob(JobKindProbeSend) }
+
+// ProbeCheckCmd queues a probe_check job.
+type ProbeCheckCmd struct{}
+
+func (c *ProbeCheckCmd) Run() error { return runProbeJob(JobKindProbeCheck) }
+
+func runProbeJob(kind string) error {
+	db, err := openDBForCLI()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return runJobs(db, []jobSpec{{kind: kind}}, true)
+}
+
 // JobsCmd groups the job history subcommands: "jobs" (the default
 // subcommand, list) shows the history and "jobs cancel ID" cancels a queued
 // job.
