@@ -14,6 +14,7 @@ const ICON: Record<BounceCategory, string> = {
     content_rejected: 'report',
     message_too_large: 'attach_file',
     server_config: 'build',
+    dns_resolver_failure: 'travel_explore',
     unknown_failure: 'help_outline',
     dmarc_spf_missing: 'dns',
     dmarc_dkim_failed: 'key_off',
@@ -22,6 +23,7 @@ const ICON: Record<BounceCategory, string> = {
     mailbox_full: 'storage',
     mailbox_disabled: 'person_off',
     domain_not_found: 'domain_disabled',
+    dns_failure_external: 'public_off',
     delivery_delay: 'hourglass_top',
 };
 
@@ -33,6 +35,7 @@ const TONE: Record<BounceCategory, BadgeTone> = {
     content_rejected: 'warning',
     message_too_large: 'warning',
     server_config: 'danger',
+    dns_resolver_failure: 'danger',
     unknown_failure: 'warning',
     dmarc_spf_missing: 'danger',
     dmarc_dkim_failed: 'warning',
@@ -41,6 +44,7 @@ const TONE: Record<BounceCategory, BadgeTone> = {
     mailbox_full: 'neutral',
     mailbox_disabled: 'neutral',
     domain_not_found: 'neutral',
+    dns_failure_external: 'info',
     delivery_delay: 'info',
 };
 

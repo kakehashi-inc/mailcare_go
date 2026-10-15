@@ -16,7 +16,10 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
   as "sending IP blocked", "sender authentication failed" or "recipient address does not exist". Bounces that
   call for the same action end up in one group even when the recipients or remote servers differ. DMARC
   aggregate reports are read as well: every record that failed DMARC is grouped by what it shows (SPF record
-  missing, DKIM verification failed, sender not authenticated) together with its sending IPs.
+  missing, DKIM verification failed, sender not authenticated) together with its sending IPs. Notices that report a
+  failed name lookup ("Host not found, try again" and the like) are checked by looking the name up again (the DNS
+  check), which tells a recipient domain that does not exist from a DNS problem on the receiving side and from a
+  name resolution problem of your own mail server.
 - **Alerts** - only what the sending side has to act on is shown as an alert; recipient-side problems (unknown
   user, full mailbox, ...) are listed separately as excluded. Each alert can be marked open, resolved or
   ignored.
@@ -24,21 +27,30 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
   source mails (raw message, headers, bodies and their index records) and a README.md describing the format.
 - **AI cause analysis** - an AI agent (Codex CLI) writes a cause analysis and recommended actions for each
   alert, automatically for new alerts and when a new kind of notice arrives for an existing one. Reports whose
-  cause could not be established are marked "Needs review".
+  cause could not be established are marked "Needs review". MailCare hands Codex CLI a summary of the alert
+  (including the recipient addresses), sample notices (their headers, the headers of the returned mail and
+  excerpts of their bodies; the full bodies are available to it as files) and the results of the DNS check, and
+  Codex CLI sends them to OpenAI (see 1.6).
 - **Mail notifications** - sends the list of alerts that need attention to the selected users, each in their
   own language (Japanese / English) and time zone. The time and the interval (daily to every 7 days) are
   configurable.
 - **Junk detection** - typical phishing (a sender name that impersonates the monitored domain or another
   organization, a link to an outside site that carries the monitored address, a forged From of the monitored
-  domain) and mail flagged as spam are recognized as junk. Junk is not an alert and is counted separately.
-- **Mail viewer** - browse the fetched mail by all / bounces / junk / others (text and HTML bodies, original
+  domain, a fake "delivery failed" notice that carries links to other sites or fails the sender check) and mail
+  flagged as spam are recognized as junk, and so is a delivery-failure notice for mail that was never sent from
+  your own servers (someone used your address as the sender). Junk is not an alert and is counted separately.
+- **Mail viewer** - browse the fetched mail by all / targets / junk / others (text and HTML bodies, original
   download).
 - **Automatic cleanup** - every day at a set time (2:00 by default), fetched mail past its retention (180 days by
   default) is removed. Bounces, auto-replies, DMARC reports and similar notices, and junk, can also be deleted
   from the IMAP server after a number of days set per mail address (60 by default for a new address, at most the
   mail retention; 0 never deletes). Notices recognized by subject or sender name alone, automatically generated
-  messages and ordinary mail stay on the server.
-- **Users and roles** - administrators and members. Members can view everything and change the state of alerts.
+  messages and ordinary mail stay on the server. Deletion on the IMAP server cannot be undone, and junk detection
+  can be wrong: for an address that receives mail you must keep by law or policy (such as records of electronic
+  transactions), set its retention to 0 or archive the mail first.
+- **Users and roles** - administrators and members. Members can view the dashboard, the alerts and the mails and
+  change the state of alerts. The settings, the tools, the jobs and the connection details (the IMAP and sending
+  server settings of the mail addresses, your own sending servers, the DNS resolvers) are for administrators only.
   The UI is available in Japanese and English, with light and dark themes.
 - **Command line** - starting and stopping, registering users and mail addresses, syncing and more can also be
   done from the command line.
@@ -53,6 +65,16 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
 - **AI cause analysis** (optional): install [Codex CLI](https://github.com/openai/codex) and sign in with the OS
   user that runs MailCare (`codex login`). Everything except the analysis works without it.
 - **Mail notifications** (optional): an SMTP server to send through.
+- **DNS check** (on by default, optional): when a delivery-failure notice reports a failed name lookup, MailCare
+  looks the name up again. This needs outbound DNS (UDP and TCP port 53) to the resolvers set in the general
+  settings (Cloudflare 1.1.1.1, Google 8.8.8.8 and Quad9 9.9.9.9 by default). The name servers of the domain
+  concerned are asked directly only for notices about your own mail, and never while only the operating system's
+  resolver is used. While the check is on, the SPF records of the domains of the monitored addresses are read as
+  well. The host names of your own sending servers are always looked up, through the operating system's resolver
+  first. With the check off, MailCare sends no DNS query except those lookups of your own sending servers through
+  the operating system's resolver, and the results stored earlier still classify the notices. If the server
+  cannot reach the resolvers, switch the check off, change the resolvers or use only the operating system's
+  resolver in "Settings -> General". See 1.6 for what these queries reveal.
 
 ### 1.3 Installation and first setup
 
@@ -78,8 +100,12 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
 4. Register the mail addresses to watch in "Settings -> Mailboxes" and check the IMAP connection with
    "Test connection".
 5. Configure the rest as needed:
-   - "Settings -> General": check times, cleanup time, mail retention, AI agent (model, reasoning level, automatic analysis
-     on / off)
+   - "Settings -> Mailboxes": for each address, the "SMTP server (sending)" that sends its mail, written as that
+     server names itself in the mail it handles (for example `mail.example.jp`). Without a host name for an address
+     (here or in the general settings), MailCare cannot tell the bounces of mail you did not send for that address.
+   - "Settings -> General": check times, cleanup time, mail retention, AI agent (model, reasoning level, automatic
+     analysis on / off), your own sending servers that belong to no mail address (IPv4 / IPv6 addresses and host
+     names; a host name here counts for every address) and the DNS check
    - "Settings -> Notifications": SMTP server, recipient users, notification time and interval
    - "Settings -> Users": users and their roles
 
@@ -105,11 +131,21 @@ Stop it with `mailcare service stop` and check it with `mailcare service status`
 ### 1.4 Data and backup
 
 - All data is stored in `data/` (`--data-dir` changes it): the fetched mail, the alerts and their analyses,
-  the settings and the users.
+  the settings and the users, the results of the DNS check (kept for the mail retention plus one day) and the
+  looked-up addresses of your own sending servers (kept for up to 90 days).
 - The key that encrypts the IMAP / SMTP passwords is also inside `data/mailcare.db`. **Back up the whole
   `data/` directory**; there is no separate key to keep.
 - To upgrade, stop the server, replace the executable and start it again. The data is updated for the new
   version automatically at start.
+- Mail that is already fetched is not judged again by new rules automatically. After an upgrade that changes how
+  notices are recognized, and after changing your sending servers (in "Settings -> General" or the SMTP server of
+  an address) or the DNS check settings, run "Reclassify" once (Tools screen, or `mailcare reclassify`).
+  - While the DNS check is on, Reclassify also looks up the names reported by stored notices of the last two days
+    (older notices use only the DNS check results stored before).
+  - It can turn older notices into junk, and junk older than the retention of an address is deleted from the IMAP
+    server at the next cleanup. Review the Junk tab of the mail list first, or set the retention of the address
+    to 0 until you have.
+  - Alerts that end up without any mail are removed together with their state and history.
 
 ### 1.5 Security
 
@@ -120,7 +156,43 @@ Stop it with `mailcare service stop` and check it with `mailcare service status`
   HTTPS, let MailCare accept only the proxy (`--web-listen 127.0.0.1`) and make the proxy pass the `Host`
   header through unchanged.
 
-### 1.6 Command line
+### 1.6 Outbound connections
+
+Besides the IMAP servers of the monitored addresses and the SMTP server of the notification mails, MailCare
+connects to the following.
+
+- **DNS check (on by default).** MailCare sends plain, unencrypted DNS queries (UDP, and TCP for long answers;
+  port 53) to the resolvers in "Settings -> General" (Cloudflare 1.1.1.1, Google 8.8.8.8 and Quad9 9.9.9.9 by
+  default), or only to the operating system's resolver when so configured. It asks for:
+  - a fixed control name (`example.com`), at most once per resolver and run, when the run first uses that
+    resolver, to check that it answers;
+  - the names whose lookup failed according to delivery-failure notices of the last two days (only names in the
+    recipient's domain or among its mail servers), and the mail servers (MX) of those recipient domains;
+  - the host name of the server that issued such a notice, to tell whether it is one of yours;
+  - the SPF records of the domains of the monitored addresses and the names they refer to;
+  - the addresses of your own sending servers (the operating system's resolver first).
+
+  For a notice that clearly concerns mail you sent, the name servers of the domain concerned are also asked
+  directly, unless only the operating system's resolver is used.
+- **What the other side learns.** The resolvers, the name servers asked directly and the networks in between see
+  this server's IP address, the time and the names asked. The names come from the notices, so whoever sends a
+  notice to a monitored address can make this server look up names of their choosing, and by making the notice
+  look like one about your mail, make it ask their own name servers directly. If this server's IP address must not
+  be disclosed that way, switch the DNS check off.
+- **With the DNS check off** ("Settings -> General", or `mailcare settings set dns_check_enabled 0`), the only DNS
+  queries are the lookups of the host names of your own sending servers through the operating system's resolver.
+  The results stored earlier still classify the notices. "Use only the OS resolver" keeps the check on but
+  sends every query to the operating system's resolver and none to the name servers directly.
+- **Stored results.** The results of the DNS check, with the answers of each resolver and name server, are stored
+  in `data/` for the mail retention plus one day; the looked-up addresses of your own sending servers for up to
+  90 days.
+- **AI cause analysis.** When Codex CLI is installed and signed in, the analysis hands it the alert summary
+  (including the recipient addresses), sample notices (headers, the headers of the returned mail, body excerpts
+  and full bodies as files) and the DNS check results, and Codex CLI sends them to OpenAI. Switching automatic
+  analysis off in "Settings -> General" stops the automatic runs; an administrator can still start an analysis by
+  hand. To send nothing to OpenAI, do not install or sign in Codex CLI with the OS user that runs MailCare.
+
+### 1.7 Command line
 
 While the server is running, command line operations are handed to it. Main commands:
 
@@ -130,13 +202,16 @@ While the server is running, command line operations are handed to it. Main comm
 | `mailcare mailbox add --address a@example.com --host imap.example.com --username a@example.com` | Register a mail address to watch (the password is prompted for) |
 | `mailcare sync --wait` | Sync every mail address now (fetch -> group -> analyze). Add `--all-time` to check every mail regardless of the period |
 | `mailcare schedule set 06:00 12:00 18:00` | Change the automatic check times |
+| `mailcare mailbox update a@example.com --smtp-host mail.example.jp` | Set the SMTP server (sending) of an address (`mailbox add` takes `--smtp-host` too; `--smtp-host ""` clears it; no password needed) |
 | `mailcare settings show` / `mailcare settings set <key> <value>` | Show / change the settings |
+| `mailcare settings set own_sending_hosts mail1.example.jp,mail2.example.jp` | Set your own sending servers that belong to no address (`own_sending_ipv4`, `own_sending_ipv6`, `own_sending_hosts`; comma-separated, `""` clears the list) |
+| `mailcare settings set dns_check_enabled 0` | Switch the DNS check off (`dns_check_resolvers` sets the resolvers, `dns_check_system_resolver_only 1` uses only the operating system's resolver) |
 | `mailcare cleanup` | Apply the retentions now: delete old notices and junk mails from the IMAP server, remove old mail, temporary files, agent workspaces and job history |
 | `mailcare jobs list` | Show the task history |
 
 `mailcare --help` lists every command.
 
-### 1.7 Bundled fonts
+### 1.8 Bundled fonts
 
 The PDF reports use BIZ UDPGothic (Copyright 2022 The BIZ UDGothic Project Authors,
 [SIL Open Font License 1.1](embedded/fonts/OFL.txt)) and Go Mono (BSD license), both built

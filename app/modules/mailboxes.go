@@ -52,6 +52,11 @@ type MailboxInput struct {
 	// checkServerKeepDays). nil = DefaultServerKeepDays (or mail_keep_days
 	// when shorter) on creation, the stored value on update.
 	ServerKeepDays *int `json:"server_keep_days"`
+	// SmtpHost is the host name of the SMTP server that sends the mail of
+	// the address (normalizeOwnHost; "" = not set). nil = not set on
+	// creation, the stored value on update. It is no connection setting:
+	// changing it needs no password.
+	SmtpHost *string `json:"smtp_host"`
 }
 
 // MailboxInputFrom builds an input pre-filled from a stored mailbox (without
@@ -59,11 +64,12 @@ type MailboxInput struct {
 func MailboxInputFrom(mb *models.Mailbox) *MailboxInput {
 	enabled := mb.Enabled
 	serverKeep := mb.ServerKeepDays
+	smtpHost := mb.SmtpHost
 	return &MailboxInput{
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost,
 		ImapPort: mb.ImapPort, ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername,
 		Folder: mb.Folder, Enabled: &enabled, InitialDays: mb.InitialDays, RecentDays: mb.RecentDays,
-		ServerKeepDays: &serverKeep,
+		ServerKeepDays: &serverKeep, SmtpHost: &smtpHost,
 	}
 }
 
@@ -139,6 +145,20 @@ func ValidateMailboxInput(in *MailboxInput) error {
 			fmt.Sprintf("server_keep_days must be between 0 and %d (0 = keep the mails on the server)", MaxServerKeepDays)).
 			With("min", 0).With("max", MaxServerKeepDays)
 	}
+	if in.SmtpHost != nil {
+		host := strings.TrimSpace(*in.SmtpHost)
+		if host != "" {
+			norm, ok := normalizeOwnHost(host)
+			if !ok {
+				host = clipEntry(host)
+				return wording.New("validation.mailbox.smtpHostInvalid",
+					fmt.Sprintf("smtp_host %q is not a host name (letters, digits and hyphens; IP addresses and localhost are not accepted)", host)).
+					With("value", host)
+			}
+			host = norm
+		}
+		in.SmtpHost = &host
+	}
 	return nil
 }
 
@@ -198,6 +218,9 @@ func applyMailboxInput(key []byte, mb *models.Mailbox, in *MailboxInput) error {
 	mb.RecentDays = in.RecentDays
 	if in.ServerKeepDays != nil {
 		mb.ServerKeepDays = *in.ServerKeepDays
+	}
+	if in.SmtpHost != nil {
+		mb.SmtpHost = *in.SmtpHost
 	}
 	mb.ImapPasswordEnc = ""
 	if in.ImapPassword != "" {

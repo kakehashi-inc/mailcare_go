@@ -20,7 +20,8 @@ type Classification struct {
 // classifyRule is one row of the rule table (design document "mail
 // classification"). Rules are evaluated in order and the first match wins.
 // match returns the bounce kind ("" means the rule does not apply); mb is
-// the monitored address the mail was fetched from.
+// the monitored address the mail was fetched from, with our own sending
+// servers.
 type classifyRule struct {
 	name  string
 	match func(pm *ParsedMessage, body string, mb mailboxIdentity) string
@@ -35,8 +36,25 @@ type classifyRule struct {
 // and finally the body wording. Junk is evaluated before the weak rules so
 // that phishing with a bounce-like subject is taken for junk, and after the
 // certain ones so that a genuine notice (the monitored server's own DSNs,
-// whose From is the monitored domain without DKIM) never is.
+// whose From is the monitored domain without DKIM) never is. The fake
+// notices (junk that looks like a non-delivery report without its
+// structure) are the exception: they come right after the structured
+// reports, because their "mailer-daemon@..." From would make the daemon
+// sender rule take them for bounces. The return notice of a message we did
+// not send (backscatter) comes before everything: it is a genuine notice
+// with the structure of rule 1, about mail forged with our address.
 var classifyRules = []classifyRule{
+	{
+		// B0. Junk: the return notice of a message none of our own sending
+		// servers handed on (isBackscatter).
+		name: ruleBackscatter,
+		match: func(pm *ParsedMessage, _ string, mb mailboxIdentity) string {
+			if isBackscatter(pm, mb) {
+				return bounceKindJunk
+			}
+			return ""
+		},
+	},
 	{
 		// 1. multipart/report; report-type=delivery-status
 		name: ruleDSNReport,
@@ -57,6 +75,27 @@ var classifyRules = []classifyRule{
 		match: func(pm *ParsedMessage, body string, _ mailboxIdentity) string {
 			if pm.DMARC != nil {
 				return bounceKindReport
+			}
+			return ""
+		},
+	},
+	{
+		// F1. Junk: a fake non-delivery report (no delivery-status part, no
+		// original message) linking to another organization (junk.go).
+		name: ruleFakeNoticeLink,
+		match: func(pm *ParsedMessage, body string, mb mailboxIdentity) string {
+			if fakeNoticeLink(pm, mb) {
+				return bounceKindJunk
+			}
+			return ""
+		},
+	},
+	{
+		// F2. Junk: a fake non-delivery report that failed DMARC.
+		name: ruleFakeNoticeAuth,
+		match: func(pm *ParsedMessage, body string, mb mailboxIdentity) string {
+			if fakeNoticeAuth(pm, mb) {
+				return bounceKindJunk
 			}
 			return ""
 		},
@@ -313,12 +352,24 @@ var (
 // joined, else the HTML sections rendered as text), then, when the message
 // also carries HTML sections, with the HTML text. A match on either decides
 // the message: a notice (is_bounce) or junk (design document "mail
-// classification").
+// classification"). It knows none of our own sending servers, so the
+// backscatter rule never applies; see ClassifyWith.
 func Classify(pm *ParsedMessage, mailbox string) Classification {
+	return ClassifyWith(pm, mailbox, OwnSources{})
+}
+
+// ClassifyWith is Classify with our own sending servers (the settings
+// own_sending_ipv4 / own_sending_ipv6 / own_sending_hosts and the SMTP
+// hosts of the monitored mail addresses): with a host name among them, the
+// return notice of a message none of them handed on is junk (the
+// backscatter rule, design document "mail classification" 2.6).
+// Nothing is resolved; the classification stays a pure function.
+func ClassifyWith(pm *ParsedMessage, mailbox string, own OwnSources) Classification {
 	if pm == nil {
 		return Classification{}
 	}
 	mb := newMailboxIdentity(mailbox)
+	mb.own = own
 	if c, ok := classifyWith(pm, pm.bodyForClassification(), mb); ok {
 		c.BodySource = pm.primarySource()
 		return c
@@ -341,6 +392,87 @@ func classifyWith(pm *ParsedMessage, body string, mb mailboxIdentity) (Classific
 		}
 	}
 	return Classification{}, false
+}
+
+// isBackscatter is the backscatter rule (B0, design document "mail
+// classification" 2.6): someone forged our address as the sender, the
+// receiving side returned the mail, and the return notice reached the
+// monitored address. The notice is genuine, but we sent nothing, so there
+// is nothing to act on. It applies when all of these hold, checked in this
+// order:
+//
+//   - at least one of our own host names is configured for the monitored
+//     mail address (own_sending_hosts or its own SMTP host; the SMTP hosts
+//     of the other addresses and resolved addresses do not count, see
+//     OwnSources.hasHosts). Our own server shows up in the Received header it adds
+//     by its name ("by mx1.example.jp"); the address in such a header is
+//     the peer's. With addresses alone our own hops would go unrecognized,
+//     so nothing is judged; the addresses still count as further evidence
+//     of a hop;
+//   - it is no DMARC aggregate report;
+//   - the returned original is attached and carries at least one Received
+//     header (a notice that returns none is left alone);
+//   - it is a return notice: not a multipart/report of a report type other
+//     than delivery-status (a read receipt is none; a multipart/report
+//     without a report-type is not taken for another type), and a
+//     delivery-status part, a multipart/report of the delivery-status type,
+//     or a message that looks like a non-delivery report (looksLikeNotice: a
+//     daemon address, the report wording, or a mail delivery system display
+//     name together with a bounce subject);
+//   - its subject is neither a reply or forward nor an out-of-office
+//     subject, unless it comes from a daemon address (personalSubject, as
+//     for the fake notices: a person forwarding a notice, or an automatic
+//     reply quoting one, is left to the later rules);
+//   - the reporting MTA of the delivery-status part is not one of our own
+//     servers (OwnSources.Match, as text or an IP literal, nothing
+//     resolved): our own MTA reports about mail it handled itself;
+//   - none of the Received headers of the original shows one of our own
+//     sending servers (OwnSources.MatchReceived), and the headers can be
+//     judged: at most maxReceivedLines of them, none past the bounds of
+//     receivedSources (a hostile original cannot make the comparison
+//     costly; past a bound the notice is left alone). The grouping
+//     classifies a message the rule takes again with the addresses and host
+//     names it looked up (classifyOwn in group.go), so the rule itself stays
+//     pure;
+//   - the original carries no DKIM-Signature whose signing domain (d=) is
+//     of the organizational domain of the monitored address (an external
+//     delivery service signing with our domain sends our mail; the
+//     signature is not verified). Without a known monitored domain this
+//     exemption is skipped.
+//
+// It does not read the body of the pass: apart from the headers and the
+// structure only looksLikeNotice looks at the bodies, always at both, so
+// both passes of Classify give the same answer.
+func isBackscatter(pm *ParsedMessage, mb mailboxIdentity) bool {
+	if !mb.own.hasHosts() || pm.DMARC != nil {
+		return false
+	}
+	om := pm.OriginalMessage
+	if om == nil || len(om.Received) == 0 {
+		return false
+	}
+	deliveryReport := pm.ContentType == "multipart/report" && pm.ReportType == "delivery-status"
+	otherReport := pm.ContentType == "multipart/report" && pm.ReportType != "" && pm.ReportType != "delivery-status"
+	if otherReport || (pm.DeliveryStatus == nil && !deliveryReport && !looksLikeNotice(pm)) {
+		return false
+	}
+	if personalSubject(pm) {
+		return false
+	}
+	if pm.DeliveryStatus != nil && mb.own.Match(pm.DeliveryStatus.ReportingMTA) {
+		return false
+	}
+	if own, judged := mb.own.matchReceivedLines(om.Received); own || !judged {
+		return false
+	}
+	if mb.domain != "" {
+		for _, d := range om.DKIMDomains {
+			if organizationalDomain(d) == mb.domain {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // hasAutoSubmitted reports whether an Auto-Submitted header value (lower

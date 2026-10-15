@@ -740,10 +740,19 @@ func (m *JobManager) runExpansion(ctx context.Context, job *models.Job, progress
 		}
 		if job.Kind == JobKindCleanup {
 			// No child to hand the work to: the job history is pruned here
-			// so that the daily cleanup still applies that retention.
+			// so that the daily cleanup still applies that retention. As in
+			// runCleanup, the DNS check results are pruned even when the job
+			// history could not be, and the failures are joined.
+			var errs []error
 			removed, err := m.pruneJobHistory(progress)
 			if err != nil {
-				return "queued 0 jobs (no mailbox)", err
+				errs = append(errs, err)
+			}
+			if err := m.pruneDNSChecks(progress); err != nil {
+				errs = append(errs, err)
+			}
+			if len(errs) > 0 {
+				return "queued 0 jobs (no mailbox)", errors.Join(errs...)
 			}
 			return fmt.Sprintf("queued 0 jobs (no mailbox), removed %d jobs", removed), nil
 		}
@@ -923,6 +932,9 @@ func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progres
 	if err != nil {
 		errs = append(errs, err)
 	}
+	if err := m.pruneDNSChecks(progress); err != nil {
+		errs = append(errs, err)
+	}
 	line := fmt.Sprintf("deleted %d server mails, removed %d messages, %d groups, %d agent workspaces, %d jobs",
 		serverDeleted, pruned.Removed, pruned.RemovedGroups, workspaces, jobs)
 	progress(line)
@@ -989,7 +1001,12 @@ func (m *JobManager) runGroup(ctx context.Context, job *models.Job, mb *models.M
 	} else {
 		progress("grouping")
 	}
-	res, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, full, ResolveRecheckDays(m.db), mailengine.Progress(progress))
+	opts, err := m.groupOptions(mb)
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return "", fmt.Errorf("%s: %w", mb.Address, err)
+	}
+	res, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, full, ResolveRecheckDays(m.db), mailengine.Progress(progress), opts...)
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
@@ -1014,7 +1031,12 @@ func (m *JobManager) runSync(ctx context.Context, job *models.Job, mb *models.Ma
 		return fetchLine(fetched), errors.New("server shutting down")
 	}
 	progress("grouping")
-	grouped, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, false, ResolveRecheckDays(m.db), mailengine.Progress(progress))
+	opts, err := m.groupOptions(mb)
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return fetchLine(fetched), fmt.Errorf("%s: %w", mb.Address, err)
+	}
+	grouped, err := mailengine.GroupMailbox(ctx, m.mailsRoot, mb.Address, false, ResolveRecheckDays(m.db), mailengine.Progress(progress), opts...)
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return fetchLine(fetched), fmt.Errorf("%s: %w", mb.Address, err)
@@ -1056,7 +1078,12 @@ func (m *JobManager) countGroupsNeedingAnalysis(ctx context.Context, address str
 // flagged needs_analysis are analyzed).
 func (m *JobManager) runReindex(ctx context.Context, job *models.Job, mb *models.Mailbox, progress func(string)) (string, error) {
 	progress("reindexing")
-	res, err := mailengine.Reindex(ctx, m.mailsRoot, mb.Address, ResolveRecheckDays(m.db), mailengine.Progress(progress))
+	opts, err := m.groupOptions(mb)
+	if err != nil {
+		progress(fmt.Sprintf("error: %v", err))
+		return "", fmt.Errorf("%s: %w", mb.Address, err)
+	}
+	res, err := mailengine.Reindex(ctx, m.mailsRoot, mb.Address, ResolveRecheckDays(m.db), mailengine.Progress(progress), opts...)
 	if err != nil {
 		progress(fmt.Sprintf("error: %v", err))
 		return "", fmt.Errorf("%s: %w", mb.Address, err)
@@ -1158,6 +1185,7 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 			MailsRoot: m.mailsRoot, AgentRoot: m.agentRoot, TemplatesFS: m.templates,
 			Address: mb.Address, Index: idx, GroupKey: g.GroupKey, Provider: provider, Model: model,
 			ReasoningEffort: reasoning, Language: "ja", RecheckDays: ResolveRecheckDays(m.db),
+			DNSCheck: m.dnsCheckLookup(),
 		}, progress)
 		switch {
 		case err != nil:

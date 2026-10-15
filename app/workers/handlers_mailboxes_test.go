@@ -3,6 +3,7 @@ package workers
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -87,5 +88,124 @@ func TestMessageEndpointsAfterAudit(t *testing.T) {
 	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/1"), nil, s.user)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("html with missing section file: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestMailboxSmtpHostThroughTheAPI: the SMTP host is created and updated
+// normalized, refused with validation.mailbox.smtpHostInvalid (nothing
+// saved), kept by an update without the field, cleared by "", changed
+// without the IMAP password (which stays stored), shown to every user and
+// changed by administrators only. The settings list the SMTP hosts of the
+// mailboxes as own_sending_mailbox_hosts, which a PUT cannot set.
+func TestMailboxSmtpHostThroughTheAPI(t *testing.T) {
+	s := newSeededCore(t)
+	path := "/api/v1/mailboxes/" + itoa(s.mb.ID)
+	type mailboxReply struct {
+		Mailbox struct {
+			SmtpHost string `json:"smtp_host"`
+		} `json:"mailbox"`
+	}
+	type message struct {
+		Key    string         `json:"key"`
+		Params map[string]any `json:"params"`
+	}
+	smtpHost := func(rec *httptest.ResponseRecorder) string {
+		t.Helper()
+		var r mailboxReply
+		decode(t, rec.Body.Bytes(), &r)
+		return r.Mailbox.SmtpHost
+	}
+	stored := func() *models.Mailbox {
+		t.Helper()
+		mb, err := models.GetMailboxByID(s.db, s.mb.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mb
+	}
+	mailboxHosts := func() []string {
+		t.Helper()
+		var st struct {
+			Hosts []string `json:"own_sending_mailbox_hosts"`
+		}
+		rec := do(t, s.h, http.MethodGet, "/api/v1/settings", nil, s.admin)
+		decode(t, rec.Body.Bytes(), &st)
+		if st.Hosts == nil {
+			t.Fatalf("own_sending_mailbox_hosts missing: %s", rec.Body.String())
+		}
+		return st.Hosts
+	}
+	if got := mailboxHosts(); len(got) != 0 {
+		t.Errorf("own_sending_mailbox_hosts before any SMTP host: %v", got)
+	}
+
+	// Creation: normalized.
+	rec := do(t, s.h, http.MethodPost, "/api/v1/mailboxes", map[string]any{"address": "info@example.test", "imap_host": "imap.example.test",
+		"imap_username": "u", "imap_password": "p", "smtp_host": " Mail.Example.JP. "}, s.admin)
+	if rec.Code != http.StatusCreated || smtpHost(rec) != "mail.example.jp" {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Update of the SMTP host alone, without the password.
+	body := map[string]any{"address": s.mb.Address, "imap_host": "imap.example.test", "imap_username": "u", "smtp_host": "SMTP.example.jp"}
+	rec = do(t, s.h, http.MethodPut, path, body, s.admin)
+	if rec.Code != http.StatusOK || smtpHost(rec) != "smtp.example.jp" || stored().SmtpHost != "smtp.example.jp" {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+	}
+	if pw, err := modules.MailboxPassword(s.key, stored()); err != nil || pw != "p" {
+		t.Errorf("password after the update: %q, %v", pw, err)
+	}
+	if got := mailboxHosts(); !reflect.DeepEqual(got, []string{"mail.example.jp", "smtp.example.jp"}) {
+		t.Errorf("own_sending_mailbox_hosts: %v", got)
+	}
+	// Invalid: refused, nothing saved.
+	for _, bad := range []string{"203.0.113.5", "mail_1.example.jp", "localhost", "mail.example.jp:25"} {
+		body["smtp_host"] = bad
+		rec = do(t, s.h, http.MethodPut, path, body, s.admin)
+		var msg message
+		decode(t, rec.Body.Bytes(), &msg)
+		if rec.Code != http.StatusBadRequest || msg.Key != "validation.mailbox.smtpHostInvalid" || msg.Params["value"] != bad {
+			t.Errorf("%q: %d %s", bad, rec.Code, rec.Body.String())
+		}
+	}
+	if stored().SmtpHost != "smtp.example.jp" {
+		t.Errorf("a refused update changed it to %q", stored().SmtpHost)
+	}
+	// Without the field: kept.
+	delete(body, "smtp_host")
+	body["display_name"] = "Ops"
+	if rec = do(t, s.h, http.MethodPut, path, body, s.admin); rec.Code != http.StatusOK || stored().SmtpHost != "smtp.example.jp" {
+		t.Errorf("update without the field: %d %s", rec.Code, rec.Body.String())
+	}
+	// An administrator sees it, a member gets it blanked like the IMAP
+	// connection; only an administrator changes it.
+	for _, p := range []string{path, "/api/v1/mailboxes"} {
+		if rec := do(t, s.h, http.MethodGet, p, nil, s.admin); !strings.Contains(rec.Body.String(), `"smtp_host":"smtp.example.jp"`) {
+			t.Errorf("GET %s as admin: %s", p, rec.Body.String())
+		}
+		if rec := do(t, s.h, http.MethodGet, p, nil, s.user); !strings.Contains(rec.Body.String(), `"smtp_host":""`) ||
+			strings.Contains(rec.Body.String(), "smtp.example.jp") {
+			t.Errorf("GET %s as user: %s", p, rec.Body.String())
+		}
+	}
+	body["smtp_host"] = "other.example.jp"
+	if rec := do(t, s.h, http.MethodPut, path, body, s.user); rec.Code != http.StatusForbidden || stored().SmtpHost != "smtp.example.jp" {
+		t.Errorf("update by a user: %d", rec.Code)
+	}
+	// "" clears it.
+	body["smtp_host"] = ""
+	if rec = do(t, s.h, http.MethodPut, path, body, s.admin); rec.Code != http.StatusOK || smtpHost(rec) != "" || stored().SmtpHost != "" {
+		t.Errorf("clearing: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := mailboxHosts(); !reflect.DeepEqual(got, []string{"mail.example.jp"}) {
+		t.Errorf("own_sending_mailbox_hosts after clearing: %v", got)
+	}
+	// The settings cannot set it: the field is ignored like any unknown one.
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"own_sending_mailbox_hosts": []string{"x.example.jp"}}, s.admin)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"own_sending_mailbox_hosts":["mail.example.jp"]`) {
+		t.Errorf("PUT own_sending_mailbox_hosts: %d %s", rec.Code, rec.Body.String())
+	}
+	if v, found, err := models.GetSettingStrict(s.db, "own_sending_mailbox_hosts"); found || err != nil {
+		t.Errorf("stored %q (%v)", v, err)
 	}
 }

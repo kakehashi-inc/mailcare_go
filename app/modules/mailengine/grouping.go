@@ -138,12 +138,19 @@ var patternIDTailRe = regexp.MustCompile(`(<id>[.\-])[0-9]+\b`)
 // to (the responsible party is a column of the group only); the name of the
 // category rule that matched is recorded on the bounce (CategoryRule). Only
 // failed and delayed notices belong to a group (isGroupedKind); anything
-// else is nil.
+// else is nil. A DNS lookup failure in the diagnostic counts as not
+// verified (groupForBounceWith with a zero verdict).
 func groupForBounce(kind string, b *models.Bounce) *models.BounceGroup {
+	return groupForBounceWith(kind, b, DNSVerdict{})
+}
+
+// groupForBounceWith is groupForBounce with the verification of the DNS
+// lookup failure the diagnostic reports (CategorizeWith).
+func groupForBounceWith(kind string, b *models.Bounce, v DNSVerdict) *models.BounceGroup {
 	if !isGroupedKind(kind) || b == nil {
 		return nil
 	}
-	c := Categorize(b, kind)
+	c := CategorizeWith(b, kind, v)
 	b.CategoryRule = c.Reason
 	return &models.BounceGroup{
 		GroupKey:           GroupKey(c.Category, c.UnitValue, c.Authority),

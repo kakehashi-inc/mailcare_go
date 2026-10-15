@@ -195,20 +195,22 @@ const (
 
 const (
 	// Actionable by the mail administrator (shown in Alerts).
-	CategoryIPBlocked       = "ip_blocked"        // unit: sending IP, authority: blacklist or recipient domain
-	CategoryRateLimited     = "rate_limited"      // unit: sending IP/server, authority: recipient domain
-	CategorySenderBlocked   = "sender_blocked"    // unit: sender address, authority: recipient domain
-	CategoryAuthFailure     = "auth_failure"      // unit: sending domain (SPF/DKIM/DMARC/PTR), authority: recipient domain
-	CategoryContentRejected = "content_rejected"  // unit: sender address, authority: recipient domain
-	CategoryMessageTooLarge = "message_too_large" // unit: sender address, authority: recipient domain
-	CategoryServerConfig    = "server_config"     // unit: our reporting MTA, authority: recipient domain
-	CategoryUnknownFailure  = "unknown_failure"   // unit: recipient domain, authority: status code + diagnostic template
+	CategoryIPBlocked          = "ip_blocked"           // unit: sending IP, authority: blacklist or recipient domain
+	CategoryRateLimited        = "rate_limited"         // unit: sending IP/server, authority: recipient domain
+	CategorySenderBlocked      = "sender_blocked"       // unit: sender address, authority: recipient domain
+	CategoryAuthFailure        = "auth_failure"         // unit: sending domain (SPF/DKIM/DMARC/PTR), authority: recipient domain
+	CategoryContentRejected    = "content_rejected"     // unit: sender address, authority: recipient domain
+	CategoryMessageTooLarge    = "message_too_large"    // unit: sender address, authority: recipient domain
+	CategoryServerConfig       = "server_config"        // unit: our reporting MTA, authority: recipient domain
+	CategoryDNSResolverFailure = "dns_resolver_failure" // unit: our reporting MTA (its resolver failed on a name that exists)
+	CategoryUnknownFailure     = "unknown_failure"      // unit: recipient domain, authority: status code + diagnostic template
 	// Not actionable by the mail administrator (recipient side; excluded from Alerts by default).
-	CategoryUserUnknown     = "user_unknown"     // unit: recipient address
-	CategoryMailboxFull     = "mailbox_full"     // unit: recipient address
-	CategoryMailboxDisabled = "mailbox_disabled" // unit: recipient address
-	CategoryDomainNotFound  = "domain_not_found" // unit: recipient domain
-	CategoryDeliveryDelay   = "delivery_delay"   // unit: recipient domain
+	CategoryUserUnknown        = "user_unknown"         // unit: recipient address
+	CategoryMailboxFull        = "mailbox_full"         // unit: recipient address
+	CategoryMailboxDisabled    = "mailbox_disabled"     // unit: recipient address
+	CategoryDomainNotFound     = "domain_not_found"     // unit: recipient domain
+	CategoryDNSFailureExternal = "dns_failure_external" // unit: recipient domain (its DNS or a third party's resolver failed)
+	CategoryDeliveryDelay      = "delivery_delay"       // unit: recipient domain
 	// DMARC (records of aggregate reports that failed DMARC; actionable, unit: the domain of the record).
 	CategoryDMARCSPFMissing       = "dmarc_spf_missing"
 	CategoryDMARCDKIMFailed       = "dmarc_dkim_failed"
@@ -219,9 +221,10 @@ const (
 func KnownCategories() []string {
 	return []string{
 		CategoryIPBlocked, CategoryRateLimited, CategorySenderBlocked, CategoryAuthFailure, CategoryContentRejected,
-		CategoryMessageTooLarge, CategoryServerConfig, CategoryUnknownFailure,
+		CategoryMessageTooLarge, CategoryServerConfig, CategoryDNSResolverFailure, CategoryUnknownFailure,
 		CategoryDMARCSPFMissing, CategoryDMARCDKIMFailed, CategoryDMARCNotAuthenticated,
-		CategoryUserUnknown, CategoryMailboxFull, CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDeliveryDelay,
+		CategoryUserUnknown, CategoryMailboxFull, CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDNSFailureExternal,
+		CategoryDeliveryDelay,
 	}
 }
 
@@ -309,6 +312,20 @@ const (
 	// AgentLimitResumeMargin after it the scheduler queues the analysis of
 	// the groups waiting for it (see scheduler.go).
 	SettingAgentLimitedUntil = "agent_limited_until"
+	// Our own sending servers beyond the SMTP hosts of the mailboxes
+	// (newline-separated; absent = none): IPv4 addresses and CIDRs, IPv6
+	// addresses and CIDRs, and host names. ResolveOwnSending adds the SMTP
+	// hosts of the mailboxes to the host names.
+	SettingOwnSendingIPv4  = "own_sending_ipv4"
+	SettingOwnSendingIPv6  = "own_sending_ipv6"
+	SettingOwnSendingHosts = "own_sending_hosts"
+	// Verification of DNS lookup failures by looking the name up again.
+	SettingDNSCheckEnabled = "dns_check_enabled" // "1" (default) or "0"
+	// SettingDNSCheckResolvers lists the resolver IPs queried
+	// (newline-separated). An absent row means DefaultDNSCheckResolvers; a
+	// row holding "" is an explicitly empty list.
+	SettingDNSCheckResolvers          = "dns_check_resolvers"
+	SettingDNSCheckSystemResolverOnly = "dns_check_system_resolver_only" // "1" or "0" (default)
 )
 
 // --- Notification defaults ---
@@ -325,6 +342,52 @@ const (
 	// NotifyMailSubjectPrefix starts the subject of every notification mail.
 	NotifyMailSubjectPrefix = "[MailCare] "
 )
+
+// --- DNS lookup failure verification defaults ---
+
+const (
+	// MaxOwnSendingEntries bounds each of the own sending lists
+	// (own_sending_ipv4 / own_sending_ipv6 / own_sending_hosts), counted after
+	// normalization and de-duplication.
+	MaxOwnSendingEntries = 500
+	// MaxDNSCheckResolvers bounds dns_check_resolvers: every resolver gets a
+	// control query and one query per name verified (3 s timeout each), and a
+	// handful of public resolvers already gives independent answers.
+	MaxDNSCheckResolvers = 10
+	// DefaultDNSCheckEnabled is whether DNS lookup failures are verified when
+	// dns_check_enabled is not set.
+	DefaultDNSCheckEnabled = true
+	// DefaultDNSCheckSystemResolverOnly is whether only the OS resolver is
+	// used when dns_check_system_resolver_only is not set.
+	DefaultDNSCheckSystemResolverOnly = false
+	// MaxSPFDomains bounds the domains of the monitored mail addresses whose
+	// SPF record a run evaluates (the first ones in mailbox order); the
+	// others add nothing.
+	MaxSPFDomains = 20
+	// OwnSourceCacheFreshAge is how long the stored result of a complete
+	// lookup of an own sending source (own_source_lookups) is used without
+	// asking again, by every mailbox and run.
+	OwnSourceCacheFreshAge = time.Hour
+	// OwnSourceCacheMaxAge is how long the stored result of a complete
+	// lookup stands in for a lookup that fails, and how long a non-empty one
+	// is kept in place of a complete lookup that found nothing; an older one
+	// does neither.
+	OwnSourceCacheMaxAge = 14 * 24 * time.Hour
+	// OwnSourceCacheKeepAge is the age past which the daily cleanup deletes
+	// a stored lookup of an own sending source.
+	OwnSourceCacheKeepAge = 90 * 24 * time.Hour
+	// OwnSourceCacheMaxFuture is how far after now a stored lookup may be
+	// dated (the clock was set back since it was written) before the daily
+	// cleanup deletes it. Such a row is never fresh.
+	OwnSourceCacheMaxFuture = 24 * time.Hour
+)
+
+// DefaultDNSCheckResolvers returns the resolvers queried when
+// dns_check_resolvers is not set. Go has no slice constants, so every call
+// returns a fresh slice that the caller may change.
+func DefaultDNSCheckResolvers() []string {
+	return []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"}
+}
 
 // --- Job workers ---
 

@@ -54,8 +54,8 @@ export type BodySource = 'text' | 'html' | '';
 
 /**
  * Group categories assigned by the grouping phase (Documents/メール判定仕様.md).
- * The first eleven are actionable by the sending side (the three dmarc_* ones
- * bundle failing records of DMARC aggregate reports); the last five describe
+ * The first twelve are actionable by the sending side (the three dmarc_* ones
+ * bundle failing records of DMARC aggregate reports); the last six describe
  * recipient-side problems and are excluded from analysis.
  */
 export const BOUNCE_CATEGORIES = [
@@ -66,6 +66,7 @@ export const BOUNCE_CATEGORIES = [
     'content_rejected',
     'message_too_large',
     'server_config',
+    'dns_resolver_failure',
     'unknown_failure',
     'dmarc_spf_missing',
     'dmarc_dkim_failed',
@@ -74,6 +75,7 @@ export const BOUNCE_CATEGORIES = [
     'mailbox_full',
     'mailbox_disabled',
     'domain_not_found',
+    'dns_failure_external',
     'delivery_delay',
 ] as const;
 export type BounceCategory = (typeof BOUNCE_CATEGORIES)[number];
@@ -163,6 +165,8 @@ export interface MailboxDTO {
     recent_days: number;
     /** Days (from the mail's date) a mail server notice classified with certain evidence (not by subject or sender name alone, not an auto-generated message) stays on the IMAP server, at most mail_keep_days; 0 = never deleted there. */
     server_keep_days: number;
+    /** Host name of the SMTP server that sends the mail of this address (one of the own sending servers); "" = not set. Blanked ("") for non-administrators, like the IMAP connection. */
+    smtp_host: string;
     /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
     last_fetched_at: string | null;
     last_fetch_error: string;
@@ -186,6 +190,8 @@ export interface MailboxInput {
     recent_days?: number;
     /** Omitted: the default (60) for a new mailbox, unchanged on update. */
     server_keep_days?: number;
+    /** SMTP server (sending) host name; "" clears it. Omitted: not set for a new mailbox, unchanged on update. Needs no password. */
+    smtp_host?: string;
 }
 
 export interface GroupDTO {
@@ -421,6 +427,29 @@ export interface SettingsDTO {
     mail_keep_days: number;
     /** Local time (HH:MM) of the daily cleanup. */
     cleanup_time: string;
+    /**
+     * Own sending servers, normalized: IPv4 / IPv6 addresses and CIDRs, and host names. Together with the SMTP
+     * host of each mailbox (own_sending_mailbox_hosts) they tell whether a bounce is about mail we sent and
+     * whether a notice about a failed DNS lookup came from our own mail server, judged per mail address
+     * (Documents/メール判定仕様.md 2.6, 4.4). Present for administrators only, like every own_sending_* field and
+     * dns_check_resolvers.
+     */
+    own_sending_ipv4?: string[];
+    own_sending_ipv6?: string[];
+    own_sending_hosts?: string[];
+    /** Read-only: the distinct SMTP hosts of the mailboxes in mailbox order (set on each mailbox, not here). */
+    own_sending_mailbox_hosts?: string[];
+    /**
+     * Read-only: the addresses of the mailboxes (in mailbox order) without an SMTP host while own_sending_hosts is
+     * empty; notices about mail not sent from our servers are not judged for them. [] while own_sending_hosts is set.
+     */
+    own_sending_mailboxes_without_host?: string[];
+    /** Whether a DNS lookup failure in a notice is verified by looking the name up again. */
+    dns_check_enabled: boolean;
+    /** IP addresses of the resolvers asked (kept but not used while dns_check_system_resolver_only is on). */
+    dns_check_resolvers?: string[];
+    /** Ask only the OS resolver instead of dns_check_resolvers. */
+    dns_check_system_resolver_only: boolean;
     /** Re-check days of every group category (1-365). */
     recheck_days: Record<string, number>;
     providers: ProviderStatus[];
@@ -445,6 +474,14 @@ export interface SettingsInput {
     agent_keep_days?: number;
     mail_keep_days?: number;
     cleanup_time?: string;
+    /** Each list replaces the saved one (one entry per element; blank entries are ignored). */
+    own_sending_ipv4?: string[];
+    own_sending_ipv6?: string[];
+    own_sending_hosts?: string[];
+    dns_check_enabled?: boolean;
+    /** An empty list is saved as empty (not the default); refused while the check needs a resolver. */
+    dns_check_resolvers?: string[];
+    dns_check_system_resolver_only?: boolean;
     /** Re-check days of the categories named (the others keep theirs). */
     recheck_days?: Record<string, number>;
     workers?: number;

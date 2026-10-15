@@ -154,4 +154,8 @@ type AnalyzeInput struct {
 	// the settling period the prompt names when a resolved group is
 	// re-checked. nil = the defaults.
 	RecheckDays mailengine.RecheckDays
+	// DNSCheck finds the stored DNS verification of a name a sample notice
+	// reports as a failed lookup (see EvidenceInput.DNSCheck); nil = the
+	// samples say that the name was not verified.
+	DNSCheck DNSCheckFunc
 }

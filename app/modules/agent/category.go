@@ -18,6 +18,10 @@ const (
 	CategoryMailboxDisabled = "mailbox_disabled"
 	CategoryDomainNotFound  = "domain_not_found"
 	CategoryDeliveryDelay   = "delivery_delay"
+	// DNS lookup failures whose name MailCare looked up again and found to
+	// exist: our own resolver, or the receiving side's / a third party's DNS.
+	CategoryDNSResolverFailure = "dns_resolver_failure"
+	CategoryDNSFailureExternal = "dns_failure_external"
 	// DMARC categories: records of DMARC aggregate reports that failed DMARC.
 	CategoryDMARCSPFMissing       = "dmarc_spf_missing"
 	CategoryDMARCDKIMFailed       = "dmarc_dkim_failed"
@@ -112,6 +116,12 @@ var CategoryGlossary = map[string]CategoryInfo{
 		Guidance:    "determine the actual cause from the notices, say which of the known categories it resembles if any, and give the concrete actions the sending-side mail administrator can take",
 		Actionable:  true,
 	},
+	CategoryDNSResolverFailure: {
+		Description: "A notice reports a failed DNS lookup (e.g. \"Host not found, try again\") for a name that MailCare looked up again and found to exist, and the notice came from the sending side's own mail server: that server's name resolution is failing.",
+		Unit:        "the sending-side mail server (the reporting MTA) whose DNS resolution failed",
+		Guidance:    "the name was verified to exist, so give the checks of that mail server's name resolution: its resolver configuration (resolv.conf), the local caching resolver (e.g. unbound or systemd-resolved) and the upstream resolver it forwards to, reachability of UDP and TCP port 53, DNSSEC validation failures, and EDNS / large responses being dropped; say that a one-off failure for a single domain is weak evidence of a resolver problem while many domains failing at the same time is strong evidence, and how to verify name resolution works again",
+		Actionable:  true,
+	},
 	CategoryUserUnknown: {
 		Description: "The recipient address does not exist (user unknown, no such user, recipient not found).",
 		Unit:        "the recipient address that does not exist",
@@ -140,6 +150,12 @@ var CategoryGlossary = map[string]CategoryInfo{
 		Description: "Delivery to the recipient domain is delayed (connection timeouts, greylisting, temporary failures); the mail is still queued.",
 		Unit:        "the recipient domain that is slow or unreachable",
 		Guidance:    "say whether the delay looks temporary and what to tell the recipient domain administrator if it persists; nothing on the sending side's mail server needs to change unless the notices show otherwise",
+		Actionable:  false,
+	},
+	CategoryDNSFailureExternal: {
+		Description: "A notice reports a failed DNS lookup for the recipient domain or its mail server, but MailCare looked the name up again and it exists (or only some resolvers or name servers fail to answer): the receiving side's DNS or the resolver of the third-party server that reported the failure is at fault.",
+		Unit:        "the recipient domain whose DNS lookup failed",
+		Guidance:    "say that the domain exists and the failure lies with the receiving side's DNS or a third party's resolver, whether it looks temporary, and what to tell the recipient domain administrator if it persists; nothing on the sending side's mail server needs to change",
 		Actionable:  false,
 	},
 	CategoryDMARCSPFMissing: {

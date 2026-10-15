@@ -32,6 +32,7 @@ import {
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { ImapSecurity, MailboxDTO, MailboxInput } from '../types';
+import { hostKey, trimSpace } from '../utils/addressList';
 
 interface FormState {
     address: string;
@@ -46,6 +47,7 @@ interface FormState {
     initial_days: string;
     recent_days: string;
     server_keep_days: string;
+    smtp_host: string;
 }
 
 const EMPTY: FormState = {
@@ -61,6 +63,7 @@ const EMPTY: FormState = {
     initial_days: String(DEFAULT_INITIAL_DAYS),
     recent_days: String(DEFAULT_RECENT_DAYS),
     server_keep_days: String(DEFAULT_SERVER_KEEP_DAYS),
+    smtp_host: '',
 };
 
 // Every field is defaulted: the DTO never carries imap_password and the
@@ -80,6 +83,7 @@ function fromDto(mb: MailboxDTO): FormState {
         recent_days: mb.recent_days ? String(mb.recent_days) : EMPTY.recent_days,
         // 0 is a real value (never delete on the server), not "unset".
         server_keep_days: String(mb.server_keep_days ?? 0),
+        smtp_host: mb.smtp_host ?? '',
     };
 }
 
@@ -97,6 +101,9 @@ export function MailboxEditPage() {
     // The server retention may not exceed the mail retention of the general settings.
     const settings = useAsync(getSettings, []);
     const mailKeepDays = settings.data?.mail_keep_days;
+    // No host name saved in the general settings: an address without an SMTP host of its own is left out of the
+    // judgement of notices about mail not sent from our servers (undefined while the settings load).
+    const noGlobalHost = settings.data?.own_sending_hosts?.length === 0;
     const [form, setForm] = useState<FormState>(EMPTY);
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
@@ -163,6 +170,12 @@ export function MailboxEditPage() {
             : mailKeepDays !== undefined && serverKeep > mailKeepDays && serverKeep !== storedServerKeep
               ? t('validation.mailbox.serverKeepDaysOverMailKeep', { max: mailKeepDays })
               : undefined;
+    // Same rule as the server (normalizeOwnHost); the SMTP host is no connection setting and needs no password.
+    const smtpHost = trimSpace(form.smtp_host);
+    const smtpHostError =
+        smtpHost !== '' && hostKey(smtpHost) === null
+            ? t('validation.mailbox.smtpHostInvalid', { value: smtpHost })
+            : undefined;
     const passwordRequired = isNew && form.imap_password === '';
     // The server uses the stored password only for the server it was saved
     // for: a change of the host, port, connection mode or username of an
@@ -187,6 +200,7 @@ export function MailboxEditPage() {
         !daysError(form.initial_days) &&
         !daysError(form.recent_days) &&
         !serverKeepError &&
+        !smtpHostError &&
         !passwordRequired &&
         !passwordError;
 
@@ -205,6 +219,7 @@ export function MailboxEditPage() {
             initial_days: form.initial_days === '' ? undefined : Number(form.initial_days),
             recent_days: form.recent_days === '' ? undefined : Number(form.recent_days),
             server_keep_days: Number(form.server_keep_days),
+            smtp_host: smtpHost,
         };
     }
 
@@ -212,7 +227,8 @@ export function MailboxEditPage() {
         setTesting(true);
         setTestResult(null);
         try {
-            await testMailbox(toInput());
+            // The connection test concerns the IMAP settings only.
+            await testMailbox({ ...toInput(), smtp_host: undefined });
             setTestResult({ ok: true });
         } catch (err) {
             setTestResult({ ok: false, message: t((err as ApiError).key, (err as ApiError).params) });
@@ -403,6 +419,28 @@ export function MailboxEditPage() {
                             </Alert>
                         )}
                     </div>
+                </Card>
+
+                <Card>
+                    <CardHeader title={t('page.mailboxes.sectionSmtp')} />
+                    <InputField
+                        label={t('field.mailbox.smtpHost')}
+                        autoComplete='off'
+                        spellCheck={false}
+                        autoCapitalize='off'
+                        value={form.smtp_host}
+                        onChange={e => set('smtp_host', e.target.value)}
+                        placeholder='mail.example.jp'
+                        hint={t('field.mailbox.smtpHostHint')}
+                        error={smtpHostError}
+                        width='medium'
+                        className='font-mono'
+                    />
+                    {smtpHost === '' && noGlobalHost && (
+                        <Alert tone='warning' className='mt-3'>
+                            {t('page.mailboxes.smtpHostMissing')}
+                        </Alert>
+                    )}
                 </Card>
 
                 <Card>

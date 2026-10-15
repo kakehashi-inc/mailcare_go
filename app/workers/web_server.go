@@ -195,7 +195,8 @@ func sameOrigin(origin, host string) bool {
 // cross-site or same-site (403 otherwise). It returns false after answering.
 func checkStateChangingRequest(w http.ResponseWriter, r *http.Request) bool {
 	// refuse answers in the error shape of the path: English text for the
-	// control endpoints (the CLI), a code for the Web API.
+	// control endpoints (the CLI), a message key of the language files for
+	// the Web API.
 	refuse := func(status int, code, msg string) bool {
 		if strings.HasPrefix(r.URL.Path, "/control/") {
 			writeControlError(w, status, msg)
@@ -205,16 +206,16 @@ func checkStateChangingRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		return refuse(http.StatusUnsupportedMediaType, "invalidRequest", "Content-Type must be application/json")
+		return refuse(http.StatusUnsupportedMediaType, "system.invalidRequest", "Content-Type must be application/json")
 	}
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if !sameOrigin(origin, r.Host) {
-			return refuse(http.StatusForbidden, "forbidden", "cross-origin request refused")
+			return refuse(http.StatusForbidden, "system.forbidden", "cross-origin request refused")
 		}
 	} else {
 		switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
 		case "cross-site", "same-site":
-			return refuse(http.StatusForbidden, "forbidden", "cross-site request refused")
+			return refuse(http.StatusForbidden, "system.forbidden", "cross-site request refused")
 		}
 	}
 	return true

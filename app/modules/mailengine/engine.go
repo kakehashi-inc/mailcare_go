@@ -46,6 +46,8 @@
 //	extract.go   extraction of bounce details (delivery-status and body text)
 //	sections.go  body section references and where the diagnostic was found
 //	category.go  the category rule table and the unit / authority extractors
+//	dnsfailure.go  detection of DNS lookup failures in diagnostics (no network)
+//	dnsverify.go   the verifier interface, our own sending sources and the GroupMailbox / Reindex options
 //	grouping.go  diagnostic template, group key/title and group maintenance
 //	group.go     GroupMailbox (the grouping phase) and the per-message step
 //	store.go     storing one message (section files + index row) shared by fetch/reindex
@@ -167,6 +169,11 @@ const (
 	categoryMailboxDisabled = "mailbox_disabled"
 	categoryDomainNotFound  = "domain_not_found"
 	categoryDeliveryDelay   = "delivery_delay"
+	// DNS lookup failures verified by looking the name up again (design
+	// document "mail classification" 4.4): our own resolver (actionable) or
+	// the receiving side's / a third party's DNS (recipient-side).
+	categoryDNSResolverFailure = "dns_resolver_failure"
+	categoryDNSFailureExternal = "dns_failure_external"
 	// DMARC categories (records of aggregate reports that failed DMARC;
 	// all actionable, see CategorizeDMARCRecord).
 	categoryDMARCSPFMissing       = "dmarc_spf_missing"

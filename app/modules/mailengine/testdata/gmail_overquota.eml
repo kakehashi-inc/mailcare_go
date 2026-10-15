@@ -8,7 +8,7 @@ Auto-Submitted: auto-replied
 Subject: Delivery Status Notification (Failure)
 References: <gm-0009@example.jp>
 In-Reply-To: <gm-0009@example.jp>
-X-Failed-Recipients: kyuro@gmail.com
+X-Failed-Recipients: user3@gmail.com
 Message-ID: <68bd5678.050a0220.9a8b7c.6d5e@mx.google.com>
 Date: Mon, 8 Sep 2025 02:00:00 -0700 (PDT)
 MIME-Version: 1.0
@@ -19,7 +19,7 @@ Content-Type: text/plain; charset="UTF-8"
 
 ** Message blocked **
 
-Your message to kyuro@gmail.com has been blocked. See technical details below for more information.
+Your message to user3@gmail.com has been blocked. See technical details below for more information.
 
 The response from the remote server was:
 452-4.2.2 The email account that you tried to reach is over quota. Please direct the recipient to https://support.google.com/mail/?p=OverQuotaTemp 41be03b00d2f7-7f0c4e1a2b3si7654321a12.34 - gsmtp
@@ -32,7 +32,7 @@ Received-From-MTA: dns; newsletter@example.jp
 Arrival-Date: Sun, 07 Sep 2025 20:00:00 -0700 (PDT)
 X-Original-Message-ID: <gm-0009@example.jp>
 
-Final-Recipient: rfc822; kyuro@gmail.com
+Final-Recipient: rfc822; user3@gmail.com
 Action: failed
 Status: 4.2.2
 Remote-MTA: dns; gmail-smtp-in.l.google.com. (2607:f8b0:4001:c01::1a, the server for the domain gmail.com.)
@@ -45,7 +45,7 @@ Last-Attempt-Date: Mon, 08 Sep 2025 02:00:00 -0700 (PDT)
 Content-Type: message/rfc822
 
 From: Newsletter <newsletter@example.jp>
-To: kyuro@gmail.com
+To: user3@gmail.com
 Subject: Welcome aboard
 Date: Sun, 7 Sep 2025 19:59:58 -0700
 Message-ID: <gm-0009@example.jp>

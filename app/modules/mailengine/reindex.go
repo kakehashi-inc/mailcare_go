@@ -59,10 +59,15 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 // see swapIndexFiles); on failure or cancellation the build file (with its
 // SQLite side files) is removed and the previous index stays as it was. A
 // raw file that cannot be indexed is reported and counted in Skipped.
-func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays, progress Progress) (*ReindexResult, error) {
+//
+// WithDNS verifies the DNS lookup failures the notices report and
+// WithOwnSources gives the backscatter rule our own sending servers, as in
+// GroupMailbox.
+func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays, progress Progress, opts ...GroupOption) (*ReindexResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	cfg := newGroupConfig(opts)
 	dir := MailboxDir(mailsRoot, address)
 	indexPath := MailboxIndexPath(mailsRoot, address)
 	carried, err := readCarryover(indexPath)
@@ -94,6 +99,7 @@ func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays
 	report(progress, fmt.Sprintf("reindexing %d raw messages", len(listing.keys)))
 	result := &ReindexResult{}
 	tracker := newGroupTracker(recheck)
+	junk := &noticeJunkCounts{}
 	exclude := []string{address}
 	for i, key := range listing.keys {
 		if err := ctx.Err(); err != nil {
@@ -118,17 +124,24 @@ func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays
 			}
 			return nil, err
 		}
-		if err := groupMessage(db, msg, pm, tracker, exclude...); err != nil {
+		if err := groupMessage(ctx, db, msg, pm, tracker, cfg, exclude...); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, fmt.Errorf("group %s: %w", key, err)
 		}
 		result.Messages++
 		if msg.IsBounce {
 			result.Bounces++
 		}
+		junk.add(msg.Rule)
 		if (i+1)%progressInterval == 0 {
 			report(progress, fmt.Sprintf("reindexed %d of %d messages", i+1, len(listing.keys)))
 		}
 	}
+	cfg.dns.reportSummary(progress)
+	cfg.lookups.reportSummary(progress, cfg.backscatterApplies())
+	junk.reportSummary(progress)
 	groups, err := finishGroups(db)
 	if err != nil {
 		return nil, err

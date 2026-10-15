@@ -119,7 +119,11 @@ type DeliveryStatusRecipient struct {
 // from a message/rfc822 or text/rfc822-headers part. The sender
 // authentication headers (Authentication-Results, Received-SPF and the
 // signing domains of DKIM-Signature) are kept for the agent evidence only;
-// the index stores MessageID, Subject, From and Date.
+// the index stores MessageID, Subject, From and Date. Received holds every
+// Received header folded onto one line, in header order (the last hop
+// first); the backscatter rule looks for our own sending servers in them
+// (design document "mail classification" 2.6). Like DKIMDomains it is not
+// stored.
 type OriginalMessage struct {
 	MessageID             string
 	Subject               string
@@ -129,6 +133,7 @@ type OriginalMessage struct {
 	AuthenticationResults []string
 	ReceivedSPF           []string
 	DKIMDomains           []string
+	Received              []string
 }
 
 // Nothing about a message is capped: every header value, every body section
@@ -403,6 +408,7 @@ func originalFromHeader(h message.Header) *OriginalMessage {
 	om.To = headerText(mh, "To")
 	om.AuthenticationResults = foldedValues(h.Values("Authentication-Results"))
 	om.ReceivedSPF = foldedValues(h.Values("Received-SPF"))
+	om.Received = foldedValues(h.Values("Received"))
 	for _, sig := range h.Values("DKIM-Signature") {
 		if m := dkimDomainRe.FindStringSubmatch(sig); m != nil {
 			om.DKIMDomains = append(om.DKIMDomains, strings.ToLower(m[1]))

@@ -7,13 +7,32 @@ import { Button, IconButton } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { DescriptionList } from '../components/ui/DescriptionList';
 import { ErrorState } from '../components/ui/ErrorState';
-import { CONTROL_WIDTH, InputField, SelectField, ToggleField, controlClass } from '../components/ui/Field';
+import {
+    CONTROL_WIDTH,
+    CheckboxField,
+    InputField,
+    SelectField,
+    TextareaField,
+    ToggleField,
+    controlClass,
+} from '../components/ui/Field';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { BOUNCE_CATEGORIES } from '../types';
+import {
+    DNS_CHECK_RESOLVERS,
+    MAX_DNS_CHECK_RESOLVERS,
+    MAX_OWN_SENDING_ENTRIES,
+    OWN_SENDING_HOSTS,
+    OWN_SENDING_IPV4,
+    OWN_SENDING_IPV6,
+    checkList,
+    listEntries,
+    type ListError,
+} from '../utils/addressList';
 import { categoryLabel } from '../utils/category';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -28,6 +47,14 @@ const RECHECK_DAYS_MAX = 365;
 // Same rule as agent.ValidateModel: starts with a letter or digit, no white space.
 const MODEL_MAX = 100;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$/;
+// Attributes shared by the text areas that take one address or host name per line.
+const LIST_TEXTAREA = {
+    rows: 4,
+    spellCheck: false,
+    autoCapitalize: 'off',
+    autoComplete: 'off',
+    className: `resize-y font-mono ${CONTROL_WIDTH.medium}`,
+} as const;
 
 /**
  * Reasoning levels offered for a model, with the same rule the server checks on save
@@ -60,6 +87,13 @@ export function SettingsGeneralPage() {
     const [cleanupTime, setCleanupTime] = useState('');
     // Re-check days per category, as typed.
     const [recheckDays, setRecheckDays] = useState<Record<string, string>>({});
+    // Own sending sources and resolvers as typed, one entry per line.
+    const [ownIpv4, setOwnIpv4] = useState('');
+    const [ownIpv6, setOwnIpv6] = useState('');
+    const [ownHosts, setOwnHosts] = useState('');
+    const [dnsCheckEnabled, setDnsCheckEnabled] = useState(false);
+    const [dnsResolvers, setDnsResolvers] = useState('');
+    const [dnsSystemOnly, setDnsSystemOnly] = useState(false);
     const [workers, setWorkers] = useState('');
     const [saving, setSaving] = useState(false);
     const [dirty, setDirty] = useState(false);
@@ -77,6 +111,12 @@ export function SettingsGeneralPage() {
         setRecheckDays(
             Object.fromEntries(Object.entries(settings.data.recheck_days ?? {}).map(([c, n]) => [c, String(n)]))
         );
+        setOwnIpv4((settings.data.own_sending_ipv4 ?? []).join('\n'));
+        setOwnIpv6((settings.data.own_sending_ipv6 ?? []).join('\n'));
+        setOwnHosts((settings.data.own_sending_hosts ?? []).join('\n'));
+        setDnsCheckEnabled(settings.data.dns_check_enabled);
+        setDnsResolvers((settings.data.dns_check_resolvers ?? []).join('\n'));
+        setDnsSystemOnly(settings.data.dns_check_system_resolver_only);
         setWorkers(String(settings.data.workers ?? ''));
         setDirty(false);
     }, [settings.data]);
@@ -106,6 +146,27 @@ export function SettingsGeneralPage() {
     const recheckDaysValid = (value: string) =>
         /^\d+$/.test(value.trim()) && Number(value) >= RECHECK_DAYS_MIN && Number(value) <= RECHECK_DAYS_MAX;
     const allRecheckDaysValid = Object.values(recheckDays).every(recheckDaysValid);
+    const ownIpv4Error = checkList(ownIpv4, OWN_SENDING_IPV4);
+    const ownIpv6Error = checkList(ownIpv6, OWN_SENDING_IPV6);
+    const ownHostsError = checkList(ownHosts, OWN_SENDING_HOSTS);
+    // The SMTP hosts of the mail addresses count as own host names too (read-only here).
+    const mailboxHosts = settings.data?.own_sending_mailbox_hosts ?? [];
+    const ownSendingEmpty =
+        [ownIpv4, ownIpv6, ownHosts].every(text => listEntries(text).length === 0) && mailboxHosts.length === 0;
+    // The addresses without a host name of their own while no host name is saved here (derived by the server): the
+    // judgement of notices about mail not sent from our servers is off for them. A host name typed here counts for
+    // every address, so the warning goes away before it is saved.
+    const withoutHost = settings.data?.own_sending_mailboxes_without_host ?? [];
+    const ownSendingNoHost = withoutHost.length > 0 && listEntries(ownHosts).length === 0;
+    // With no IP address listed here either, nothing at all is configured for these addresses: the DNS judgement
+    // takes every reporting server as ours for them, so any entry typed here hides the sentence as well.
+    const ownSendingNoHostAllOwn =
+        ownSendingNoHost && listEntries(ownIpv4).length === 0 && listEntries(ownIpv6).length === 0;
+    // The resolvers are sent (and checked by the server) even while their field is disabled.
+    const dnsResolversError = checkList(dnsResolvers, DNS_CHECK_RESOLVERS);
+    // Same rule as modules.ValidateDNSCheck: the check needs a resolver unless it asks the OS resolver only.
+    const dnsNoResolver = dnsCheckEnabled && !dnsSystemOnly && listEntries(dnsResolvers).length === 0;
+    const listError = (err: ListError | null) => (err ? t(err.key, err.params) : undefined);
     const canSave =
         dirty &&
         invalidTimes.length === 0 &&
@@ -115,6 +176,11 @@ export function SettingsGeneralPage() {
         mailKeepDaysValid &&
         cleanupTimeValid &&
         allRecheckDaysValid &&
+        !ownIpv4Error &&
+        !ownIpv6Error &&
+        !ownHostsError &&
+        !dnsResolversError &&
+        !dnsNoResolver &&
         modelValid &&
         effortValid &&
         !saving;
@@ -144,6 +210,12 @@ export function SettingsGeneralPage() {
                 mail_keep_days: mailKeepDaysValue,
                 cleanup_time: cleanupTime,
                 recheck_days: Object.fromEntries(Object.entries(recheckDays).map(([c, v]) => [c, Number(v)])),
+                own_sending_ipv4: listEntries(ownIpv4),
+                own_sending_ipv6: listEntries(ownIpv6),
+                own_sending_hosts: listEntries(ownHosts),
+                dns_check_enabled: dnsCheckEnabled,
+                dns_check_resolvers: listEntries(dnsResolvers),
+                dns_check_system_resolver_only: dnsSystemOnly,
                 workers: workersValue,
             });
             toast.success(t('result.setting.saved'));
@@ -350,6 +422,124 @@ export function SettingsGeneralPage() {
                             ))}
                         </div>
                     </fieldset>
+                </Card>
+
+                <Card>
+                    <CardHeader
+                        title={t('page.settingsGeneral.dnsCheck')}
+                        description={t('page.settingsGeneral.dnsCheckHint')}
+                    />
+                    <fieldset aria-describedby='own-sending-hint'>
+                        <legend className='text-sm font-medium text-ink'>{t('field.setting.ownSending')}</legend>
+                        <p id='own-sending-hint' className='mb-3 mt-1 text-sm text-muted'>
+                            {t('field.setting.ownSendingHint', { max: MAX_OWN_SENDING_ENTRIES })}
+                        </p>
+                        <div className='flex flex-col gap-4'>
+                            <TextareaField
+                                {...LIST_TEXTAREA}
+                                label={t('field.setting.ownSendingIpv4')}
+                                hint={t('field.setting.ownSendingIpv4Hint')}
+                                placeholder={t('field.setting.ownSendingIpv4Placeholder')}
+                                value={ownIpv4}
+                                onChange={e => {
+                                    setOwnIpv4(e.target.value);
+                                    setDirty(true);
+                                }}
+                                error={listError(ownIpv4Error)}
+                            />
+                            <TextareaField
+                                {...LIST_TEXTAREA}
+                                label={t('field.setting.ownSendingIpv6')}
+                                hint={t('field.setting.ownSendingIpv6Hint')}
+                                placeholder={t('field.setting.ownSendingIpv6Placeholder')}
+                                value={ownIpv6}
+                                onChange={e => {
+                                    setOwnIpv6(e.target.value);
+                                    setDirty(true);
+                                }}
+                                error={listError(ownIpv6Error)}
+                            />
+                            <TextareaField
+                                {...LIST_TEXTAREA}
+                                label={t('field.setting.ownSendingHosts')}
+                                hint={t('field.setting.ownSendingHostsHint')}
+                                placeholder={t('field.setting.ownSendingHostsPlaceholder')}
+                                value={ownHosts}
+                                onChange={e => {
+                                    setOwnHosts(e.target.value);
+                                    setDirty(true);
+                                }}
+                                error={listError(ownHostsError)}
+                            />
+                            {mailboxHosts.length > 0 && (
+                                <div className='text-sm'>
+                                    <p className='font-medium text-ink'>{t('field.setting.ownSendingMailboxHosts')}</p>
+                                    <ul className='mt-1 flex flex-wrap gap-x-3 gap-y-1'>
+                                        {mailboxHosts.map(host => (
+                                            <li key={host} className='break-all font-mono text-ink'>
+                                                {host}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                    <p className='mt-1 text-muted'>{t('field.setting.ownSendingMailboxHostsHint')}</p>
+                                </div>
+                            )}
+                            {ownSendingEmpty && <Alert tone='info'>{t('page.settingsGeneral.ownSendingEmpty')}</Alert>}
+                            {ownSendingNoHost && (
+                                <Alert tone='warning'>
+                                    <p>{t('page.settingsGeneral.ownSendingNoHost')}</p>
+                                    <ul className='mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm'>
+                                        {withoutHost.map(address => (
+                                            <li key={address} className='break-all font-mono'>
+                                                {address}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                    {/* After the list, which the sentence refers back to ("these addresses"). */}
+                                    {ownSendingNoHostAllOwn && (
+                                        <p className='mt-2'>{t('page.settingsGeneral.ownSendingNoHostAllOwn')}</p>
+                                    )}
+                                </Alert>
+                            )}
+                        </div>
+                    </fieldset>
+                    <div className='mt-6 flex flex-col gap-4 border-t border-line pt-4'>
+                        <ToggleField
+                            label={t('field.setting.dnsCheckEnabled')}
+                            hint={t('field.setting.dnsCheckEnabledHint')}
+                            checked={dnsCheckEnabled}
+                            onChange={v => {
+                                setDnsCheckEnabled(v);
+                                setDirty(true);
+                            }}
+                        />
+                        {/* Disabled controls keep their values, which are saved unchanged. */}
+                        <TextareaField
+                            {...LIST_TEXTAREA}
+                            label={t('field.setting.dnsCheckResolvers')}
+                            hint={t('field.setting.dnsCheckResolversHint', { max: MAX_DNS_CHECK_RESOLVERS })}
+                            value={dnsResolvers}
+                            onChange={e => {
+                                setDnsResolvers(e.target.value);
+                                setDirty(true);
+                            }}
+                            disabled={!dnsCheckEnabled || dnsSystemOnly}
+                            error={
+                                listError(dnsResolversError) ??
+                                (dnsNoResolver ? t('validation.dnsCheck.noResolver') : undefined)
+                            }
+                        />
+                        <CheckboxField
+                            label={t('field.setting.dnsCheckSystemResolverOnly')}
+                            hint={t('field.setting.dnsCheckSystemResolverOnlyHint')}
+                            checked={dnsSystemOnly}
+                            onChange={e => {
+                                setDnsSystemOnly(e.target.checked);
+                                setDirty(true);
+                            }}
+                            disabled={!dnsCheckEnabled}
+                        />
+                    </div>
                 </Card>
 
                 <Card>

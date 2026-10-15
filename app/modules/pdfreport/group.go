@@ -46,7 +46,7 @@ var categoryTones = map[string]tone{
 	"server_config": toneDanger, "unknown_failure": toneWarning, "dmarc_spf_missing": toneDanger,
 	"dmarc_dkim_failed": toneWarning, "dmarc_not_authenticated": toneWarning, "user_unknown": toneNeutral,
 	"mailbox_full": toneNeutral, "mailbox_disabled": toneNeutral, "domain_not_found": toneNeutral,
-	"delivery_delay": toneInfo,
+	"delivery_delay": toneInfo, "dns_resolver_failure": toneDanger, "dns_failure_external": toneInfo,
 }
 
 var stateTones = map[string]tone{"open": toneDanger, "resolved": toneSuccess, "ignored": toneNeutral}

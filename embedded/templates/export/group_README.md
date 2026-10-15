@@ -84,7 +84,7 @@ Times are RFC 3339 strings in UTC; a time or value that is not known is
 | Field | Meaning |
 | --- | --- |
 | `group_key` | 16 hex digits identifying the group |
-| `category` | cause: `ip_blocked`, `rate_limited`, `auth_failure`, `sender_blocked`, `content_rejected`, `message_too_large`, `server_config`, `unknown_failure`, `dmarc_spf_missing`, `dmarc_dkim_failed`, `dmarc_not_authenticated` (the sending side acts), `user_unknown`, `mailbox_full`, `mailbox_disabled`, `domain_not_found`, `delivery_delay` (recipient side or transient) |
+| `category` | cause: `ip_blocked`, `rate_limited`, `auth_failure`, `sender_blocked`, `content_rejected`, `message_too_large`, `server_config`, `dns_resolver_failure`, `unknown_failure`, `dmarc_spf_missing`, `dmarc_dkim_failed`, `dmarc_not_authenticated` (the sending side acts), `user_unknown`, `mailbox_full`, `mailbox_disabled`, `domain_not_found`, `dns_failure_external`, `delivery_delay` (recipient side or transient) |
 | `unit_value` | what to act on: a sending IP, a sender address or a domain (`""` when the category has none) |
 | `authority` | who made the decision: a blocklist, the receiving domain, or for `unknown_failure` the status code and diagnostic |
 | `actionable` | `true` when the sending side can act on it; `false` for recipient-side problems |

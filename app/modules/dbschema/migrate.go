@@ -2,7 +2,8 @@
 // SQLite database:
 //
 //	migrations/master/  the master database (data/mailcare.db): users,
-//	                    tokens, settings, mailboxes, jobs
+//	                    tokens, settings, mailboxes, jobs, dns_checks,
+//	                    own_source_lookups
 //	migrations/index/   every per-mailbox index (data/mails/<address>.sqlite):
 //	                    messages, bounces, groups, agent reports
 //

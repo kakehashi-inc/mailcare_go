@@ -59,8 +59,9 @@ func InsertSettingIfAbsent(db *sql.DB, key, value string) error {
 	return err
 }
 
-// SetSetting upserts a setting key/value pair.
-func SetSetting(db *sql.DB, key, value string) error {
+// SetSetting upserts a setting key/value pair. db may be a transaction, so
+// that several settings are saved together.
+func SetSetting(db Execer, key, value string) error {
 	_, err := db.Exec(
 		`INSERT INTO settings (key, value) VALUES (?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -71,8 +72,9 @@ func SetSetting(db *sql.DB, key, value string) error {
 
 // DeleteSetting removes a setting row if present (no error when absent). Used to
 // keep the table free of values equal to the code default, so a later change to a
-// default is not overridden by a baked-in row.
-func DeleteSetting(db *sql.DB, key string) error {
+// default is not overridden by a baked-in row. db may be a transaction, like
+// for SetSetting.
+func DeleteSetting(db Execer, key string) error {
 	_, err := db.Exec(`DELETE FROM settings WHERE key = ?`, key)
 	return err
 }

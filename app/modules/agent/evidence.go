@@ -40,6 +40,12 @@ import (
 // taken from a notice is folded onto one line, and every body line is
 // prefixed with "| ", so that text from a notice can never open a line or a
 // section of the prompt.
+//
+// A sample whose diagnostic reports a failed DNS lookup (design document
+// "mail classification" 4.4) also carries what was parsed from it and the
+// verification MailCare stored for the name (EvidenceInput.DNSCheck, see
+// dnsFailureEvidence); the stored evidence lines come from DNS responses and
+// are quoted like body lines.
 
 // Pattern is one bounce pattern of a group.
 type Pattern struct {
@@ -83,6 +89,9 @@ type Sample struct {
 	FileName string
 	Prompt   string // the block for the EVIDENCE section of the prompt
 	File     string // the content of the evidence file
+	// DNS is true when the block reports a failed DNS lookup (the prompt
+	// then explains how to read the verification).
+	DNS bool
 }
 
 // Evidence is what BuildEvidence prepares for one analysis run.
@@ -112,7 +121,26 @@ type EvidenceInput struct {
 	// none): the members are then counted before and after it, and the
 	// samples are taken from after it (Covered is not used).
 	Decided time.Time
+	// DNSCheck finds the stored DNS verification of the name a sample's
+	// diagnostic reports as a failed lookup; nil = none is available.
+	DNSCheck DNSCheckFunc
 }
+
+// DNSCheckResult is a verification of a name that MailCare stored after
+// looking it up again (a dns_checks row, design document "mail
+// classification" 4.4).
+type DNSCheckResult struct {
+	Outcome   string    // exists | not_found | broken
+	Detail    string    // the evidence, one line per resolver and authoritative server
+	CheckedAt time.Time // when the name was looked up
+}
+
+// DNSCheckFunc returns the stored verification a notice received at
+// noticeTime uses for a name and record type, as mailengine.ParseDNSFailure
+// reports them (qtype "" for the forms that name no type); ok = false when
+// there is none. The caller supplies it because the verifications live in
+// the master database, which this package does not open.
+type DNSCheckFunc func(name, qtype string, noticeTime time.Time) (res DNSCheckResult, ok bool)
 
 // readRawMessage reads the original notice of a message key. A variable so
 // that tests can supply their own notices.
@@ -267,6 +295,16 @@ func (ev *Evidence) PatternKeys() []string {
 	return keys
 }
 
+// hasDNS reports whether any sample reports a failed DNS lookup.
+func (ev *Evidence) hasDNS() bool {
+	for _, s := range ev.Samples {
+		if s.DNS {
+			return true
+		}
+	}
+	return false
+}
+
 // buildSample reads the notice of a sample and renders its prompt block and
 // its evidence file.
 func buildSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
@@ -280,18 +318,22 @@ func buildSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
 		", rule " + orPlaceholder(foldLine(b.CategoryRule), "(not recorded)") + "\n")
 	head.WriteString("Diagnostic: " + orNotFound(sanitize(foldLine(b.Diagnostic))) + "\n")
 	head.WriteString("Diagnostic source: " + describeSource(b.DiagnosticSource) + "\n")
+	// The DNS block comes from the index, so it is shown even when the
+	// notice file cannot be read.
+	dnsPrompt, dnsFile := dnsFailureEvidence(in.DNSCheck, b, s.FileName)
+	s.DNS = dnsPrompt != ""
 
 	raw, err := readRawMessage(in.MailsRoot, in.Address, b.MessageKey)
 	if err != nil {
 		note := "Notice: (not found: the notice file could not be read)\n"
-		s.Prompt = head.String() + note
-		s.File = head.String() + note
+		s.Prompt = head.String() + dnsPrompt + note
+		s.File = head.String() + dnsFile + note
 		return
 	}
 	pm := mailengine.ParseMessage(raw)
 	var prompt, file strings.Builder
-	prompt.WriteString(head.String())
-	file.WriteString(head.String())
+	prompt.WriteString(head.String() + dnsPrompt)
+	file.WriteString(head.String() + dnsFile)
 	notice := "Notice: From: " + orNotFound(sanitize(foldLine(formatFrom(pm)))) + "; Subject: " + orNotFound(sanitize(foldLine(pm.Subject))) + "\n"
 	prompt.WriteString(notice)
 	file.WriteString(notice)
@@ -378,7 +420,106 @@ func buildDMARCSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
 	s.File = out.String()
 }
 
+// dnsFailureEvidence renders the failed DNS lookup the diagnostic of a
+// bounce reports (mailengine.ParseDNSFailure, the detection the grouping
+// uses) and the verification MailCare stored for its name (check; nil or
+// ok = false: "(not found)"): the block for the prompt, with at most
+// maxDNSEvidenceLines evidence lines, and the block for the evidence file,
+// with all of them. Both are "" when the diagnostic reports no failed
+// lookup. The evidence lines quote resolvers, name servers and the records
+// they returned, which whoever runs a DNS server can fill with any text, so
+// every line is folded and prefixed with "| " like the body of a notice.
+func dnsFailureEvidence(check DNSCheckFunc, b *models.GroupBounce, fileName string) (prompt, file string) {
+	f, found := mailengine.ParseDNSFailure(b.Diagnostic)
+	if !found {
+		return "", ""
+	}
+	qtype := f.QType
+	if qtype == "" {
+		qtype = "(not named by the notice; MailCare looks such names up as MX)"
+	}
+	wording := `permanent ("Host not found" without "try again": the resolver of the reporting MTA typically got NXDOMAIN, an answer that the name does not exist)`
+	if f.Temporary {
+		wording = `temporary ("try again", "lookup failure" or the like: the resolver of the reporting MTA got no usable answer, typically SERVFAIL or a timeout)`
+	}
+	facts := "DNS lookup failure (parsed from the diagnostic): name " + f.Name + "; record type " + qtype +
+		"; wording " + wording + "; reporting MTA " + orNotFound(sanitize(foldLine(b.ReportingMTA))) + "\n"
+	var res DNSCheckResult
+	ok := false
+	if check != nil {
+		res, ok = check(f.Name, f.QType, noticeTime(b))
+	}
+	if !ok {
+		none := facts + "DNS verification: (not found: this name was not verified by MailCare)\n"
+		return none, none
+	}
+	head := facts + "DNS verification by MailCare: outcome " + orNotFound(truncateLine(sanitize(foldLine(res.Outcome)), maxDNSOutcomeRunes)) +
+		"; checked " + orNotFound(formatTime(models.NullTime(res.CheckedAt))) +
+		"; notice received " + orNotFound(formatTime(models.NullTime(noticeTime(b)))) + "\n"
+	lines := dnsDetailLines(res.Detail)
+	if len(lines) == 0 {
+		none := head + "Verification evidence: (not found: no evidence lines were stored)\n"
+		return none, none
+	}
+	const origin = "resolver and name server answers, data from DNS responses"
+	var p, fl strings.Builder
+	shown := lines
+	if len(shown) > maxDNSEvidenceLines {
+		shown = shown[:maxDNSEvidenceLines]
+	}
+	p.WriteString(head)
+	p.WriteString(fmt.Sprintf("Verification evidence (lines 1-%d of %d; %s):\n", len(shown), len(lines), origin))
+	for _, l := range shown {
+		p.WriteString("| " + truncateLine(l, maxExcerptLineRunes) + "\n")
+	}
+	if len(shown) < len(lines) {
+		p.WriteString(fmt.Sprintf("[TRUNCATED: continues in %s (%d more lines)]\n", fileName, len(lines)-len(shown)))
+	}
+	all := lines
+	if len(all) > maxEvidenceFileLines {
+		all = all[:maxEvidenceFileLines]
+	}
+	fl.WriteString(head)
+	fl.WriteString(fmt.Sprintf("Verification evidence (complete, %d lines; %s):\n", len(lines), origin))
+	for _, l := range all {
+		fl.WriteString("| " + truncateLine(l, maxEvidenceLineRunes) + "\n")
+	}
+	if len(all) < len(lines) {
+		fl.WriteString(fmt.Sprintf("[TRUNCATED: %d more lines not included]\n", len(lines)-len(all)))
+	}
+	return p.String(), fl.String()
+}
+
+// dnsDetailLines splits the stored evidence of a verification into lines,
+// each folded onto one line (no line break, control white space or Unicode
+// line separator survives) with the output markers neutralized; blank lines
+// are dropped.
+func dnsDetailLines(detail string) []string {
+	var out []string
+	for _, l := range strings.Split(detail, "\n") {
+		if l = sanitize(foldLine(l)); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// noticeTime is when a notice was received, taken as the grouping takes it
+// to pick the stored DNS verification: the IMAP INTERNALDATE when known,
+// else the date of the message.
+func noticeTime(b *models.GroupBounce) time.Time {
+	if b.ReceivedAt.Valid && !b.ReceivedAt.Time.IsZero() {
+		return b.ReceivedAt.Time
+	}
+	return b.Date
+}
+
 const (
+	// maxDNSEvidenceLines caps the evidence lines of a DNS verification in
+	// the prompt (the evidence file has them all); maxDNSOutcomeRunes caps
+	// its outcome.
+	maxDNSEvidenceLines = 12
+	maxDNSOutcomeRunes  = 40
 	// maxExcerptLineRunes caps one line of a prompt excerpt.
 	maxExcerptLineRunes = 300
 	// maxEvidenceFileLines and maxEvidenceLineRunes cap the body of an

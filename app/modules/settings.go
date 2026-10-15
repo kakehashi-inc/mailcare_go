@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,11 +23,207 @@ import (
 // takes effect on its own (a baked-in default would otherwise win).
 
 // PersistSetting stores value under key, or deletes the row when isDefault.
-func PersistSetting(db *sql.DB, key, value string, isDefault bool) error {
+// db may be a transaction (persistSettings).
+func PersistSetting(db models.Execer, key, value string, isDefault bool) error {
 	if isDefault {
 		return models.DeleteSetting(db, key)
 	}
 	return models.SetSetting(db, key, value)
+}
+
+// settingWrite is one change of the settings table: value stored under key,
+// or the row removed when isDefault (PersistSetting).
+type settingWrite struct {
+	key, value string
+	isDefault  bool
+}
+
+// persistSettings applies writes in one transaction of the master
+// database: all of them are saved, or none when one fails (the transaction
+// is rolled back), so a failure halfway never leaves a combination the
+// validation would refuse. The values are computed, and the saved values
+// they depend on read, before: the transaction only writes, so it holds no
+// read snapshot that another writer could make stale.
+func persistSettings(db *sql.DB, writes []settingWrite) error {
+	if len(writes) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, w := range writes {
+		if err := PersistSetting(tx, w.key, w.value, w.isDefault); err != nil {
+			return fmt.Errorf("save %s: %w", w.key, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// SettingsUpdate gathers the changes of several settings made by one
+// request, so that they are saved together (Save: one transaction, all or
+// nothing). Every method validates its input, against the saved values
+// where the result depends on them, and returns the error that refuses it
+// (nothing is added then); nothing is written before Save. The zero value
+// is ready to use. The Save* functions of the single settings go through it
+// as well.
+type SettingsUpdate struct {
+	writes []settingWrite
+}
+
+// set adds the write of one setting.
+func (u *SettingsUpdate) set(key, value string, isDefault bool) {
+	u.writes = append(u.writes, settingWrite{key: key, value: value, isDefault: isDefault})
+}
+
+// Save writes every change gathered in one transaction (nothing when one
+// write fails).
+func (u *SettingsUpdate) Save(db *sql.DB) error {
+	return persistSettings(db, u.writes)
+}
+
+// Workers sets the worker count (clamped like SaveWorkers).
+func (u *SettingsUpdate) Workers(n int) {
+	n = ClampWorkers(n)
+	u.set(SettingWorkers, strconv.Itoa(n), n == DefaultWorkers)
+}
+
+// CheckTimes sets the check times, already normalized (ParseCheckTimes); an
+// empty list disables the scheduler (see SaveCheckTimes).
+func (u *SettingsUpdate) CheckTimes(times []string) {
+	value := FormatCheckTimes(times)
+	u.set(SettingCheckTimes, value, value == DefaultCheckTimes)
+}
+
+// AgentSettings sets any of the agent provider, model and reasoning level
+// (nil = unchanged), checked as the combination they give with the saved
+// values (see SaveAgentSettings).
+func (u *SettingsUpdate) AgentSettings(db *sql.DB, provider, model, level *string) error {
+	finalProvider := ResolveAgentProvider(db)
+	finalModel := ResolveAgentModel(db)
+	finalLevel := ResolveAgentReasoningEffort(db)
+	if provider != nil {
+		name := strings.TrimSpace(*provider)
+		if name == "" {
+			return errAgentProviderEmpty
+		}
+		if name != finalProvider {
+			finalModel, finalLevel = "", ""
+		}
+		finalProvider = name
+	}
+	if model != nil {
+		finalModel = strings.TrimSpace(*model)
+	}
+	if level != nil {
+		finalLevel = strings.TrimSpace(*level)
+	}
+	if err := CheckAgentSettings(finalProvider, finalModel, finalLevel); err != nil {
+		return err
+	}
+	u.set(SettingAgentProvider, finalProvider, finalProvider == DefaultAgentProvider)
+	u.set(SettingAgentModel, finalModel, finalModel == "")
+	u.set(SettingAgentReasoningEffort, finalLevel, finalLevel == "")
+	return nil
+}
+
+// AgentEnabled sets the agent switch.
+func (u *SettingsUpdate) AgentEnabled(enabled bool) {
+	u.set(SettingAgentEnabled, "0", enabled)
+}
+
+// AgentKeepDays sets the retention of the agent run directories.
+func (u *SettingsUpdate) AgentKeepDays(n int) error {
+	if err := ValidateAgentKeepDays(n); err != nil {
+		return err
+	}
+	u.set(SettingAgentKeepDays, strconv.Itoa(n), n == DefaultAgentKeepDays)
+	return nil
+}
+
+// MailKeepDays sets the retention of the fetched mails.
+func (u *SettingsUpdate) MailKeepDays(n int) error {
+	if err := ValidateMailKeepDays(n); err != nil {
+		return err
+	}
+	u.set(SettingMailKeepDays, strconv.Itoa(n), n == DefaultMailKeepDays)
+	return nil
+}
+
+// CleanupTime sets the time of the daily cleanup and returns it
+// normalized.
+func (u *SettingsUpdate) CleanupTime(s string) (string, error) {
+	t, err := ParseCleanupTime(s)
+	if err != nil {
+		return "", err
+	}
+	u.set(SettingCleanupTime, t, t == DefaultCleanupTime)
+	return t, nil
+}
+
+// RecheckDays sets the re-check days of the given categories, merged with
+// the saved ones of the others (see SaveRecheckDays).
+func (u *SettingsUpdate) RecheckDays(db *sql.DB, days map[string]int) error {
+	if err := ValidateRecheckDays(days); err != nil {
+		return err
+	}
+	merged := ResolveRecheckDays(db)
+	for c, n := range days {
+		merged[c] = n
+	}
+	value := FormatRecheckDays(merged)
+	u.set(SettingRecheckDays, value, value == "")
+	return nil
+}
+
+// OwnSendingIPv4 sets the own sending IPv4 list (see SaveOwnSendingIPv4).
+func (u *SettingsUpdate) OwnSendingIPv4(entries []string) error {
+	return u.list(ownSendingIPv4Setting, entries)
+}
+
+// OwnSendingIPv6 sets the own sending IPv6 list.
+func (u *SettingsUpdate) OwnSendingIPv6(entries []string) error {
+	return u.list(ownSendingIPv6Setting, entries)
+}
+
+// OwnSendingHosts sets the own sending host names.
+func (u *SettingsUpdate) OwnSendingHosts(entries []string) error {
+	return u.list(ownSendingHostsSetting, entries)
+}
+
+// list validates the entries of a list setting and sets them one per line
+// (an empty list removes the setting).
+func (u *SettingsUpdate) list(ls listSetting, entries []string) error {
+	list, err := ls.parse(entries)
+	if err != nil {
+		return err
+	}
+	value := strings.Join(list, "\n")
+	u.set(ls.key, value, value == "")
+	return nil
+}
+
+// DNSCheck sets any of the three settings of the DNS lookup failure
+// verification (nil = unchanged), checked as the combination they give
+// with the saved values (see SaveDNSCheck).
+func (u *SettingsUpdate) DNSCheck(db *sql.DB, enabled *bool, resolvers *[]string, systemOnly *bool) error {
+	cfg, err := CheckDNSCheckSettings(db, enabled, resolvers, systemOnly)
+	if err != nil {
+		return err
+	}
+	if enabled != nil {
+		// On is the default: "0" is stored only when off.
+		u.set(SettingDNSCheckEnabled, "0", cfg.Enabled)
+	}
+	if resolvers != nil {
+		u.set(SettingDNSCheckResolvers, strings.Join(cfg.Resolvers, "\n"), slices.Equal(cfg.Resolvers, DefaultDNSCheckResolvers()))
+	}
+	if systemOnly != nil {
+		// Off is the default: "1" is stored only when on.
+		u.set(SettingDNSCheckSystemResolverOnly, "1", !cfg.SystemOnly)
+	}
+	return nil
 }
 
 // persistOrLog wraps PersistSetting for callers that cannot fail on it.
@@ -110,8 +308,9 @@ func ResolveWorkers(db *sql.DB) int {
 
 // SaveWorkers persists the worker count (non-default only).
 func SaveWorkers(db *sql.DB, n int) error {
-	n = ClampWorkers(n)
-	return PersistSetting(db, SettingWorkers, strconv.Itoa(n), n == DefaultWorkers)
+	var u SettingsUpdate
+	u.Workers(n)
+	return u.Save(db)
 }
 
 // ResolveAgentProvider returns the configured agent provider name.
@@ -122,21 +321,20 @@ func ResolveAgentProvider(db *sql.DB) string {
 // SetAgentProvider persists the agent provider (non-default only). The caller
 // validates the name against the registered providers. Model names and
 // reasoning levels differ between providers, so switching to another
-// provider clears both (callers that set them too set them afterwards).
+// provider clears both (callers that set them too set them afterwards), in
+// the same transaction as the provider.
 func SetAgentProvider(db *sql.DB, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errAgentProviderEmpty
 	}
+	var u SettingsUpdate
 	if name != ResolveAgentProvider(db) {
-		if err := models.DeleteSetting(db, SettingAgentModel); err != nil {
-			return err
-		}
-		if err := models.DeleteSetting(db, SettingAgentReasoningEffort); err != nil {
-			return err
-		}
+		u.set(SettingAgentModel, "", true)
+		u.set(SettingAgentReasoningEffort, "", true)
 	}
-	return PersistSetting(db, SettingAgentProvider, name, name == DefaultAgentProvider)
+	u.set(SettingAgentProvider, name, name == DefaultAgentProvider)
+	return u.Save(db)
 }
 
 // ResolveAgentModel returns the model passed to the agent CLI ("" = the
@@ -209,37 +407,14 @@ func SetAgentLimitedUntil(db *sql.DB, until time.Time) error {
 // level at once (nil = unchanged): the resulting combination is checked
 // first (CheckAgentSettings) and nothing is saved when it is refused. A
 // provider change without a model or level clears them, as SetAgentProvider
-// does. The provider name must be registered (checked by the caller).
+// does. The provider name must be registered (checked by the caller). The
+// three are saved together (SettingsUpdate).
 func SaveAgentSettings(db *sql.DB, provider, model, level *string) error {
-	finalProvider := ResolveAgentProvider(db)
-	finalModel := ResolveAgentModel(db)
-	finalLevel := ResolveAgentReasoningEffort(db)
-	if provider != nil {
-		name := strings.TrimSpace(*provider)
-		if name == "" {
-			return errAgentProviderEmpty
-		}
-		if name != finalProvider {
-			finalModel, finalLevel = "", ""
-		}
-		finalProvider = name
-	}
-	if model != nil {
-		finalModel = strings.TrimSpace(*model)
-	}
-	if level != nil {
-		finalLevel = strings.TrimSpace(*level)
-	}
-	if err := CheckAgentSettings(finalProvider, finalModel, finalLevel); err != nil {
+	var u SettingsUpdate
+	if err := u.AgentSettings(db, provider, model, level); err != nil {
 		return err
 	}
-	if err := PersistSetting(db, SettingAgentProvider, finalProvider, finalProvider == DefaultAgentProvider); err != nil {
-		return err
-	}
-	if err := PersistSetting(db, SettingAgentModel, finalModel, finalModel == ""); err != nil {
-		return err
-	}
-	return PersistSetting(db, SettingAgentReasoningEffort, finalLevel, finalLevel == "")
+	return u.Save(db)
 }
 
 var errAgentProviderEmpty = wording.New("validation.agent.providerUnknown", "agent provider must not be empty")
@@ -263,7 +438,9 @@ func ResolveAgentEnabled(db *sql.DB) bool {
 
 // SetAgentEnabled persists the agent switch (non-default only).
 func SetAgentEnabled(db *sql.DB, enabled bool) error {
-	return PersistSetting(db, SettingAgentEnabled, "0", enabled)
+	var u SettingsUpdate
+	u.AgentEnabled(enabled)
+	return u.Save(db)
 }
 
 // ValidateAgentKeepDays checks the retention of the agent run directories
@@ -306,10 +483,11 @@ func ResolveAgentKeepDays(db *sql.DB) int {
 
 // SaveAgentKeepDays persists the retention (non-default only).
 func SaveAgentKeepDays(db *sql.DB, n int) error {
-	if err := ValidateAgentKeepDays(n); err != nil {
+	var u SettingsUpdate
+	if err := u.AgentKeepDays(n); err != nil {
 		return err
 	}
-	return PersistSetting(db, SettingAgentKeepDays, strconv.Itoa(n), n == DefaultAgentKeepDays)
+	return u.Save(db)
 }
 
 // --- Mail retention ---
@@ -353,10 +531,11 @@ func ResolveMailKeepDays(db *sql.DB) int {
 
 // SaveMailKeepDays persists the retention (non-default only).
 func SaveMailKeepDays(db *sql.DB, n int) error {
-	if err := ValidateMailKeepDays(n); err != nil {
+	var u SettingsUpdate
+	if err := u.MailKeepDays(n); err != nil {
 		return err
 	}
-	return PersistSetting(db, SettingMailKeepDays, strconv.Itoa(n), n == DefaultMailKeepDays)
+	return u.Save(db)
 }
 
 // --- Re-check days ---
@@ -443,15 +622,11 @@ func FormatRecheckDays(days map[string]int) string {
 // others keep their current value); only values that differ from the
 // defaults are stored.
 func SaveRecheckDays(db *sql.DB, days map[string]int) error {
-	if err := ValidateRecheckDays(days); err != nil {
+	var u SettingsUpdate
+	if err := u.RecheckDays(db, days); err != nil {
 		return err
 	}
-	merged := ResolveRecheckDays(db)
-	for c, n := range days {
-		merged[c] = n
-	}
-	value := FormatRecheckDays(merged)
-	return PersistSetting(db, SettingRecheckDays, value, value == "")
+	return u.Save(db)
 }
 
 // --- Cleanup time ---
@@ -489,11 +664,12 @@ func ResolveCleanupTime(db *sql.DB) string {
 // SaveCleanupTime persists the time of the daily cleanup (non-default
 // only) and returns it normalized.
 func SaveCleanupTime(db *sql.DB, s string) (string, error) {
-	t, err := ParseCleanupTime(s)
+	var u SettingsUpdate
+	t, err := u.CleanupTime(s)
 	if err != nil {
 		return "", err
 	}
-	return t, PersistSetting(db, SettingCleanupTime, t, t == DefaultCleanupTime)
+	return t, u.Save(db)
 }
 
 // ParseBoolSetting accepts 1/0, true/false, yes/no, on/off.
@@ -590,8 +766,9 @@ func ResolveCheckTimes(db *sql.DB) []string {
 // SaveCheckTimes persists normalized check times (non-default only). An empty
 // list disables the scheduler and is stored as an empty string.
 func SaveCheckTimes(db *sql.DB, times []string) error {
-	value := FormatCheckTimes(times)
-	return PersistSetting(db, SettingCheckTimes, value, value == DefaultCheckTimes)
+	var u SettingsUpdate
+	u.CheckTimes(times)
+	return u.Save(db)
 }
 
 // NextCheckAt returns the first occurrence of any of the check times (local
@@ -617,4 +794,546 @@ func NextCheckAt(now time.Time, times []string) (next time.Time, ok bool) {
 		}
 	}
 	return next, ok
+}
+
+// --- Own sending servers and DNS lookup failure verification ---
+
+// OwnSending is our own sending servers: the saved lists (own_sending_ipv4,
+// own_sending_ipv6 and own_sending_hosts: the sources not tied to a mailbox,
+// such as an application that delivers directly or an external delivery
+// service) and the SMTP hosts of the mailboxes (MailboxHosts). They tell
+// whether a return notice is about mail we sent and whether a DNS lookup
+// failure was reported by our own server (mailengine, design document "mail
+// classification" 2.6 and 4.4). Every list is normalized (canonical IP and
+// CIDR text, host names lower-case without the trailing dot) and never nil.
+//
+// MailboxesWithoutHost is derived, for the settings screen: the addresses
+// of the mailboxes (enabled or not, in the order of the list) for which no
+// host name is configured, so that the backscatter rule (2.6), which is
+// switched on per mailbox by a host name, does not apply to them. It is
+// empty while own_sending_hosts holds a host name, which counts for every
+// mailbox.
+type OwnSending struct {
+	IPv4, IPv6, Hosts    []string
+	MailboxHosts         []string
+	MailboxesWithoutHost []string
+}
+
+// AllHosts returns the host names of our own sending servers: the saved
+// own_sending_hosts first, then the SMTP hosts of the mailboxes, without
+// repeats. Never nil.
+func (o OwnSending) AllHosts() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, list := range [][]string{o.Hosts, o.MailboxHosts} {
+		for _, h := range list {
+			if !seen[h] {
+				seen[h] = true
+				out = append(out, h)
+			}
+		}
+	}
+	return out
+}
+
+// DNSCheckConfig is the configuration of the verification of DNS lookup
+// failures. Resolvers is never nil; while SystemOnly is on it is not used
+// (only the OS resolver is) but kept.
+type DNSCheckConfig struct {
+	Enabled    bool
+	Resolvers  []string
+	SystemOnly bool
+}
+
+// DNSCheckResolversNone is the word "settings set dns_check_resolvers"
+// accepts to save an empty list ("" restores the default list), and what an
+// empty list is displayed as.
+const DNSCheckResolversNone = "none"
+
+// listSetting is a setting that holds a list, stored one entry per line:
+// how an entry is normalized (ok false = invalid), the error of an invalid
+// entry and the bound on the number of entries.
+type listSetting struct {
+	key       string
+	max       int
+	normalize func(s string) (string, bool)
+	invalid   func(line int, value string) error
+	tooMany   func() error
+}
+
+var (
+	ownSendingIPv4Setting = listSetting{
+		key: SettingOwnSendingIPv4, max: MaxOwnSendingEntries,
+		normalize: func(s string) (string, bool) { return normalizeIPOrPrefix(s, false) },
+		invalid: func(line int, value string) error {
+			return listEntryInvalid("validation.ownSending.ipv4Invalid", SettingOwnSendingIPv4,
+				"an IPv4 address or CIDR (loopback and 0.0.0.0 are not accepted)", line, value)
+		},
+		tooMany: func() error { return ownSendingTooMany(SettingOwnSendingIPv4) },
+	}
+	ownSendingIPv6Setting = listSetting{
+		key: SettingOwnSendingIPv6, max: MaxOwnSendingEntries,
+		normalize: func(s string) (string, bool) { return normalizeIPOrPrefix(s, true) },
+		invalid: func(line int, value string) error {
+			return listEntryInvalid("validation.ownSending.ipv6Invalid", SettingOwnSendingIPv6,
+				"an IPv6 address or CIDR (loopback, ::, zones and IPv4-mapped addresses are not accepted)", line, value)
+		},
+		tooMany: func() error { return ownSendingTooMany(SettingOwnSendingIPv6) },
+	}
+	ownSendingHostsSetting = listSetting{
+		key: SettingOwnSendingHosts, max: MaxOwnSendingEntries,
+		normalize: normalizeOwnHost,
+		invalid: func(line int, value string) error {
+			return listEntryInvalid("validation.ownSending.hostInvalid", SettingOwnSendingHosts,
+				"a host name (letters, digits and hyphens; IP addresses and localhost are not accepted)", line, value)
+		},
+		tooMany: func() error { return ownSendingTooMany(SettingOwnSendingHosts) },
+	}
+	dnsCheckResolversSetting = listSetting{
+		key: SettingDNSCheckResolvers, max: MaxDNSCheckResolvers,
+		normalize: normalizeResolver,
+		invalid: func(line int, value string) error {
+			return listEntryInvalid("validation.dnsCheck.resolverInvalid", SettingDNSCheckResolvers,
+				"the IP address of a resolver (no port or CIDR; loopback and unspecified addresses are not accepted)", line, value)
+		},
+		tooMany: func() error {
+			return wording.New("validation.dnsCheck.resolversTooMany",
+				fmt.Sprintf("%s accepts at most %d resolvers", SettingDNSCheckResolvers, MaxDNSCheckResolvers)).
+				With("max", MaxDNSCheckResolvers)
+		},
+	}
+	// ownSendingSettings maps the keys of the own sending lists to their
+	// rules.
+	ownSendingSettings = map[string]listSetting{
+		SettingOwnSendingIPv4:  ownSendingIPv4Setting,
+		SettingOwnSendingIPv6:  ownSendingIPv6Setting,
+		SettingOwnSendingHosts: ownSendingHostsSetting,
+	}
+)
+
+var errDNSCheckNoResolver = wording.New("validation.dnsCheck.noResolver",
+	fmt.Sprintf("%s must list at least one resolver while %s is on and %s is off",
+		SettingDNSCheckResolvers, SettingDNSCheckEnabled, SettingDNSCheckSystemResolverOnly))
+
+// listEntryInvalid is the error of an invalid entry of a list setting; line
+// is the 1-based line (the position in the comma-separated CLI value).
+func listEntryInvalid(key, setting, what string, line int, value string) error {
+	value = clipEntry(value)
+	return wording.New(key, fmt.Sprintf("%s: entry %d (%q) is not %s", setting, line, value, what)).
+		With("line", line).With("value", value)
+}
+
+func ownSendingTooMany(setting string) error {
+	return wording.New("validation.ownSending.tooMany",
+		fmt.Sprintf("%s accepts at most %d entries", setting, MaxOwnSendingEntries)).With("max", MaxOwnSendingEntries)
+}
+
+// clipEntry shortens an entry quoted in an error message.
+func clipEntry(s string) string {
+	const maxRunes = 64
+	if r := []rune(s); len(r) > maxRunes {
+		return string(r[:maxRunes]) + "..."
+	}
+	return s
+}
+
+// listEntry is one non-blank entry of a list setting and its 1-based line.
+type listEntry struct {
+	line  int
+	value string
+}
+
+// splitListEntries splits the inputs of a list setting into trimmed
+// entries. Every input may hold several lines; blank lines are skipped but
+// counted, so line is the row of the entry in a text area.
+func splitListEntries(inputs []string) []listEntry {
+	var out []listEntry
+	line := 0
+	for _, input := range inputs {
+		for _, raw := range strings.Split(input, "\n") {
+			line++
+			if s := strings.TrimSpace(raw); s != "" {
+				out = append(out, listEntry{line: line, value: s})
+			}
+		}
+	}
+	return out
+}
+
+// collect normalizes the entries of the list and drops the duplicates
+// (keeping the first). Strict (input to save) stops at the first invalid
+// entry and checks the bound; otherwise (a saved value) an entry that is
+// not valid any more is skipped with a log line instead of discarding the
+// whole list, and only the first max entries are kept (a value edited in
+// the database by hand never makes the verification ask thousands of
+// resolvers). The bound counts the entries left after de-duplication. The
+// result is never nil, so JSON shows it as [].
+func (ls listSetting) collect(inputs []string, strict bool) ([]string, error) {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, e := range splitListEntries(inputs) {
+		norm, ok := ls.normalize(e.value)
+		if !ok {
+			if strict {
+				return nil, ls.invalid(e.line, e.value)
+			}
+			log.Printf("ignoring invalid saved %s entry %q", ls.key, e.value)
+			continue
+		}
+		if !seen[norm] {
+			seen[norm] = true
+			out = append(out, norm)
+		}
+	}
+	if len(out) > ls.max {
+		if strict {
+			return nil, ls.tooMany()
+		}
+		log.Printf("ignoring %d saved %s entries over the maximum of %d", len(out)-ls.max, ls.key, ls.max)
+		out = out[:ls.max]
+	}
+	return out, nil
+}
+
+// parse validates and normalizes list entries given by a person.
+func (ls listSetting) parse(entries []string) ([]string, error) {
+	return ls.collect(entries, true)
+}
+
+// resolveSaved returns the saved list (empty when not set).
+func (ls listSetting) resolveSaved(db *sql.DB) []string {
+	list, _ := ls.collect([]string{models.GetSetting(db, ls.key)}, false)
+	return list
+}
+
+// save validates the entries and persists them one per line (an empty list
+// removes the setting).
+func (ls listSetting) save(db *sql.DB, entries []string) error {
+	var u SettingsUpdate
+	if err := u.list(ls, entries); err != nil {
+		return err
+	}
+	return u.Save(db)
+}
+
+// usableIP reports whether a can stand for a server: no zone, not loopback,
+// not unspecified and not IPv4-mapped. An IPv4-mapped IPv6 address
+// (::ffff:203.0.113.5, ::ffff:0:0/96) is refused in every list rather than
+// unmapped: it is an IPv4 address written as IPv6, which belongs in the
+// IPv4 list, so a list never holds one address in two forms (whoever
+// compares an address with the lists unmaps it first).
+func usableIP(a netip.Addr) bool {
+	return a.Zone() == "" && !a.IsLoopback() && !a.IsUnspecified() && !a.Is4In6()
+}
+
+// normalizeIPOrPrefix normalizes an IPv4 (want6 false) or IPv6 address or
+// CIDR to the canonical text of net/netip. A CIDR is masked to its network
+// address (203.0.113.7/24 -> 203.0.113.0/24) and a CIDR of one address is
+// written as the address (203.0.113.7/32 -> 203.0.113.7), so equal entries
+// compare equal. The network address must be usable too, which refuses
+// 0.0.0.0/0, ::/0 and the loopback networks.
+func normalizeIPOrPrefix(s string, want6 bool) (string, bool) {
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return "", false
+		}
+		p = p.Masked()
+		if !usableIP(p.Addr()) || p.Addr().Is6() != want6 {
+			return "", false
+		}
+		if p.IsSingleIP() {
+			return p.Addr().String(), true
+		}
+		return p.String(), true
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil || !usableIP(a) || a.Is6() != want6 {
+		return "", false
+	}
+	return a.String(), true
+}
+
+// normalizeOwnHost checks the host name of one of our own sending servers
+// (an entry of own_sending_hosts, or the SMTP host of a mailbox,
+// mailboxes.go) and returns it lower-case without one trailing dot. A host name is one or more labels of 1-63 ASCII
+// letters, digits and hyphens (not at either end of a label), 253
+// characters at most. A single label (mailhost) is accepted: internal MTAs
+// often report a name without a domain. A last label of digits only is
+// refused so that an IP address is not taken for a host name, and so are
+// the loopback names (localhost, *.localhost, localhost.localdomain), which
+// name every machine rather than ours.
+func normalizeOwnHost(s string) (string, bool) {
+	h := strings.TrimSuffix(s, ".")
+	if h == "" || len(h) > 253 {
+		return "", false
+	}
+	labels := strings.Split(h, ".")
+	for _, label := range labels {
+		if !validHostLabel(label) {
+			return "", false
+		}
+	}
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+		return "", false
+	}
+	h = strings.ToLower(h)
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") || h == "localhost.localdomain" {
+		return "", false
+	}
+	return h, true
+}
+
+// validHostLabel reports whether label is 1-63 ASCII letters, digits and
+// hyphens, not starting or ending with a hyphen.
+func validHostLabel(label string) bool {
+	if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(label); i++ {
+		c := label[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeResolver normalizes the IP address of a resolver: IPv4 or IPv6,
+// without port, CIDR or zone, and usable (usableIP).
+func normalizeResolver(s string) (string, bool) {
+	a, err := netip.ParseAddr(s)
+	if err != nil || !usableIP(a) {
+		return "", false
+	}
+	return a.String(), true
+}
+
+// ParseOwnSendingIPv4 validates and normalizes own sending IPv4 addresses
+// and CIDRs. Every entry may hold several lines; blank lines are skipped,
+// duplicates dropped, and at most MaxOwnSendingEntries remain. An empty
+// input yields an empty list.
+func ParseOwnSendingIPv4(entries []string) ([]string, error) {
+	return ownSendingIPv4Setting.parse(entries)
+}
+
+// ParseOwnSendingIPv6 is ParseOwnSendingIPv4 for IPv6 addresses and CIDRs.
+func ParseOwnSendingIPv6(entries []string) ([]string, error) {
+	return ownSendingIPv6Setting.parse(entries)
+}
+
+// ParseOwnSendingHosts is ParseOwnSendingIPv4 for host names.
+func ParseOwnSendingHosts(entries []string) ([]string, error) {
+	return ownSendingHostsSetting.parse(entries)
+}
+
+// ResolveOwnSendingIPv4 returns the saved own sending IPv4 addresses and
+// CIDRs (empty when not set); saved entries that are no longer valid are
+// skipped with a log line.
+func ResolveOwnSendingIPv4(db *sql.DB) []string {
+	return ownSendingIPv4Setting.resolveSaved(db)
+}
+
+// ResolveOwnSendingIPv6 is ResolveOwnSendingIPv4 for IPv6.
+func ResolveOwnSendingIPv6(db *sql.DB) []string {
+	return ownSendingIPv6Setting.resolveSaved(db)
+}
+
+// ResolveOwnSendingHosts is ResolveOwnSendingIPv4 for host names.
+func ResolveOwnSendingHosts(db *sql.DB) []string {
+	return ownSendingHostsSetting.resolveSaved(db)
+}
+
+// ResolveOwnSending returns our own sending servers: the three saved lists
+// and the SMTP hosts of every registered mailbox (ownSendingMailboxHosts).
+// Every user of the own sending servers takes them from here: the grouping
+// (groupOptions, per mailbox: ownSourcesFor), the settings API and
+// "settings show". A
+// failure to list the mailboxes is returned rather than leaving their host
+// names out, which would take a notice our own server issued for one about
+// mail we never sent.
+func ResolveOwnSending(db *sql.DB) (OwnSending, error) {
+	mailboxes, err := models.ListMailboxes(db)
+	if err != nil {
+		return OwnSending{}, fmt.Errorf("failed to list the mailboxes: %w", err)
+	}
+	return ownSendingOf(db, mailboxes), nil
+}
+
+// ownSendingOf is ResolveOwnSending with the mailboxes already listed.
+func ownSendingOf(db *sql.DB, mailboxes []*models.Mailbox) OwnSending {
+	o := OwnSending{IPv4: ResolveOwnSendingIPv4(db), IPv6: ResolveOwnSendingIPv6(db),
+		Hosts: ResolveOwnSendingHosts(db), MailboxHosts: ownSendingMailboxHosts(mailboxes), MailboxesWithoutHost: []string{}}
+	if len(o.Hosts) == 0 {
+		o.MailboxesWithoutHost = mailboxesWithoutHost(mailboxes)
+	}
+	return o
+}
+
+// mailboxesWithoutHost returns the addresses of the mailboxes, enabled or
+// not and in the order of the list, whose SMTP host is empty or not a valid
+// host name (which counts as none, as for the grouping: ownSourcesFor).
+// Never nil.
+func mailboxesWithoutHost(mailboxes []*models.Mailbox) []string {
+	out := []string{}
+	for _, mb := range mailboxes {
+		if _, ok := normalizeOwnHost(strings.TrimSpace(mb.SmtpHost)); !ok {
+			out = append(out, mb.Address)
+		}
+	}
+	return out
+}
+
+// ownSendingMailboxHosts returns the SMTP hosts of the mailboxes, enabled or
+// not, in the order of the list, without the empty and the repeated ones. A
+// stored host that is not a valid host name (edited in the database by
+// hand) is skipped with a log line, like an invalid saved list entry. The
+// result is never nil, so JSON shows it as [].
+func ownSendingMailboxHosts(mailboxes []*models.Mailbox) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, mb := range mailboxes {
+		raw := strings.TrimSpace(mb.SmtpHost)
+		if raw == "" {
+			continue
+		}
+		host, ok := normalizeOwnHost(raw)
+		if !ok {
+			log.Printf("ignoring invalid smtp_host %q of mailbox %s", mb.SmtpHost, mb.Address)
+			continue
+		}
+		if !seen[host] {
+			seen[host] = true
+			out = append(out, host)
+		}
+	}
+	return out
+}
+
+// SaveOwnSendingIPv4 validates (ParseOwnSendingIPv4) and persists the own
+// sending IPv4 list, one entry per line; an empty list removes the setting.
+func SaveOwnSendingIPv4(db *sql.DB, entries []string) error {
+	return ownSendingIPv4Setting.save(db, entries)
+}
+
+// SaveOwnSendingIPv6 is SaveOwnSendingIPv4 for IPv6.
+func SaveOwnSendingIPv6(db *sql.DB, entries []string) error {
+	return ownSendingIPv6Setting.save(db, entries)
+}
+
+// SaveOwnSendingHosts is SaveOwnSendingIPv4 for host names.
+func SaveOwnSendingHosts(db *sql.DB, entries []string) error {
+	return ownSendingHostsSetting.save(db, entries)
+}
+
+// ParseDNSCheckResolvers validates and normalizes resolver IP addresses
+// (IPv4 or IPv6, see normalizeResolver). Every entry may hold several
+// lines; blank lines are skipped, duplicates dropped (the order is kept),
+// and at most MaxDNSCheckResolvers remain. An empty input yields an empty
+// list.
+func ParseDNSCheckResolvers(entries []string) ([]string, error) {
+	return dnsCheckResolversSetting.parse(entries)
+}
+
+// resolveBool returns a "1" / "0" setting (fallback when not set or of
+// another shape).
+func resolveBool(db *sql.DB, key string, fallback bool) bool {
+	switch models.GetSetting(db, key) {
+	case "1":
+		return true
+	case "0":
+		return false
+	}
+	return fallback
+}
+
+// ResolveDNSCheckEnabled reports whether DNS lookup failures are verified
+// (default true).
+func ResolveDNSCheckEnabled(db *sql.DB) bool {
+	return resolveBool(db, SettingDNSCheckEnabled, DefaultDNSCheckEnabled)
+}
+
+// ResolveDNSCheckSystemResolverOnly reports whether only the OS resolver is
+// queried (default false).
+func ResolveDNSCheckSystemResolverOnly(db *sql.DB) bool {
+	return resolveBool(db, SettingDNSCheckSystemResolverOnly, DefaultDNSCheckSystemResolverOnly)
+}
+
+// ResolveDNSCheckResolvers returns the resolvers to query (saved >
+// default): no row means DefaultDNSCheckResolvers, a row holding "" an
+// explicitly empty list. Saved entries that are no longer valid are skipped
+// with a log line.
+func ResolveDNSCheckResolvers(db *sql.DB) []string {
+	saved, found, err := models.GetSettingStrict(db, SettingDNSCheckResolvers)
+	if err != nil {
+		log.Printf("failed to read %s: %v", SettingDNSCheckResolvers, err)
+		return DefaultDNSCheckResolvers()
+	}
+	if !found {
+		return DefaultDNSCheckResolvers()
+	}
+	list, _ := dnsCheckResolversSetting.collect([]string{saved}, false)
+	return list
+}
+
+// ResolveDNSCheck returns the configuration of the DNS lookup failure
+// verification.
+func ResolveDNSCheck(db *sql.DB) DNSCheckConfig {
+	return DNSCheckConfig{
+		Enabled:    ResolveDNSCheckEnabled(db),
+		Resolvers:  ResolveDNSCheckResolvers(db),
+		SystemOnly: ResolveDNSCheckSystemResolverOnly(db),
+	}
+}
+
+// ValidateDNSCheck checks the combination of the three settings: while the
+// verification is on and not limited to the OS resolver, at least one
+// resolver must be listed.
+func ValidateDNSCheck(enabled, systemOnly bool, resolvers []string) error {
+	if enabled && !systemOnly && len(resolvers) == 0 {
+		return errDNSCheckNoResolver
+	}
+	return nil
+}
+
+// CheckDNSCheckSettings returns the configuration that changing any of the
+// three settings (nil = unchanged, the saved value counts) would give, the
+// resolvers normalized (ParseDNSCheckResolvers), or the error that refuses
+// the change (ValidateDNSCheck on the resulting combination). Nothing is
+// saved.
+func CheckDNSCheckSettings(db *sql.DB, enabled *bool, resolvers *[]string, systemOnly *bool) (DNSCheckConfig, error) {
+	cfg := ResolveDNSCheck(db)
+	if enabled != nil {
+		cfg.Enabled = *enabled
+	}
+	if systemOnly != nil {
+		cfg.SystemOnly = *systemOnly
+	}
+	if resolvers != nil {
+		list, err := ParseDNSCheckResolvers(*resolvers)
+		if err != nil {
+			return DNSCheckConfig{}, err
+		}
+		cfg.Resolvers = list
+	}
+	if err := ValidateDNSCheck(cfg.Enabled, cfg.SystemOnly, cfg.Resolvers); err != nil {
+		return DNSCheckConfig{}, err
+	}
+	return cfg, nil
+}
+
+// SaveDNSCheck changes any of the three settings at once (nil =
+// unchanged): the resulting combination is checked first
+// (CheckDNSCheckSettings) and nothing is saved when it is refused. A value
+// equal to its default removes the setting; for the resolvers that is the
+// default list in its order, and any other list, an empty one included, is
+// stored (one address per line). The settings are written in one
+// transaction (SettingsUpdate), so a failure never leaves a combination the
+// check would refuse.
+func SaveDNSCheck(db *sql.DB, enabled *bool, resolvers *[]string, systemOnly *bool) error {
+	var u SettingsUpdate
+	if err := u.DNSCheck(db, enabled, resolvers, systemOnly); err != nil {
+		return err
+	}
+	return u.Save(db)
 }

@@ -269,18 +269,16 @@ type NotificationInput struct {
 	UserIDs       *[]int64
 }
 
-// SaveNotificationSettings validates every given field and persists it
-// (values equal to the code default delete the row). key is needed only
+// SaveNotificationSettings validates every given field and persists them
+// together, in one transaction (values equal to the code default delete the
+// row). key is needed only
 // when a password is given. While a password is stored, an update that
 // changes the host, port, security mode or username must carry the password
 // too (ErrSMTPPasswordRequired otherwise; nothing is saved): the stored
 // password serves the server it was saved for and is never pointed at
 // another one.
 func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) error {
-	type write struct {
-		key, value string
-		isDefault  bool
-	}
+	type write = settingWrite
 	var writes []write
 	if in.SMTPHost != nil {
 		host := strings.TrimSpace(*in.SMTPHost)
@@ -370,12 +368,8 @@ func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 			return ErrSMTPPasswordRequired
 		}
 	}
-	for _, w := range writes {
-		if err := PersistSetting(db, w.key, w.value, w.isDefault); err != nil {
-			return err
-		}
-	}
-	return nil
+	// One transaction: a failure never leaves half of the SMTP settings.
+	return persistSettings(db, writes)
 }
 
 // smtpConnectionChanged reports whether in changes the SMTP host, port,

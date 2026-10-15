@@ -67,6 +67,10 @@ var categoryDefs = map[string]categoryDef{
 	categoryMailboxDisabled: {false, responsibleRecipient, unitRecipientAddress, authorityNone},
 	categoryDomainNotFound:  {false, responsibleDomain, unitRecipientDomain, authorityNone},
 	categoryDeliveryDelay:   {false, responsibleDomain, unitRecipientDomain, authorityNone},
+	// DNS lookup failures (4.4): our own resolver failed (the server that
+	// reported it is the unit), or the receiving side's DNS did.
+	categoryDNSResolverFailure: {true, responsibleSender, unitReportingMTA, authorityNone},
+	categoryDNSFailureExternal: {false, responsibleDomain, unitRecipientDomain, authorityNone},
 	// DMARC categories: filed by CategorizeDMARCRecord, which sets the unit
 	// itself (the domain of the record; no authority).
 	categoryDMARCSPFMissing:       {true, responsibleSender, unitNone, authorityNone},
@@ -86,6 +90,10 @@ type categoryFacts struct {
 	senderDomain  string // its domain
 	sendingIP     string // our sending IP quoted in the diagnostic
 	blacklist     string // known blacklist provider named in the diagnostic
+
+	dns      DNSFailure // DNS lookup failure reported by the diagnostic (4.4)
+	dnsFound bool       // whether dns holds a detected failure
+	verdict  DNSVerdict // what the caller verified about it (zero: not verified)
 }
 
 // categoryRule is one row of the rule table. Rules are evaluated in order and
@@ -100,6 +108,12 @@ type categoryRule struct {
 //
 //  1. status codes that clearly name a recipient-side problem win over any
 //     wording (a "blocked" in a 5.1.1 text is still an unknown user);
+//     1'. a DNS lookup failure the diagnostic reports, by its verification
+//     (design document "mail classification" 4.4). It precedes the
+//     actionable rules because rate_limited would take "Host not found, try
+//     again later", delayed_kind because a failure reported by a delay
+//     warning is verified too, and the domain status codes (5.1.2 / 5.4.4 /
+//     5.4.6) because a permanent lookup failure carries one of them;
 //  2. the actionable categories, most specific first (blacklist and rate
 //     limit wording, then delays, authentication, sender, size, content,
 //     server configuration);
@@ -116,6 +130,31 @@ var categoryRules = []categoryRule{
 	{"status_mailbox_disabled", categoryMailboxDisabled, func(f *categoryFacts) bool {
 		return statusIn(f.status, "5.2.1")
 	}},
+
+	// --- 1'. DNS lookup failures (4.4) ---
+	{"dns_verified_not_found", categoryDomainNotFound, func(f *categoryFacts) bool {
+		return f.dnsFound && f.verdict.Outcome == DNSOutcomeNotFound
+	}},
+	{"dns_resolver_failure", categoryDNSResolverFailure, func(f *categoryFacts) bool {
+		return f.dnsFound && f.verdict.Outcome == DNSOutcomeExists && f.verdict.OwnMTA
+	}},
+	{"dns_failure_external", categoryDNSFailureExternal, func(f *categoryFacts) bool {
+		return f.dnsFound && ((f.verdict.Outcome == DNSOutcomeExists && !f.verdict.OwnMTA) || f.verdict.Outcome == DNSOutcomeBroken)
+	}},
+	// Not verified (checking disabled, outside the conditions, or no resolver
+	// answered): a delay warning or a temporary failure is a delivery delay,
+	// a permanent failure an unknown domain.
+	{"dns_unverified_delay", categoryDeliveryDelay, func(f *categoryFacts) bool {
+		return f.dnsFound && !f.verdict.Outcome.verified() && (f.kind == bounceKindDelayed || f.dns.Temporary)
+	}},
+	{"dns_unverified_not_found", categoryDomainNotFound, func(f *categoryFacts) bool {
+		return f.dnsFound && !f.verdict.Outcome.verified() && f.kind == bounceKindFailed && !f.dns.Temporary
+	}},
+
+	// A permanent lookup failure normally carries 5.4.4 (Postfix) or 5.1.2
+	// (Sendmail), so this status rule must follow the DNS rules above: the
+	// verification has to see exactly the notices whose resolver may have
+	// answered wrongly. Without a detected failure it is the plain status rule.
 	{"status_domain_not_found", categoryDomainNotFound, func(f *categoryFacts) bool {
 		return statusIn(f.status, "5.1.2", "5.4.4", "5.4.6")
 	}},
@@ -339,12 +378,23 @@ var notAuthorityDomains = map[string]bool{
 var listingSignalRe = regexp.MustCompile(`blacklist|black[ -]list|block[ -]?list|dnsbl|\brbl\b|listed|blocked using|blocked by|reputation`)
 
 // Categorize runs the rule table over one extracted bounce and derives the
-// unit and authority of its group.
+// unit and authority of its group, with a DNS lookup failure in the
+// diagnostic taken as not verified (CategorizeWith with a zero verdict).
 func Categorize(b *models.Bounce, kind string) Category {
+	return CategorizeWith(b, kind, DNSVerdict{})
+}
+
+// CategorizeWith is Categorize with the verification of the DNS lookup
+// failure the diagnostic reports (design document "mail classification"
+// 4.4). The failure itself is parsed from the diagnostic; the verdict only
+// counts when one is detected. It does no I/O: the caller verifies the name
+// beforehand.
+func CategorizeWith(b *models.Bounce, kind string, v DNSVerdict) Category {
 	if b == nil {
 		b = &models.Bounce{}
 	}
 	f := newCategoryFacts(b, kind)
+	f.verdict = v
 	for _, rule := range categoryRules {
 		if !rule.match(f) {
 			continue
@@ -374,6 +424,7 @@ func newCategoryFacts(b *models.Bounce, kind string) *categoryFacts {
 	f.senderDomain = domainOf(f.senderAddress)
 	f.sendingIP = extractSendingIP(f.text, strings.ToLower(b.RemoteIP))
 	f.blacklist = knownBlacklist(f.text)
+	f.dns, f.dnsFound = ParseDNSFailure(b.Diagnostic)
 	return f
 }
 

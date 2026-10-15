@@ -1,0 +1,68 @@
+Return-Path: <>
+Received: from mx.partner.example.net (mx.partner.example.net [198.51.100.25])
+	by mx1.example.jp (Postfix) with ESMTPS id 4ZcDeF2gH3z9tLq
+	for <newsletter@example.jp>; Wed, 10 Sep 2025 03:13:02 +0900 (JST)
+Date: Wed, 10 Sep 2025 03:13:01 +0900 (JST)
+From: MAILER-DAEMON@mx.partner.example.net (Mail Delivery System)
+Subject: Undelivered Mail Returned to Sender
+To: newsletter@example.jp
+Auto-Submitted: auto-replied
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status;
+	boundary="4ZbCdE1fG2z9tLm.1757441581/mx.partner.example.net"
+Message-Id: <20250909181301.4ZbCdE1fG2z9tLm@mx.partner.example.net>
+
+This is a MIME-encapsulated message.
+
+--4ZbCdE1fG2z9tLm.1757441581/mx.partner.example.net
+Content-Description: Notification
+Content-Type: text/plain; charset=us-ascii
+
+This is the mail system at host mx.partner.example.net.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can
+delete your own text from the attached returned message.
+
+                   The mail system
+
+<nobody@partner.example.net>: unknown user: "nobody"
+
+--4ZbCdE1fG2z9tLm.1757441581/mx.partner.example.net
+Content-Description: Delivery report
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; mx.partner.example.net
+X-Postfix-Queue-ID: 4ZbCdE1fG2z9tLm
+X-Postfix-Sender: rfc822; newsletter@example.jp
+Arrival-Date: Wed, 10 Sep 2025 03:12:44 +0900 (JST)
+
+Final-Recipient: rfc822; nobody@partner.example.net
+Original-Recipient: rfc822;nobody@partner.example.net
+Action: failed
+Status: 5.1.1
+Diagnostic-Code: X-Postfix; unknown user: "nobody"
+
+--4ZbCdE1fG2z9tLm.1757441581/mx.partner.example.net
+Content-Description: Undelivered Message
+Content-Type: message/rfc822
+
+Return-Path: <newsletter@example.jp>
+Received: from spam-sender.example (unknown [198.51.100.7])
+	by mx.partner.example.net (Postfix) with ESMTP id 4ZbCdE1fG2z9tLm
+	for <nobody@partner.example.net>; Wed, 10 Sep 2025 03:12:44 +0900 (JST)
+From: "Account Team" <newsletter@example.jp>
+To: nobody@partner.example.net
+Subject: Your invoice is ready
+Date: Wed, 10 Sep 2025 03:12:40 +0900
+Message-ID: <a1b2c3d4e5@spam-sender.example>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=us-ascii
+
+Open the attached invoice and confirm the payment today.
+
+--4ZbCdE1fG2z9tLm.1757441581/mx.partner.example.net--

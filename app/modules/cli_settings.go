@@ -82,7 +82,7 @@ func (c *ScheduleSetCmd) Run() error {
 // SettingsCmd shows or changes server settings.
 type SettingsCmd struct {
 	Show SettingsShowCmd `cmd:"" help:"Show the settings"`
-	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, agent_keep_days, mail_keep_days, cleanup_time, cookie_ttl_hours, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, smtp_from, public_base_url, notify_enabled, notify_time, notify_interval_days, notify_user_ids)"`
+	Set  SettingsSetCmd  `cmd:"" help:"Set a setting (web_listen, web_port, workers, check_times, agent_provider, agent_enabled, agent_keep_days, mail_keep_days, cleanup_time, own_sending_ipv4, own_sending_ipv6, own_sending_hosts, dns_check_enabled, dns_check_resolvers, dns_check_system_resolver_only, cookie_ttl_hours, smtp_host, smtp_port, smtp_security, smtp_username, smtp_password, smtp_from, public_base_url, notify_enabled, notify_time, notify_interval_days, notify_user_ids)"`
 }
 
 // SettingsShowCmd prints every effective setting.
@@ -102,6 +102,11 @@ func (c *SettingsShowCmd) Run() error {
 	if err != nil {
 		return NewExitError(ExitConfig, err.Error())
 	}
+	own, err := ResolveOwnSending(db)
+	if err != nil {
+		return NewExitError(ExitGeneral, err.Error())
+	}
+	dnsCheck := ResolveDNSCheck(db)
 	values := map[string]interface{}{
 		SettingWebListen:            ResolveWebListen(db, ""),
 		SettingWebPort:              ResolveWebPort(db, 0),
@@ -132,6 +137,22 @@ func (c *SettingsShowCmd) Run() error {
 		// The date of the last daily cleanup is recorded by the scheduler
 		// and shown for information only.
 		SettingCleanupLastRunDate: stringOrNull(models.GetSetting(db, SettingCleanupLastRunDate)),
+		// Own sending servers and the DNS lookup failure verification; the
+		// resolvers are kept but not used while
+		// dns_check_system_resolver_only is on.
+		SettingOwnSendingIPv4:  own.IPv4,
+		SettingOwnSendingIPv6:  own.IPv6,
+		SettingOwnSendingHosts: own.Hosts,
+		// The SMTP hosts of the mailboxes (mailbox update --smtp-host), own
+		// sending host names next to own_sending_hosts; shown, not set here.
+		"own_sending_mailbox_hosts": own.MailboxHosts,
+		// The addresses without a host name of their own while
+		// own_sending_hosts is empty: their notices about mail we did not
+		// send are not judged (shown, derived).
+		"own_sending_mailboxes_without_host": own.MailboxesWithoutHost,
+		SettingDNSCheckEnabled:               dnsCheck.Enabled,
+		SettingDNSCheckResolvers:             dnsCheck.Resolvers,
+		SettingDNSCheckSystemResolverOnly:    dnsCheck.SystemOnly,
 	}
 	if c.JSON {
 		values["data_dir"] = dataDir
@@ -175,6 +196,22 @@ func (c *SettingsShowCmd) Run() error {
 	}
 	fmt.Printf("%-18s %s\n", SettingRecheckDays+":", strings.Join(parts, ", "))
 	fmt.Println()
+	fmt.Printf("%-31s %s\n", SettingOwnSendingIPv4+":", displayList(own.IPv4, "(not set)"))
+	fmt.Printf("%-31s %s\n", SettingOwnSendingIPv6+":", displayList(own.IPv6, "(not set)"))
+	fmt.Printf("%-31s %s\n", SettingOwnSendingHosts+":", displayList(own.Hosts, "(not set)"))
+	fmt.Printf("%-31s %s\n", "own_sending_mailbox_hosts:", displayList(own.MailboxHosts, "(none: set with mailbox update --smtp-host)"))
+	if len(own.MailboxesWithoutHost) > 0 {
+		fmt.Printf("%-31s %s (backscatter is not judged for them: set mailbox update --smtp-host or own_sending_hosts)\n",
+			"mailboxes without a host name:", strings.Join(own.MailboxesWithoutHost, ", "))
+	}
+	fmt.Printf("%-31s %v\n", SettingDNSCheckEnabled+":", dnsCheck.Enabled)
+	resolvers := displayList(dnsCheck.Resolvers, DNSCheckResolversNone)
+	if dnsCheck.SystemOnly {
+		resolvers += " (not used: only the OS resolver is queried)"
+	}
+	fmt.Printf("%-31s %s\n", SettingDNSCheckResolvers+":", resolvers)
+	fmt.Printf("%-31s %v\n", SettingDNSCheckSystemResolverOnly+":", dnsCheck.SystemOnly)
+	fmt.Println()
 	fmt.Printf("%-22s %v\n", SettingSMTPHost+":", notify.SMTP.Host)
 	fmt.Printf("%-22s %v\n", SettingSMTPPort+":", notify.SMTP.Port)
 	fmt.Printf("%-22s %v\n", SettingSMTPSecurity+":", notify.SMTP.Security)
@@ -206,6 +243,15 @@ func (c *SettingsShowCmd) Run() error {
 	return nil
 }
 
+// displayList formats a list setting for people: comma-separated, or empty
+// when the list is.
+func displayList(list []string, empty string) string {
+	if len(list) == 0 {
+		return empty
+	}
+	return strings.Join(list, ", ")
+}
+
 // stringOrNull maps an empty string to JSON null.
 func stringOrNull(s string) interface{} {
 	if s == "" {
@@ -220,7 +266,7 @@ func stringOrNull(s string) interface{} {
 // shell history or the process list.
 type SettingsSetCmd struct {
 	Key   string  `arg:"" help:"Setting key"`
-	Value *string `arg:"" optional:"" help:"New value (an empty string restores the default; check_times also accepts none to disable the automatic checks). Omit it for smtp_password to be prompted for the password (hidden on a terminal; a line on piped input)"`
+	Value *string `arg:"" optional:"" help:"New value (an empty string restores the default; check_times also accepts none to disable the automatic checks; own_sending_ipv4, own_sending_ipv6, own_sending_hosts and dns_check_resolvers take a comma-separated list, and dns_check_resolvers accepts none to save an empty list). Omit it for smtp_password to be prompted for the password (hidden on a terminal; a line on piped input)"`
 }
 
 func (c *SettingsSetCmd) Run() error {
@@ -271,6 +317,8 @@ func SettingKeys() []string {
 		SettingWebListen, SettingWebPort, SettingWorkers, SettingCheckTimes, SettingAgentProvider, SettingAgentModel,
 		SettingAgentReasoningEffort, SettingAgentEnabled,
 		SettingAgentKeepDays, SettingMailKeepDays, SettingCleanupTime, SettingRecheckDays, SettingCookieTTLHours,
+		SettingOwnSendingIPv4, SettingOwnSendingIPv6, SettingOwnSendingHosts,
+		SettingDNSCheckEnabled, SettingDNSCheckResolvers, SettingDNSCheckSystemResolverOnly,
 		SettingSMTPHost, SettingSMTPPort, SettingSMTPSecurity,
 		SettingSMTPUsername,
 		settingSMTPPassword,
@@ -292,6 +340,12 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 	value = strings.TrimSpace(value)
 	if !slices.Contains(SettingKeys(), key) {
 		return "", NewExitErrorf(ExitArgument, "unknown setting %q (known: %s)", key, strings.Join(SettingKeys(), ", "))
+	}
+	switch key {
+	case SettingDNSCheckEnabled, SettingDNSCheckResolvers, SettingDNSCheckSystemResolverOnly:
+		// Restoring a default may break the rule these share, so "" is
+		// checked here too.
+		return applyDNSCheckSetting(db, key, value)
 	}
 	if value == "" {
 		stored := key
@@ -384,6 +438,14 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 			return "", err
 		}
 		return FormatRecheckDays(ResolveRecheckDays(db)), nil
+	case SettingOwnSendingIPv4, SettingOwnSendingIPv6, SettingOwnSendingHosts:
+		// A comma-separated list replaces the saved one ("" clears it).
+		ls := ownSendingSettings[key]
+		list, perr := ls.parse(strings.Split(value, ","))
+		if perr != nil {
+			return argErr(perr)
+		}
+		return displayList(list, "(not set)"), ls.save(db, list)
 	}
 	// Notification keys share the validation of the Web settings.
 	in := &NotificationInput{}
@@ -468,4 +530,65 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		shown = FormatNotifyUserIDs(ids)
 	}
 	return shown, nil
+}
+
+// applyDNSCheckSetting sets one of dns_check_enabled, dns_check_resolvers
+// (a comma-separated list, or DNSCheckResolversNone for an empty one) and
+// dns_check_system_resolver_only; "" restores its default. The result is
+// checked together with the saved values of the other two
+// (CheckDNSCheckSettings), so a change that leaves the enabled verification
+// without a resolver is an argument error and nothing is saved. A list of
+// commas and blanks is refused before that check, with its own message
+// whether the verification is on or off.
+func applyDNSCheckSetting(db *sql.DB, key, value string) (string, error) {
+	var enabled, systemOnly *bool
+	var resolvers *[]string
+	var shown string
+	switch key {
+	case SettingDNSCheckEnabled, SettingDNSCheckSystemResolverOnly:
+		b := DefaultDNSCheckEnabled
+		if key == SettingDNSCheckSystemResolverOnly {
+			b = DefaultDNSCheckSystemResolverOnly
+		}
+		if value != "" {
+			parsed, err := ParseBoolSetting(value)
+			if err != nil {
+				return "", NewExitError(ExitArgument, err.Error())
+			}
+			b = parsed
+		}
+		if key == SettingDNSCheckEnabled {
+			enabled = &b
+		} else {
+			systemOnly = &b
+		}
+		shown = strconv.FormatBool(b)
+	case SettingDNSCheckResolvers:
+		list := DefaultDNSCheckResolvers()
+		switch {
+		case strings.EqualFold(value, DNSCheckResolversNone):
+			list = []string{}
+		case value != "":
+			list = strings.Split(value, ",")
+			parsed, err := ParseDNSCheckResolvers(list)
+			if err != nil {
+				return "", NewExitError(ExitArgument, err.Error())
+			}
+			if len(parsed) == 0 {
+				// Only the word none saves an empty list (not a value of
+				// commas and blanks).
+				return "", NewExitErrorf(ExitArgument, "%s lists no address (use %s to save an empty list)",
+					SettingDNSCheckResolvers, DNSCheckResolversNone)
+			}
+		}
+		resolvers = &list
+	}
+	cfg, err := CheckDNSCheckSettings(db, enabled, resolvers, systemOnly)
+	if err != nil {
+		return "", NewExitError(ExitArgument, err.Error())
+	}
+	if resolvers != nil {
+		shown = displayList(cfg.Resolvers, DNSCheckResolversNone)
+	}
+	return shown, SaveDNSCheck(db, enabled, resolvers, systemOnly)
 }

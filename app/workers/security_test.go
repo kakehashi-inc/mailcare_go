@@ -246,37 +246,54 @@ func TestLoginThrottle(t *testing.T) {
 
 func TestMembersDoNotSeeServerInternals(t *testing.T) {
 	s := newSeededCore(t)
-	// Settings: server internals for administrators only.
+	s.mb.SmtpHost = "smtp.example.jp"
+	if err := models.UpdateMailbox(s.db, s.mb); err != nil {
+		t.Fatal(err)
+	}
+	if err := modules.SaveOwnSendingIPv4(s.db, []string{"203.0.113.5"}); err != nil {
+		t.Fatal(err)
+	}
+	// Settings: server internals and the mail infrastructure (own sending
+	// servers, SMTP hosts, the addresses without one, DNS resolvers) for
+	// administrators only; the switches of the DNS check for everyone.
+	adminOnly := []string{`"data_dir"`, `"web_listen"`, `"web_port"`, `"workers"`, `"own_sending_ipv4"`, `"own_sending_ipv6"`,
+		`"own_sending_hosts"`, `"own_sending_mailbox_hosts"`, `"own_sending_mailboxes_without_host"`, `"dns_check_resolvers"`}
 	rec := do(t, s.h, http.MethodGet, "/api/v1/settings", nil, s.user)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings as user: %d", rec.Code)
 	}
-	for _, key := range []string{`"data_dir"`, `"web_listen"`, `"web_port"`, `"workers"`} {
+	for _, key := range append(adminOnly, "203.0.113.5", "smtp.example.jp", "1.1.1.1") {
 		if strings.Contains(rec.Body.String(), key) {
 			t.Errorf("settings for a user contain %s: %s", key, rec.Body.String())
 		}
 	}
-	for _, key := range []string{`"check_times"`, `"agent_provider"`, `"mail_keep_days"`, `"server_timezone"`, `"providers"`} {
+	for _, key := range []string{`"check_times"`, `"agent_provider"`, `"mail_keep_days"`, `"server_timezone"`, `"providers"`,
+		`"dns_check_enabled":true`, `"dns_check_system_resolver_only":false`} {
 		if !strings.Contains(rec.Body.String(), key) {
 			t.Errorf("settings for a user lack %s: %s", key, rec.Body.String())
 		}
 	}
 	rec = do(t, s.h, http.MethodGet, "/api/v1/settings", nil, s.admin)
-	for _, want := range []string{`"data_dir":"`, `"web_listen":"127.0.0.1"`, `"web_port":`, `"workers":`} {
+	for _, want := range append(adminOnly, `"data_dir":"`, `"web_listen":"127.0.0.1"`, `"own_sending_ipv4":["203.0.113.5"]`,
+		`"own_sending_mailbox_hosts":["smtp.example.jp"]`, `"own_sending_mailboxes_without_host":[]`,
+		`"dns_check_resolvers":["1.1.1.1","8.8.8.8","9.9.9.9"]`, `"dns_check_enabled":true`) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("settings for an admin lack %s: %s", want, rec.Body.String())
 		}
 	}
-	// Mailboxes: the IMAP connection settings and fetch ranges are blanked
-	// for users on the list, the single mailbox and the dashboard.
+	// Mailboxes: the IMAP connection settings, fetch ranges and the SMTP
+	// host are blanked for users on the list, the single mailbox and the
+	// dashboard.
 	redacted := func(body string) bool {
 		return strings.Contains(body, `"imap_host":""`) && strings.Contains(body, `"imap_port":0`) && strings.Contains(body, `"imap_security":""`) &&
 			strings.Contains(body, `"imap_username":""`) && strings.Contains(body, `"folder":""`) && strings.Contains(body, `"initial_days":0`) &&
-			strings.Contains(body, `"recent_days":0`) && !strings.Contains(body, "imap.example.test")
+			strings.Contains(body, `"recent_days":0`) && !strings.Contains(body, "imap.example.test") &&
+			strings.Contains(body, `"smtp_host":""`) && !strings.Contains(body, "smtp.example.jp")
 	}
 	full := func(body string) bool {
 		return strings.Contains(body, `"imap_host":"imap.example.test"`) && strings.Contains(body, `"imap_username":"u"`) &&
-			strings.Contains(body, `"folder":"INBOX"`) && strings.Contains(body, `"initial_days":`+itoa(int64(modules.DefaultInitialDays)))
+			strings.Contains(body, `"folder":"INBOX"`) && strings.Contains(body, `"initial_days":`+itoa(int64(modules.DefaultInitialDays))) &&
+			strings.Contains(body, `"smtp_host":"smtp.example.jp"`)
 	}
 	for _, path := range []string{"/api/v1/mailboxes", "/api/v1/mailboxes?stats=1", "/api/v1/mailboxes/" + itoa(s.mb.ID), "/api/v1/dashboard"} {
 		rec := do(t, s.h, http.MethodGet, path, nil, s.user)
@@ -289,6 +306,49 @@ func TestMembersDoNotSeeServerInternals(t *testing.T) {
 		rec = do(t, s.h, http.MethodGet, path, nil, s.admin)
 		if rec.Code != http.StatusOK || !full(rec.Body.String()) {
 			t.Errorf("%s as admin: %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestStateChangingRefusalKeys pins the answers of the refused writes: the
+// Web API answers a message key of the language files, the control
+// endpoints keep their English error text.
+func TestStateChangingRefusalKeys(t *testing.T) {
+	c := newTestCore(t)
+	h := c.webHandler()
+	type apiError struct {
+		Key   string `json:"key"`
+		Error string `json:"error"`
+	}
+	for _, tc := range []struct {
+		name, path string
+		mutate     func(r *http.Request)
+		status     int
+		key, text  string
+	}{
+		{"API, wrong content type", "/api/v1/jobs", func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") },
+			http.StatusUnsupportedMediaType, "system.invalidRequest", ""},
+		{"API, cross-origin", "/api/v1/jobs", func(r *http.Request) { r.Host = "example.com"; r.Header.Set("Origin", "http://evil.example") },
+			http.StatusForbidden, "system.forbidden", ""},
+		{"API, cross-site", "/api/v1/jobs", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") },
+			http.StatusForbidden, "system.forbidden", ""},
+		{"login, cross-origin", "/web/login", func(r *http.Request) { r.Host = "example.com"; r.Header.Set("Origin", "http://evil.example") },
+			http.StatusForbidden, "system.forbidden", ""},
+		{"control, wrong content type", "/control/shutdown", func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") },
+			http.StatusUnsupportedMediaType, "", "Content-Type must be application/json"},
+		{"control, cross-origin", "/control/shutdown", func(r *http.Request) { r.Host = "example.com"; r.Header.Set("Origin", "http://evil.example") },
+			http.StatusForbidden, "", "cross-origin request refused"},
+		{"control, cross-site", "/control/shutdown", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") },
+			http.StatusForbidden, "", "cross-site request refused"},
+	} {
+		req := newRequest(t, http.MethodPost, tc.path, map[string]string{})
+		req.RemoteAddr = "127.0.0.1:40000"
+		tc.mutate(req)
+		rec := serve(h, req)
+		var got apiError
+		decode(t, rec.Body.Bytes(), &got)
+		if rec.Code != tc.status || got.Key != tc.key || got.Error != tc.text {
+			t.Errorf("%s: %d %s; want %d key %q error %q", tc.name, rec.Code, rec.Body.String(), tc.status, tc.key, tc.text)
 		}
 	}
 }

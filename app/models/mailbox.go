@@ -37,6 +37,12 @@ type Mailbox struct {
 	// the mail retention was shortened later); 0 keeps every mail on the
 	// server (also the value of a row saved before the setting existed).
 	ServerKeepDays int `json:"server_keep_days"`
+	// SmtpHost is the host name of the SMTP server that sends the mail of
+	// this address (lower-case, without the trailing dot; "" = not set, also
+	// the value of a row saved before the setting existed). The host names
+	// of every mailbox are our own sending servers (app/modules
+	// ResolveOwnSending).
+	SmtpHost string `json:"smtp_host"`
 }
 
 // ProtocolIMAP is the value of the "protocol" key in mailboxes.detail_info.
@@ -56,6 +62,9 @@ type mailboxDetails struct {
 	// ServerKeepDays: absent in rows saved before the setting existed,
 	// which reads as 0 (never delete on the server).
 	ServerKeepDays int `json:"server_keep_days"`
+	// SmtpHost: absent in rows saved before the setting existed, which
+	// reads as "" (not set).
+	SmtpHost string `json:"smtp_host"`
 }
 
 func (m *Mailbox) detailsJSON() string {
@@ -63,6 +72,7 @@ func (m *Mailbox) detailsJSON() string {
 		Protocol: ProtocolIMAP, Host: m.ImapHost, Port: m.ImapPort, Security: m.ImapSecurity,
 		Username: m.ImapUsername, PasswordEnc: m.ImapPasswordEnc,
 		Folder: m.Folder, InitialDays: m.InitialDays, RecentDays: m.RecentDays, ServerKeepDays: m.ServerKeepDays,
+		SmtpHost: m.SmtpHost,
 	})
 }
 
@@ -71,7 +81,7 @@ func (m *Mailbox) applyDetails(raw string) {
 	unmarshalJSON(raw, &j)
 	m.ImapHost, m.ImapPort, m.ImapSecurity, m.ImapUsername = j.Host, j.Port, j.Security, j.Username
 	m.ImapPasswordEnc, m.Folder, m.InitialDays, m.RecentDays = j.PasswordEnc, j.Folder, j.InitialDays, j.RecentDays
-	m.ServerKeepDays = j.ServerKeepDays
+	m.ServerKeepDays, m.SmtpHost = j.ServerKeepDays, j.SmtpHost
 }
 
 const mailboxColumns = `id, address, display_name, enabled, detail_info, last_fetched_at, last_fetch_error, created_at, updated_at`

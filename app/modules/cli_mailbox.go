@@ -28,8 +28,8 @@ func mailboxRow(mb *models.Mailbox) map[string]interface{} {
 		"id": mb.ID, "address": mb.Address, "display_name": mb.DisplayName, "imap_host": mb.ImapHost,
 		"imap_port": mb.ImapPort, "imap_security": mb.ImapSecurity, "imap_username": mb.ImapUsername,
 		"folder": mb.Folder, "enabled": mb.Enabled, "initial_days": mb.InitialDays, "recent_days": mb.RecentDays,
-		"server_keep_days": mb.ServerKeepDays,
-		"last_fetched_at":  rfc3339OrNull(mb.LastFetchedAt), "last_fetch_error": mb.LastFetchError,
+		"server_keep_days": mb.ServerKeepDays, "smtp_host": mb.SmtpHost,
+		"last_fetched_at": rfc3339OrNull(mb.LastFetchedAt), "last_fetch_error": mb.LastFetchError,
 	}
 }
 
@@ -58,6 +58,11 @@ func printMailbox(mb *models.Mailbox) {
 	fmt.Printf("initial days:  %d\n", mb.InitialDays)
 	fmt.Printf("recent days:   %d\n", mb.RecentDays)
 	fmt.Printf("server keep:   %s\n", serverKeepLabel(mb.ServerKeepDays))
+	smtpHost := mb.SmtpHost
+	if smtpHost == "" {
+		smtpHost = "(not set)"
+	}
+	fmt.Printf("smtp host:     %s\n", smtpHost)
 	fmt.Printf("last fetch:    %s (%s)\n", formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
 	if mb.LastFetchError != "" {
 		fmt.Printf("last error:    %s\n", mb.LastFetchError)
@@ -77,6 +82,7 @@ type MailboxAddCmd struct {
 	RecentDays  int    `help:"Days to look back on later checks (default: ${default_recent_days})" name:"recent-days" default:"0"`
 	// ServerKeepDays: -1 = the default.
 	ServerKeepDays int    `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never (default: ${default_server_keep_days}, or mail_keep_days when shorter)" name:"server-keep-days" default:"-1"`
+	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of your own sending servers; not the server of the notification mails; default: not set)" name:"smtp-host"`
 	DisplayName    string `help:"Display name" name:"display-name"`
 	Disabled       bool   `help:"Register as disabled (not checked automatically)"`
 }
@@ -105,6 +111,9 @@ func (c *MailboxAddCmd) Run() error {
 	}
 	if c.ServerKeepDays != -1 {
 		in.ServerKeepDays = &c.ServerKeepDays
+	}
+	if c.SmtpHost != "" {
+		in.SmtpHost = &c.SmtpHost
 	}
 	mb, err := CreateMailbox(db, key, in)
 	if err != nil {
@@ -207,10 +216,12 @@ type MailboxUpdateCmd struct {
 	InitialDays int    `help:"Days to look back on the first check" name:"initial-days" default:"0"`
 	RecentDays  int    `help:"Days to look back on later checks" name:"recent-days" default:"0"`
 	// ServerKeepDays: -1 = unchanged.
-	ServerKeepDays int    `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never" name:"server-keep-days" default:"-1"`
-	DisplayName    string `help:"Display name" name:"display-name"`
-	Enabled        bool   `help:"Enable the mailbox"`
-	Disabled       bool   `help:"Disable the mailbox"`
+	ServerKeepDays int `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never" name:"server-keep-days" default:"-1"`
+	// SmtpHost: nil = unchanged, "" clears it.
+	SmtpHost    *string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (not the server of the notification mails; \"\" clears it; no password needed)" name:"smtp-host"`
+	DisplayName string  `help:"Display name" name:"display-name"`
+	Enabled     bool    `help:"Enable the mailbox"`
+	Disabled    bool    `help:"Disable the mailbox"`
 }
 
 func (c *MailboxUpdateCmd) Run() error {
@@ -268,6 +279,9 @@ func (c *MailboxUpdateCmd) Run() error {
 	}
 	if c.ServerKeepDays != -1 {
 		in.ServerKeepDays = &c.ServerKeepDays
+	}
+	if c.SmtpHost != nil {
+		in.SmtpHost = c.SmtpHost
 	}
 	if c.DisplayName != "" {
 		in.DisplayName = c.DisplayName

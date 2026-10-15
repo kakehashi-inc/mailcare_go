@@ -121,6 +121,10 @@ type GroupBounce struct {
 	Bounce
 	MessageKey string
 	Date       time.Time
+	// ReceivedAt is the IMAP INTERNALDATE of the message (set for bounces
+	// only): with Date it gives the time the notice was received, which
+	// picks the stored DNS verification of the notice.
+	ReceivedAt sql.NullTime
 	BodySource string
 	DMARC      *DMARCRecord
 }
@@ -146,7 +150,7 @@ func ListGroupBounces(db Execer, groupKey string) ([]*GroupBounce, error) {
 
 // listGroupBouncesOnly returns the bounces of a group, newest message first.
 func listGroupBouncesOnly(db Execer, groupKey string) ([]*GroupBounce, error) {
-	rows, err := db.Query(`SELECT m.message_key, m.date, m.body_source, `+prefixColumns("b.", bounceColumns)+`
+	rows, err := db.Query(`SELECT m.message_key, m.date, m.received_at, m.body_source, `+prefixColumns("b.", bounceColumns)+`
 		FROM bounces b JOIN messages m ON m.id = b.id WHERE b.group_key = ? ORDER BY m.date DESC, m.id DESC`, groupKey)
 	if err != nil {
 		return nil, err
@@ -156,13 +160,14 @@ func listGroupBouncesOnly(db Execer, groupKey string) ([]*GroupBounce, error) {
 	for rows.Next() {
 		gb := &GroupBounce{}
 		b := &gb.Bounce
-		if err := rows.Scan(&gb.MessageKey, &gb.Date, &gb.BodySource, &b.ID, &b.GroupKey, &b.Recipient, &b.RecipientDomain, &b.Action,
+		if err := rows.Scan(&gb.MessageKey, &gb.Date, &gb.ReceivedAt, &gb.BodySource, &b.ID, &b.GroupKey, &b.Recipient, &b.RecipientDomain, &b.Action,
 			&b.StatusCode, &b.SMTPCode, &b.Diagnostic, &b.DiagnosticTemplate, &b.DiagnosticSource, &b.CategoryRule,
 			&b.PatternKey, &b.RemoteMTA, &b.RemoteIP, &b.ReportingMTA, &b.OriginalMessageID, &b.OriginalSubject,
 			&b.OriginalFrom, &b.OriginalDate); err != nil {
 			return nil, err
 		}
 		gb.Date = gb.Date.UTC()
+		gb.ReceivedAt = utcNullTime(gb.ReceivedAt)
 		out = append(out, gb)
 	}
 	return out, rows.Err()

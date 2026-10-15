@@ -90,7 +90,8 @@ func TestGroupMessageTransaction(t *testing.T) {
 	}
 	failing := &failingExecer{Execer: tx, failOn: "UPDATE messages SET is_bounce"}
 	copyMsg := *msg
-	if err := groupMessageIn(failing, &copyMsg, pm, newGroupTracker(nil), address); !errors.Is(err, errInjected) {
+	plan := planGrouping(context.Background(), &copyMsg, pm, groupConfig{}, address)
+	if err := groupMessageIn(failing, &copyMsg, plan, newGroupTracker(nil)); !errors.Is(err, errInjected) {
 		t.Fatalf("groupMessageIn with a failing messages update returned %v", err)
 	}
 	if err := tx.Rollback(); err != nil {
@@ -108,14 +109,15 @@ func TestGroupMessageTransaction(t *testing.T) {
 	//    has no details, so the next run repeats it.
 	failing = &failingExecer{Execer: db, failOn: "INSERT INTO bounces"}
 	copyMsg = *msg
-	if err := groupMessageIn(failing, &copyMsg, pm, newGroupTracker(nil), address); !errors.Is(err, errInjected) {
+	plan = planGrouping(context.Background(), &copyMsg, pm, groupConfig{}, address)
+	if err := groupMessageIn(failing, &copyMsg, plan, newGroupTracker(nil)); !errors.Is(err, errInjected) {
 		t.Fatalf("groupMessageIn with a failing bounces insert returned %v", err)
 	}
 	assertUntouched(t, db, msg, true, "after a failed bounces insert")
 
 	// 3. The real path (groupMessage over the database) completes the
 	//    message and its group in one go.
-	if err := groupMessage(db, msg, pm, newGroupTracker(nil), address); err != nil {
+	if err := groupMessage(context.Background(), db, msg, pm, newGroupTracker(nil), groupConfig{}, address); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err := models.GetMessageByKey(db, msg.MessageKey)
@@ -248,7 +250,7 @@ func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 	}
 	db = mustOpenIndex(t, root2, address)
 	defer db.Close()
-	quota, err := models.GetGroup(db, GroupKey(categoryMailboxFull, "kyuro@gmail.com", ""))
+	quota, err := models.GetGroup(db, GroupKey(categoryMailboxFull, "user3@gmail.com", ""))
 	if err != nil || quota.NeedsAnalysis || quota.Actionable {
 		t.Errorf("over-quota group = %+v (err %v), want no analysis flag", quota, err)
 	}

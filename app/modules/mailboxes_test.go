@@ -12,6 +12,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules/mailengine"
+	"mailcare/app/modules/wording"
 )
 
 // TestMailboxRenameAndDeleteMoveEveryDirectory checks that renaming a mailbox
@@ -675,5 +676,200 @@ func TestListMailboxesOrderedByDomain(t *testing.T) {
 	want := "b@alpha.example c@alpha.example a@mid.example a@zeta.example"
 	if strings.Join(got, " ") != want {
 		t.Errorf("order %v, want %s", got, want)
+	}
+}
+
+// TestMailboxSmtpHost checks the SMTP host of a mailbox: normalized like a
+// host name of our own sending servers (normalizeOwnHost), optional, kept
+// by an update that does not carry it, cleared by "", refused with
+// validation.mailbox.smtpHostInvalid (nothing saved), and changed without
+// the password, which only the IMAP connection settings require.
+func TestMailboxSmtpHost(t *testing.T) {
+	db := newTestDB(t)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mailsRoot, err := MailsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentRoot, err := AgentDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := func(s string) *string { return &s }
+	in := func(address string, smtpHost *string) *MailboxInput {
+		return &MailboxInput{Address: address, ImapHost: "imap.example.test", ImapUsername: "u", ImapPassword: "p", SmtpHost: smtpHost}
+	}
+
+	// Accepted forms, normalized; blank or absent means not set.
+	longName := strings.Repeat("abcdefghi.", 25) + "abcd" // 254 characters
+	for i, tc := range []struct{ given, want string }{
+		{" Mail.Example.JP. ", "mail.example.jp"},
+		{"mailhost", "mailhost"},
+		{"xn--bcher-kva.example", "xn--bcher-kva.example"},
+		{"a-b.example", "a-b.example"},
+		{strings.Repeat("a", 63) + ".example", strings.Repeat("a", 63) + ".example"},
+		{longName[:253], longName[:253]},
+		{"  ", ""},
+	} {
+		mb, err := CreateMailbox(db, key, in(fmt.Sprintf("ok%d@example.test", i), host(tc.given)))
+		if err != nil || mb.SmtpHost != tc.want {
+			t.Errorf("%q: %+v (err %v), want %q", tc.given, mb, err, tc.want)
+		}
+	}
+	plain, err := CreateMailbox(db, key, in("plain@example.test", nil))
+	if err != nil || plain.SmtpHost != "" {
+		t.Fatalf("without the field: %+v (err %v)", plain, err)
+	}
+
+	// Refused forms: IP literals, ports, underscores, loopback names, labels
+	// of the wrong shape or length, non-ASCII letters (the Kelvin sign
+	// lower-cases to k). Nothing is saved.
+	for _, bad := range []string{
+		"203.0.113.5", "2001:db8::1", "mail.123", "123", "-mail.example.com", "mail-.example.com", "mail_1.example.com",
+		"mail..example.com", ".example.com", ".", "example.com..", strings.Repeat("a", 64) + ".example", longName,
+		"localhost", "LocalHost.", "mx.localhost", "localhost.localdomain", "mail example.com",
+		"\u30e1\u30fc\u30eb.example.jp", "\u212aexample.com", "*.example.com", "mail.example.com:25", "https://mail.example.com",
+	} {
+		_, err := CreateMailbox(db, key, in("bad@example.test", host(bad)))
+		m, ok := wording.As(err)
+		if !ok || m.Key != "validation.mailbox.smtpHostInvalid" || m.Params["value"] != clipEntry(strings.TrimSpace(bad)) {
+			t.Errorf("%q: %v (%+v)", bad, err, m)
+		}
+	}
+	if _, err := models.GetMailboxByAddress(db, "bad@example.test"); err != sql.ErrNoRows {
+		t.Errorf("a refused mailbox was saved: %v", err)
+	}
+
+	// An update sets it without a password (the stored one is kept), an
+	// update without the field keeps it, "" clears it, an invalid one saves
+	// nothing.
+	update := MailboxInputFrom(plain)
+	update.SmtpHost = host("SMTP.Example.JP")
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, plain, update); err != nil {
+		t.Fatalf("setting the SMTP host without a password: %v", err)
+	}
+	stored, err := models.GetMailboxByID(db, plain.ID)
+	if err != nil || stored.SmtpHost != "smtp.example.jp" {
+		t.Errorf("after setting: %+v (err %v)", stored, err)
+	}
+	if p, err := MailboxPassword(key, stored); err != nil || p != "p" {
+		t.Errorf("password after setting the SMTP host = %q (err %v)", p, err)
+	}
+	update = MailboxInputFrom(stored)
+	update.SmtpHost = nil
+	update.DisplayName = "Ops"
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ = models.GetMailboxByID(db, plain.ID); stored.SmtpHost != "smtp.example.jp" || stored.DisplayName != "Ops" {
+		t.Errorf("an update without the field: %+v", stored)
+	}
+	update = MailboxInputFrom(stored)
+	update.SmtpHost = host("mail_1.example.jp")
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); wordingKey(err) != "validation.mailbox.smtpHostInvalid" {
+		t.Errorf("an invalid host on update: %v", err)
+	}
+	if stored, _ = models.GetMailboxByID(db, plain.ID); stored.SmtpHost != "smtp.example.jp" {
+		t.Errorf("a refused update changed it to %q", stored.SmtpHost)
+	}
+	update = MailboxInputFrom(stored)
+	update.SmtpHost = host("")
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ = models.GetMailboxByID(db, plain.ID); stored.SmtpHost != "" {
+		t.Errorf("after clearing: %q", stored.SmtpHost)
+	}
+	// A connection change still needs the password, whatever the SMTP host.
+	update = MailboxInputFrom(stored)
+	update.ImapHost, update.SmtpHost = "imap2.example.test", host("mail.example.jp")
+	if err := UpdateMailbox(db, key, mailsRoot, agentRoot, stored, update); !errors.Is(err, ErrPasswordRequired) {
+		t.Errorf("an IMAP host change with the SMTP host: %v, want ErrPasswordRequired", err)
+	}
+}
+
+// TestMailboxCLISmtpHost checks --smtp-host of "mailbox add" and "mailbox
+// update": the value is normalized, update without the flag keeps it, an
+// empty value clears it, an invalid one is an argument error, and "mailbox
+// show" prints it.
+func TestMailboxCLISmtpHost(t *testing.T) {
+	db := newTestDB(t)
+	isArg := func(err error) bool {
+		var exitErr *ExitError
+		return errors.As(err, &exitErr) && exitErr.Code == ExitArgument
+	}
+	add := &MailboxAddCmd{Address: "cli@example.test", Host: "127.0.0.1", Port: closedPort(t), Security: IMAPSecurityNone,
+		Username: "u", Password: "p", ServerKeepDays: -1, SmtpHost: "Mail.Example.JP."}
+	out := captureStdout(t, func() {
+		if err := add.Run(); err != nil {
+			t.Errorf("mailbox add --smtp-host: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Registered mailbox") {
+		t.Fatalf("mailbox add output:\n%s", out)
+	}
+	smtpHost := func() string {
+		t.Helper()
+		mb, err := models.GetMailboxByAddress(db, "cli@example.test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mb.SmtpHost
+	}
+	if got := smtpHost(); got != "mail.example.jp" {
+		t.Errorf("after add: %q", got)
+	}
+	bad := &MailboxAddCmd{Address: "bad@example.test", Host: "127.0.0.1", Username: "u", Password: "p", ServerKeepDays: -1,
+		SmtpHost: "203.0.113.5"}
+	if err := bad.Run(); !isArg(err) {
+		t.Errorf("mailbox add with an IP as the SMTP host: %v, want an argument error", err)
+	}
+
+	captureStdout(t, func() {
+		if err := (&MailboxUpdateCmd{Address: "cli@example.test", ServerKeepDays: -1, DisplayName: "Ops"}).Run(); err != nil {
+			t.Errorf("mailbox update without --smtp-host: %v", err)
+		}
+	})
+	if got := smtpHost(); got != "mail.example.jp" {
+		t.Errorf("update without the flag: %q", got)
+	}
+	newHost, invalid, empty := "SMTP.example.jp", "bad_host", ""
+	if err := (&MailboxUpdateCmd{Address: "cli@example.test", ServerKeepDays: -1, SmtpHost: &invalid}).Run(); !isArg(err) {
+		t.Errorf("mailbox update --smtp-host bad_host: %v, want an argument error", err)
+	}
+	captureStdout(t, func() {
+		if err := (&MailboxUpdateCmd{Address: "cli@example.test", ServerKeepDays: -1, SmtpHost: &newHost}).Run(); err != nil {
+			t.Errorf("mailbox update --smtp-host (no password): %v", err)
+		}
+	})
+	if got := smtpHost(); got != "smtp.example.jp" {
+		t.Errorf("after update: %q", got)
+	}
+	out = captureStdout(t, func() {
+		if err := (&MailboxShowCmd{Address: "cli@example.test"}).Run(); err != nil {
+			t.Errorf("mailbox show: %v", err)
+		}
+	})
+	if !strings.Contains(out, "smtp host:     smtp.example.jp") {
+		t.Errorf("mailbox show lacks the SMTP host:\n%s", out)
+	}
+	captureStdout(t, func() {
+		if err := (&MailboxUpdateCmd{Address: "cli@example.test", ServerKeepDays: -1, SmtpHost: &empty}).Run(); err != nil {
+			t.Errorf("mailbox update --smtp-host \"\": %v", err)
+		}
+	})
+	if got := smtpHost(); got != "" {
+		t.Errorf("after clearing: %q", got)
+	}
+	out = captureStdout(t, func() {
+		if err := (&MailboxShowCmd{Address: "cli@example.test", JSON: true}).Run(); err != nil {
+			t.Errorf("mailbox show --json: %v", err)
+		}
+	})
+	if !strings.Contains(out, `"smtp_host": ""`) {
+		t.Errorf("mailbox show --json lacks the empty SMTP host:\n%s", out)
 	}
 }

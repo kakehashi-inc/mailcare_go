@@ -1,0 +1,39 @@
+# The SPF records of large mail services, recorded from live DNS for
+# TestLookupSPFRealSenders (the total address-space cap must not make their
+# evaluation incomplete).
+#
+# Recorded on 2026-10-15 with
+#   dig +short TXT <name> @1.1.1.1
+# for every name below: _spf.google.com (Google Workspace),
+# spf.protection.outlook.com (Microsoft 365), amazonses.com (Amazon SES),
+# sendgrid.net and the ab.sendgrid.net it includes (SendGrid), and
+# _netblocks.google.com, _netblocks2.google.com and _netblocks3.google.com
+# (the former include tree of _spf.google.com; on that date
+# _spf.google.com lists its ranges itself and includes none of them).
+# Every TXT record of a name is kept, the SPF record among others.
+#
+# Format: one TXT record per line, "<name> TXT <text>"; the
+# character-strings of a record are separated by "|" (as served by the
+# fake DNS server of the tests). Lines starting with "#" are comments.
+_spf.google.com TXT v=spf1 ip4:74.125.0.0/16 ip4:209.85.128.0/17 ip6:2001:4860:4864::/56 ip6:2404:6800:4864::/56 ip6:2607:f8b0:4864::/56 ip6:2800:3f0:4864::/56 ip6:2a00:1450:4864::/56 ip6:2c0f:fb50:4864::/56 ~all
+spf.protection.outlook.com TXT v=spf1 ip4:40.92.0.0/15 ip4:40.107.0.0/16 ip4:52.100.0.0/15 ip4:52.102.0.0/16 ip4:52.103.0.0/17 ip4:104.47.0.0/17 ip6:2a01:111:f400::/48 ip6:2a01:111:f403::/49 ip6:2a01:111:f403:8000::/51 ip6:2a01:111:f403:c000::/51 ip6:2a01:111:f403:f000::/52 -all
+amazonses.com TXT google-site-verification=aOJq8aXEtCO23r176f6iOTGt-RVuPv81XPtBuIzRTx0
+amazonses.com TXT mailru-verification: 71ab435de908d6ed
+amazonses.com TXT v=spf1 ip4:199.255.192.0/22 ip4:199.127.232.0/22 ip4:54.240.0.0/18 ip4:69.169.224.0/20 ip4:23.249.208.0/20 ip4:23.251.224.0/19 ip4:76.223.176.0/20 ip4:54.240.64.0/18 ip4:76.223.128.0/19 ip4:216.221.160.0/19 ip4:206.55.144.0/20 ip4:24.110.64.0/18 |ip4:98.77.0.0/16 -all
+amazonses.com TXT yahoo-verification-key=OL6T0cZm2ykeymVyCj7mnvnTL3zAtLwrRXGAgBFtvFw=
+sendgrid.net TXT google-site-verification=1UEf8ey-RibUjY6gnpqIZFjWNqMknmeyeHz1zTmj0DE
+sendgrid.net TXT 5m3r13nvilmq8tgf5foh6ki1uv
+sendgrid.net TXT cemmvnbghpsb500d7c19e35fgm
+sendgrid.net TXT 6ifgg010qg6mquqt5lodun8qds
+sendgrid.net TXT l8bqrl0r33q4joeb79q8uuj009
+sendgrid.net TXT yahoo-verification-key=TrufSXS+dfythA5AIMbLUnkX38rjr1HR93gbqHUSY74=
+sendgrid.net TXT p8bnb2lp424dkl3c4io1aemiei
+sendgrid.net TXT i52uk89q4nfe1mpgqv5qsmsj3j.
+sendgrid.net TXT utjqqjvmeadmlva41ectre9gd3
+sendgrid.net TXT mailru-verification: 2e3995fa8a7d00e0
+sendgrid.net TXT tdjhrpaflcikf52iqtn9rnggr9
+sendgrid.net TXT v=spf1 ip4:167.89.0.0/17 ip4:208.117.48.0/20 ip4:50.31.32.0/19 ip4:198.37.144.0/20 ip4:198.21.0.0/21 ip4:192.254.112.0/20 ip4:168.245.0.0/17 ip4:149.72.0.0/16 ip4:159.183.0.0/16 ip4:134.128.64.0/18 ip4:159.26.176.0/20 include:ab.sendgrid.net ~all
+ab.sendgrid.net TXT v=spf1 ip4:223.165.113.0/24 ip4:223.165.115.0/24 ip4:223.165.118.0/23 ip4:223.165.120.0/23 ~all
+_netblocks.google.com TXT v=spf1 ip4:74.125.0.0/16 ip4:209.85.128.0/17 ~all
+_netblocks2.google.com TXT v=spf1 ip6:2001:4860:4000::/36 ip6:2404:6800:4000::/36 ip6:2607:f8b0:4000::/36 ip6:2800:3f0:4000::/36 ip6:2a00:1450:4000::/36 ip6:2c0f:fb50:4000::/36 ~all
+_netblocks3.google.com TXT v=spf1 ~all

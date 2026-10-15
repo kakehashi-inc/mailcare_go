@@ -190,8 +190,9 @@ func TestCategoryGlossaryComplete(t *testing.T) {
 		if info.Description == "" || info.Unit == "" || info.Guidance == "" {
 			t.Errorf("%s: description, unit and guidance are required", name)
 		}
-		// A DMARC group is the domain of the records alone: no authority.
-		if info.Actionable && info.Authority == "" && !IsDMARCCategory(name) {
+		// A DMARC group is the domain of the records alone and a resolver
+		// failure the reporting MTA alone: no authority.
+		if info.Actionable && info.Authority == "" && !IsDMARCCategory(name) && name != CategoryDNSResolverFailure {
 			t.Errorf("%s: an actionable category names its authority", name)
 		}
 		if !info.Actionable && info.Authority != "" {
@@ -201,7 +202,8 @@ func TestCategoryGlossaryComplete(t *testing.T) {
 	for _, name := range []string{
 		CategoryIPBlocked, CategoryRateLimited, CategorySenderBlocked, CategoryAuthFailure, CategoryContentRejected,
 		CategoryMessageTooLarge, CategoryServerConfig, CategoryUnknownFailure, CategoryUserUnknown, CategoryMailboxFull,
-		CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDeliveryDelay,
+		CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDeliveryDelay, CategoryDNSResolverFailure,
+		CategoryDNSFailureExternal,
 	} {
 		if _, ok := CategoryGlossary[name]; !ok {
 			t.Errorf("%s missing from the glossary", name)
@@ -376,5 +378,90 @@ func TestBuildPromptParties(t *testing.T) {
 	in.TemplatesFS = fstest.MapFS{"templates/agent/party_names_ja.txt": {Data: []byte("a\nb\n")}}
 	if !strings.Contains(BuildPrompt(in), "- the recipient domain administrator: ") {
 		t.Error("an incomplete party name template must fall back to the English names")
+	}
+}
+
+// TestBuildPromptDNSRules: a group of a DNS category, or one with a sample
+// that reports a failed lookup, gets the rules for reading the verification
+// inside HOW TO USE THE EVIDENCE; other groups do not.
+func TestBuildPromptDNSRules(t *testing.T) {
+	stubNotices(t, map[string]string{"kd": noticePostfixDNS()})
+	var calls []dnsCall
+	check := stubDNSCheck(DNSCheckResult{Outcome: "exists", Detail: "name=infoseek.jp type=MX outcome=exists",
+		CheckedAt: time.Date(2026, 9, 3, 12, 5, 0, 0, time.UTC)}, true, &calls)
+	group := dnsGroup()
+	bounces := []*models.GroupBounce{dnsBounce("kd", postfixDNSDiagnostic)}
+	in := PromptInput{Address: "bounce@example.jp", Language: "en", Group: group,
+		Stats:    &models.GroupBounceStats{Recipients: []string{"user1@infoseek.jp"}},
+		Evidence: BuildEvidence(EvidenceInput{Group: group, Bounces: bounces, DNSCheck: check})}
+	p := BuildPrompt(in)
+	rules := []string{
+		"- Failed DNS lookups (samples with a \"DNS lookup failure\" line)",
+		"do not run DNS tools yourself (no network access)",
+		"Wording: temporary (\"try again\", \"lookup failure\") means the resolver of the reporting MTA got no usable answer, typically SERVFAIL or a timeout",
+		"Permanent (\"Host not found\" without \"try again\") means it got NXDOMAIN",
+		"Say in the cause section which of the two the notice shows and what it means.",
+		"When the reporting MTA is the sending side's own mail server (category dns_resolver_failure), the failure points at that server's name resolution",
+		"(category dns_failure_external), the fault lies with that server's resolver or the domain's DNS",
+		"Outcome not_found: ", "Outcome broken: ",
+		"compare \"checked\" with \"notice received\"",
+		"one domain failing once is weak evidence", "many different recipient domains failing in the same period is strong evidence",
+		"Count the domains in Recipients under GROUP SUMMARY",
+		"when none are named for the monitored address, every reporting MTA counts as own",
+		"the domain's authoritative name servers are asked as well, where reachable, only for a notice that clearly concerns the sending side's own mail",
+		"never when only the operating system's resolver is used",
+		"up to a day before the notice was received or up to two days after it",
+		"A rule starting with dns_unverified",
+		"a DNS line marked (not found) is no reason to read it",
+		"\"DNS verification: (not found: ...)\" means MailCare holds no verification",
+	}
+	for _, want := range append([]string{
+		"No network access", "DNS lookups",
+		"A sample whose diagnostic reports a failed DNS lookup also shows what was parsed from it",
+		"DNS verification by MailCare: outcome exists; checked 2026-09-03T12:05:00Z",
+		"| name=infoseek.jp type=MX outcome=exists\n",
+	}, rules...) {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q\n%s", want, p)
+		}
+	}
+	// The authoritative servers are no part of every verification.
+	if strings.Contains(p, "several resolvers and, where reachable, the domain's authoritative name servers") {
+		t.Error("the prompt still says every verification asks the authoritative name servers")
+	}
+	idx := func(s string) int { return strings.Index(p, s) }
+	if !(idx("=== HOW TO USE THE EVIDENCE ===") < idx("- Failed DNS lookups") && idx("- Failed DNS lookups") < idx("=== PARTIES")) {
+		t.Error("the DNS rules belong to HOW TO USE THE EVIDENCE")
+	}
+	// No first person in the instructions (only inside the ban).
+	withoutBan := p[:idx("Never write in the first or second person")]
+	for _, word := range []string{" our ", "Our ", " we ", " us "} {
+		if strings.Contains(withoutBan, word) {
+			t.Errorf("the prompt speaks in the first person (%q)", word)
+		}
+	}
+
+	// A DNS category without a sample that reports a failed lookup still
+	// gets the rules, but not the note on the sample block.
+	group.Category = CategoryDNSFailureExternal
+	in.Evidence = BuildEvidence(EvidenceInput{Group: group,
+		Bounces: []*models.GroupBounce{groupBounce("kx", "pa", "dsn", "user1@infoseek.jp", 3)}})
+	p = BuildPrompt(in)
+	if !strings.Contains(p, rules[0]) || strings.Contains(p, "A sample whose diagnostic reports a failed DNS lookup") {
+		t.Errorf("dns_failure_external without a DNS sample:\n%s", p)
+	}
+	// A sample that reports a failed lookup brings the rules to any
+	// category (e.g. a delay that was not verified).
+	group.Category = CategoryDeliveryDelay
+	group.Actionable = false
+	in.Evidence = BuildEvidence(EvidenceInput{Group: group, Bounces: bounces})
+	if p := BuildPrompt(in); !strings.Contains(p, rules[0]) || !strings.Contains(p, "DNS verification: (not found: this name was not verified by MailCare)") {
+		t.Errorf("delivery_delay with a DNS sample:\n%s", p)
+	}
+
+	// Other groups get none of it.
+	if p := BuildPrompt(samplePromptInput(t)); strings.Contains(p, "DNS lookup failure") || strings.Contains(p, "Failed DNS lookups") ||
+		strings.Contains(p, "DNS verification") {
+		t.Errorf("an ip_blocked group got the DNS rules:\n%s", p)
 	}
 }

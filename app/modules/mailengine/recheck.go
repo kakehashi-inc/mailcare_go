@@ -59,10 +59,12 @@ var defaultRecheckDays = map[string]int{
 	categoryMailboxDisabled:       7,
 	categoryDomainNotFound:        7,
 	categoryDeliveryDelay:         7,
+	categoryDNSFailureExternal:    7,
 	categoryAuthFailure:           3,
 	categoryContentRejected:       3,
 	categoryMessageTooLarge:       3,
 	categoryServerConfig:          3,
+	categoryDNSResolverFailure:    3,
 }
 
 // DefaultRecheckDays returns the default re-check days of a category (7 for

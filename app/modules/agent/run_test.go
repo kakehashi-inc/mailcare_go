@@ -750,3 +750,41 @@ func TestAnalyzeGroupFailureSettlesTheGroup(t *testing.T) {
 		t.Error("a new pattern must not count as settled")
 	}
 }
+
+// TestAnalyzeGroupPassesDNSCheck: the callback of AnalyzeInput reaches the
+// evidence, asked with the time the notice was received (from the index),
+// and its verification is in the prompt.
+func TestAnalyzeGroupPassesDNSCheck(t *testing.T) {
+	db, mailsRoot, agentRoot, address := newTestIndex(t)
+	received := time.Date(2026, 9, 2, 12, 3, 0, 0, time.UTC)
+	if _, err := db.Exec(`UPDATE bounces SET diagnostic = ?, reporting_mta = 'mx1.example.com'`, postfixDNSDiagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE messages SET received_at = ? WHERE message_key = '20260902-120000_bbbbbbbbbbbb'`, received); err != nil {
+		t.Fatal(err)
+	}
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), cannedSuccess)})
+	var calls []dnsCall
+	check := stubDNSCheck(DNSCheckResult{Outcome: "exists", Detail: "name=infoseek.jp type=MX outcome=exists\nresolver 1.1.1.1: control ok; MX ok (mx1.infoseek.jp)",
+		CheckedAt: received.Add(time.Minute)}, true, &calls)
+	rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
+		MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
+		DNSCheck: check,
+	}, nil)
+	if err != nil || rep.Status != "completed" {
+		t.Fatalf("run: %+v %v", rep, err)
+	}
+	if len(calls) != 1 || calls[0].name != "infoseek.jp" || calls[0].qtype != "MX" || !calls[0].at.Equal(received) {
+		t.Errorf("callback calls = %+v", calls)
+	}
+	prompt, err := os.ReadFile(filepath.Join(RunDir(agentRoot, address, testGroupKey, rep.ID), PromptFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"DNS verification by MailCare: outcome exists; checked 2026-09-02T12:04:00Z; notice received 2026-09-02T12:03:00Z",
+		"| resolver 1.1.1.1: control ok; MX ok (mx1.infoseek.jp)\n", "- Failed DNS lookups"} {
+		if !strings.Contains(string(prompt), want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+}

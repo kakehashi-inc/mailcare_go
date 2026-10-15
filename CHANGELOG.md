@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Delivery-failure notices that report a failed name lookup ("Host not found, try again" and the like) are now checked: MailCare looks the name up itself. A recipient domain that really does not exist stays "Recipient domain not found"; a DNS failure on the receiving side becomes the new excluded type "DNS failure (receiving side or external)"; a failure of your own mail server's name resolution becomes the new alert type "DNS resolver failure (own server)". The AI cause analysis is given what the check found. Notices older than two days are not looked up again, and results kept from earlier checks keep the classification stable.
+- The DNS check is on by default. In the general settings it can be switched off, pointed at other resolvers or limited to the operating system's resolver. Its queries leave the server as plain DNS to the resolvers you set (Cloudflare, Google and Quad9 by default) and, for notices about your own mail, to the name servers of the domain concerned; the README section "Outbound connections" explains what they reveal.
+- Fake "mail delivery failed" notices are recognized as junk: those that carry links to other sites, those that fail the sender check, and notices about mail that was never sent from your own servers (someone used your address as the sender). Like other junk, they are deleted from the IMAP server after the retention of the address.
+- Your own sending servers can be registered: each mail address has an "SMTP server (sending)" field, and the general settings take other sending servers (host names and IPv4 / IPv6 addresses). Their addresses are looked up automatically, and while the DNS check is on, the SPF records of your domains are read too. Like the IMAP connection settings, these are shown to administrators only.
+- Notices about mail you did not send are recognized for an address only when a host name is known for it: its own SMTP server, or a host name in the general settings, which counts for every address. Register every route you send through: a bounce of mail sent through a route that is not registered is taken for junk unless the mail is signed (DKIM) with your domain. The general settings list the addresses that have no host name.
+
+### Changed
+
+- After upgrading, and after changing your sending servers or the DNS check settings, run "Reclassify" once (Tools screen, or `mailcare reclassify`) to apply them to the mail already fetched. Reclassify can turn older notices into junk, which the next cleanup deletes from the IMAP server once it is past the retention of its address: review the Junk tab first, or set the retention to 0 until you have. Alerts left without any mail are removed together with their state and history.
+
 ## [0.2.3] - 2026-09-30
 
 ### Added

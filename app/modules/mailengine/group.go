@@ -27,10 +27,19 @@ import (
 // when one of its patterns is not covered by its latest completed report),
 // and the responsible party named by its latest completed report is
 // re-applied.
-func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, recheck RecheckDays, progress Progress) (*GroupResult, error) {
+//
+// WithDNS verifies the DNS lookup failures the notices report (design
+// document "mail classification" 4.4) before the transaction of each
+// message; without it every detected failure stays not verified.
+// WithOwnSources gives the classification our own sending servers for the
+// backscatter rule (2.6); without it the rule does not apply.
+// WithOwnHostResolver resolves their host names and WithOwnSPF reads the
+// SPF records of the monitored domains for both judgements.
+func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, recheck RecheckDays, progress Progress, opts ...GroupOption) (*GroupResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	cfg := newGroupConfig(opts)
 	dir := MailboxDir(mailsRoot, address)
 	db, err := OpenIndex(ctx, mailsRoot, address, progress)
 	if err != nil {
@@ -50,6 +59,7 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, rec
 	report(progress, fmt.Sprintf("grouping %d messages", len(msgs)))
 	result := &GroupResult{GroupsTouched: []string{}}
 	tracker := newGroupTracker(recheck)
+	junk := &noticeJunkCounts{}
 	exclude := []string{address}
 	for i, msg := range msgs {
 		if err := ctx.Err(); err != nil {
@@ -62,17 +72,24 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, rec
 			report(progress, fmt.Sprintf("skipping %s: %v", msg.MessageKey, err))
 			continue
 		}
-		if err := groupMessage(db, msg, ParseMessage(raw), tracker, exclude...); err != nil {
+		if err := groupMessage(ctx, db, msg, ParseMessage(raw), tracker, cfg, exclude...); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			return nil, fmt.Errorf("group %s: %w", msg.MessageKey, err)
 		}
 		result.Processed++
 		if msg.IsBounce {
 			result.Bounces++
 		}
+		junk.add(msg.Rule)
 		if (i+1)%progressInterval == 0 {
 			report(progress, fmt.Sprintf("grouped %d of %d messages", i+1, len(msgs)))
 		}
 	}
+	cfg.dns.reportSummary(progress)
+	cfg.lookups.reportSummary(progress, cfg.backscatterApplies())
+	junk.reportSummary(progress)
 	touched := tracker.touched()
 	result.GroupsTouched = touched
 	if full {
@@ -92,6 +109,38 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, rec
 	return result, nil
 }
 
+// noticeJunkCounts counts the messages of one GroupMailbox or Reindex run
+// that the junk rules about delivery-failure notices took (the backscatter
+// rule and the fake notices F1 and F2), for the progress line of the run:
+// these rules can take genuine-looking notices, so the administrator sees
+// how many went to junk.
+type noticeJunkCounts struct {
+	backscatter, fakeLink, fakeAuth int
+}
+
+// add counts a message classified in the run by the rule of its
+// classification (messages.rule); other rules are not counted.
+func (c *noticeJunkCounts) add(rule string) {
+	switch rule {
+	case ruleBackscatter:
+		c.backscatter++
+	case ruleFakeNoticeLink:
+		c.fakeLink++
+	case ruleFakeNoticeAuth:
+		c.fakeAuth++
+	}
+}
+
+// reportSummary adds the progress line of the counts when any message was
+// taken by one of the rules.
+func (c *noticeJunkCounts) reportSummary(progress Progress) {
+	if c.backscatter+c.fakeLink+c.fakeAuth == 0 {
+		return
+	}
+	report(progress, fmt.Sprintf("junk: %d %s, %d %s, %d %s",
+		c.backscatter, ruleBackscatter, c.fakeLink, ruleFakeNoticeLink, c.fakeAuth, ruleFakeNoticeAuth))
+}
+
 // groupMessage runs classification, extraction, categorization and grouping
 // for one index row and marks it classified (design document "mail classification" 2-4, design 5.4). Every write
 // of the message happens in one transaction: the group rows (UpsertGroup),
@@ -109,39 +158,99 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, rec
 // its details. msg is updated in place. exclude lists the addresses never
 // taken as failed recipient (the monitored address); the sender of the
 // notice itself is always excluded.
-func groupMessage(db *sql.DB, msg *models.Message, pm *ParsedMessage, tracker *groupTracker, exclude ...string) error {
+//
+// Everything that needs no database runs before the transaction is opened
+// (planGrouping): classification (with the own sending servers of cfg),
+// extraction, the verification of a DNS lookup failure (cfg.dns, nil when
+// off; it may use the network, and a SQLite write transaction is never held
+// meanwhile) and the categorization. A cancellation noticed after that
+// writes nothing, so the message is not filed as not verified because the
+// verification was cut short.
+func groupMessage(ctx context.Context, db *sql.DB, msg *models.Message, pm *ParsedMessage, tracker *groupTracker, cfg groupConfig, exclude ...string) error {
+	plan := planGrouping(ctx, msg, pm, cfg, exclude...)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := groupMessageIn(tx, msg, pm, tracker, exclude...); err != nil {
+	if err := groupMessageIn(tx, msg, plan, tracker); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// groupMessageIn is the body of groupMessage over an Execer (a transaction
-// in production; the tests also drive it with a plain database or a failing
-// wrapper to check the write order).
-func groupMessageIn(db models.Execer, msg *models.Message, pm *ParsedMessage, tracker *groupTracker, exclude ...string) error {
-	cls := Classify(pm, mailboxOf(exclude))
-	var bounce *models.Bounce
-	var group *models.BounceGroup
-	groupKey := ""
-	if cls.IsBounce && isGroupedKind(cls.Kind) {
-		bounce = ExtractBounce(pm, cls.Kind, append([]string{pm.FromAddress}, exclude...)...)
-		group = groupForBounce(cls.Kind, bounce)
-		if group != nil {
-			groupKey = group.GroupKey
-		}
+// messageGrouping is what the grouping step decided for one message before
+// anything is written: its classification, the bounce details with their
+// group (failed / delayed notices) and the failing records of a DMARC
+// report with their distinct groups.
+type messageGrouping struct {
+	cls          Classification
+	bounce       *models.Bounce
+	group        *models.BounceGroup
+	records      []*models.DMARCRecord
+	recordGroups []*reportGroup
+}
+
+// planGrouping classifies a message (with the own sending servers of the
+// run, which the backscatter rule needs: classifyOwn), extracts the bounce
+// details of a failed or delayed notice, verifies the DNS lookup failure
+// its diagnostic reports (dnsVerification.verdict; only these notices reach
+// the verifier, never junk, DMARC reports or other mail) and categorizes
+// it, and categorizes the failing records of a DMARC report. It does not
+// touch the database.
+func planGrouping(ctx context.Context, msg *models.Message, pm *ParsedMessage, cfg groupConfig, exclude ...string) *messageGrouping {
+	plan := &messageGrouping{cls: classifyOwn(ctx, pm, mailboxOf(exclude), cfg)}
+	if plan.cls.IsBounce && isGroupedKind(plan.cls.Kind) {
+		plan.bounce = ExtractBounce(pm, plan.cls.Kind, append([]string{pm.FromAddress}, exclude...)...)
+		verdict := cfg.dns.verdict(ctx, plan.bounce, pm, mailboxOf(exclude), noticeTime(msg))
+		plan.group = groupForBounceWith(plan.cls.Kind, plan.bounce, verdict)
 	}
-	var records []*models.DMARCRecord
-	var recordGroups []*reportGroup
-	if cls.Kind == bounceKindReport {
-		var groups []*models.BounceGroup
-		records, groups = dmarcRecordsFor(pm.DMARC)
-		recordGroups = distinctReportGroups(records, groups)
+	if plan.cls.Kind == bounceKindReport {
+		records, groups := dmarcRecordsFor(pm.DMARC)
+		plan.records, plan.recordGroups = records, distinctReportGroups(records, groups)
+	}
+	return plan
+}
+
+// classifyOwn classifies a message with the own sending servers of the run
+// and, when it was taken for backscatter, again with the addresses the run
+// looks up (ownLookups: the addresses of the own host names and the SPF
+// records of the monitored domains, looked up on the first such message of
+// the run). The classification itself stays pure. The addresses can only
+// add matches, and the sources are read by the backscatter rule alone, so
+// they can only turn that verdict into another one: a message the rule does
+// not take without them needs no lookup, which keeps a run without a
+// backscatter candidate from looking anything up. While the lookups of the
+// run are incomplete (the lookup of an own host name was not answered, or
+// an SPF record could not be evaluated completely), an address of ours may
+// be missing, so the message is classified without the rule instead: a
+// failure to look a source up never turns a genuine notice into junk.
+func classifyOwn(ctx context.Context, pm *ParsedMessage, mailbox string, cfg groupConfig) Classification {
+	cls := ClassifyWith(pm, mailbox, cfg.own)
+	if cls.Rule != ruleBackscatter {
+		return cls
+	}
+	extra := cfg.lookups.get(ctx)
+	if !extra.complete() {
+		return ClassifyWith(pm, mailbox, OwnSources{})
+	}
+	if len(extra.addrs) > 0 || len(extra.prefixes) > 0 || len(extra.hosts) > 0 {
+		cls = ClassifyWith(pm, mailbox, cfg.own.withResolved(extra.addrs, extra.prefixes, extra.hosts))
+	}
+	return cls
+}
+
+// groupMessageIn writes what planGrouping decided over an Execer (a
+// transaction in production; the tests also drive it with a plain database
+// or a failing wrapper to check the write order).
+func groupMessageIn(db models.Execer, msg *models.Message, plan *messageGrouping, tracker *groupTracker) error {
+	cls, bounce, group, records, recordGroups := plan.cls, plan.bounce, plan.group, plan.records, plan.recordGroups
+	groupKey := ""
+	if group != nil {
+		groupKey = group.GroupKey
 	}
 	// 1. the groups (descriptive columns; the counters follow the members).
 	if err := tracker.upsert(db, group); err != nil {
@@ -232,6 +341,61 @@ func distinctReportGroups(records []*models.DMARCRecord, groups []*models.Bounce
 		}
 	}
 	return out
+}
+
+// GroupOption configures one GroupMailbox or Reindex run.
+type GroupOption func(*groupConfig)
+
+// groupConfig is the configuration of one run built from its options.
+type groupConfig struct {
+	own     OwnSources       // our own sending servers (WithOwnSources); empty: no backscatter rule
+	lookups *ownLookups      // the addresses the run looks up for them (nil: none)
+	dns     *dnsVerification // nil: DNS lookup failures are not verified
+
+	// What the options gave, combined into own, lookups and dns by
+	// newGroupConfig.
+	ownGiven    bool            // WithOwnSources was given
+	verifier    DNSVerifier     // WithDNS (nil: not verified)
+	dnsOwn      OwnSources      // the sources given to WithDNS
+	ownResolver OwnHostResolver // WithOwnHostResolver
+	spfResolver OwnSPFResolver  // WithOwnSPF
+	spfDomains  []string        // WithOwnSPF
+}
+
+// newGroupConfig applies the options of one run. The verification of WithDNS
+// tells our own reporting MTAs by the sources of WithOwnSources when that
+// option is given too, whatever the order of the options, else by the
+// sources given to WithDNS. The host names of those sources are resolved by
+// the resolver of WithOwnHostResolver, else by the verifier when it is a
+// HostResolver, and the SPF records of WithOwnSPF are evaluated, once for
+// the run and for both judgements (ownLookups).
+func newGroupConfig(opts []GroupOption) groupConfig {
+	var cfg groupConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	dnsOwn := cfg.dnsOwn
+	if cfg.ownGiven {
+		dnsOwn = cfg.own
+	}
+	resolver := cfg.ownResolver
+	if resolver == nil {
+		if r, ok := cfg.verifier.(HostResolver); ok {
+			resolver = r
+		}
+	}
+	cfg.lookups = newOwnLookups(resolver, dnsOwn, cfg.spfResolver, cfg.spfDomains)
+	cfg.dns = newDNSVerification(cfg.verifier, dnsOwn, cfg.lookups)
+	return cfg
+}
+
+// backscatterApplies reports whether the backscatter rule applies to the
+// run: our own sending servers were given (WithOwnSources) with a host name
+// configured for the mailbox (OwnSources.hasHosts).
+func (cfg groupConfig) backscatterApplies() bool {
+	return cfg.ownGiven && cfg.own.hasHosts()
 }
 
 // mailboxOf returns the monitored address among the excluded addresses

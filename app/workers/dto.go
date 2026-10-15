@@ -123,8 +123,10 @@ type MailboxStatsDTO struct {
 }
 
 // MailboxDTO is a mailbox without its password. The connection settings
-// (host, port, security, username, folder) and the fetch ranges are shown
-// to administrators only; redactMailboxDTO blanks them for other users.
+// (host, port, security, username, folder), the fetch ranges, the server
+// retention and the SMTP host (one of our own sending servers, which the
+// settings show to administrators only as well) are shown to
+// administrators only; redactMailboxDTO blanks them for other users.
 type MailboxDTO struct {
 	ID             int64            `json:"id"`
 	Address        string           `json:"address"`
@@ -138,6 +140,7 @@ type MailboxDTO struct {
 	InitialDays    int              `json:"initial_days"`
 	RecentDays     int              `json:"recent_days"`
 	ServerKeepDays int              `json:"server_keep_days"` // 0 = the mails stay on the server
+	SmtpHost       string           `json:"smtp_host"`        // "" = not set
 	LastFetchedAt  *string          `json:"last_fetched_at"`
 	LastFetchError string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
 	CreatedAt      string           `json:"created_at"`
@@ -150,6 +153,7 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost, ImapPort: mb.ImapPort,
 		ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername, Folder: mb.Folder, Enabled: mb.Enabled,
 		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, ServerKeepDays: mb.ServerKeepDays,
+		SmtpHost:       mb.SmtpHost,
 		LastFetchedAt:  nullTimeString(mb.LastFetchedAt),
 		LastFetchError: mb.LastFetchError,
 		CreatedAt:      timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
@@ -157,8 +161,8 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 }
 
 // mailboxDTOFor converts a mailbox for the given user: administrators get
-// every field, other users get the connection settings and fetch ranges
-// and retentions blanked (empty strings and zeros).
+// every field, other users get the connection settings, fetch ranges,
+// retentions and the SMTP host blanked (empty strings and zeros).
 func mailboxDTOFor(mb *models.Mailbox, u *models.User) MailboxDTO {
 	dto := toMailboxDTO(mb)
 	if u == nil || u.Role != modules.RoleAdmin {
@@ -171,6 +175,7 @@ func mailboxDTOFor(mb *models.Mailbox, u *models.User) MailboxDTO {
 func redactMailboxDTO(dto *MailboxDTO) {
 	dto.ImapHost, dto.ImapPort, dto.ImapSecurity, dto.ImapUsername, dto.Folder = "", 0, "", "", ""
 	dto.InitialDays, dto.RecentDays, dto.ServerKeepDays = 0, 0, 0
+	dto.SmtpHost = ""
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.

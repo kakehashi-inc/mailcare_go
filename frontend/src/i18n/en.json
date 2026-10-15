@@ -155,6 +155,7 @@
             "addressTaken": "That email address is already registered.",
             "addressConflicts": "This address cannot be used because its data would share a folder name with {{other}}, which is already registered.",
             "folderInvalid": "Folder names cannot contain line breaks.",
+            "smtpHostInvalid": "\"{{value}}\" is not a host name. Use letters, digits and hyphens (IP addresses, port numbers and localhost are not accepted).",
             "serverKeepDaysOverMailKeep": "The retention must not exceed the mail retention of the general settings ({{max}} days)."
         },
         "group": {
@@ -179,6 +180,17 @@
             "identifierInvalid": "The identifier must be up to {{max}} characters of letters, digits, \"_\" or \"-\".",
             "identifierTaken": "That identifier is already taken.",
             "expiresInvalid": "Choose a date and time in the future."
+        },
+        "ownSending": {
+            "ipv4Invalid": "Line {{line}} (\"{{value}}\") is not an IPv4 address or CIDR such as 203.0.113.0/24. Loopback addresses and 0.0.0.0 are not accepted.",
+            "ipv6Invalid": "Line {{line}} (\"{{value}}\") is not an IPv6 address or CIDR such as 2001:db8::/32. Loopback addresses, ::, zones (such as %eth0) and IPv4-mapped addresses starting with ::ffff: are not accepted.",
+            "hostInvalid": "Line {{line}} (\"{{value}}\") is not a host name. Use letters, digits and hyphens (IP addresses and localhost are not accepted).",
+            "tooMany": "Each list accepts up to {{max}} entries."
+        },
+        "dnsCheck": {
+            "resolverInvalid": "Line {{line}} (\"{{value}}\") is not a resolver IP address. Enter it without a port or CIDR (loopback addresses, 0.0.0.0 and :: are not accepted).",
+            "resolversTooMany": "You can list up to {{max}} resolvers.",
+            "noResolver": "To verify DNS failures, enter at least one resolver IP address or turn on \"Use only the OS resolver\"."
         }
     },
     "result": {
@@ -460,6 +472,10 @@
                 "label": "Sending server misconfigured",
                 "description": "Relay, TLS or HELO settings do not meet the recipient's requirements. Check the sending server (MTA) configuration."
             },
+            "dns_resolver_failure": {
+                "label": "DNS resolver failure (own server)",
+                "description": "Your mail server could not look up the recipient's name in DNS, yet the name exists when MailCare looks it up. Check the server's name resolution (resolv.conf, the local caching resolver such as unbound, the upstream resolver, UDP and TCP port 53, DNSSEC validation)."
+            },
             "unknown_failure": {
                 "label": "Unknown failure",
                 "description": "A delivery failure that matches no known pattern. Read the diagnostic and the source messages, and use the analysis report if needed."
@@ -491,6 +507,10 @@
             "domain_not_found": {
                 "label": "Recipient domain not found",
                 "description": "The recipient domain has no DNS (MX) record. Check the spelling; otherwise wait for the recipient's DNS to recover."
+            },
+            "dns_failure_external": {
+                "label": "DNS failure (receiving side or external)",
+                "description": "A failed DNS lookup was reported, but when MailCare looks the recipient's name up again, the name exists, or the answers are inconsistent or the receiving side's name servers fail. The receiving side's DNS or another provider's resolver is at fault; nothing can be done on the sending side. Contact the recipient side only if it persists."
             },
             "delivery_delay": {
                 "label": "Delivery delayed",
@@ -555,8 +575,10 @@
             "recentDaysHint": "Days to look back on later syncs (default 10)",
             "fetchDays": "Fetch days",
             "serverKeepDays": "Retention",
-            "serverKeepDaysHint": "Bounces and other notices, and junk mails, older than this many days (from the mail's date) are deleted from the server. 0 never deletes them on the server.",
+            "serverKeepDaysHint": "Bounces and other notices, and junk mails, older than this many days (from the mail's date) are deleted from the server. 0 never deletes them on the server. Deletion on the server cannot be undone, and junk detection can be wrong: for an address that receives mail you must keep by law or policy (such as records of electronic transactions), set 0 or archive the mail first.",
             "serverKeepDaysMax": "At most the mail retention of the general settings ({{max}} days).",
+            "smtpHost": "SMTP server (sending)",
+            "smtpHostHint": "The host name of the server that sends the mail of this address (e.g. mail.example.jp), written as the server calls itself: the name in the \"by ...\" part of the Received headers it adds and in \"This is the mail system at host ...\" of its notices. It is used to recognize the delivery-failure notices this server issued and the notices about mail that was not sent from your own servers; without it (and without a host name in the general settings) the latter are not recognized for this address. The IPv4 / IPv6 addresses of the name are looked up automatically; registering the server's sending IP addresses in \"Your own sending servers\" of the general settings as well is the safe choice. To apply a change to the mail already fetched, run \"Reclassify\" on the Tools screen.",
             "lastChecked": "Last synced",
             "openGroups": "Open",
             "recheckGroups": "Re-check",
@@ -654,6 +676,25 @@
             "agentKeepDaysHint": "How many days the workspace directory of each analysis run (prompt, CLI output, report) is kept. Older ones are removed by the daily cleanup.",
             "recheckDays": "Days before a re-check",
             "recheckDaysHint": "After a group is marked resolved, a notice about mail sent after this many days marks it \"Resolved (re)\". Notices before that are taken as arriving while a delisting or another change takes effect.",
+            "ownSending": "Your own sending servers",
+            "ownSendingHint": "The servers that send your organization's mail: the \"SMTP server (sending)\" of each mail address together with what is registered here. Register here the sources not tied to a mail address (an application that delivers directly to the recipients' servers, another relay, an external delivery service and so on). A bounce (a notice that mail could not be delivered) that was not issued by one of your own mail servers and whose original mail passed through none of your own sending servers is taken as a notice about mail someone else sent with your organization's address forged as the sender, and is treated as junk. This judgement is made for each mail address separately, only while a host name is known for it: its own SMTP server, or a host name registered here, which counts for every address (a server appears in the headers of the mail it handles by its name, so IP addresses alone are not enough). The servers also tell whether a notice about a failed DNS lookup came from your own mail server (for an address with no server known, neither here nor its own SMTP server, every such notice is taken as coming from your own mail server). The IPv4 / IPv6 addresses of the host names are looked up automatically and compared as well. While the DNS check is on, the SPF record of the domain of each mail address is read too, and the sending addresses it lists count as your own. Warning: bounces of mail sent through a route outside your own sending servers (an external delivery service, another server, a separate mailing application and so on) are treated as junk and do not appear as alerts unless the mail is signed (DKIM) with your organization's domain. After changing the servers, run \"Reclassify\" on the Tools screen to apply them to the mail already fetched. Enter one per line, up to {{max}} per list.",
+            "ownSendingIpv4": "Own sending IPv4",
+            "ownSendingIpv4Hint": "IPv4 addresses or CIDRs. Register the addresses of the machines that actually connect to the recipients' mail servers: your SMTP server's own sending address, and any application that delivers directly without going through the SMTP server. Applications and devices that only hand their mail to your SMTP server need not be listed.",
+            "ownSendingIpv4Placeholder": "203.0.113.5\n203.0.113.0/24",
+            "ownSendingIpv6": "Own sending IPv6",
+            "ownSendingIpv6Hint": "IPv6 addresses or CIDRs. Register the addresses of the machines that actually connect to the recipients' mail servers: your SMTP server's own sending address, and any application that delivers directly without going through the SMTP server. Applications and devices that only hand their mail to your SMTP server need not be listed.",
+            "ownSendingIpv6Placeholder": "2001:db8::25\n2001:db8::/48",
+            "ownSendingHosts": "Own sending host names",
+            "ownSendingHostsHint": "Host names of sending servers not tied to a mail address (the SMTP server of a mail address is entered in the settings of that address). Enter the name each server calls itself: the one in the \"by ...\" part of the Received headers it adds and in \"This is the mail system at host ...\" of its notices. The names are compared as written with the route of the original mail and with the server that issued the notice, and their IPv4 / IPv6 addresses are looked up automatically and compared too. As a server may also appear under another name, registering its IP addresses as well is the safe choice. Short names without a domain (such as mailhost) are accepted. To apply a change to the mail already fetched, run \"Reclassify\" on the Tools screen.",
+            "ownSendingHostsPlaceholder": "mail.example.jp",
+            "ownSendingMailboxHosts": "SMTP servers of the mail addresses",
+            "ownSendingMailboxHostsHint": "The \"SMTP server (sending)\" entered in the settings of each mail address. Each one switches the judgement of notices about mail not sent from your servers on for its own address only; all of them are recognized as your own servers for every address. They are changed in the settings of each mail address.",
+            "dnsCheckEnabled": "Run the DNS check",
+            "dnsCheckEnabledHint": "On by default. When a notice says a name could not be looked up, the name is looked up again to tell whether the recipient domain does not exist or the resolver of the reporting server is failing. MailCare then asks the resolvers below for the names in notices and the MX, NS and SPF records of the domains concerned; the name servers of the domain are asked directly only for notices about your own mail. The host names of your own sending servers are looked up through the OS resolver first, and asked of the resolvers below only when it returns no address (short names without a domain are looked up through the OS resolver only). The SPF records of the domains of your mail addresses are read too, and the sending addresses they list count as your own. Turning it off stops every query except looking up the host names of your own sending servers through the OS resolver. See \"Outbound connections\" in the README.",
+            "dnsCheckResolvers": "Resolver IP addresses",
+            "dnsCheckResolversHint": "The DNS resolvers asked. One IPv4 or IPv6 address per line, up to {{max}} (default: Cloudflare 1.1.1.1, Google 8.8.8.8 and Quad9 9.9.9.9). The queries are plain, unencrypted DNS (port 53): the resolvers and the networks on the way see this server's IP address and the names asked.",
+            "dnsCheckSystemResolverOnly": "Use only the OS resolver",
+            "dnsCheckSystemResolverOnlyHint": "Asks only the resolver set up in the server's OS instead of the ones above, and no name server directly. The OS resolver often belongs to the same setup as your mail servers, so it is a weaker independent check; and with a single resolver, differences between public resolvers cannot be detected.",
             "webListen": "Listen address",
             "webPort": "Listen port",
             "dataDir": "Data directory"
@@ -885,6 +926,11 @@
             "cleanupHint": "Settings of the processing that removes data past its retention.",
             "recheck": "Re-check",
             "recheckHint": "When resolved and ignored groups go back to the lists for a new decision.",
+            "dnsCheck": "Sending sources and DNS check",
+            "dnsCheckHint": "Settings for telling whether a bounce is about mail you sent, and for judging notices about failed DNS lookups (Name service error, Host not found and so on).",
+            "ownSendingEmpty": "No own sending servers are known (none here, and no SMTP server of a mail address). For every mail address, bounces of mail sent with your address forged as the sender are not recognized as junk (that needs a host name for the address), and every notice about a failed DNS lookup is taken as coming from your own mail server.",
+            "ownSendingNoHost": "Notices about mail that was not sent from your servers are not judged for the addresses below: no host name is known for them. Enter the \"SMTP server (sending)\" in the settings of each address, or register a host name here (it counts for every address).",
+            "ownSendingNoHostAllOwn": "For these addresses every reporting mail server is taken as your own, so a failed name lookup reported by another server can raise a \"DNS resolver failure (own server)\" alert; to prevent this, enter the \"SMTP server (sending)\" of each address or register your own sending servers here (IP addresses or host names).",
             "jobs": "Job execution",
             "jobsHint": "Settings for the jobs that run in the background.",
             "agent": "Agent",
@@ -901,6 +947,8 @@
             "sectionBasic": "Basics",
             "sectionImap": "IMAP connection",
             "sectionImapHint": "How to reach the incoming mail server. The password is stored encrypted.",
+            "sectionSmtp": "Sending server",
+            "smtpHostMissing": "No host name is known for this address (none here, and none in the general settings): notices about mail that was not sent from your servers are not recognized for it.",
             "sectionRange": "Fetch range",
             "sectionRangeHint": "The first check looks back the initial fetch days; later checks look back the regular fetch days. \"All time\" on the Tools page checks every mail regardless of the period.",
             "sectionServerKeep": "Deleting mails on the server",

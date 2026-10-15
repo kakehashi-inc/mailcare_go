@@ -165,7 +165,8 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		return fail(fmt.Errorf("load state history: %w", err))
 	}
 	recheck, earlier := decisionsOf(group, history)
-	evIn := EvidenceInput{MailsRoot: in.MailsRoot, Address: in.Address, Group: group, Bounces: bounces, Covered: covered}
+	evIn := EvidenceInput{MailsRoot: in.MailsRoot, Address: in.Address, Group: group, Bounces: bounces, Covered: covered,
+		DNSCheck: in.DNSCheck}
 	if recheck != nil {
 		evIn.Decided = recheck.DecidedAt
 		if recheck.State == "resolved" {
