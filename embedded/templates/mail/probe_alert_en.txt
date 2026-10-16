@@ -1,0 +1,70 @@
+{{/*
+  Delivery probe alert mail (English). Sent to the notification recipients
+  once per probe mail when it becomes delayed and once when it becomes a
+  failure or could not be sent (both groups in one mail). Fields:
+    .Date     date and time the mail is built (recipient's time zone)
+    .Failures entries of the failures and send failures
+    .Delays   entries of the delayed probe mails
+    .URL      the probe screen of MailCare
+    .BaseURL  the public URL of MailCare
+    .Admin    the recipient is an administrator (the error texts are for
+              administrators only)
+    .SendFailures  whether an entry is a send failure
+    Every entry:
+      .Address .Slot (send time, server time as in the subject) .Manual
+      (sent by hand) .SentAt (date and time of sending, recipient's time
+      zone, as .Date)
+      .SendFailed (the SMTP server did not accept it) .Error (why;
+      "" for recipients other than administrators)
+      .Hours .Minutes (time without arrival)
+*/ -}}
+{{define "subject" -}}
+[MailCare] Delivery probe
+{{- if .Failures}} failure: {{len .Failures}}{{end}}
+{{- if and .Failures .Delays}},{{end}}
+{{- if .Delays}} delay: {{len .Delays}}{{end}} ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+This is a notification from MailCare.
+{{- if .Failures}}
+
+{{len .Failures}} probe mail(s) did not arrive within the failure threshold or could not be sent (as of {{.Date}}).
+Sending or receiving mail may be failing.
+{{- range .Failures}}
+
+* {{.Address}}
+   Sent at: {{.SentAt}}{{if .Manual}} (Manual){{end}}
+{{- if .SendFailed}}
+   Status: Send failed
+{{- if .Error}}
+   Error: {{.Error}}
+{{- end}}
+{{- else}}
+   Status: Failure (missing for {{.Hours}} h {{.Minutes}} min)
+{{- end}}
+{{- end}}
+{{- if and .SendFailures (not .Admin)}}
+
+Details of send errors are shown to administrators.
+{{- end}}
+{{- end}}
+{{- if .Delays}}
+
+{{len .Delays}} probe mail(s) did not arrive within the delay threshold (as of {{.Date}}).
+If they do not arrive within the failure threshold, another mail reports them as failures.
+{{- range .Delays}}
+
+* {{.Address}}
+   Sent at: {{.SentAt}}{{if .Manual}} (Manual){{end}}
+   Status: Delayed (missing for {{.Hours}} h {{.Minutes}} min)
+{{- end}}
+{{- end}}
+
+Check the status and mark the probe mails as resolved at:
+{{.URL}}
+
+--------------------------------------------------
+This mail was sent automatically by MailCare.
+Notification settings: {{.BaseURL}}/settings/notifications
+{{- end}}

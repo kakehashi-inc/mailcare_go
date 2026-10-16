@@ -1,0 +1,35 @@
+{{/*
+  Probe server unreadable mail (English). Sent once to the notification
+  recipients when the arrival check could not read the probe server for the
+  failure threshold. Fields:
+    .Date     date and time the mail is built (recipient's time zone)
+    .Since    when the first failed check of the run ran (recipient's time zone)
+    .Error    the error of the latest check ("" for recipients other than
+              administrators)
+    .Admin    the recipient is an administrator
+    .URL      the probe screen of MailCare
+    .BaseURL  the public URL of MailCare
+*/ -}}
+{{define "subject" -}}
+[MailCare] Probe server unreadable ({{.Date}})
+{{- end}}
+
+{{define "body" -}}
+This is a notification from MailCare.
+The probe server could not be read since {{.Since}}, so the arrival of the probe mails cannot be checked (as of {{.Date}}).
+The arrival check is retried at growing intervals.
+{{- if .Error}}
+
+Error: {{.Error}}
+{{- else if not .Admin}}
+
+Details are shown to administrators.
+{{- end}}
+
+Check the status at:
+{{.URL}}
+
+--------------------------------------------------
+This mail was sent automatically by MailCare.
+Notification settings: {{.BaseURL}}/settings/notifications
+{{- end}}

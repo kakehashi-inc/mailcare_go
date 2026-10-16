@@ -254,31 +254,37 @@ func NormalizePublicBaseURL(s string) (string, error) {
 }
 
 // NotificationInput carries the fields of a settings update; nil fields are
-// left unchanged. An empty SMTPPassword also leaves the password unchanged.
+// left unchanged. An empty SMTPPassword also leaves the password unchanged;
+// ClearSMTPPassword removes the stored one.
 type NotificationInput struct {
-	SMTPHost      *string
-	SMTPPort      *int
-	SMTPSecurity  *string
-	SMTPUsername  *string
-	SMTPPassword  *string
-	SMTPFrom      *string
-	PublicBaseURL *string
-	Enabled       *bool
-	Time          *string
-	IntervalDays  *int
-	UserIDs       *[]int64
+	SMTPHost          *string
+	SMTPPort          *int
+	SMTPSecurity      *string
+	SMTPUsername      *string
+	SMTPPassword      *string
+	ClearSMTPPassword bool
+	SMTPFrom          *string
+	PublicBaseURL     *string
+	Enabled           *bool
+	Time              *string
+	IntervalDays      *int
+	UserIDs           *[]int64
 }
 
 // SaveNotificationSettings validates every given field and persists them
 // together, in one transaction (values equal to the code default delete the
-// row). key is needed only
-// when a password is given. While a password is stored, an update that
-// changes the host, port, security mode or username must carry the password
-// too (ErrSMTPPasswordRequired otherwise; nothing is saved): the stored
-// password serves the server it was saved for and is never pointed at
-// another one. The saved values are read for that check and the fields
-// written under the settings lock (settingsMu), so that a concurrent change
-// cannot point the stored password at another server either.
+// row). key is needed only when a password is given. The password belongs
+// to the username: without a username (no authentication) the stored
+// password is removed and none is needed; setting a username, or removing
+// the password while a username stays, needs a password typed or stored
+// (errSMTPPasswordMissing otherwise). While a password is stored, an update
+// that changes the host, port, security mode or username to another
+// non-empty one must carry the password too (ErrSMTPPasswordRequired
+// otherwise; nothing is saved): the stored password serves the server it
+// was saved for and is never pointed at another one. The saved values are
+// read for those checks and the fields written under the settings lock
+// (settingsMu), so that a concurrent change cannot point the stored
+// password at another server either.
 func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) error {
 	return withSettingsLock(func() error { return saveNotificationSettings(db, key, in) })
 }
@@ -287,8 +293,15 @@ func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) error {
 	type write = settingWrite
 	var writes []write
+	saved, err := ResolveNotificationSettings(db, nil)
+	if err != nil {
+		return err
+	}
+	// The values after this update, for the check that notifications are on
+	// only with an SMTP host and a sender address.
+	enabled, host, from := saved.Enabled, saved.SMTP.Host, saved.SMTP.From
 	if in.SMTPHost != nil {
-		host := strings.TrimSpace(*in.SMTPHost)
+		host = strings.TrimSpace(*in.SMTPHost)
 		if strings.ContainsAny(host, " /\\@") {
 			return wording.New("validation.connection.hostInvalid", "smtp_host must be a host name or IP address")
 		}
@@ -310,11 +323,21 @@ func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 		}
 		writes = append(writes, write{SettingSMTPSecurity, sec, sec == DefaultSMTPSecurity})
 	}
+	username := saved.SMTP.Username
 	if in.SMTPUsername != nil {
-		name := strings.TrimSpace(*in.SMTPUsername)
-		writes = append(writes, write{SettingSMTPUsername, name, name == ""})
+		username = strings.TrimSpace(*in.SMTPUsername)
+		writes = append(writes, write{SettingSMTPUsername, username, username == ""})
 	}
-	if in.SMTPPassword != nil && *in.SMTPPassword != "" {
+	passwordGiven := in.SMTPPassword != nil && *in.SMTPPassword != ""
+	passwordMissing := false
+	switch {
+	case username == "":
+		// No authentication: the stored password goes (a typed one is not
+		// kept either).
+		if saved.SMTPPasswordSet {
+			writes = append(writes, write{SettingSMTPPasswordEnc, "", true})
+		}
+	case passwordGiven:
 		if key == nil {
 			return errors.New("the master key is required to store the SMTP password")
 		}
@@ -323,9 +346,15 @@ func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 			return err
 		}
 		writes = append(writes, write{SettingSMTPPasswordEnc, enc, false})
+	case in.ClearSMTPPassword:
+		passwordMissing = true
+	case !saved.SMTPPasswordSet:
+		// A username set now needs a password (a saved one without a
+		// password is left alone while it is not changed).
+		passwordMissing = in.SMTPUsername != nil
 	}
 	if in.SMTPFrom != nil {
-		from, err := NormalizeEmail(*in.SMTPFrom)
+		from, err = NormalizeEmail(*in.SMTPFrom)
 		if err != nil {
 			return fmt.Errorf("smtp_from: %w", err)
 		}
@@ -339,7 +368,11 @@ func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 		writes = append(writes, write{SettingPublicBaseURL, base, base == ""})
 	}
 	if in.Enabled != nil {
+		enabled = *in.Enabled
 		writes = append(writes, write{SettingNotifyEnabled, "1", !*in.Enabled})
+	}
+	if enabled && (host == "" || from == "") {
+		return errNotifySMTPRequired
 	}
 	if in.Time != nil {
 		t := strings.TrimSpace(*in.Time)
@@ -366,14 +399,11 @@ func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 		value := FormatNotifyUserIDs(ids)
 		writes = append(writes, write{SettingNotifyUserIDs, value, value == ""})
 	}
-	if in.SMTPPassword == nil || *in.SMTPPassword == "" {
-		saved, err := ResolveNotificationSettings(db, nil)
-		if err != nil {
-			return err
-		}
-		if saved.SMTPPasswordSet && smtpConnectionChanged(saved, in) {
-			return ErrSMTPPasswordRequired
-		}
+	if passwordMissing {
+		return errSMTPPasswordMissing
+	}
+	if username != "" && !passwordGiven && saved.SMTPPasswordSet && smtpConnectionChanged(saved, in) {
+		return ErrSMTPPasswordRequired
 	}
 	// One transaction: a failure never leaves half of the SMTP settings.
 	return persistSettings(db, writes)
@@ -381,7 +411,8 @@ func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 
 // smtpConnectionChanged reports whether in changes the SMTP host, port,
 // security mode or username away from the saved values (compared after the
-// same normalization the update applies).
+// same normalization the update applies). Callers ask only while a username
+// stays: clearing it removes the stored password instead.
 func smtpConnectionChanged(saved *NotificationSettings, in *NotificationInput) bool {
 	if in.SMTPHost != nil && strings.TrimSpace(*in.SMTPHost) != saved.SMTP.Host {
 		return true
@@ -833,6 +864,14 @@ var ErrSMTPPasswordRequired = wording.New("validation.connection.passwordRequire
 
 var errSMTPPortInvalid = wording.New("validation.common.numberOutOfRange", "smtp_port must be between 1 and 65535").With("min", 1).With("max", 65535)
 
+// errSMTPPasswordMissing refuses a username without a password, typed or
+// stored (the SMTP server would refuse the login).
+var errSMTPPasswordMissing = wording.New("validation.connection.passwordRequired", "smtp_password is required with smtp_username")
+
+// errNotifySMTPRequired refuses notifications switched on (or left on) without
+// an SMTP host or a sender address: nothing could be sent.
+var errNotifySMTPRequired = wording.New("validation.notification.smtpRequired", "notifications need the SMTP host and the sender address")
+
 // SMTPTestInput carries the connection values a test mail may try instead of
 // the saved ones; nil fields (and an empty password) mean the saved values.
 type SMTPTestInput struct {
@@ -845,11 +884,13 @@ type SMTPTestInput struct {
 }
 
 // SMTPConfigForTest builds the SMTP configuration of a test mail from the
-// saved settings and the values given in the request. The stored password is
-// used only when the host, port, security mode and username are the saved
-// ones; as soon as one of them differs the request must carry a
-// password (ErrSMTPPasswordRequired otherwise), so that the stored password
-// can never be sent to a server other than the one it was saved for.
+// saved settings and the values given in the request. Without a username no
+// password is used; with one a password is needed (errSMTPPasswordMissing
+// otherwise). The stored password is used only when the host, port,
+// security mode and username are the saved ones; as soon as one of them
+// differs the request must carry a password (ErrSMTPPasswordRequired
+// otherwise), so that the stored password can never be sent to a server
+// other than the one it was saved for.
 func SMTPConfigForTest(db *sql.DB, key []byte, in *SMTPTestInput) (SMTPConfig, error) {
 	saved, err := ResolveNotificationSettings(db, key)
 	if err != nil {
@@ -889,12 +930,15 @@ func SMTPConfigForTest(db *sql.DB, key []byte, in *SMTPTestInput) (SMTPConfig, e
 		}
 		cfg.From = from
 	}
+	if cfg.Username == "" {
+		return cfg, nil
+	}
 	if in.Password != nil && *in.Password != "" {
 		cfg.Password = *in.Password
 		return cfg, nil
 	}
 	if !saved.SMTPPasswordSet {
-		return cfg, nil
+		return SMTPConfig{}, errSMTPPasswordMissing
 	}
 	sameServer := cfg.Host == saved.SMTP.Host && cfg.Port == saved.SMTP.Port &&
 		cfg.Security == saved.SMTP.Security && cfg.Username == saved.SMTP.Username

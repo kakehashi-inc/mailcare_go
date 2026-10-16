@@ -198,7 +198,7 @@ func (c *UserRoleCmd) Run() error {
 // empty preference restores its default.
 type UserUpdateCmd struct {
 	Username    string  `arg:"" help:"Username"`
-	DisplayName *string `help:"Display name" name:"display-name"`
+	DisplayName *string `help:"Display name (\"\" restores the username)" name:"display-name"`
 	Email       *string `help:"Notification mail address (\"\" clears it)"`
 	Language    *string `help:"UI language: ja or en"`
 	Timezone    *string `help:"Display timezone, IANA name (e.g. Asia/Tokyo, UTC)"`

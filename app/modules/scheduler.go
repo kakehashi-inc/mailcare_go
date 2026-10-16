@@ -20,7 +20,9 @@ import (
 // date of the occurrence is recorded in the cleanup_last_run_date setting so
 // a restart does not repeat it and an occurrence missed while the server was
 // down is caught up at start), and the analysis of the waiting groups once the agent's usage
-// limit is over (queueAnalysisAfterLimit). It re-reads the settings on every tick so a change takes
+// limit is over (queueAnalysisAfterLimit), and the delivery probe: a
+// probe_send job at each probe send time and a probe_check job once the
+// next arrival check is due (queueProbe). It re-reads the settings on every tick so a change takes
 // effect immediately, and it never fires the same time twice within one
 // minute.
 type Scheduler struct {
@@ -33,13 +35,14 @@ type Scheduler struct {
 	lastFired    map[string]string // HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
 	notifyFired  string            // "YYYY-MM-DD HH:MM" of the last notify firing
 	cleanupFired string            // "YYYY-MM-DD" of the last cleanup occurrence queued by this process
+	probeFired   map[string]string // probe send HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 }
 
 // NewScheduler creates a scheduler that submits jobs through jm.
 func NewScheduler(db *sql.DB, jm *JobManager) *Scheduler {
-	return &Scheduler{db: db, jm: jm, now: time.Now, lastFired: map[string]string{}}
+	return &Scheduler{db: db, jm: jm, now: time.Now, lastFired: map[string]string{}, probeFired: map[string]string{}}
 }
 
 // Start launches the ticking goroutine. Check and notify times that already
@@ -90,7 +93,10 @@ func (s *Scheduler) Stop() {
 // queues one sync job (mailbox NULL: expanded into one child per enabled
 // mailbox by the job manager), a due notify time queues one notify job, and
 // the first tick at or after the cleanup time of a day queues one cleanup
-// job (mailbox NULL: one child per mailbox, disabled ones included).
+// job (mailbox NULL: one child per mailbox, disabled ones included). A job
+// that could do nothing is not queued (no error, no log line): no sync
+// without an enabled mailbox, no notify without the SMTP server or a
+// selected recipient with an email address.
 func (s *Scheduler) Tick() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -101,9 +107,12 @@ func (s *Scheduler) Tick() {
 		for _, key := range due {
 			s.lastFired[key.time] = key.minute
 		}
-		s.enqueue(JobKindSync)
+		if s.hasEnabledMailbox() {
+			s.enqueue(JobKindSync)
+		}
 	}
 	s.queueCleanupIfDue(now)
+	s.queueProbe(last, now)
 	settings, err := ResolveNotificationSettings(s.db, nil)
 	if err != nil {
 		log.Printf("scheduler: failed to read the notification settings: %v", err)
@@ -111,28 +120,124 @@ func (s *Scheduler) Tick() {
 	}
 	if key, due := NotifyDue(last, now, settings, s.notifyFired); due {
 		s.notifyFired = key
-		s.enqueue(JobKindNotify)
+		if s.notifyReachesSomeone(settings) {
+			s.enqueue(JobKindNotify)
+		}
 	}
 	s.queueAnalysisAfterLimit(now)
+}
+
+// hasEnabledMailbox reports whether a sync over every mailbox has one to
+// process (runExpansion takes the enabled ones). The caller holds s.mu.
+func (s *Scheduler) hasEnabledMailbox() bool {
+	mailboxes, err := models.ListMailboxes(s.db)
+	if err != nil {
+		log.Printf("scheduler: failed to list the mailboxes: %v", err)
+		return false
+	}
+	for _, mb := range mailboxes {
+		if mb.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// notifyReachesSomeone reports whether a notify job could send: the SMTP
+// server is set and a selected recipient has an email address. The caller
+// holds s.mu.
+func (s *Scheduler) notifyReachesSomeone(settings *NotificationSettings) bool {
+	if !settings.SMTP.Configured() {
+		return false
+	}
+	_, addresses, err := NotificationRecipients(s.db, settings)
+	if err != nil {
+		log.Printf("scheduler: failed to read the notification recipients: %v", err)
+		return false
+	}
+	return len(addresses) > 0
 }
 
 // queueAnalysisAfterLimit queues the analysis of the groups waiting for it
 // (analyze, mailbox NULL: one child per mailbox) once the recorded end of the
 // agent's usage limit is AgentLimitResumeMargin behind, and removes the
-// record. With the automatic analysis switched off, or the CLI missing,
-// only the record goes. The caller holds s.mu.
+// record. With the automatic analysis switched off, the CLI missing or no
+// mailbox, only the record goes. The caller holds s.mu.
 func (s *Scheduler) queueAnalysisAfterLimit(now time.Time) {
 	until, limited := ResolveAgentLimitedUntil(s.db)
 	if !limited || now.Before(until.Add(AgentLimitResumeMargin)) {
 		return
 	}
-	if ResolveAgentEnabled(s.db) && agent.ProviderAvailable(ResolveAgentProvider(s.db)) {
+	if ResolveAgentEnabled(s.db) && agent.ProviderAvailable(ResolveAgentProvider(s.db)) && s.hasMailbox() {
 		if !s.enqueue(JobKindAnalyze) {
 			return // try again on the next tick
 		}
 	}
 	if err := SetAgentLimitedUntil(s.db, time.Time{}); err != nil {
 		log.Printf("scheduler: failed to clear the usage limit record: %v", err)
+	}
+}
+
+// hasMailbox reports whether any mailbox exists. The caller holds s.mu.
+func (s *Scheduler) hasMailbox() bool {
+	mailboxes, err := models.ListMailboxes(s.db)
+	if err != nil {
+		log.Printf("scheduler: failed to list the mailboxes: %v", err)
+		return false
+	}
+	return len(mailboxes) > 0
+}
+
+// queueProbe queues the probe send when a probe send time arrived (target:
+// its "YYYY-MM-DD HH:MM") and otherwise the arrival check once the recorded
+// next check time has come and no probe_send is queued or running (each send
+// schedules the next check, which covers the mails of the earlier sends too;
+// the check re-reads the time when it starts, runProbe). Nothing is queued
+// while the probe is switched off or not set up. A send time passes without
+// a send while no mailbox sends probe mails, and a due check without open
+// probe mails is not queued: its schedule and a run of failed checks are
+// cleared as such a check would (ClearProbeCheck). Send times that passed
+// while the server was down are not sent afterwards. The caller holds s.mu.
+func (s *Scheduler) queueProbe(last, now time.Time) {
+	ps, err := ResolveProbeSettings(s.db, nil)
+	if err != nil {
+		log.Printf("scheduler: failed to read the probe settings: %v", err)
+		return
+	}
+	if !ps.Enabled || !ps.Configured() {
+		return
+	}
+	if due, ok := ProbeSendDue(last, now, ps.SendTimes, s.probeFired); ok {
+		s.probeFired[due.time] = due.minute
+		if n, err := ProbeParticipantCount(s.db); err != nil {
+			log.Printf("scheduler: failed to list the mailboxes: %v", err)
+		} else if n > 0 {
+			s.enqueueTarget(JobKindProbeSend, due.minute)
+			return
+		}
+	}
+	if ps.NextCheckAt.Valid && !now.Before(ps.NextCheckAt.Time) {
+		// A running or waiting send moves the check (it schedules the next
+		// one), so none is queued meanwhile.
+		if sending, err := models.HasActiveJobOfKind(s.db, JobKindProbeSend); err != nil || sending {
+			return
+		}
+		// A check already queued or running covers it (no log line every
+		// tick until it ends).
+		if checking, err := models.HasActiveJobOfKind(s.db, JobKindProbeCheck); err != nil || checking {
+			return
+		}
+		open, err := models.CountOpenProbeMails(s.db)
+		switch {
+		case err != nil:
+			log.Printf("scheduler: failed to count the open probe mails: %v", err)
+		case open == 0:
+			if err := ClearProbeCheck(s.db); err != nil {
+				log.Printf("scheduler: failed to clear the arrival check: %v", err)
+			}
+		default:
+			s.enqueue(JobKindProbeCheck)
+		}
 	}
 }
 
@@ -157,7 +262,12 @@ func (s *Scheduler) queueCleanupIfDue(now time.Time) {
 // scheduler and logs the outcome. It reports whether such a job is now
 // queued or running (false when the queue could not be reached).
 func (s *Scheduler) enqueue(kind string) bool {
-	job, created, err := s.jm.Enqueue(kind, 0, "", RequestedByScheduler)
+	return s.enqueueTarget(kind, "")
+}
+
+// enqueueTarget is enqueue with a job target.
+func (s *Scheduler) enqueueTarget(kind, target string) bool {
+	job, created, err := s.jm.Enqueue(kind, 0, target, RequestedByScheduler)
 	switch {
 	case err != nil:
 		log.Printf("scheduler: failed to queue the %s job: %v", kind, err)

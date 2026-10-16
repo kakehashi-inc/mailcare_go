@@ -26,21 +26,64 @@ func controlURL(port int, path string) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/control%s", port, path)
 }
 
-// controlError extracts the error message of a control response body.
-func controlError(resp *http.Response) error {
+// controlDo sends a request to the local control endpoints with the control
+// token of this data directory (ControlTokenHeader). body nil sends none; a
+// body is sent as JSON.
+func controlDo(client *http.Client, method string, port int, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, controlURL(port, path), body)
+	if err != nil {
+		return nil, err
+	}
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token := localControlToken(port); token != "" {
+		req.Header.Set(ControlTokenHeader, token)
+	}
+	return client.Do(req)
+}
+
+// controlFailure is the error body of a control response: the message,
+// and for a refused control token the id of the data directory the server
+// serves (DataDirID).
+type controlFailure struct {
+	Error     string `json:"error"`
+	DataDirID string `json:"data_dir_id,omitempty"`
+}
+
+// readControlFailure reads the error body of a control response (once).
+func readControlFailure(resp *http.Response) controlFailure {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	var payload struct {
-		Error string `json:"error"`
+	var f controlFailure
+	if json.Unmarshal(body, &f) != nil || f.Error == "" {
+		f = controlFailure{Error: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
-	if json.Unmarshal(body, &payload) == nil && payload.Error != "" {
-		return fmt.Errorf("%s", payload.Error)
+	return f
+}
+
+// controlError extracts the error message of a control response body. A
+// refused control token is explained (refusedTokenError).
+func controlError(port int, resp *http.Response) error {
+	f := readControlFailure(resp)
+	if resp.StatusCode == http.StatusForbidden && f.Error == ControlTokenRefused {
+		return refusedTokenError(port, f)
 	}
-	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	return fmt.Errorf("%s", f.Error)
+}
+
+// refusedTokenError explains a refused control token: the server serves the
+// data directory of this process (another OS user, or a stale token) or
+// another one.
+func refusedTokenError(port int, f controlFailure) error {
+	if f.DataDirID != "" && f.DataDirID == localDataDirID() {
+		return fmt.Errorf("the server on port %d serves this data directory but refused the control token of this command: run it as the OS user of the service with the same --data-dir, or restart the server", port)
+	}
+	return fmt.Errorf("the server on port %d serves another data directory (it refused the control token of this one)", port)
 }
 
 // StopServer sends a graceful shutdown request to a running local server.
 func StopServer(port int) error {
-	resp, err := controlClient.Post(controlURL(port, "/shutdown"), "application/json", nil)
+	resp, err := controlDo(controlClient, http.MethodPost, port, "/shutdown", nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to server on port %d: %w", port, err)
 	}
@@ -49,7 +92,7 @@ func StopServer(port int) error {
 		fmt.Println("Server shutdown initiated")
 		return nil
 	}
-	return fmt.Errorf("shutdown request failed: %w", controlError(resp))
+	return fmt.Errorf("shutdown request failed: %w", controlError(port, resp))
 }
 
 // ServerStatus is the payload of GET /control/status. DataDir is the
@@ -69,6 +112,11 @@ type ServerStatus struct {
 	Mailboxes   int    `json:"mailboxes"`
 	ActiveJobs  int    `json:"active_jobs"`
 	NextCheckAt string `json:"next_check_at"`
+	// RefusedOwnDir is set by LocalServer when a server refused the control
+	// token of this process although it serves the data directory of this
+	// process (the same DataDirID): the CLI must not touch the data in
+	// process then.
+	RefusedOwnDir bool `json:"-"`
 }
 
 // ServesDataDir reports whether the server serves the given data directory
@@ -79,13 +127,13 @@ func (st *ServerStatus) ServesDataDir(dataDir string) bool {
 
 // GetServerStatus queries a running local server's status endpoint.
 func GetServerStatus(port int) (*ServerStatus, error) {
-	resp, err := controlClient.Get(controlURL(port, "/status"))
+	resp, err := controlDo(controlClient, http.MethodGet, port, "/status", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server on port %d: %w", port, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, controlError(resp)
+		return nil, controlError(port, resp)
 	}
 	var st ServerStatus
 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
@@ -123,14 +171,24 @@ func ShowServerStatus(port int) error {
 // LocalServer returns the status of the MailCare server answering on the
 // local control port, or nil when nothing answers there (or what answers is
 // not a MailCare server). Whether that server serves this process's data
-// directory is a separate question (ServerStatus.ServesDataDir).
+// directory is a separate question (ServerStatus.ServesDataDir). A server
+// that refuses the control token of this process is reported without a data
+// directory, with RefusedOwnDir set when its refusal names the data
+// directory of this process (DataDirID).
 func LocalServer(port int) *ServerStatus {
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(controlURL(port, "/status"))
+	resp, err := controlDo(client, http.MethodGet, port, "/status", nil)
 	if err != nil {
 		return nil
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		f := readControlFailure(resp)
+		if f.Error != ControlTokenRefused {
+			return nil
+		}
+		return &ServerStatus{Name: AppName, RefusedOwnDir: f.DataDirID != "" && f.DataDirID == localDataDirID()}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -184,13 +242,13 @@ func SubmitJobToServer(port int, req JobRequest) (*JobInfo, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	resp, err := controlClient.Post(controlURL(port, "/jobs"), "application/json", bytes.NewReader(body))
+	resp, err := controlDo(controlClient, http.MethodPost, port, "/jobs", bytes.NewReader(body))
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to connect to server on port %d: %w", port, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, false, controlError(resp)
+		return nil, false, controlError(port, resp)
 	}
 	var env jobEnvelope
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
@@ -201,13 +259,13 @@ func SubmitJobToServer(port int, req JobRequest) (*JobInfo, bool, error) {
 
 // GetServerJob fetches one job from the running server.
 func GetServerJob(port int, id int64) (*JobInfo, error) {
-	resp, err := controlClient.Get(controlURL(port, fmt.Sprintf("/jobs/%d", id)))
+	resp, err := controlDo(controlClient, http.MethodGet, port, fmt.Sprintf("/jobs/%d", id), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to server on port %d: %w", port, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, controlError(resp)
+		return nil, controlError(port, resp)
 	}
 	var env jobEnvelope
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {

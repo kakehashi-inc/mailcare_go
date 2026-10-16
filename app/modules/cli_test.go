@@ -291,3 +291,51 @@ func TestSettingsShowSendingSourceAndDNSCheck(t *testing.T) {
 		t.Errorf("text output after the changes:\n%s", text)
 	}
 }
+
+// "settings set KEY \"\"" restores the default of every key through the
+// validation of a given value; web_listen takes an IP address or a host
+// name only.
+func TestApplySettingDefaultsAndWebListen(t *testing.T) {
+	db := newTestDB(t)
+	isArg := func(err error) bool {
+		var exitErr *ExitError
+		return errors.As(err, &exitErr) && exitErr.Code == ExitArgument
+	}
+	for _, kv := range [][2]string{
+		{SettingWorkers, "4"}, {SettingCheckTimes, "05:00"}, {SettingAgentKeepDays, "7"}, {SettingMailKeepDays, "30"},
+		{SettingCleanupTime, "03:30"}, {SettingCookieTTLHours, "8"}, {SettingWebPort, "8080"}, {SettingRecheckDays, CategoryIPBlocked + "=3"},
+		{SettingSendingSourceHosts, "mx.example.test"}, {SettingWebListen, "127.0.0.1"}, {SettingAgentEnabled, "0"},
+		{SettingSMTPPort, "2525"}, {SettingNotifyTime, "06:30"}, {SettingNotifyInterval, "3"},
+	} {
+		if _, err := ApplySetting(db, kv[0], kv[1], nil); err != nil {
+			t.Fatalf("%s=%s: %v", kv[0], kv[1], err)
+		}
+		if _, err := ApplySetting(db, kv[0], "", nil); err != nil {
+			t.Errorf("%s restored: %v", kv[0], err)
+		}
+	}
+	if ResolveWorkers(db) != DefaultWorkers || FormatCheckTimes(ResolveCheckTimes(db)) != DefaultCheckTimes ||
+		ResolveAgentKeepDays(db) != DefaultAgentKeepDays || ResolveMailKeepDays(db) != DefaultMailKeepDays ||
+		ResolveCleanupTime(db) != DefaultCleanupTime || ResolveCookieTTLHours(db) != DefaultCookieTTLHours ||
+		ResolveWebPort(db, 0) != DefaultWebPort || FormatRecheckDays(ResolveRecheckDays(db)) != "" ||
+		ResolveWebListen(db, "") != DefaultWebListenAddr || !ResolveAgentEnabled(db) {
+		t.Error("a default was not restored")
+	}
+	if sources, _ := ResolveSendingSources(db); len(sources.Hosts) != 0 {
+		t.Errorf("sending source hosts not cleared: %v", sources.Hosts)
+	}
+	if s, _ := ResolveNotificationSettings(db, nil); s.SMTP.Port != DefaultSMTPPort || s.Time != DefaultNotifyTime || s.IntervalDays != DefaultNotifyIntervalDays {
+		t.Errorf("notification defaults not restored: %+v", s)
+	}
+	for in, want := range map[string]string{"10.0.0.5": "10.0.0.5", "::1": "::1", "[::1]": "::1", "mailcare.example.test": "mailcare.example.test",
+		"localhost": "localhost", "": DefaultWebListenAddr} {
+		if got, err := ApplySetting(db, SettingWebListen, in, nil); err != nil || (in != "" && got != want) || ResolveWebListen(db, "") != want {
+			t.Errorf("web_listen %q: %q %v (saved %q)", in, got, err, ResolveWebListen(db, ""))
+		}
+	}
+	for _, bad := range []string{"not valid", "http://example.test", "example.test:80", "a/b", "-bad.example.test", "bad_name.example.test"} {
+		if _, err := ApplySetting(db, SettingWebListen, bad, nil); !isArg(err) {
+			t.Errorf("web_listen %q: %v, want an argument error", bad, err)
+		}
+	}
+}

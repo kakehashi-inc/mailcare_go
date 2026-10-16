@@ -29,6 +29,11 @@ import type {
     NotificationSettingsDTO,
     NotificationSettingsInput,
     NotificationTestInput,
+    ProbeFilter,
+    ProbeListResponse,
+    ProbeMailDTO,
+    ProbeSettingsDTO,
+    ProbeSettingsInput,
     ProfileInput,
     SettingsDTO,
     SettingsInput,
@@ -396,9 +401,8 @@ export function updateNotificationSettings(input: NotificationSettingsInput): Pr
     return request<NotificationSettingsDTO>(api('/settings/notifications'), json('PUT', input));
 }
 
-/** Sends a short SMTP check mail; without "to" the server uses the address of the caller. */
-export function sendTestNotification(to?: string): Promise<{ ok: boolean }> {
-    const input: NotificationTestInput = to ? { to } : {};
+/** Sends a short SMTP check mail with the given connection values; without "to" the server uses the address of the caller. */
+export function sendTestNotification(input: NotificationTestInput): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(api('/notifications/test'), json('POST', input));
 }
 
@@ -448,3 +452,51 @@ export function deleteToken(identifier: string): Promise<void> {
 }
 
 export type { BounceDTO };
+
+// --- Delivery probe ---
+
+export function getProbeSettings(): Promise<ProbeSettingsDTO> {
+    return request<ProbeSettingsDTO>(api('/settings/probe'));
+}
+
+/** Changes only the fields present in the input and returns the full settings. */
+export function updateProbeSettings(input: ProbeSettingsInput): Promise<ProbeSettingsDTO> {
+    return request<ProbeSettingsDTO>(api('/settings/probe'), json('PUT', input));
+}
+
+/** Tries the probe server with the saved settings and the given values (the stored password only for the saved connection). */
+export function testProbeServer(input: ProbeSettingsInput): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(api('/settings/probe/test'), json('POST', input));
+}
+
+/** Sends a test mail through the probe SMTP server of a mailbox form to the probe address. */
+export function testMailboxProbe(input: MailboxInput): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(api('/mailboxes/probe-test'), json('POST', input));
+}
+
+export interface ProbeListParams {
+    filter?: ProbeFilter;
+    mailbox_id?: number;
+    page?: number;
+    per_page?: number;
+}
+
+export function listProbes(params: ProbeListParams = {}): Promise<ProbeListResponse> {
+    return request<ProbeListResponse>(api(`/probes${query({ ...params })}`));
+}
+
+/** Closes an open probe mail by hand with a reason and optional details; returns the updated mail. */
+export async function resolveProbe(id: number, reason: string, note: string): Promise<ProbeMailDTO> {
+    const r = await request<{ probe: ProbeMailDTO }>(api(`/probes/${id}/resolve`), json('PUT', { reason, note }));
+    return r.probe;
+}
+
+/** Queues a probe send now (recorded without a send time). */
+export function sendProbesNow(): Promise<JobSubmitResult> {
+    return request<JobSubmitResult>(api('/probes/send'), json('POST'));
+}
+
+/** Queues an arrival check now. */
+export function checkProbesNow(): Promise<JobSubmitResult> {
+    return request<JobSubmitResult>(api('/probes/check'), json('POST'));
+}

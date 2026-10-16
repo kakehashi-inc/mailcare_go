@@ -1,0 +1,28 @@
+{{/*
+  Delivery probe mail (English). The subject is fixed by the program
+  (ASCII: date and time of the send, the sending address and the token), so
+  only "body" is used. Fields: .Address (the sending address), .Slot (the
+  send time, YYYY-MM-DD HH:MM), .SentAt (date and time of sending, server
+  time zone), .Token (the probe ID; "" for a test), .Test (a test of the
+  SMTP settings: not recorded).
+*/ -}}
+{{define "subject" -}}
+[MailCare] Probe {{.Slot}}
+{{- end}}
+
+{{define "body" -}}
+{{if .Test -}}
+This is a test email for the MailCare send check (SMTP) settings.
+This email is not recorded and is not looked for by the arrival check.
+{{- else -}}
+This probe mail was sent automatically by MailCare to check that mail is delivered.
+Its arrival is checked, so do not move or delete it.
+{{- end}}
+
+Sender: {{.Address}}
+Send time (scheduled): {{.Slot}}
+Sent at: {{.SentAt}}
+{{- if .Token}}
+Probe ID: {{.Token}}
+{{- end}}
+{{- end}}

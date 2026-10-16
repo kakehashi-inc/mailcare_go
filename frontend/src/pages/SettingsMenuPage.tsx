@@ -23,6 +23,12 @@ export function SettingsMenuPage() {
             description: t('page.settings.menu.notifications'),
         },
         {
+            to: '/settings/probe',
+            icon: 'forward_to_inbox',
+            label: t('layout.nav.settingsProbe'),
+            description: t('page.settings.menu.probe'),
+        },
+        {
             to: '/settings/mailboxes',
             icon: 'alternate_email',
             label: t('layout.nav.settingsMailboxes'),

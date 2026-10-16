@@ -2,6 +2,7 @@ package workers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 
@@ -94,10 +95,19 @@ func (c *core) handleUpdateMailbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in modules.MailboxInput
-	if !decodeJSON(w, r, &in) {
+	var raw json.RawMessage
+	if !decodeJSON(w, r, &raw) {
 		return
 	}
+	var in modules.MailboxInput
+	var present map[string]json.RawMessage
+	if json.Unmarshal(raw, &in) != nil || json.Unmarshal(raw, &present) != nil {
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
+	}
+	// A field left out of the request keeps its stored value (the SMTP
+	// connection of the send check, its password included).
+	modules.KeepAbsentSMTPFields(mb, &in, func(name string) bool { _, ok := present[name]; return ok })
 	if err := modules.UpdateMailbox(c.db, c.key, c.mailsRoot, c.agentRoot, mb, &in); err != nil {
 		writeErrorMessage(w, r, err)
 		return

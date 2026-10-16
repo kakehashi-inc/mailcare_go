@@ -58,13 +58,23 @@ type core struct {
 
 	srv          *http.Server
 	shutdownOnce sync.Once
+
+	// controlToken is the token every control request must carry (fresh at
+	// every start; startServer writes it to the data directory for the CLI).
+	controlToken string
 }
 
 // newCore assembles a core over an open database. The job manager is created
 // but not started; startServer starts it together with the scheduler.
 func newCore(db *sql.DB, key []byte, spaFS fs.FS, dataDir, webListen string, webPort int) *core {
+	token, err := modules.NewControlToken()
+	if err != nil {
+		// No random source: the control endpoints stay closed (an empty
+		// token never matches).
+		log.Printf("failed to create the control token: %v", err)
+	}
 	c := &core{
-		db: db, key: key, spaFS: spaFS, startTime: time.Now(),
+		db: db, key: key, spaFS: spaFS, startTime: time.Now(), controlToken: token,
 		webListen: webListen, webPort: webPort,
 		cookieTTLHours: modules.ResolveCookieTTLHours(db),
 		dataDir:        dataDir,
@@ -118,6 +128,14 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 	if err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
+	// One server per data directory, for the whole lifetime of this one:
+	// a second start stops here, before it touches the database or the
+	// control token of the running server.
+	release, err := modules.AcquireServerLock(dataDir)
+	if err != nil {
+		return err
+	}
+	defer release()
 	modules.LogMigrations = true
 	db, err := modules.OpenDB("")
 	if err != nil {
@@ -159,6 +177,9 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 		return fmt.Errorf("failed to create the mails directory: %w", err)
 	}
 	modules.ResetStaleJobs(db, c.mailsRoot)
+	if c.controlToken == "" {
+		return errors.New("failed to create the control token")
+	}
 	// Ensure a default token exists. Deleting the default never promotes
 	// another token: on the next start an existing "default" token is made
 	// the default, otherwise a new one is created.
@@ -186,6 +207,16 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", webPort, err)
 	}
+	// The control token is written only once this server listens (a start
+	// that fails before never replaces the token of a running server; the
+	// server lock keeps a second server of this data directory out).
+	if err := modules.WriteControlToken(dataDir, webPort, c.controlToken); err != nil {
+		for _, ln := range listeners {
+			ln.Close()
+		}
+		return fmt.Errorf("failed to write the control token: %w", err)
+	}
+	defer modules.RemoveControlToken(dataDir, c.controlToken)
 
 	c.jm.Start()
 	c.sched.Start()
@@ -309,7 +340,7 @@ func writeErrorMessage(w http.ResponseWriter, r *http.Request, err error) {
 	switch m.Key {
 	case "system.notFound":
 		status = http.StatusNotFound
-	case "result.mailbox.busy":
+	case "result.mailbox.busy", "result.probe.notOpen":
 		status = http.StatusConflict
 	}
 	writeJSON(w, status, apiMessage{Key: m.Key, Params: m.Params})
@@ -325,6 +356,14 @@ func writeInternalError(w http.ResponseWriter, what string, err error) {
 // {"error": msg}: English text the CLI prints as it is.
 func writeControlError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeControlTokenRefused answers a control request without the right
+// token: 403 with the id of the data directory served (modules.DataDirID,
+// no secret), so the CLI of this data directory can tell that it must not
+// work on the data itself.
+func (c *core) writeControlTokenRefused(w http.ResponseWriter) {
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": modules.ControlTokenRefused, "data_dir_id": modules.DataDirID(c.dataDir)})
 }
 
 // decodeJSON reads a JSON body into v. It returns false (after answering

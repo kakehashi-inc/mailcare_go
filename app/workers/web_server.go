@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"crypto/subtle"
 	"errors"
 	"io/fs"
 	"log"
@@ -50,6 +51,7 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/mailboxes", c.handleListMailboxes)
 	mux.HandleFunc("POST /api/v1/mailboxes", c.requireAdmin(c.handleCreateMailbox))
 	mux.HandleFunc("POST /api/v1/mailboxes/test", c.requireAdmin(c.handleTestMailbox))
+	mux.HandleFunc("POST /api/v1/mailboxes/probe-test", c.requireAdmin(c.handleTestMailboxProbe))
 	mux.HandleFunc("GET /api/v1/mailboxes/{id}", c.handleGetMailbox)
 	mux.HandleFunc("PUT /api/v1/mailboxes/{id}", c.requireAdmin(c.handleUpdateMailbox))
 	mux.HandleFunc("DELETE /api/v1/mailboxes/{id}", c.requireAdmin(c.handleDeleteMailbox))
@@ -82,6 +84,15 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings/notifications", c.requireAdmin(c.handleUpdateNotificationSettings))
 	mux.HandleFunc("POST /api/v1/notifications/test", c.requireAdmin(c.handleTestNotification))
 	mux.HandleFunc("POST /api/v1/notifications/send", c.requireAdmin(c.handleSendNotification))
+
+	// Delivery probe.
+	mux.HandleFunc("GET /api/v1/settings/probe", c.requireAdmin(c.handleGetProbeSettings))
+	mux.HandleFunc("PUT /api/v1/settings/probe", c.requireAdmin(c.handleUpdateProbeSettings))
+	mux.HandleFunc("POST /api/v1/settings/probe/test", c.requireAdmin(c.handleTestProbeSettings))
+	mux.HandleFunc("GET /api/v1/probes", c.handleListProbes)
+	mux.HandleFunc("PUT /api/v1/probes/{id}/resolve", c.handleResolveProbe)
+	mux.HandleFunc("POST /api/v1/probes/send", c.requireAdmin(c.handleSendProbes))
+	mux.HandleFunc("POST /api/v1/probes/check", c.requireAdmin(c.handleCheckProbes))
 
 	// Users (admin only).
 	mux.HandleFunc("GET /api/v1/users", c.requireAdmin(c.handleListUsers))
@@ -126,6 +137,26 @@ func isLoopbackRequest(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// isForwarded reports whether a request names a proxy (forwarding headers):
+// the control endpoints serve the local CLI only, never through a proxy on
+// the same host (which reaches them over loopback too).
+func isForwarded(r *http.Request) bool {
+	for _, name := range []string{"X-Forwarded-For", "Forwarded", "X-Real-Ip", "Via"} {
+		if _, ok := r.Header[http.CanonicalHeaderKey(name)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// validControlToken reports whether a control request carries the control
+// token of this server (constant-time comparison; an empty token never
+// matches).
+func (c *core) validControlToken(r *http.Request) bool {
+	got := r.Header.Get(modules.ControlTokenHeader)
+	return c.controlToken != "" && got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(c.controlToken)) == 1
 }
 
 // isPublicAPIPath lists the /api/v1 paths that need no session.
@@ -247,6 +278,7 @@ func isMessageHTMLPath(p string) bool {
 
 // webMiddleware sets the defensive response headers, refuses cross-site and
 // non-JSON state-changing requests, restricts /control/* to loopback clients
+// that come through no proxy and carry the control token
 // and enforces cookie authentication on /api/v1/* (except health and setup).
 // Other paths (SPA, login, logout, setup) pass through unauthenticated.
 func (c *core) webMiddleware(next http.Handler) http.Handler {
@@ -258,11 +290,16 @@ func (c *core) webMiddleware(next http.Handler) http.Handler {
 		p := r.URL.Path
 		switch {
 		case strings.HasPrefix(p, "/control/"):
-			if !isLoopbackRequest(r) {
+			switch {
+			case !isLoopbackRequest(r):
 				writeControlError(w, http.StatusForbidden, "forbidden")
-				return
+			case isForwarded(r):
+				writeControlError(w, http.StatusForbidden, "forwarded requests are refused")
+			case !c.validControlToken(r):
+				c.writeControlTokenRefused(w)
+			default:
+				next.ServeHTTP(w, r)
 			}
-			next.ServeHTTP(w, r)
 		case strings.HasPrefix(p, "/api/v1/") && !isPublicAPIPath(p):
 			sess, err := modules.ValidateSessionCookie(c.db, c.key, cookieValue(r))
 			if err != nil {

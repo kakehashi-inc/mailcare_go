@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -75,7 +76,8 @@ func TestRenamedMigrationKeepsItsVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mailcare.db")
 	db := openAt(t, path)
 	applied, err := ApplyLocked(ctx, db, masterWithOldName(t), path)
-	if err != nil || len(applied) != migrationCount(t, Master()) || filepath.Base(applied[len(applied)-1]) != oldMigration {
+	appliedOld := slices.ContainsFunc(applied, func(a string) bool { return filepath.Base(a) == oldMigration })
+	if err != nil || len(applied) != migrationCount(t, Master()) || !appliedOld {
 		t.Fatalf("migrating with the old file name: %v, %v", applied, err)
 	}
 	if !upToDate(ctx, db, Master(), path) {

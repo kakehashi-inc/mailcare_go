@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -535,6 +538,7 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:40000", "[::1]:40000"} {
 		req = httptest.NewRequest(http.MethodGet, "/control/status", nil)
 		req.RemoteAddr = addr
+		req.Header.Set(modules.ControlTokenHeader, c.controlToken)
 		rec = httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -563,6 +567,7 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"sync"}`))
 	req.RemoteAddr = "127.0.0.1:40000"
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(modules.ControlTokenHeader, c.controlToken)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"requested_by":"cli"`) {
@@ -574,6 +579,7 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &env)
 	req = httptest.NewRequest(http.MethodGet, "/control/jobs/"+itoa(env.Job.ID), nil)
 	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set(modules.ControlTokenHeader, c.controlToken)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"queued"`) {
@@ -582,6 +588,7 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"analyze","target":"0123456789abcdef"}`))
 	req.RemoteAddr = "127.0.0.1:40000"
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(modules.ControlTokenHeader, c.controlToken)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -591,6 +598,7 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	// (the CLI sends it).
 	req = httptest.NewRequest(http.MethodPost, "/control/jobs", strings.NewReader(`{"kind":"sync"}`))
 	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set(modules.ControlTokenHeader, c.controlToken)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnsupportedMediaType {
@@ -598,6 +606,143 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 	}
 }
 
+// The control endpoints need the control token of the server, and refuse a
+// request that came through a proxy (forwarding headers), even from
+// loopback and with the token.
+func TestControlEndpointsNeedTokenAndNoProxy(t *testing.T) {
+	c := newTestCore(t)
+	h := c.webHandler()
+	status := func(mutate func(r *http.Request)) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, "/control/status", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		mutate(req)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	if c.controlToken == "" || len(c.controlToken) != 64 {
+		t.Fatalf("control token %q", c.controlToken)
+	}
+	if code, body := status(func(*http.Request) {}); code != http.StatusForbidden || !strings.Contains(body, modules.ControlTokenRefused) {
+		t.Errorf("no token: %d %s", code, body)
+	}
+	if code, _ := status(func(r *http.Request) { r.Header.Set(modules.ControlTokenHeader, strings.Repeat("0", 64)) }); code != http.StatusForbidden {
+		t.Errorf("wrong token: %d", code)
+	}
+	for _, header := range []string{"X-Forwarded-For", "Forwarded", "X-Real-IP", "Via"} {
+		code, body := status(func(r *http.Request) {
+			r.Header.Set(modules.ControlTokenHeader, c.controlToken)
+			r.Header.Set(header, "127.0.0.1")
+		})
+		if code != http.StatusForbidden || !strings.Contains(body, "forwarded") {
+			t.Errorf("%s: %d %s", header, code, body)
+		}
+	}
+	if code, _ := status(func(r *http.Request) { r.Header.Set(modules.ControlTokenHeader, c.controlToken) }); code != http.StatusOK {
+		t.Errorf("token: %d", code)
+	}
+}
+
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
+}
+
+// A second start for the data directory of a running server stops before it
+// opens the database, and a start that cannot listen leaves the control
+// token of the running server alone.
+func TestSecondStartKeepsRunningServer(t *testing.T) {
+	dataDir := t.TempDir()
+	modules.SetDataDir(dataDir)
+	t.Cleanup(func() { modules.SetDataDir("") })
+	release, err := modules.AcquireServerLock(dataDir) // the running server
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modules.WriteControlToken(dataDir, 1, "running-server-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := startServer("127.0.0.1", 1, 0, nil, 0); !errors.Is(err, modules.ErrServerRunning) {
+		t.Errorf("second start: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "mailcare.db")); !os.IsNotExist(err) {
+		t.Errorf("the second start opened the database: %v", err)
+	}
+	release()
+	// Without the lock held but with the port taken: the start fails to
+	// listen and keeps the token.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := modules.WriteControlToken(dataDir, port, "running-server-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := startServer("127.0.0.1", port, 0, nil, 0); err == nil || !strings.Contains(err.Error(), "failed to listen") {
+		t.Errorf("start on a taken port: %v", err)
+	}
+	if _, got := modules.ReadControlToken(dataDir); got != "running-server-token" {
+		t.Errorf("the token of the running server became %q", got)
+	}
+}
+
+// No spelling of a control path is served without the token, and the
+// status never carries the token.
+func TestControlPathVariantsNeedToken(t *testing.T) {
+	c := newTestCore(t)
+	h := c.webHandler()
+	for _, x := range []struct{ method, path string }{
+		{http.MethodPost, "/control/shutdown"}, {http.MethodPost, "/control/jobs"}, {http.MethodGet, "/control/jobs/1"},
+		{http.MethodGet, "/control/status"}, {http.MethodHead, "/control/status"}, {http.MethodGet, "//control/status"},
+		{http.MethodGet, "/control/../control/status"}, {http.MethodGet, "/./control/status"}, {http.MethodGet, "/control/%73tatus"},
+		{http.MethodGet, "/control%2Fstatus"}, {http.MethodGet, "/control"}, {http.MethodGet, "/control/status/"},
+		{http.MethodOptions, "/control/status"},
+	} {
+		req := httptest.NewRequest(x.method, x.path, strings.NewReader(`{"kind":"sync"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "127.0.0.1:40000"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code == http.StatusOK || rec.Code == http.StatusCreated {
+			t.Errorf("%s %s served without the token: %d", x.method, x.path, rec.Code)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/control/status", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header[http.CanonicalHeaderKey(modules.ControlTokenHeader)] = []string{"", c.controlToken}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"data_dir_id":"`+modules.DataDirID(c.dataDir)+`"`) {
+		t.Errorf("empty first token value: %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/control/status", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set(modules.ControlTokenHeader, c.controlToken)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), c.controlToken) {
+		t.Errorf("status: %d, token in the body: %v", rec.Code, strings.Contains(rec.Body.String(), c.controlToken))
+	}
+}
+
+// A probe_send with a send time is refused from the Web API and the control
+// endpoints (the scheduler alone queues it).
+func TestProbeSendSlotRefusedOutsideScheduler(t *testing.T) {
+	s := newSeededCore(t)
+	for _, target := range []string{"2026-10-15 07:00", " 2026-10-15 07:00 "} {
+		if rec := do(t, s.h, http.MethodPost, "/api/v1/jobs", map[string]any{"kind": "probe_send", "target": target}, s.admin); rec.Code == http.StatusCreated || rec.Code == http.StatusOK {
+			t.Errorf("API queued %q", target)
+		}
+		body, _ := json.Marshal(map[string]any{"kind": "probe_send", "target": target})
+		req := httptest.NewRequest(http.MethodPost, "/control/jobs", bytes.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(modules.ControlTokenHeader, s.controlToken)
+		rec := httptest.NewRecorder()
+		s.h.ServeHTTP(rec, req)
+		if rec.Code == http.StatusCreated || rec.Code == http.StatusOK {
+			t.Errorf("control queued %q", target)
+		}
+	}
 }

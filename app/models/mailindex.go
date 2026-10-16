@@ -174,6 +174,11 @@ func utcNullTime(t sql.NullTime) sql.NullTime {
 	return sql.NullTime{Time: t.Time.UTC().Round(0), Valid: true}
 }
 
+// placeholders returns n comma-separated "?" for an IN list.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
 // NullTime converts a time to sql.NullTime (zero -> NULL).
 func NullTime(t time.Time) sql.NullTime {
 	if t.IsZero() {

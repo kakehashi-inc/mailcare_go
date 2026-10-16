@@ -165,8 +165,17 @@ func TestCurrentUserEmailAndUserEmailEndpoints(t *testing.T) {
 	}
 	rec = do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"language": "", "theme": "", "display_name": ""}, admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"language":"ja"`) || !strings.Contains(rec.Body.String(), `"theme":"auto"`) ||
-		!strings.Contains(rec.Body.String(), `"display_name":"Root"`) {
-		t.Errorf("empty preferences restore defaults, empty name keeps it: %d %s", rec.Code, rec.Body.String())
+		!strings.Contains(rec.Body.String(), `"display_name":"admin"`) {
+		t.Errorf("empty preferences and an empty name restore the defaults (the name: the username): %d %s", rec.Code, rec.Body.String())
+	}
+	// An administrator clearing the display name of a user restores the
+	// username as well.
+	if rec := do(t, h, http.MethodPut, "/api/v1/users/"+itoa(env.User.ID), map[string]any{"display_name": "Someone"}, admin); rec.Code != http.StatusOK {
+		t.Fatalf("set the display name: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, h, http.MethodPut, "/api/v1/users/"+itoa(env.User.ID), map[string]any{"display_name": ""}, admin)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"display_name":"`+env.User.Username+`"`) {
+		t.Errorf("cleared display name of a user: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = do(t, h, http.MethodPut, "/api/v1/users/"+itoa(env.User.ID), map[string]any{"language": "en", "theme": "light"}, admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"language":"en"`) || !strings.Contains(rec.Body.String(), `"theme":"light"`) ||

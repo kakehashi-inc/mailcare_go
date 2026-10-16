@@ -21,7 +21,9 @@
             "settingsMailboxes": "Mailboxes",
             "settingsUsers": "Users",
             "settingsTokens": "Tokens",
-            "settingsProfile": "Profile"
+            "settingsProfile": "Profile",
+            "settingsProbe": "Delivery probe",
+            "probes": "Delivery probe"
         },
         "renderError": {
             "title": "The page could not be displayed",
@@ -62,7 +64,8 @@
             "minutesSeconds": "{{minutes}} min {{seconds}} s",
             "hoursMinutes": "{{hours}} h {{minutes}} min",
             "days": "{{count}} days",
-            "days_one": "{{count}} day"
+            "days_one": "{{count}} day",
+            "minutes": "{{count}} min"
         }
     },
     "component": {
@@ -156,6 +159,8 @@
             "addressConflicts": "This address cannot be registered because its data folder name would be the same as that of {{other}}.",
             "folderInvalid": "Folder name cannot contain line breaks.",
             "smtpHostInvalid": "\"{{value}}\" is not a valid host name. Use letters, digits and hyphens. IP addresses, port numbers and localhost are not accepted.",
+            "smtpHostRequiredForProbe": "Enter the host name to use the send check.",
+            "smtpPortRequired": "Enter the port to use the send check.",
             "serverKeepDaysOverMailKeep": "Server retention must not exceed the mail retention ({{max}} days)."
         },
         "group": {
@@ -173,7 +178,8 @@
             "publicUrlQuery": "Do not include a query (?) or fragment (#) in the URL.",
             "recipientsTooMany": "Select up to {{max}} recipients.",
             "recipientNotFound": "A selected recipient was not found. Reload the page and select the recipients again.",
-            "testRecipientRequired": "Enter the recipient."
+            "testRecipientRequired": "Enter the recipient.",
+            "smtpRequired": "Enter the SMTP host and sender address to turn on notifications."
         },
         "token": {
             "nameRequired": "Enter a name.",
@@ -191,6 +197,15 @@
             "resolverInvalid": "Line {{line}}: \"{{value}}\" is not a valid resolver IP address. Enter it without a port or CIDR. Loopback addresses, 0.0.0.0 and :: are not accepted.",
             "resolversTooMany": "Enter up to {{max}} resolvers.",
             "noResolver": "To use the DNS check, enter at least one resolver or turn on \"Use only the OS resolver\"."
+        },
+        "probe": {
+            "failureNotAfterDelay": "The failure threshold must be longer than the delay threshold.",
+            "reasonRequired": "Select the reason.",
+            "sendTimesTooMany": "Up to {{max}} send times.",
+            "sendTimesTooClose": "Send times must be at least {{min}} minutes apart.",
+            "delayNotBeforeNextSend": "The delay threshold must be shorter than the gap between send times (up to {{max}} minutes).",
+            "offFirst": "Switch the delivery probe off first (its open probe mails are closed).",
+            "subjectTagInvalid": "Use up to 16 letters, digits, dots, underscores or hyphens."
         }
     },
     "result": {
@@ -245,6 +260,23 @@
         "token": {
             "created": "Issued token \"{{name}}\".",
             "deleted": "Deleted token \"{{name}}\"."
+        },
+        "probe": {
+            "sendQueued": "Started sending the probe mails. Check the result on the Jobs page.",
+            "checkQueued": "Started the arrival check. Check the result on the Jobs page.",
+            "alreadyQueued": "The same job is already queued or running.",
+            "resolved": "Probe mail marked as resolved.",
+            "notConfigured": "Set the probe address and the probe server first.",
+            "addressNotSet": "The probe address is not set.",
+            "notOpen": "This probe mail cannot be marked as resolved.",
+            "disabled": "The delivery probe is off.",
+            "smtpTestSent": "Test email sent to {{to}}.",
+            "noMailbox": "No mailbox sends probe mails.",
+            "nothingOpen": "No probe mail is waiting for its arrival."
+        },
+        "agent": {
+            "unavailable": "The AI agent CLI was not found.",
+            "usageLimited": "The AI agent has reached its usage limit. Analysis is possible once the limit ends."
         }
     },
     "action": {
@@ -254,7 +286,6 @@
             "openFor": "Open {{address}}",
             "editFor": "Edit {{address}}",
             "test": "Test connection",
-            "testFor": "Test connection of {{address}}",
             "delete": "Delete mailbox",
             "deleteFor": "Delete {{address}}",
             "deleteConfirm": "Delete {{address}}? The index and groups are also deleted. This cannot be undone.",
@@ -319,6 +350,14 @@
         "setting": {
             "addTime": "Add time",
             "removeTime": "Remove {{time}}"
+        },
+        "probe": {
+            "sendNow": "Send now",
+            "checkNow": "Check now",
+            "resolve": "Mark as resolved",
+            "test": "Test connection",
+            "smtpTest": "Send test email",
+            "open": "Open delivery probe"
         }
     },
     "value": {
@@ -398,7 +437,9 @@
             "reindex": "Index rebuild",
             "reclassify": "Reclassify",
             "cleanup": "Cleanup",
-            "notify": "Notification email"
+            "notify": "Notification email",
+            "probe_send": "Probe send",
+            "probe_check": "Probe check"
         },
         "checkStatus": {
             "never": "Never synced",
@@ -521,6 +562,33 @@
             "text": "Text",
             "html": "HTML",
             "none": "None"
+        },
+        "probeStatus": {
+            "pending": "Awaiting arrival",
+            "delayed": "Delayed",
+            "failure": "Failure",
+            "send_failed": "Send failed",
+            "arrived": "Arrived",
+            "recovered": "Recovered",
+            "resolved": "Resolved"
+        },
+        "probeLevel": {
+            "delayed": "Delayed",
+            "failure": "Failure"
+        },
+        "probeResolveReason": {
+            "server_recovered": "Mail server confirmed working again",
+            "arrived_elsewhere": "Arrived but was filed into another folder",
+            "maintenance": "Planned maintenance",
+            "config_error": "Wrong setting corrected",
+            "probe_server_issue": "Problem on the probe server",
+            "other": "Other",
+            "probe_disabled": "Probe switched off"
+        },
+        "probeFilter": {
+            "open": "Unresolved",
+            "issues": "Delays and failures",
+            "all": "All"
         }
     },
     "field": {
@@ -563,7 +631,6 @@
         "mailbox": {
             "address": "Email address",
             "addressHint": "Stored in lowercase.",
-            "domain": "Domain",
             "enabled": "Enable monitoring",
             "enabledHint": "When off, the mailbox is not synced automatically.",
             "server": "Server",
@@ -573,10 +640,12 @@
             "recentDaysHint": "Days to look back on later syncs (default 10).",
             "fetchDays": "Fetch days",
             "serverKeepDays": "Server retention (days)",
+            "keepDays": "Retention",
             "serverKeepDaysHint": "Messages older than this many days, counted from the message date, are deleted from the IMAP server (0 keeps them). Junk detection can be wrong, so use 0 for an address that receives mail that must be kept.",
             "serverKeepDaysMax": "Up to the mail retention ({{max}} days).",
-            "smtpHost": "SMTP server (sending)",
-            "smtpHostHint": "Host name of the SMTP server used to send mail from this mailbox. After a change, run \"Reclassify\" in Tools to update existing messages.",
+            "smtpHost": "SMTP server",
+            "probeEnabled": "Run the send check",
+            "probeEnabledHint": "When on, probe mails are sent through this server and their arrival is checked.",
             "lastChecked": "Last synced",
             "openGroups": "Open",
             "recheckGroups": "Re-check",
@@ -699,7 +768,6 @@
         },
         "notification": {
             "host": "SMTP host",
-            "authHint": "Leave empty if the server requires no authentication.",
             "from": "From address",
             "testTo": "Recipient",
             "testToHint": "If empty, the email is sent to the email address of the signed-in user.",
@@ -726,6 +794,37 @@
             "isDefault": "Default",
             "expires": "Expires",
             "expiresAt": "Expiry date and time"
+        },
+        "probe": {
+            "enabled": "Enable the delivery probe",
+            "enabledHint": "At the send times, the mailboxes with the send check on send a probe mail.",
+            "address": "Probe address",
+            "addressHint": "Address received on the probe server. A dedicated address is recommended.",
+            "sendTimes": "Send times",
+            "sendTimesHint": "Each enabled mailbox with the send check on sends one probe mail.",
+            "delayMinutes": "Delay threshold (minutes)",
+            "delayMinutesHint": "Arrival is checked at this interval after the latest send; missing mails are reported as \"Delayed\".",
+            "failureMinutes": "Failure threshold (minutes)",
+            "failureMinutesHint": "Mails still missing this long after sending are reported as \"Failure\"; after that, arrival is checked at this interval.",
+            "slot": "Send time",
+            "mailbox": "Mailbox",
+            "status": "Status",
+            "delay": "Delay",
+            "arrivedAt": "Arrived at",
+            "lastChecked": "Last checked",
+            "detail": "Notes",
+            "lastSend": "Last send",
+            "nextSend": "Next send",
+            "nextCheck": "Next arrival check",
+            "lastCheck": "Last arrival check",
+            "thresholds": "Thresholds",
+            "thresholdsValue": "Delay {{delay}} / failure {{failure}}",
+            "resolveReason": "Reason",
+            "resolveNote": "Details",
+            "resolvedBy": "Resolved by {{user}} on {{date}}",
+            "resolvedAuto": "Closed automatically on {{date}}",
+            "subjectTag": "Identifier",
+            "subjectTagHint": "Added to the start of the probe mail subject, for example [MC:…]. Use a different identifier for each MailCare sharing the probe mailbox."
         }
     },
     "page": {
@@ -744,7 +843,8 @@
                 "ignored": "No ignored groups.",
                 "ignored_recheck": "No ignored groups to re-check.",
                 "excluded": "No excluded groups."
-            }
+            },
+            "probeCard": "Delays and failures of mail, seen from the arrival of the probe mails."
         },
         "login": {
             "title": "Log in",
@@ -765,6 +865,7 @@
             "totals": "Totals",
             "mailboxes": "Mailboxes",
             "mailboxDisabled": "This mailbox is disabled and is not synced automatically.",
+            "fetchError": "The last sync failed.",
             "schedule": "Schedule",
             "nextCheck": "Next sync",
             "noSchedule": "No schedule",
@@ -776,7 +877,15 @@
             "agentDisabledTitle": "Automatic analysis is disabled",
             "agentDisabled": "New bounces are not analyzed automatically. Enable automatic analysis in General settings.",
             "agentUnavailableTitle": "AI agent CLI not found",
-            "agentUnavailable": "The command for provider \"{{provider}}\" was not found on the server, so analyses will fail."
+            "agentUnavailable": "The command for provider \"{{provider}}\" was not found on the server, so analyses will fail.",
+            "probe": "Delivery probe",
+            "probeFailureTitle": "Delivery probe failure",
+            "probeFailure": "Failed or unsent probe mails: {{count}}.",
+            "probeDelayTitle": "Delivery probe delay",
+            "probeDelay": "Delayed probe mails: {{count}}.",
+            "probeOk": "No unresolved delays or failures.",
+            "probeOff": "The delivery probe is off.",
+            "probeCheckError": "Arrival check failed"
         },
         "groupDetail": {
             "title": "Group details",
@@ -911,7 +1020,8 @@
                 "notifications": "SMTP server and the time, interval and recipients of notification emails",
                 "mailboxes": "Register, edit and test monitored mailboxes",
                 "users": "Add users, change roles and reset passwords",
-                "tokens": "Issue and delete tokens for future API integration"
+                "tokens": "Issue and delete tokens for future API integration",
+                "probe": "Probe server, send times and thresholds for delays and failures"
             }
         },
         "settingsGeneral": {
@@ -926,7 +1036,7 @@
             "dnsCheckHint": "Used to identify bounces of mail sent from the sending sources and to find the cause of failed name lookups.",
             "sendingSourceEmpty": "No sending sources are set, so bounces of mail sent from elsewhere cannot be identified.",
             "sendingSourceNoHost": "Mailboxes without a sending source host name (bounces of mail sent from elsewhere cannot be identified)",
-            "sendingSourceNoHostAction": "Enter the \"SMTP server (sending)\" of each mailbox, or \"Sending source host names\" on this page.",
+            "sendingSourceNoHostAction": "Enter the \"SMTP server\" of each mailbox, or \"Sending source host names\" on this page.",
             "sendingSourceNoHostNoAddress": "For these mailboxes, every failed name lookup is also treated as a problem of the sending side's mail server.",
             "jobs": "Job execution",
             "agent": "AI agent",
@@ -948,33 +1058,23 @@
             "sectionRange": "Fetch range",
             "sectionRangeHint": "The first sync looks back the initial fetch days; later syncs look back the regular fetch days. Selecting \"all time\" as the fetch period on the Tools page checks every message regardless of the period.",
             "sectionServerKeep": "Deleting messages on the server",
-            "sectionServerKeepHint": "The daily cleanup deletes bounces, auto-replies, DMARC reports and similar notices, and junk mail, from the IMAP server. Notices recognized by subject or sender name alone, automatically generated messages and ordinary mail are not deleted. Deleted messages cannot be restored. Copies stored in MailCare are kept until the mail retention."
+            "sectionServerKeepHint": "The daily cleanup deletes bounces, auto-replies, DMARC reports and similar notices, and junk mail, from the IMAP server. Notices recognized by subject or sender name alone, automatically generated messages and ordinary mail are not deleted. Deleted messages cannot be restored. Copies stored in MailCare are kept until the mail retention.",
+            "probeNoAddress": "The probe address is not set, so no test email can be sent (Settings > Delivery probe).",
+            "probeDisabledNote": "This mailbox is disabled and sends no probe mail."
         },
         "notifications": {
             "description": "Sends a list of the alerts that need action to the selected users by email.",
-            "status": {
-                "blockedTitle": "Notification emails will not be sent",
-                "readyTitle": "Notifications are enabled",
-                "disabled": "Notifications are disabled. Enable notifications and save to send emails to the recipients at the notification time.",
-                "smtpIncomplete": "The SMTP host and From address are not set. Enter the SMTP settings and save.",
-                "noRecipients": "No recipient has an email address. Select recipients or register email addresses for the users.",
-                "ready": "{{interval}} at {{time}}, an email is sent to the recipients if any groups need action.",
-                "unsaved": "There are unsaved changes. Saving also updates this status."
-            },
             "smtp": "SMTP settings",
             "smtpHint": "Mail server used to send notification emails.",
-            "testHint": "Sends a test email with the saved SMTP settings.",
+            "testHint": "Sends a test email with the SMTP settings as entered.",
             "testNoAddress": "No email address is registered. Enter a recipient or register an email address in the profile.",
-            "testNeedsSmtp": "Enter and save the SMTP host and From address to send a test email.",
-            "testSaveFirst": "The SMTP settings have changed. Save the settings before sending a test email.",
             "settings": "Notification settings",
             "recipientsSelected": "Recipients: {{count}}",
             "recipientsWithoutEmail": "(without email address: {{count}})",
             "noEmail": "No email address",
             "noUsers": "No users.",
             "publicUrlEffective": "URL in use:",
-            "sendNowHint": "Sends the notification email now with the saved settings, without waiting for the notification time.",
-            "sendBlocked": "The notification email cannot be sent with the saved settings. See the message above."
+            "sendNowHint": "Sends the notification email now with the saved settings, without waiting for the notification time."
         },
         "users": {
             "currentUser": "You",
@@ -993,6 +1093,44 @@
             "emailHint": "Recipient of notification emails. When an administrator selects this user as a recipient, the list of alerts is sent to this address. Can also be used to log in. Leave empty to remove the address.",
             "changePasswordHint": "Enter the current password and a new password.",
             "sessionNote": "Changing the password logs out all other devices."
+        },
+        "probeSettings": {
+            "description": "Each mailbox sends probe mails whose arrival is checked, to detect delays and failures of mail.",
+            "server": "Probe server (IMAP)",
+            "serverHint": "Mailbox that receives the probe mails. The account needs permission to delete mail.",
+            "schedule": "Sending and thresholds",
+            "noSendTimes": "No send times: probe mails are not sent automatically.",
+            "testOk": "Connected to the probe server.",
+            "mailboxesCount": "Mailboxes sending probe mails: {{count}}",
+            "noMailboxes": "No enabled mailbox has the send check on.",
+            "notifyHint": "Delays and failures are mailed to the notification recipients, even while notification emails are off."
+        },
+        "probes": {
+            "description": "Arrival of the probe mails sent from each mailbox.",
+            "counts": "Status",
+            "recentHint": "Recovered and Resolved count the last {{days}} days.",
+            "mailboxes": "Latest probe mail per mailbox",
+            "notSending": "Not sending",
+            "neverSent": "Not sent yet",
+            "list": "Probe mails",
+            "manual": "Manual",
+            "arrivedAfter": "Arrived after {{duration}}",
+            "missingFor": "Missing for {{duration}}",
+            "notConfiguredTitle": "The delivery probe is not set up",
+            "notConfigured": "Set the probe server and the probe address to detect delays and failures.",
+            "checkErrorTitle": "The latest arrival check failed",
+            "checkError": "Could not read the probe server ({{error}}). Retried automatically.",
+            "checkErrorMember": "Could not read the probe server. Retried automatically.",
+            "deleteErrorTitle": "Probe mails could not be deleted",
+            "deleteError": "Could not delete them from the probe server ({{error}}). The next arrival check tries again.",
+            "resolveTitle": "Mark the probe mail as resolved",
+            "resolveFor": "{{address}} ({{slot}})",
+            "resolveHint": "The delay or failure stays recorded.",
+            "empty": {
+                "open": "No unresolved probe mails.",
+                "issues": "No delayed or failed probe mails.",
+                "all": "No probe mails yet."
+            }
         }
     }
 }

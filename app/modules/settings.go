@@ -264,6 +264,32 @@ func ResolveWebListen(db *sql.DB, arg string) string {
 	return resolveStr(db, SettingWebListen, arg, DefaultWebListenAddr)
 }
 
+// ParseWebListen checks a Web listen address the server can listen on: an
+// IP address (an IPv6 one with or without brackets) or a host name; ""
+// gives DefaultWebListenAddr. It returns the address as saved (IPv6
+// without brackets, as net.JoinHostPort expects it).
+func ParseWebListen(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return DefaultWebListenAddr, nil
+	}
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = s[1 : len(s)-1]
+	}
+	if _, err := netip.ParseAddr(s); err == nil {
+		return s, nil
+	}
+	h := strings.TrimSuffix(s, ".")
+	valid := h != "" && len(h) <= 253
+	for _, label := range strings.Split(h, ".") {
+		valid = valid && validHostLabel(label)
+	}
+	if !valid {
+		return "", wording.New("validation.connection.hostInvalid", fmt.Sprintf("web_listen %q must be an IP address or a host name", s))
+	}
+	return h, nil
+}
+
 // ResolveWebPort returns the Web port (arg > saved > default).
 func ResolveWebPort(db *sql.DB, arg int) int {
 	return resolveInt(db, SettingWebPort, arg, DefaultWebPort)

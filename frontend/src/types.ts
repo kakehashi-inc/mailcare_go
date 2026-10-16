@@ -38,9 +38,19 @@ export type Severity = 'high' | 'medium' | 'low' | '';
 export type Confidence = 'high' | 'medium' | 'low';
 export type ImapSecurity = 'ssl' | 'starttls' | 'none';
 export type SmtpSecurity = 'ssl' | 'starttls' | 'none';
-export type JobKind = 'sync' | 'fetch' | 'group' | 'analyze' | 'reindex' | 'reclassify' | 'cleanup' | 'notify';
-/** Job kinds that the tools page offers (notify is started from the notification settings). */
-export type ToolKind = Exclude<JobKind, 'notify'>;
+export type JobKind =
+    | 'sync'
+    | 'fetch'
+    | 'group'
+    | 'analyze'
+    | 'reindex'
+    | 'reclassify'
+    | 'cleanup'
+    | 'notify'
+    | 'probe_send'
+    | 'probe_check';
+/** Job kinds that the tools page offers (notify is started from the notification settings, the probe jobs from the probe screens). */
+export type ToolKind = Exclude<JobKind, 'notify' | 'probe_send' | 'probe_check'>;
 /** Tool job kinds, in the order the tools page lists them. */
 export const JOB_KINDS: readonly ToolKind[] = ['sync', 'fetch', 'group', 'analyze', 'reindex', 'reclassify', 'cleanup'];
 export type JobStatus = 'queued' | 'running' | 'done' | 'error' | 'canceled';
@@ -167,6 +177,14 @@ export interface MailboxDTO {
     server_keep_days: number;
     /** Host name of the SMTP server that sends the mail of this address (one of the sending sources); "" = not set. Blanked ("") for non-administrators, like the IMAP connection. */
     smtp_host: string;
+    /** The send check: on, the probe mails are sent through smtp_host with the fields below; off, smtp_host only serves the judgement of the sending sources. Shown to every user (the fields below are blanked for non-administrators). */
+    probe_enabled: boolean;
+    /** The rest of the SMTP connection while the send check is on (0 / "" while off). Blanked for non-administrators. */
+    smtp_port: number;
+    smtp_security: SmtpSecurity | '';
+    smtp_username: string;
+    /** The password itself is never returned; only whether one is stored. */
+    smtp_password_set: boolean;
     /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
     last_fetched_at: string | null;
     last_fetch_error: string;
@@ -190,8 +208,17 @@ export interface MailboxInput {
     recent_days?: number;
     /** Omitted: the default (60) for a new mailbox, unchanged on update. */
     server_keep_days?: number;
-    /** SMTP server (sending) host name; "" clears it. Omitted: not set for a new mailbox, unchanged on update. Needs no password. */
+    /** SMTP server host name; "" clears it. Omitted: not set for a new mailbox, unchanged on update. Needs no password. */
     smtp_host?: string;
+    /** The send check. Omitted: off for a new mailbox, unchanged (with the stored port, security and username) on update. */
+    probe_enabled?: boolean;
+    /** The rest of the SMTP connection; required (the port) or used only while the send check is on, cleared while off. */
+    smtp_port?: number;
+    smtp_security?: SmtpSecurity;
+    /** Empty = no authentication. */
+    smtp_username?: string;
+    /** Empty keeps the stored one, but only while host, port, security and username stay the same. */
+    smtp_password?: string;
 }
 
 export interface GroupDTO {
@@ -396,6 +423,7 @@ export interface DashboardDTO {
     next_check_at: string | null;
     check_times: string[];
     agent: { provider: string; enabled: boolean; available: boolean };
+    probe: ProbeSummary;
 }
 
 export interface ProviderStatus {
@@ -459,6 +487,11 @@ export interface SettingsDTO {
     web_listen?: string;
     web_port?: number;
     data_dir?: string;
+    /**
+     * Why an analysis asked for now cannot run: the message key (agent CLI missing, usage limit lasting), "" when it
+     * can. Administrators only.
+     */
+    analyze_refusal?: '' | 'result.agent.unavailable' | 'result.agent.usageLimited';
     /** IANA zone the scheduler interprets check_times, cleanup_time and notify_time in. */
     server_timezone: string;
 }
@@ -533,9 +566,18 @@ export interface NotificationSettingsInput {
     notify_user_ids?: number[];
 }
 
-/** POST /api/v1/notifications/test: "to" defaults to the address of the caller on the server. */
+/**
+ * POST /api/v1/notifications/test: "to" defaults to the address of the caller on the server. The connection values
+ * are the ones typed in the form; the stored password is used only for the saved connection.
+ */
 export interface NotificationTestInput {
     to?: string;
+    smtp_host?: string;
+    smtp_port?: number;
+    smtp_security?: SmtpSecurity;
+    smtp_username?: string;
+    smtp_password?: string;
+    smtp_from?: string;
 }
 
 /** GET /api/v1/mailboxes/{id}/groups */
@@ -663,4 +705,150 @@ export interface TokenInput {
 export interface TokenCreateResponse {
     token: TokenDTO;
     value: string;
+}
+
+// --- Delivery probe ---
+
+/**
+ * Status of a probe mail: pending (sent, not overdue yet), delayed / failure (not arrived for the delay / failure
+ * threshold), send_failed (the SMTP server did not accept it), arrived (in time), recovered (arrived after the delay
+ * threshold, or arrived after a send failure), resolved (closed by hand, or by the system when the probe was switched
+ * off).
+ */
+export type ProbeStatus = 'pending' | 'delayed' | 'failure' | 'send_failed' | 'arrived' | 'recovered' | 'resolved';
+/** The worst level a probe mail reached ("" = none). */
+export type ProbeLevel = '' | 'delayed' | 'failure';
+/** Filters of the probe mail list: still open, every problem (open or closed), every mail. */
+export const PROBE_FILTERS = ['open', 'issues', 'all'] as const;
+export type ProbeFilter = (typeof PROBE_FILTERS)[number];
+/** Why a probe mail was resolved by hand (value.probeResolveReason), in the order the dialog offers them ("other" last). */
+export const PROBE_RESOLVE_REASONS = [
+    'server_recovered',
+    'arrived_elsewhere',
+    'maintenance',
+    'config_error',
+    'probe_server_issue',
+    'other',
+] as const;
+export type ProbeResolveReason = (typeof PROBE_RESOLVE_REASONS)[number];
+/** Set by the system (resolved_by ""), never chosen by hand: the probe, the send check or the mailbox was switched off. */
+export const PROBE_REASON_DISABLED = 'probe_disabled';
+/** The statuses a user can resolve by hand (a pending mail is not overdue yet). */
+export const PROBE_RESOLVABLE: readonly ProbeStatus[] = ['delayed', 'failure', 'send_failed'];
+
+export interface ProbeMailDTO {
+    id: number;
+    mailbox_id: number;
+    address: string;
+    /** The probe ID ("" for non-administrators, also cut from the subject). */
+    token: string;
+    /** "YYYY-MM-DD HH:MM" of the send time (server time, as in the subject); for a mail sent by hand the time it was sent. */
+    slot: string;
+    /** Sent by hand (not at a send time). */
+    manual: boolean;
+    subject: string;
+    sent_at: string;
+    status: ProbeStatus;
+    level: ProbeLevel;
+    /** Arrival minus sending once arrived, else the time without arrival at the latest check. */
+    delay_seconds: number;
+    arrived_at: string | null;
+    last_checked_at: string | null;
+    /** Why it could not be sent, or a sender mismatch on the probe server (administrators only; "" for others). */
+    error_message: string;
+    delay_notified_at: string | null;
+    notified_at: string | null;
+    resolved_at: string | null;
+    resolved_by: string;
+    resolve_reason: ProbeResolveReason | typeof PROBE_REASON_DISABLED | '';
+    resolve_note: string;
+}
+
+export interface ProbeCounts {
+    pending: number;
+    delayed: number;
+    failure: number;
+    send_failed: number;
+    /** Arrived late within the last recent_days. */
+    recovered: number;
+    /** Resolved by hand within the last recent_days. */
+    resolved: number;
+}
+
+export interface ProbeMailboxState {
+    mailbox_id: number;
+    address: string;
+    display_name: string;
+    /** Enabled, send check on and an SMTP host. */
+    sending: boolean;
+    latest: ProbeMailDTO | null;
+}
+
+/** State of the delivery probe (dashboard and probe screen). */
+export interface ProbeSummary {
+    enabled: boolean;
+    configured: boolean;
+    send_times: string[];
+    delay_minutes: number;
+    failure_minutes: number;
+    next_send_at: string | null;
+    next_check_at: string | null;
+    last_send_at: string | null;
+    last_check_at: string | null;
+    /** The error of the latest check (only "error" for non-administrators). */
+    last_check_error: string;
+    /** Why the verified probe mails could not be deleted from the probe server (administrators only). */
+    last_delete_error: string;
+    /** The time zone of the server (the send times are server local time). */
+    server_timezone: string;
+    counts: ProbeCounts;
+    recent_days: number;
+    mailboxes: ProbeMailboxState[];
+}
+
+/** GET /api/v1/probes */
+export interface ProbeListResponse {
+    summary: ProbeSummary;
+    probes: ProbeMailDTO[];
+    total: number;
+    page: number;
+    per_page: number;
+    filter: ProbeFilter;
+}
+
+/** GET /api/v1/settings/probe */
+export interface ProbeSettingsDTO {
+    enabled: boolean;
+    /** The recipient address of the probe mails (the mailbox of the probe server). */
+    address: string;
+    imap_host: string;
+    imap_port: number;
+    imap_security: ImapSecurity;
+    imap_username: string;
+    imap_password_set: boolean;
+    imap_folder: string;
+    /** HH:MM, server local time. */
+    send_times: string[];
+    delay_minutes: number;
+    failure_minutes: number;
+    /** The identifier at the start of the subject ("[<identifier>:<probe ID>]"). */
+    subject_tag: string;
+    /** Mailboxes that send probe mails (enabled, send check on). */
+    mailboxes: number;
+}
+
+/** PUT /api/v1/settings/probe: only the fields present are changed; an empty imap_password keeps the stored one. */
+export interface ProbeSettingsInput {
+    enabled?: boolean;
+    address?: string;
+    imap_host?: string;
+    imap_port?: number;
+    imap_security?: ImapSecurity;
+    imap_username?: string;
+    imap_password?: string;
+    imap_folder?: string;
+    send_times?: string[];
+    delay_minutes?: number;
+    failure_minutes?: number;
+    subject_tag?: string;
 }

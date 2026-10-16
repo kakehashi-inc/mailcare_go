@@ -61,6 +61,13 @@ func (c *core) handleControlCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeControlError(w, http.StatusBadRequest, "invalid mailbox_id")
 		return
 	}
+	if err := modules.ManualJobRefusal(c.db, body.Kind, time.Now()); err != nil {
+		if _, ok := wording.As(err); !ok {
+			log.Printf("control: failed to check a job: %v", err)
+		}
+		writeControlError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	job, created, err := c.jm.Enqueue(body.Kind, body.MailboxID, body.Target, modules.RequestedByCLI)
 	if err != nil {
 		if _, ok := wording.As(err); !ok {

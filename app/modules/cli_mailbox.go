@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
+	"strings"
 
 	"mailcare/app/models"
 	"time"
@@ -29,6 +31,8 @@ func mailboxRow(mb *models.Mailbox) map[string]interface{} {
 		"imap_port": mb.ImapPort, "imap_security": mb.ImapSecurity, "imap_username": mb.ImapUsername,
 		"folder": mb.Folder, "enabled": mb.Enabled, "initial_days": mb.InitialDays, "recent_days": mb.RecentDays,
 		"server_keep_days": mb.ServerKeepDays, "smtp_host": mb.SmtpHost,
+		"probe_enabled": mb.ProbeEnabled, "smtp_port": mb.SmtpPort, "smtp_security": mb.SmtpSecurity,
+		"smtp_username": mb.SmtpUsername, "smtp_password_set": mb.SmtpPasswordEnc != "",
 		"last_fetched_at": rfc3339OrNull(mb.LastFetchedAt), "last_fetch_error": mb.LastFetchError,
 	}
 }
@@ -63,6 +67,15 @@ func printMailbox(mb *models.Mailbox) {
 		smtpHost = "(not set)"
 	}
 	fmt.Printf("smtp host:     %s\n", smtpHost)
+	if mb.ProbeEnabled {
+		conn := fmt.Sprintf("on: port %d (%s)", mb.SmtpPort, mb.SmtpSecurity)
+		if mb.SmtpUsername != "" {
+			conn += " as " + mb.SmtpUsername
+		}
+		fmt.Printf("send check:    %s\n", conn)
+	} else {
+		fmt.Printf("send check:    off\n")
+	}
 	fmt.Printf("last fetch:    %s (%s)\n", formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
 	if mb.LastFetchError != "" {
 		fmt.Printf("last error:    %s\n", mb.LastFetchError)
@@ -82,9 +95,77 @@ type MailboxAddCmd struct {
 	RecentDays  int    `help:"Days to look back on later checks (default: ${default_recent_days})" name:"recent-days" default:"0"`
 	// ServerKeepDays: -1 = the default.
 	ServerKeepDays int    `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never (default: ${default_server_keep_days}, or mail_keep_days when shorter)" name:"server-keep-days" default:"-1"`
-	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of the sending sources; not the server of the notification mails; default: not set)" name:"smtp-host"`
+	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of the sending sources; with --probe on the probe mails are sent through it; not the server of the notification mails; default: not set)" name:"smtp-host"`
 	DisplayName    string `help:"Display name" name:"display-name"`
 	Disabled       bool   `help:"Register as disabled (not checked automatically)"`
+	smtpConnectionFlags
+}
+
+// smtpConnectionFlags are the flags of the send check of a mailbox: on, the
+// probe mails of the address are sent through --smtp-host with the other
+// flags (the port is required, the authentication optional); off, the host
+// only serves the judgement of the sending sources.
+type smtpConnectionFlags struct {
+	Probe           string  `help:"Send check: on sends probe mails through the SMTP server (needs --smtp-host and --smtp-port), off does not (default on add: off; on update: unchanged)" name:"probe" enum:",on,off" default:""`
+	SMTPPort        int     `help:"Port of the SMTP server for the send check (required with --probe on, e.g. ${default_smtp_port})" name:"smtp-port" default:"0"`
+	SMTPSecurity    string  `help:"Connection security of the SMTP server (default: starttls)" name:"smtp-security" enum:",ssl,starttls,none" default:""`
+	SMTPUsername    *string `help:"Username of the SMTP server (\"\" = no authentication)" name:"smtp-username"`
+	SMTPPassword    string  `help:"Password of the SMTP server (a value given here is visible in the shell history and the process list: prefer --ask-smtp-password)" name:"smtp-password"`
+	AskSMTPPassword bool    `help:"Prompt for the password of the SMTP server (hidden on a terminal; a line on piped input)" name:"ask-smtp-password"`
+}
+
+// errSMTPFlagsWithoutProbe refuses SMTP connection flags for a mailbox whose
+// send check ends up off (they would be dropped silently).
+var errSMTPFlagsWithoutProbe = NewExitError(ExitArgument,
+	"--smtp-port, --smtp-security, --smtp-username, --smtp-password and --ask-smtp-password need the send check on (--probe on)")
+
+// warnPlaintextSMTP warns on stderr when the send check of a mailbox logs in
+// to its SMTP server without encryption (security none).
+func warnPlaintextSMTP(mb *models.Mailbox) {
+	if mb.ProbeEnabled && mb.SmtpSecurity == IMAPSecurityNone && mb.SmtpUsername != "" {
+		warnPlaintextCredentials("the SMTP server of " + mb.Address)
+	}
+}
+
+// warnPlaintextCredentials warns on stderr that credentials go to a server
+// without encryption.
+func warnPlaintextCredentials(what string) {
+	fmt.Fprintf(os.Stderr, "Warning: %s is reached without encryption (security none): the username and password travel in plain text.\n", what)
+}
+
+// apply copies the given flags onto an input. creating is true for mailbox
+// add, which prompts for the SMTP password when the send check is on with a
+// username and no password is given. The SMTP connection flags are refused
+// when the send check ends up off.
+func (f *smtpConnectionFlags) apply(in *MailboxInput, creating bool) error {
+	if f.Probe != "" {
+		on := f.Probe == "on"
+		in.ProbeEnabled = &on
+	}
+	connFlags := f.SMTPPort != 0 || f.SMTPSecurity != "" || f.SMTPUsername != nil || f.SMTPPassword != "" || f.AskSMTPPassword
+	if connFlags && (in.ProbeEnabled == nil || !*in.ProbeEnabled) {
+		return errSMTPFlagsWithoutProbe
+	}
+	if f.SMTPPort != 0 {
+		in.SmtpPort = f.SMTPPort
+	}
+	if f.SMTPSecurity != "" {
+		in.SmtpSecurity = f.SMTPSecurity
+	}
+	if f.SMTPUsername != nil {
+		in.SmtpUsername = *f.SMTPUsername
+	}
+	switch {
+	case f.SMTPPassword != "":
+		in.SmtpPassword = f.SMTPPassword
+	case f.AskSMTPPassword || (creating && in.ProbeEnabled != nil && *in.ProbeEnabled && strings.TrimSpace(in.SmtpUsername) != ""):
+		password, err := promptPassword("SMTP password")
+		if err != nil {
+			return err
+		}
+		in.SmtpPassword = password
+	}
+	return nil
 }
 
 func (c *MailboxAddCmd) Run() error {
@@ -115,11 +196,15 @@ func (c *MailboxAddCmd) Run() error {
 	if c.SmtpHost != "" {
 		in.SmtpHost = &c.SmtpHost
 	}
+	if err := c.smtpConnectionFlags.apply(in, true); err != nil {
+		return err
+	}
 	mb, err := CreateMailbox(db, key, in)
 	if err != nil {
 		return NewExitError(ExitArgument, err.Error())
 	}
 	fmt.Printf("Registered mailbox %q (id %d)\n", mb.Address, mb.ID)
+	warnPlaintextSMTP(mb)
 	fmt.Print("Testing the IMAP connection... ")
 	ctx, cancel := signalContext()
 	defer cancel()
@@ -218,10 +303,11 @@ type MailboxUpdateCmd struct {
 	// ServerKeepDays: -1 = unchanged.
 	ServerKeepDays int `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never" name:"server-keep-days" default:"-1"`
 	// SmtpHost: nil = unchanged, "" clears it.
-	SmtpHost    *string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (not the server of the notification mails; \"\" clears it; no password needed)" name:"smtp-host"`
+	SmtpHost    *string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (not the server of the notification mails; \"\" clears it, which needs --probe off)" name:"smtp-host"`
 	DisplayName string  `help:"Display name" name:"display-name"`
 	Enabled     bool    `help:"Enable the mailbox"`
 	Disabled    bool    `help:"Disable the mailbox"`
+	smtpConnectionFlags
 }
 
 func (c *MailboxUpdateCmd) Run() error {
@@ -283,6 +369,9 @@ func (c *MailboxUpdateCmd) Run() error {
 	if c.SmtpHost != nil {
 		in.SmtpHost = c.SmtpHost
 	}
+	if err := c.smtpConnectionFlags.apply(in, false); err != nil {
+		return err
+	}
 	if c.DisplayName != "" {
 		in.DisplayName = c.DisplayName
 	}
@@ -297,9 +386,13 @@ func (c *MailboxUpdateCmd) Run() error {
 		if errors.Is(err, ErrPasswordRequired) {
 			return NewExitErrorf(ExitArgument, "%s (pass --password or --ask-password)", err)
 		}
+		if errors.Is(err, ErrSMTPConnectionPasswordRequired) || errors.Is(err, errSMTPPasswordRequired) {
+			return NewExitErrorf(ExitArgument, "%s (pass --ask-smtp-password or --smtp-password)", err)
+		}
 		return NewExitError(ExitArgument, err.Error())
 	}
 	fmt.Printf("Updated mailbox %q\n", mb.Address)
+	warnPlaintextSMTP(mb)
 	return nil
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules/mailengine"
+	"mailcare/app/modules/wording"
 )
 
 func TestNotifyDueAndNextNotifyAt(t *testing.T) {
@@ -188,12 +189,18 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 	if _, found, _ := models.GetSettingStrict(db, SettingSMTPPort); found {
 		t.Errorf("default port stored")
 	}
-	// "settings set smtp_password \"\"" removes the stored password.
-	if _, err := ApplySetting(db, settingSMTPPassword, "", nil); err != nil {
+	// The password belongs to the username: "settings set smtp_password \"\""
+	// is refused while the username stays, and clearing the username
+	// removes the stored password without asking for it.
+	if _, err := ApplySetting(db, settingSMTPPassword, "", nil); !errors.Is(err, errSMTPPasswordMissing) &&
+		(err == nil || !strings.Contains(err.Error(), errSMTPPasswordMissing.Error())) {
+		t.Errorf("password removed while the username stays: %v", err)
+	}
+	if _, err := ApplySetting(db, SettingSMTPUsername, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ = ResolveNotificationSettings(db, key); s.SMTPPasswordSet {
-		t.Errorf("password not cleared")
+	if s, _ = ResolveNotificationSettings(db, key); s.SMTPPasswordSet || s.SMTP.Username != "" {
+		t.Errorf("password not cleared with the username: %+v", s.SMTP)
 	}
 	// Recipients: only users with an address are addressed.
 	bob, err := CreateUserFrom(db, NewUser{Username: "bob", Password: "password123", Role: RoleUser})
@@ -253,8 +260,6 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 		{SettingSMTPHost, "smtp.example.test", "smtp.example.test"},
 		{SettingSMTPPort, "465", "465"},
 		{SettingSMTPSecurity, "SSL", "ssl"},
-		{SettingSMTPUsername, "bounce", "bounce"},
-		{"smtp_password", "s3cret", "(encrypted)"},
 		{SettingSMTPFrom, "MailCare@Example.test", "mailcare@example.test"},
 		{SettingPublicBaseURL, "https://mailcare.example.test/", "https://mailcare.example.test"},
 		{SettingNotifyEnabled, "yes", "true"},
@@ -267,22 +272,38 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 			t.Errorf("%s=%s: %q, %v (want %q)", ok[0], ok[1], got, err, ok[2])
 		}
 	}
+	// A username needs a password: without one to ask for it is refused, and
+	// the password alone has no username to belong to.
+	if _, err := ApplySetting(db, SettingSMTPUsername, "bounce", loadKey); !isArg(err) || !strings.Contains(err.Error(), errSMTPPasswordMissing.Error()) {
+		t.Errorf("username without a password: %v", err)
+	}
+	if _, err := ApplySetting(db, settingSMTPPassword, "s3cret", loadKey); !isArg(err) || !strings.Contains(err.Error(), SettingSMTPUsername) {
+		t.Errorf("password without a username: %v", err)
+	}
+	asked := 0
+	ask := func() (string, error) { asked++; return "s3cret", nil }
+	if got, err := applySetting(db, SettingSMTPUsername, "bounce", loadKey, ask); err != nil || got != "bounce" || asked != 1 {
+		t.Errorf("username with the password asked for: %q %v (asked %d)", got, err, asked)
+	}
+	if got, err := ApplySetting(db, settingSMTPPassword, "s3cret", loadKey); err != nil || got != "(encrypted)" {
+		t.Errorf("password change: %q %v", got, err)
+	}
 	key, _ := LoadSecretKey(db)
 	s, err := ResolveNotificationSettings(db, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.SMTP.Host != "smtp.example.test" || s.SMTP.Port != 465 || s.SMTP.Security != IMAPSecuritySSL || s.SMTP.Password != "s3cret" ||
-		s.SMTP.From != "mailcare@example.test" || s.PublicBaseURL != "https://mailcare.example.test" || !s.Enabled ||
-		s.Time != "07:05" || s.IntervalDays != 2 || len(s.UserIDs) != 1 || s.UserIDs[0] != admin.ID {
+	if s.SMTP.Host != "smtp.example.test" || s.SMTP.Port != 465 || s.SMTP.Security != IMAPSecuritySSL || s.SMTP.Username != "bounce" ||
+		s.SMTP.Password != "s3cret" || s.SMTP.From != "mailcare@example.test" || s.PublicBaseURL != "https://mailcare.example.test" ||
+		!s.Enabled || s.Time != "07:05" || s.IntervalDays != 2 || len(s.UserIDs) != 1 || s.UserIDs[0] != admin.ID {
 		t.Errorf("resolved after CLI: %+v", s)
 	}
-	// With a password stored, a connection key cannot change by itself
-	// (the CLI sets one key per command, so the operator removes the
-	// password first); other keys and the unchanged value still work.
+	// With a password stored, a connection key cannot change without the
+	// password (one key per command: the command asks for it); other keys
+	// and the unchanged value still work.
 	for _, change := range [][2]string{{SettingSMTPHost, "other.example.test"}, {SettingSMTPPort, "25"}, {SettingSMTPSecurity, "none"}, {SettingSMTPUsername, "other"}} {
 		_, err := ApplySetting(db, change[0], change[1], loadKey)
-		if !isArg(err) || !strings.Contains(err.Error(), ErrSMTPPasswordRequired.Error()) || !strings.Contains(err.Error(), `settings set smtp_password ""`) {
+		if !isArg(err) || !strings.Contains(err.Error(), ErrSMTPPasswordRequired.Error()) || !strings.Contains(err.Error(), "asks for the password") {
 			t.Errorf("%s=%s with a stored password: %v", change[0], change[1], err)
 		}
 	}
@@ -295,21 +316,38 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 	if s, _ := ResolveNotificationSettings(db, key); s.SMTP.Host != "smtp.example.test" || s.SMTP.Port != 465 || s.SMTP.Username != "bounce" {
 		t.Errorf("refused CLI changes were applied: %+v", s.SMTP)
 	}
-	// An empty value restores the default; for the password it clears the stored one.
-	if _, err := ApplySetting(db, "smtp_password", "", nil); err != nil {
+	// Asked for, the password comes with the change.
+	if got, err := applySetting(db, SettingSMTPPort, "587", loadKey, ask); err != nil || got != "587" || asked != 2 {
+		t.Errorf("port change with the password asked for: %q %v (asked %d)", got, err, asked)
+	}
+	// An empty value restores the default through the same validation: the
+	// password stays while the username does, the sender and host stay while
+	// notifications are on, and clearing the username removes the password.
+	for _, refused := range []string{settingSMTPPassword, SettingSMTPFrom, SettingSMTPHost} {
+		if _, err := ApplySetting(db, refused, "", nil); !isArg(err) {
+			t.Errorf("%s=\"\": %v, want an argument error", refused, err)
+		}
+	}
+	if _, err := ApplySetting(db, SettingSMTPUsername, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := ApplySetting(db, SettingSMTPHost, "other.example.test", loadKey); err != nil || got != "other.example.test" {
-		t.Errorf("host change once the password is removed: %q %v", got, err)
+		t.Errorf("host change once the username and the password are removed: %q %v", got, err)
 	}
 	if _, err := ApplySetting(db, SettingNotifyInterval, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if s, _ = ResolveNotificationSettings(db, key); s.SMTPPasswordSet || s.IntervalDays != DefaultNotifyIntervalDays {
+	if s, _ = ResolveNotificationSettings(db, key); s.SMTPPasswordSet || s.SMTP.Username != "" || s.IntervalDays != DefaultNotifyIntervalDays {
 		t.Errorf("defaults not restored: %+v", s)
 	}
+	if _, err := ApplySetting(db, SettingNotifyEnabled, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplySetting(db, SettingSMTPHost, "", nil); err != nil {
+		t.Errorf("host removed once notifications are off: %v", err)
+	}
 	// The password needs the master key.
-	if _, err := ApplySetting(db, "smtp_password", "x", nil); err == nil {
+	if _, err := applySetting(db, SettingSMTPUsername, "bounce", nil, ask); err == nil {
 		t.Errorf("password stored without a key")
 	}
 }
@@ -660,7 +698,14 @@ func TestSchedulerQueuesNotifyJob(t *testing.T) {
 	}
 	on := true
 	str := func(v string) *string { return &v }
-	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &on, Time: str("09:00")}); err != nil {
+	admin, err := CreateUserFrom(db, NewUser{Username: "admin", Email: "admin@example.test", Password: "password123", Role: RoleAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{
+		Enabled: &on, Time: str("09:00"), SMTPHost: str("smtp.example.test"), SMTPFrom: str("mailcare@example.test"),
+		UserIDs: &[]int64{admin.ID},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	jm := NewJobManager(db, nil, t.TempDir(), t.TempDir(), nil)
@@ -767,5 +812,98 @@ func TestSMTPConfigForTestGuardsTheStoredPassword(t *testing.T) {
 		if _, err := SMTPConfigForTest(db, key, in); err == nil || errors.Is(err, ErrSMTPPasswordRequired) {
 			t.Errorf("%+v: %v, want a validation error", in, err)
 		}
+	}
+}
+
+// The SMTP password belongs to the username: a username needs a password
+// (typed or stored); an empty password field keeps the stored one; clearing
+// the username removes the stored password without asking for it; another
+// non-empty username, host, port or security still needs the password. The
+// test mail follows the same rules.
+func TestSMTPAuthenticationRules(t *testing.T) {
+	db := newTestDB(t)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	str := func(v string) *string { return &v }
+	num := func(v int) *int { return &v }
+	missing := func(err error) bool {
+		m, ok := wording.As(err)
+		return ok && m.Key == "validation.connection.passwordRequired"
+	}
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPHost: str("mail.example.test"), SMTPUsername: str("user")}); !missing(err) {
+		t.Fatalf("username without a password: %v", err)
+	}
+	if s, _ := ResolveNotificationSettings(db, nil); s.SMTP.Host != "" || s.SMTP.Username != "" {
+		t.Errorf("a refused update saved something: %+v", s.SMTP)
+	}
+	if _, err := SMTPConfigForTest(db, key, &SMTPTestInput{Host: str("mail.example.test"), Username: str("user"), From: str("a@example.test")}); !missing(err) {
+		t.Errorf("test mail with a username and no password: %v", err)
+	}
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPHost: str("mail.example.test"), SMTPUsername: str("user"),
+		SMTPPassword: str("s3cret")}); err != nil {
+		t.Fatal(err)
+	}
+	// The empty field keeps the stored password; removing it while the
+	// username stays is refused.
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPUsername: str("user"), SMTPPassword: str("")}); err != nil {
+		t.Errorf("unchanged username, empty password field: %v", err)
+	}
+	if err := SaveNotificationSettings(db, key, &NotificationInput{ClearSMTPPassword: true}); !missing(err) {
+		t.Errorf("password removed while the username stays: %v", err)
+	}
+	for _, in := range []*NotificationInput{{SMTPUsername: str("other")}, {SMTPHost: str("other.example.test")}, {SMTPPort: num(25)}} {
+		if err := SaveNotificationSettings(db, key, in); !errors.Is(err, ErrSMTPPasswordRequired) {
+			t.Errorf("%+v without the password: %v", in, err)
+		}
+	}
+	if s, _ := ResolveNotificationSettings(db, key); s.SMTP.Password != "s3cret" || s.SMTP.Username != "user" {
+		t.Errorf("stored password or username lost: %+v", s.SMTP)
+	}
+	// No username: no password needed (also with another host), the stored
+	// one is removed and a typed one is not kept; the test mail uses none.
+	if cfg, err := SMTPConfigForTest(db, key, &SMTPTestInput{Host: str("other.example.test"), Username: str("")}); err != nil || cfg.Password != "" {
+		t.Errorf("test mail without a username: %+v %v", cfg, err)
+	}
+	if err := SaveNotificationSettings(db, key, &NotificationInput{SMTPHost: str("other.example.test"), SMTPUsername: str(""),
+		SMTPPassword: str("ignored")}); err != nil {
+		t.Fatalf("username cleared: %v", err)
+	}
+	if s, _ := ResolveNotificationSettings(db, key); s.SMTPPasswordSet || s.SMTP.Username != "" || s.SMTP.Host != "other.example.test" {
+		t.Errorf("after the username was cleared: %+v (password set %v)", s.SMTP, s.SMTPPasswordSet)
+	}
+}
+
+func TestNotificationsNeedSMTP(t *testing.T) {
+	db := newTestDB(t)
+	on, off := true, false
+	str := func(v string) *string { return &v }
+	refused := func(err error) bool {
+		m, ok := wording.As(err)
+		return ok && m.Key == "validation.notification.smtpRequired"
+	}
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &on}); !refused(err) {
+		t.Fatalf("on without SMTP: %v", err)
+	}
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &on, SMTPHost: str("smtp.example.test")}); !refused(err) {
+		t.Fatalf("on without sender address: %v", err)
+	}
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{
+		Enabled: &on, SMTPHost: str("smtp.example.test"), SMTPFrom: str("mailcare@example.test"),
+	}); err != nil {
+		t.Fatalf("on with SMTP: %v", err)
+	}
+	// Clearing the host while notifications stay on is refused; switching off
+	// in the same update is accepted.
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{SMTPHost: str("")}); !refused(err) {
+		t.Fatalf("clearing the host while on: %v", err)
+	}
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &off, SMTPHost: str("")}); err != nil {
+		t.Fatalf("off and clearing the host: %v", err)
+	}
+	s, err := ResolveNotificationSettings(db, nil)
+	if err != nil || s.Enabled || s.SMTP.Host != "" {
+		t.Fatalf("saved: %+v %v", s, err)
 	}
 }

@@ -1,0 +1,28 @@
+{{/*
+  Delivery probe mail (Japanese). The subject is fixed by the program
+  (ASCII: date and time of the send, the sending address and the token), so
+  only "body" is used. Fields: .Address (the sending address), .Slot (the
+  send time, YYYY-MM-DD HH:MM), .SentAt (date and time of sending, server
+  time zone), .Token (the probe token; "" for a test), .Test (a test of the
+  SMTP settings: not recorded).
+*/ -}}
+{{define "subject" -}}
+[MailCare] Probe {{.Slot}}
+{{- end}}
+
+{{define "body" -}}
+{{if .Test -}}
+MailCare の送信確認（SMTP）設定のテストメールです。
+このメールは記録せず、到着確認の対象になりません。
+{{- else -}}
+MailCare がメールの配信を確認するために自動で送信した確認メールです。
+到着の確認に使うため、移動や削除はしないでください。
+{{- end}}
+
+送信元: {{.Address}}
+送信時刻（予定）: {{.Slot}}
+送信日時: {{.SentAt}}
+{{- if .Token}}
+確認番号: {{.Token}}
+{{- end}}
+{{- end}}

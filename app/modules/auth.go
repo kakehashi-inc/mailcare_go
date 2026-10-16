@@ -241,8 +241,9 @@ func CreateUserFrom(db *sql.DB, in NewUser) (*models.User, error) {
 }
 
 // ProfileInput carries the profile fields a user (or an administrator on
-// their behalf) may change; nil fields are left unchanged. An empty Email
-// clears the address; an empty preference restores its default.
+// their behalf) may change; nil fields are left unchanged. An empty
+// DisplayName falls back to the username (as on creation), an empty Email
+// clears the address and an empty preference restores its default.
 type ProfileInput struct {
 	DisplayName *string
 	Email       *string

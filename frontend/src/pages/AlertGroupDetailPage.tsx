@@ -6,6 +6,7 @@ import {
     getGroup,
     getJob,
     getMailbox,
+    getSettings,
     groupExportUrl,
     groupReportUrl,
     setGroupState,
@@ -212,6 +213,9 @@ export function AlertGroupDetailPage() {
     const { isAdmin } = useAuth();
     const mailbox = useAsync(() => getMailbox(id), [id]);
     const detail = useAsync(() => getGroup(id, groupKey), [id, groupKey]);
+    // Administrators only: why an analysis cannot run now ("" when it can).
+    const settings = useAsync(() => (isAdmin ? getSettings() : Promise.resolve(null)), [isAdmin]);
+    const analyzeRefusal = settings.data?.analyze_refusal ?? '';
     const [job, setJob] = useState<JobDTO | null>(null);
     const [analyzing, setAnalyzing] = useState(false);
     const [changing, setChanging] = useState<GroupState | null>(null);
@@ -480,7 +484,8 @@ export function AlertGroupDetailPage() {
                                         variant='primary'
                                         icon='psychology'
                                         loading={analyzing}
-                                        disabled={reportRunning}
+                                        disabled={reportRunning || !settings.data || analyzeRefusal !== ''}
+                                        title={analyzeRefusal ? t(analyzeRefusal) : undefined}
                                         onClick={() => void analyze()}
                                     >
                                         {reportRunning

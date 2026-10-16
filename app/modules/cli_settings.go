@@ -11,6 +11,7 @@ import (
 
 	"mailcare/app/models"
 	"mailcare/app/modules/agent"
+	"mailcare/app/modules/mailengine"
 	"mailcare/app/modules/wording"
 )
 
@@ -155,6 +156,22 @@ func (c *SettingsShowCmd) Run() error {
 		SettingDNSCheckResolvers:                dnsCheck.Resolvers,
 		SettingDNSCheckSystemResolverOnly:       dnsCheck.SystemOnly,
 	}
+	if probe, err := ResolveProbeSettings(db, nil); err == nil {
+		values[SettingProbeEnabled] = probe.Enabled
+		values[SettingProbeAddress] = probe.Address
+		values[SettingProbeIMAPHost] = probe.Conn.ImapHost
+		values[SettingProbeIMAPPort] = probe.Conn.ImapPort
+		values[SettingProbeIMAPSecurity] = probe.Conn.ImapSecurity
+		values[SettingProbeIMAPUsername] = probe.Conn.ImapUsername
+		values["probe_imap_password_set"] = probe.PasswordSet
+		values[SettingProbeIMAPFolder] = probe.Conn.Folder
+		values[SettingProbeSubjectTag] = probe.SubjectTag
+		values[SettingProbeSendTimes] = probe.SendTimes
+		values[SettingProbeDelayMinutes] = probe.DelayMinutes
+		values[SettingProbeFailureMinutes] = probe.FailureMinutes
+		values[SettingProbeLastSendAt] = rfc3339OrNull(probe.LastSendAt)
+		values[SettingProbeNextCheckAt] = rfc3339OrNull(probe.NextCheckAt)
+	}
 	if c.JSON {
 		values["data_dir"] = dataDir
 		values["providers"] = agent.Providers()
@@ -235,6 +252,8 @@ func (c *SettingsShowCmd) Run() error {
 		fmt.Printf("%-22s none (notifications are disabled)\n", "next_send_at:")
 	}
 	fmt.Println()
+	printProbeSettings(db)
+	fmt.Println()
 	lastCleanup := models.GetSetting(db, SettingCleanupLastRunDate)
 	if lastCleanup == "" {
 		lastCleanup = "-"
@@ -267,7 +286,7 @@ func stringOrNull(s string) interface{} {
 // shell history or the process list.
 type SettingsSetCmd struct {
 	Key   string  `arg:"" help:"Setting key"`
-	Value *string `arg:"" optional:"" help:"New value (an empty string restores the default; check_times also accepts none to disable the automatic checks; sending_source_ipv4, sending_source_ipv6, sending_source_hosts and dns_check_resolvers take a comma-separated list, and dns_check_resolvers accepts none to save an empty list). Omit it for smtp_password to be prompted for the password (hidden on a terminal; a line on piped input)"`
+	Value *string `arg:"" optional:"" help:"New value (an empty string restores the default; check_times also accepts none to disable the automatic checks; sending_source_ipv4, sending_source_ipv6, sending_source_hosts and dns_check_resolvers take a comma-separated list, and dns_check_resolvers accepts none to save an empty list). Omit it for smtp_password or probe_imap_password to be prompted for the password (hidden on a terminal; a line on piped input)"`
 }
 
 func (c *SettingsSetCmd) Run() error {
@@ -276,8 +295,12 @@ func (c *SettingsSetCmd) Run() error {
 	switch {
 	case c.Value != nil:
 		value = strings.TrimSpace(*c.Value)
-	case key == settingSMTPPassword:
-		password, err := promptPassword("SMTP password")
+	case key == settingSMTPPassword || key == settingProbeIMAPPassword:
+		label := "SMTP password"
+		if key == settingProbeIMAPPassword {
+			label = "Probe server password"
+		}
+		password, err := promptPassword(label)
 		if err != nil {
 			return err
 		}
@@ -286,20 +309,30 @@ func (c *SettingsSetCmd) Run() error {
 		}
 		value = password
 	default:
-		return NewExitErrorf(ExitArgument, "a value is required for %s (only %s may be omitted to be prompted)", key, settingSMTPPassword)
+		return NewExitErrorf(ExitArgument, "a value is required for %s (only %s and %s may be omitted to be prompted)", key,
+			settingSMTPPassword, settingProbeIMAPPassword)
 	}
 	db, err := openDBForCLI()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	shown, err := ApplySetting(db, key, value, func() ([]byte, error) { return loadKeyForCLI(db) })
+	// A change that needs the SMTP password with it (a username set, or the
+	// connection of a stored password changed) asks for it.
+	askSMTPPassword := func() (string, error) { return promptPassword("SMTP password") }
+	shown, err := applySetting(db, key, value, func() ([]byte, error) { return loadKeyForCLI(db) }, askSMTPPassword)
 	if err != nil {
 		var exitErr *ExitError
 		if errors.As(err, &exitErr) {
 			return err
 		}
 		return NewExitError(ExitConfig, err.Error())
+	}
+	if slices.Contains(probeSettingKeys, key) {
+		if probe, err := ResolveProbeSettings(db, nil); err == nil && probe.Conn.ImapSecurity == IMAPSecurityNone &&
+			(probe.Conn.ImapUsername != "" || probe.PasswordSet) {
+			warnPlaintextCredentials("the probe server")
+		}
 	}
 	if value == "" {
 		fmt.Printf("%s restored to its default\n", key)
@@ -324,7 +357,120 @@ func SettingKeys() []string {
 		SettingSMTPUsername,
 		settingSMTPPassword,
 		SettingSMTPFrom, SettingPublicBaseURL, SettingNotifyEnabled, SettingNotifyTime, SettingNotifyInterval, SettingNotifyUserIDs,
+		SettingProbeEnabled, SettingProbeAddress, SettingProbeIMAPHost, SettingProbeIMAPPort, SettingProbeIMAPSecurity,
+		SettingProbeIMAPUsername, settingProbeIMAPPassword, SettingProbeIMAPFolder, SettingProbeSendTimes,
+		SettingProbeDelayMinutes, SettingProbeFailureMinutes, SettingProbeSubjectTag,
 	}
+}
+
+// settingProbeIMAPPassword is the "settings set" key of the probe server
+// password; the value is encrypted and stored under SettingProbeIMAPPassword.
+const settingProbeIMAPPassword = "probe_imap_password"
+
+// probeSettingKeys are the "settings set" keys of the delivery probe.
+var probeSettingKeys = []string{
+	SettingProbeEnabled, SettingProbeAddress, SettingProbeIMAPHost, SettingProbeIMAPPort, SettingProbeIMAPSecurity,
+	SettingProbeIMAPUsername, settingProbeIMAPPassword, SettingProbeIMAPFolder, SettingProbeSendTimes,
+	SettingProbeDelayMinutes, SettingProbeFailureMinutes, SettingProbeSubjectTag,
+}
+
+// applyProbeSetting sets one delivery probe setting through the validation
+// of the Web settings (SaveProbeSettings); "" restores the default ("" for
+// the address, the host and the username; no password; switched off), and
+// probe_send_times "none" sets no send time.
+func applyProbeSetting(db *sql.DB, key, value string, loadKey func() ([]byte, error)) (string, error) {
+	in := &ProbeInput{}
+	shown := value
+	var masterKey []byte
+	intArg := func(def int, lo, hi int) (*int, error) {
+		if value == "" {
+			return &def, nil
+		}
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return nil, NewExitErrorf(ExitArgument, "%s must be an integer between %d and %d", key, lo, hi)
+		}
+		return &n, nil
+	}
+	var err error
+	switch key {
+	case SettingProbeEnabled:
+		enabled := false
+		if value != "" {
+			if enabled, err = ParseBoolSetting(value); err != nil {
+				return "", NewExitError(ExitArgument, err.Error())
+			}
+		}
+		in.Enabled = &enabled
+		shown = strconv.FormatBool(enabled)
+	case SettingProbeAddress:
+		in.Address = &value
+		shown = strings.ToLower(value)
+	case SettingProbeIMAPHost:
+		in.IMAPHost = &value
+	case SettingProbeIMAPPort:
+		if in.IMAPPort, err = intArg(DefaultIMAPPort, 1, 65535); err != nil {
+			return "", err
+		}
+		shown = strconv.Itoa(*in.IMAPPort)
+	case SettingProbeIMAPSecurity:
+		in.IMAPSecurity = &value
+		shown = strings.ToLower(value)
+	case SettingProbeIMAPUsername:
+		in.IMAPUsername = &value
+	case settingProbeIMAPPassword:
+		if value == "" {
+			in.ClearIMAPPassword = true
+			break
+		}
+		if loadKey == nil {
+			return "", errors.New("the master key is required to store the probe IMAP password")
+		}
+		if masterKey, err = loadKey(); err != nil {
+			return "", err
+		}
+		in.IMAPPassword = &value
+		shown = "(encrypted)"
+	case SettingProbeIMAPFolder:
+		in.IMAPFolder = &value
+	case SettingProbeSubjectTag:
+		// Trimmed here as Probe() trims it, so the value shown is the one saved.
+		if value = strings.TrimSpace(value); value == "" {
+			value = DefaultProbeSubjectTag
+		}
+		in.SubjectTag = &value
+		shown = value
+	case SettingProbeSendTimes:
+		times := strings.Split(value, ",")
+		switch {
+		case value == "":
+			times = strings.Split(DefaultProbeSendTimes, ",")
+		case strings.EqualFold(value, CheckTimesNone):
+			times = []string{}
+		}
+		in.SendTimes = &times
+	case SettingProbeDelayMinutes:
+		if in.DelayMinutes, err = intArg(DefaultProbeDelayMinutes, MinProbeMinutes, MaxProbeMinutes); err != nil {
+			return "", err
+		}
+		shown = strconv.Itoa(*in.DelayMinutes)
+	case SettingProbeFailureMinutes:
+		if in.FailureMinutes, err = intArg(DefaultProbeFailureMinutes, MinProbeMinutes, MaxProbeMinutes); err != nil {
+			return "", err
+		}
+		shown = strconv.Itoa(*in.FailureMinutes)
+	}
+	if err := SaveProbeSettings(db, masterKey, in); err != nil {
+		if errors.Is(err, ErrProbeIMAPPasswordRequired) {
+			return "", NewExitErrorf(ExitArgument, "%v (while the probe is on, switch it off first with: settings set %s 0; then remove the stored password with: settings set %s \"\", change the setting, set the password again and switch the probe on)",
+				err, SettingProbeEnabled, settingProbeIMAPPassword)
+		}
+		return "", NewExitError(ExitArgument, err.Error())
+	}
+	if key == SettingProbeSendTimes {
+		shown = displayList(ResolveProbeSendTimes(db), CheckTimesNone)
+	}
+	return shown, nil
 }
 
 // settingSMTPPassword is the "settings set" key of the SMTP password; the
@@ -332,11 +478,19 @@ func SettingKeys() []string {
 const settingSMTPPassword = "smtp_password"
 
 // ApplySetting validates and stores one setting given as text and returns
-// the value as stored (for display). An empty value restores the default.
-// loadKey supplies the master key when the SMTP password is set (nil when a
-// caller never sets it). Validation failures are ExitErrors with
-// ExitArgument.
+// the value as stored (for display). An empty value restores the default,
+// through the same validation. loadKey supplies the master key when the
+// SMTP password is set (nil when a caller never sets it). Validation
+// failures are ExitErrors with ExitArgument.
 func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error)) (string, error) {
+	return applySetting(db, key, value, loadKey, nil)
+}
+
+// applySetting is ApplySetting that, given askSMTPPassword, asks for the
+// SMTP password when a change of the SMTP host, port, security or username
+// needs it (one key per command, so the password cannot come as another
+// argument) and saves both together.
+func applySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error), askSMTPPassword func() (string, error)) (string, error) {
 	key = strings.ToLower(strings.TrimSpace(key))
 	value = strings.TrimSpace(value)
 	if !slices.Contains(SettingKeys(), key) {
@@ -348,36 +502,50 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		// checked here too.
 		return applyDNSCheckSetting(db, key, value)
 	}
-	if value == "" {
-		stored := key
-		if key == settingSMTPPassword {
-			stored = SettingSMTPPasswordEnc
-		}
-		return "", withSettingsLock(func() error { return models.DeleteSetting(db, stored) })
+	if slices.Contains(probeSettingKeys, key) {
+		// The two thresholds and switching the probe on depend on other
+		// probe settings, so "" is checked here too.
+		return applyProbeSetting(db, key, value, loadKey)
 	}
+	// "" restores the default through the same validation as any other
+	// value, so a default that breaks a rule shared with other settings is
+	// refused like any other value.
 	argErr := func(err error) (string, error) { return "", NewExitError(ExitArgument, err.Error()) }
 	switch key {
 	case SettingWebListen:
-		return value, persistLocked(db, key, value, value == DefaultWebListenAddr)
-	case SettingWebPort, SettingCookieTTLHours:
-		n, perr := strconv.Atoi(value)
-		if perr != nil || n < 1 || (key == SettingWebPort && n > 65535) {
-			return "", NewExitErrorf(ExitArgument, "%s must be a positive integer", key)
+		addr, perr := ParseWebListen(value)
+		if perr != nil {
+			return argErr(perr)
 		}
+		return addr, persistLocked(db, key, addr, addr == DefaultWebListenAddr)
+	case SettingWebPort, SettingCookieTTLHours:
 		def := DefaultWebPort
 		if key == SettingCookieTTLHours {
 			def = DefaultCookieTTLHours
 		}
+		n := def
+		if value != "" {
+			var perr error
+			if n, perr = strconv.Atoi(value); perr != nil || n < 1 || (key == SettingWebPort && n > 65535) {
+				return "", NewExitErrorf(ExitArgument, "%s must be a positive integer", key)
+			}
+		}
 		return strconv.Itoa(n), persistLocked(db, key, strconv.Itoa(n), n == def)
 	case SettingWorkers:
-		n, perr := ParseWorkers(value)
-		if perr != nil {
-			return argErr(perr)
+		n := DefaultWorkers
+		if value != "" {
+			var perr error
+			if n, perr = ParseWorkers(value); perr != nil {
+				return argErr(perr)
+			}
 		}
 		return strconv.Itoa(n), SaveWorkers(db, n)
 	case SettingCheckTimes:
 		// "none" disables the automatic checks ("" restores the default).
-		if strings.EqualFold(value, CheckTimesNone) {
+		switch {
+		case value == "":
+			return FormatCheckTimes(DefaultCheckTimeList()), SaveCheckTimes(db, DefaultCheckTimeList())
+		case strings.EqualFold(value, CheckTimesNone):
 			return CheckTimesNone, SaveCheckTimes(db, nil)
 		}
 		times, perr := ParseCheckTimes([]string{value})
@@ -386,6 +554,11 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		}
 		return FormatCheckTimes(times), SaveCheckTimes(db, times)
 	case SettingAgentProvider:
+		if value == "" {
+			// Switching provider clears the model and the reasoning level of
+			// the previous one (SetAgentProvider).
+			value = DefaultAgentProvider
+		}
 		if !agent.IsValidProvider(value) {
 			names := make([]string, 0)
 			for _, p := range agent.Providers() {
@@ -413,24 +586,36 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		}
 		return value, nil
 	case SettingAgentEnabled:
-		enabled, perr := ParseBoolSetting(value)
-		if perr != nil {
-			return argErr(perr)
+		enabled := true
+		if value != "" {
+			var perr error
+			if enabled, perr = ParseBoolSetting(value); perr != nil {
+				return argErr(perr)
+			}
 		}
 		return strconv.FormatBool(enabled), SetAgentEnabled(db, enabled)
 	case SettingAgentKeepDays:
-		n, perr := ParseAgentKeepDays(value)
-		if perr != nil {
-			return argErr(perr)
+		n := DefaultAgentKeepDays
+		if value != "" {
+			var perr error
+			if n, perr = ParseAgentKeepDays(value); perr != nil {
+				return argErr(perr)
+			}
 		}
 		return strconv.Itoa(n), SaveAgentKeepDays(db, n)
 	case SettingMailKeepDays:
-		n, perr := ParseMailKeepDays(value)
-		if perr != nil {
-			return argErr(perr)
+		n := DefaultMailKeepDays
+		if value != "" {
+			var perr error
+			if n, perr = ParseMailKeepDays(value); perr != nil {
+				return argErr(perr)
+			}
 		}
 		return strconv.Itoa(n), SaveMailKeepDays(db, n)
 	case SettingCleanupTime:
+		if value == "" {
+			value = DefaultCleanupTime
+		}
 		norm, perr := ParseCleanupTime(value)
 		if perr != nil {
 			return argErr(perr)
@@ -438,10 +623,16 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		_, err := SaveCleanupTime(db, norm)
 		return norm, err
 	case SettingRecheckDays:
-		// "category=days" pairs; the categories not named keep their value.
+		// "category=days" pairs; the categories not named keep their value
+		// ("" restores the default of every category).
 		days, perr := ParseRecheckDays(value)
 		if perr != nil {
 			return argErr(perr)
+		}
+		if value == "" {
+			for _, c := range KnownCategories() {
+				days[c] = mailengine.DefaultRecheckDays(c)
+			}
 		}
 		if err := SaveRecheckDays(db, days); err != nil {
 			return "", err
@@ -450,13 +641,20 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 	case SettingSendingSourceIPv4, SettingSendingSourceIPv6, SettingSendingSourceHosts:
 		// A comma-separated list replaces the saved one ("" clears it).
 		ls := sendingSourceSettings[key]
-		list, perr := ls.parse(strings.Split(value, ","))
+		var entries []string
+		if value != "" {
+			entries = strings.Split(value, ",")
+		}
+		list, perr := ls.parse(entries)
 		if perr != nil {
 			return argErr(perr)
 		}
 		return displayList(list, "(not set)"), ls.save(db, list)
 	}
-	// Notification keys share the validation of the Web settings.
+	// Notification keys share the validation of the Web settings, "" too
+	// (the default of each: no host, sender or username, the default port,
+	// connection security, time and interval, notifications off, no
+	// recipient; the password removed).
 	in := &NotificationInput{}
 	shown := value
 	var masterKey []byte
@@ -464,9 +662,12 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 	case SettingSMTPHost:
 		in.SMTPHost = &value
 	case SettingSMTPPort:
-		n, perr := strconv.Atoi(value)
-		if perr != nil {
-			return "", NewExitErrorf(ExitArgument, "%s must be an integer between 1 and 65535", key)
+		n := DefaultSMTPPort
+		if value != "" {
+			var perr error
+			if n, perr = strconv.Atoi(value); perr != nil {
+				return "", NewExitErrorf(ExitArgument, "%s must be an integer between 1 and 65535", key)
+			}
 		}
 		in.SMTPPort = &n
 	case SettingSMTPSecurity:
@@ -475,6 +676,10 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 	case SettingSMTPUsername:
 		in.SMTPUsername = &value
 	case settingSMTPPassword:
+		if value == "" {
+			in.ClearSMTPPassword = true
+			break
+		}
 		if loadKey == nil {
 			return "", errors.New("the master key is required to store the SMTP password")
 		}
@@ -492,27 +697,36 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		in.PublicBaseURL = &value
 		shown = strings.TrimRight(value, "/")
 	case SettingNotifyEnabled:
-		enabled, perr := ParseBoolSetting(value)
-		if perr != nil {
-			return argErr(perr)
+		enabled := false
+		if value != "" {
+			var perr error
+			if enabled, perr = ParseBoolSetting(value); perr != nil {
+				return argErr(perr)
+			}
 		}
 		in.Enabled = &enabled
 		shown = strconv.FormatBool(enabled)
 	case SettingNotifyTime:
-		norm, perr := ValidateNotifyTime(value)
-		if perr != nil {
-			return argErr(perr)
+		norm := DefaultNotifyTime
+		if value != "" {
+			var perr error
+			if norm, perr = ValidateNotifyTime(value); perr != nil {
+				return argErr(perr)
+			}
 		}
 		in.Time = &norm
 		shown = norm
 	case SettingNotifyInterval:
-		n, perr := strconv.Atoi(value)
-		if perr != nil {
-			return "", NewExitErrorf(ExitArgument, "%s must be an integer between %d and %d", key, MinNotifyIntervalDays, MaxNotifyIntervalDays)
+		n := DefaultNotifyIntervalDays
+		if value != "" {
+			var perr error
+			if n, perr = strconv.Atoi(value); perr != nil {
+				return "", NewExitErrorf(ExitArgument, "%s must be an integer between %d and %d", key, MinNotifyIntervalDays, MaxNotifyIntervalDays)
+			}
 		}
 		in.IntervalDays = &n
 	case SettingNotifyUserIDs:
-		var ids []int64
+		ids := []int64{}
 		for _, part := range strings.Split(value, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
@@ -526,11 +740,38 @@ func ApplySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error))
 		}
 		in.UserIDs = &ids
 	}
-	if err := SaveNotificationSettings(db, masterKey, in); err != nil {
-		if errors.Is(err, ErrSMTPPasswordRequired) {
-			// One key per command: the password cannot come along, so the
-			// operator removes it first and sets it again afterwards.
-			return "", NewExitErrorf(ExitArgument, "%v (remove the stored password with: settings set %s \"\", change the setting, then set the password again)", err, settingSMTPPassword)
+	if key == settingSMTPPassword && value != "" {
+		// The password belongs to the username (without one it is not kept).
+		if saved, err := ResolveNotificationSettings(db, nil); err == nil && saved.SMTP.Username == "" {
+			return "", NewExitErrorf(ExitArgument, "set %s first (it asks for the password)", SettingSMTPUsername)
+		}
+	}
+	err := SaveNotificationSettings(db, masterKey, in)
+	connectionKey := key == SettingSMTPHost || key == SettingSMTPPort || key == SettingSMTPSecurity || key == SettingSMTPUsername
+	if connectionKey && askSMTPPassword != nil && (errors.Is(err, ErrSMTPPasswordRequired) || errors.Is(err, errSMTPPasswordMissing)) {
+		password, aerr := askSMTPPassword()
+		if aerr != nil {
+			return "", aerr
+		}
+		if password == "" {
+			return "", NewExitError(ExitArgument, "no password given")
+		}
+		if loadKey == nil {
+			return "", errors.New("the master key is required to store the SMTP password")
+		}
+		if masterKey, err = loadKey(); err != nil {
+			return "", err
+		}
+		in.SMTPPassword = &password
+		err = SaveNotificationSettings(db, masterKey, in)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrSMTPPasswordRequired), errors.Is(err, errSMTPPasswordMissing) && connectionKey:
+			return "", NewExitErrorf(ExitArgument, "%v (settings set %s on a terminal asks for the password)", err, key)
+		case errors.Is(err, errSMTPPasswordMissing):
+			return "", NewExitErrorf(ExitArgument, "%v (clear %s for a server without authentication; that removes the password too)",
+				err, SettingSMTPUsername)
 		}
 		return argErr(err)
 	}
@@ -605,4 +846,37 @@ func applyDNSCheckSetting(db *sql.DB, key, value string) (string, error) {
 		shown = displayList(cfg.Resolvers, DNSCheckResolversNone)
 	}
 	return shown, nil
+}
+
+// printProbeSettings prints the delivery probe settings ("settings show").
+func printProbeSettings(db *sql.DB) {
+	probe, err := ResolveProbeSettings(db, nil)
+	if err != nil {
+		fmt.Printf("%-22s %v\n", "probe:", err)
+		return
+	}
+	password := "(not set)"
+	if probe.PasswordSet {
+		password = "(set)"
+	}
+	fmt.Printf("%-22s %v\n", SettingProbeEnabled+":", probe.Enabled)
+	fmt.Printf("%-22s %s\n", SettingProbeAddress+":", probe.Address)
+	fmt.Printf("%-22s %s\n", SettingProbeIMAPHost+":", probe.Conn.ImapHost)
+	fmt.Printf("%-22s %d\n", SettingProbeIMAPPort+":", probe.Conn.ImapPort)
+	fmt.Printf("%-22s %s\n", SettingProbeIMAPSecurity+":", probe.Conn.ImapSecurity)
+	fmt.Printf("%-22s %s\n", SettingProbeIMAPUsername+":", probe.Conn.ImapUsername)
+	fmt.Printf("%-22s %s\n", settingProbeIMAPPassword+":", password)
+	fmt.Printf("%-22s %s\n", SettingProbeIMAPFolder+":", probe.Conn.Folder)
+	fmt.Printf("%-22s %s\n", SettingProbeSubjectTag+":", probe.SubjectTag)
+	fmt.Printf("%-22s %s\n", SettingProbeSendTimes+":", displayList(probe.SendTimes, CheckTimesNone))
+	fmt.Printf("%-22s %d\n", SettingProbeDelayMinutes+":", probe.DelayMinutes)
+	fmt.Printf("%-22s %d\n", SettingProbeFailureMinutes+":", probe.FailureMinutes)
+	fmt.Printf("%-22s %s\n", "probe_last_send_at:", formatNullTime(probe.LastSendAt))
+	fmt.Printf("%-22s %s\n", "probe_next_check_at:", formatNullTime(probe.NextCheckAt))
+	if probe.LastCheckError != "" {
+		fmt.Printf("%-22s %s\n", "probe_last_check_error:", probe.LastCheckError)
+	}
+	if probe.LastDeleteError != "" {
+		fmt.Printf("%-22s %s\n", "probe_last_delete_error:", probe.LastDeleteError)
+	}
 }

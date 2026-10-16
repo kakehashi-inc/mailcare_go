@@ -161,14 +161,16 @@ const (
 // --- Job kinds and statuses (jobs table) ---
 
 const (
-	JobKindSync       = "sync"       // fetch, then group, then queue analysis (one mailbox; NULL expands to every enabled mailbox)
-	JobKindFetch      = "fetch"      // download new mail and index it (no classification)
-	JobKindGroup      = "group"      // classify and group the messages not grouped yet, then queue analysis
-	JobKindAnalyze    = "analyze"    // run the agent on groups that need it
-	JobKindReindex    = "reindex"    // rebuild the index from the raw files (fetch-equivalent + full grouping)
-	JobKindReclassify = "reclassify" // re-run classification and grouping over every message
-	JobKindNotify     = "notify"     // send the alert summary mail to the notification recipients
-	JobKindCleanup    = "cleanup"    // apply the retentions: server mails, local mails, stale temporary files, agent run directories, job history (one mailbox; NULL expands to every mailbox)
+	JobKindSync       = "sync"        // fetch, then group, then queue analysis (one mailbox; NULL expands to every enabled mailbox)
+	JobKindFetch      = "fetch"       // download new mail and index it (no classification)
+	JobKindGroup      = "group"       // classify and group the messages not grouped yet, then queue analysis
+	JobKindAnalyze    = "analyze"     // run the agent on groups that need it
+	JobKindReindex    = "reindex"     // rebuild the index from the raw files (fetch-equivalent + full grouping)
+	JobKindReclassify = "reclassify"  // re-run classification and grouping over every message
+	JobKindNotify     = "notify"      // send the alert summary mail to the notification recipients
+	JobKindCleanup    = "cleanup"     // apply the retentions: server mails, local mails, stale temporary files, agent run directories, job history (one mailbox; NULL expands to every mailbox)
+	JobKindProbeSend  = "probe_send"  // send a probe mail from every participating mailbox to the probe server (no mailbox; target: the send slot)
+	JobKindProbeCheck = "probe_check" // look for the probe mails not arrived yet on the probe server and judge delays and failures (no mailbox)
 
 	JobStatusQueued   = "queued"
 	JobStatusRunning  = "running"
@@ -326,6 +328,108 @@ const (
 	// row holding "" is an explicitly empty list.
 	SettingDNSCheckResolvers          = "dns_check_resolvers"
 	SettingDNSCheckSystemResolverOnly = "dns_check_system_resolver_only" // "1" or "0" (default)
+	// Delivery probe (probe.go): the probe server (IMAP) the probe mails are
+	// sent to, the send times and the two thresholds. The password is stored
+	// encrypted with the master key (see secret.go).
+	SettingProbeEnabled        = "probe_enabled" // "1" or "0" (default)
+	SettingProbeAddress        = "probe_address" // the recipient address of the probe mails
+	SettingProbeIMAPHost       = "probe_imap_host"
+	SettingProbeIMAPPort       = "probe_imap_port"
+	SettingProbeIMAPSecurity   = "probe_imap_security" // ssl | starttls | none
+	SettingProbeIMAPUsername   = "probe_imap_username"
+	SettingProbeIMAPPassword   = "probe_imap_password_enc"
+	SettingProbeIMAPFolder     = "probe_imap_folder"
+	SettingProbeSendTimes      = "probe_send_times"      // comma-separated HH:MM (DefaultProbeSendTimes)
+	SettingProbeDelayMinutes   = "probe_delay_minutes"   // minutes without arrival that make a probe mail delayed
+	SettingProbeFailureMinutes = "probe_failure_minutes" // minutes without arrival that make a probe mail a failure
+	// SettingProbeLastSendAt is when the latest probe send finished (RFC
+	// 3339, internal): the arrival checks are counted from it.
+	SettingProbeLastSendAt = "probe_last_send_at"
+	// SettingProbeNextCheckAt is when the scheduler queues the next arrival
+	// check (RFC 3339, internal; absent = no check pending).
+	SettingProbeNextCheckAt = "probe_next_check_at"
+	// SettingProbeLastCheckAt and SettingProbeLastCheckError record the
+	// outcome of the latest arrival check (internal).
+	SettingProbeLastCheckAt    = "probe_last_check_at"
+	SettingProbeLastCheckError = "probe_last_check_error"
+	// SettingProbeLastDeleteError is why the latest arrival check could not
+	// delete the verified probe mails from the probe server (internal; ""
+	// once a check deletes them).
+	SettingProbeLastDeleteError = "probe_last_delete_error"
+	// SettingProbeCheckFailures counts the arrival checks that failed in a
+	// row and SettingProbeCheckFailingSince is when the first of them ran
+	// (internal; both removed by the next successful check): the retries
+	// back off, and SettingProbeUnreadableNotifiedAt records the one mail
+	// sent once the probe server stayed unreadable for the failure threshold.
+	SettingProbeCheckFailures        = "probe_check_failures"
+	SettingProbeCheckFailingSince    = "probe_check_failing_since"
+	SettingProbeUnreadableNotifiedAt = "probe_unreadable_notified_at"
+	// SettingProbeWideSweepAt is when the daily sweep of the cleanup last
+	// ran (recorded probe mails ProbeSearchMaxDays back and unrecorded probe
+	// mails; internal).
+	SettingProbeWideSweepAt = "probe_wide_sweep_at"
+	// SettingProbeSubjectTag is the identifier at the start of the subject
+	// of the probe mails ("[<identifier>:<token>]"; DefaultProbeSubjectTag).
+	SettingProbeSubjectTag = "probe_subject_tag"
+)
+
+// --- Delivery probe defaults ---
+
+const (
+	// DefaultProbeSendTimes is the default schedule of the probe mails
+	// (local time, HH:MM).
+	DefaultProbeSendTimes = "07:00,11:00,15:00,19:00"
+	// DefaultProbeDelayMinutes is how long a probe mail may take to arrive
+	// before it counts as delayed; while probe mails are missing the arrival
+	// is checked every this many minutes after the latest send, up to the
+	// failure threshold.
+	DefaultProbeDelayMinutes = 15
+	// DefaultProbeFailureMinutes is how long a probe mail may take to arrive
+	// before it counts as a failure; after that the arrival is checked every
+	// this many minutes.
+	DefaultProbeFailureMinutes = 60
+	MinProbeMinutes            = 1
+	MaxProbeMinutes            = 7 * 24 * 60
+	// ProbeCheckCoalesce is how close the moments missing probe mails reach
+	// their next level may be to be checked together (probeLevelCheckAt).
+	ProbeCheckCoalesce = time.Minute
+	// ProbeCheckRetryInterval is the first retry of an arrival check that
+	// could not read the probe server; every further failure doubles it, up
+	// to the failure threshold.
+	ProbeCheckRetryInterval = 10 * time.Minute
+	// ProbeIMAPTimeout bounds one session with the probe server (longer than
+	// IMAPTimeout: the searches, the fetch and the deletion of a check run
+	// in it).
+	ProbeIMAPTimeout = 3 * time.Minute
+	// ProbeSearchMaxDays bounds how far back a check searches (by the
+	// arrival date on the probe server); the wide sweep covers the records
+	// of that many days.
+	ProbeSearchMaxDays = 14
+	// ProbeCleanupScanMax bounds the candidates for unrecorded probe mails
+	// one daily sweep reads and ProbeCleanupMax the probe mails one check
+	// deletes under the rule for the unrecorded ones (both the oldest
+	// first; the rest on the next sweeps: mails that cannot be deleted do
+	// not hold back the ones behind them while they are fewer than the
+	// difference). ProbeLeftoverMinAge is how long such a mail stays on the
+	// probe server at least (another MailCare sharing the server may still
+	// look for it).
+	ProbeCleanupScanMax = 2000
+	ProbeCleanupMax     = 500
+	ProbeLeftoverMinAge = 24 * time.Hour
+	// DefaultProbeSubjectTag is the default identifier of the probe mails.
+	DefaultProbeSubjectTag = "MC"
+	// MaxProbeSendTimes and MinProbeSendGapMinutes bound the send times: at
+	// most this many a day, at least this many minutes apart.
+	MaxProbeSendTimes      = 24
+	MinProbeSendGapMinutes = 15
+	// MinProbeRecordKeepDays is the shortest time the daily cleanup keeps the
+	// probe mail records, even when mail_keep_days is shorter.
+	MinProbeRecordKeepDays = 7
+	// ProbeHeader carries the token of a probe mail as a header as well.
+	ProbeHeader = "X-MailCare-Probe"
+	// MaxProbeNoteLength bounds the details written when a probe mail is
+	// resolved by hand (characters).
+	MaxProbeNoteLength = 2000
 )
 
 // --- Notification defaults ---

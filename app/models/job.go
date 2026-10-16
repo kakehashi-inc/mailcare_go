@@ -238,6 +238,14 @@ func HasActiveJob(db *sql.DB, kind string, mailboxID int64, target string) (bool
 	return n > 0, err
 }
 
+// HasActiveJobOfKind reports whether a job of the kind is queued or
+// running, whatever its mailbox and target.
+func HasActiveJobOfKind(db *sql.DB, kind string) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE kind = ? AND status IN ('queued','running')`, kind).Scan(&n)
+	return n > 0, err
+}
+
 // DeleteOldJobs removes the finished jobs whose finish time is before the
 // given time and returns how many rows went.
 func DeleteOldJobs(db *sql.DB, before time.Time) (int64, error) {

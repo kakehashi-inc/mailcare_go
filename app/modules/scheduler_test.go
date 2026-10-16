@@ -77,6 +77,11 @@ func TestSchedulerTickQueuesOneSyncJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	jm := NewJobManager(db, nil, t.TempDir(), t.TempDir(), nil)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addMailbox(t, db, key, "a@example.test", "", true)
 	s := NewScheduler(db, jm)
 	clock := localDate(2026, 9, 17, 5, 59, 50)
 	s.now = func() time.Time { return clock }
@@ -374,5 +379,58 @@ func TestSchedulerStartCatchesUpCleanup(t *testing.T) {
 		if j.Kind == JobKindSync {
 			t.Errorf("start fired a check time: %+v", j)
 		}
+	}
+}
+
+// A job that could do nothing is not queued: no sync without an enabled
+// mailbox, no notify without a selected recipient with an address, no
+// probe send without a mailbox that sends probe mails and no arrival check
+// without an open probe mail (whose schedule and failure run are cleared
+// instead, as such a check would).
+func TestSchedulerSkipsJobsThatDoNothing(t *testing.T) {
+	db := newTestDB(t)
+	jm := NewJobManager(db, nil, t.TempDir(), t.TempDir(), nil)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCheckTimes(db, []string{"06:00"}); err != nil {
+		t.Fatal(err)
+	}
+	addMailbox(t, db, key, "off@example.test", "", false)
+	bob, err := CreateUserFrom(db, NewUser{Username: "bob", Password: "password123", Role: RoleUser}) // no address
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	str := func(v string) *string { return &v }
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &on, Time: str("06:00"),
+		SMTPHost: str("smtp.example.test"), SMTPFrom: str("mailcare@example.test"), UserIDs: &[]int64{bob.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveProbeSettings(db, key, &ProbeInput{Address: str("probe@example.test"), IMAPHost: str("imap.example.test"),
+		IMAPUsername: str("probe"), IMAPPassword: str("x"), SendTimes: &[]string{"06:00"}, Enabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateSettings(db, func(u *SettingsUpdate) error {
+		u.setTime(SettingProbeNextCheckAt, localDate(2026, 9, 17, 5, 0, 0))
+		u.set(SettingProbeCheckFailures, "2", false)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScheduler(db, jm)
+	clock := localDate(2026, 9, 17, 5, 59, 50)
+	s.now = func() time.Time { return clock }
+	s.lastTick = clock
+	clock = localDate(2026, 9, 17, 6, 0, 10)
+	s.Tick()
+	for _, kind := range []string{JobKindSync, JobKindNotify, JobKindProbeSend, JobKindProbeCheck} {
+		if jobs := activeJobsOfKind(t, db, kind); len(jobs) != 0 {
+			t.Errorf("%s queued with nothing to do: %+v", kind, jobs[0])
+		}
+	}
+	if ps, _ := ResolveProbeSettings(db, nil); ps.NextCheckAt.Valid || ps.CheckFailures != 0 {
+		t.Errorf("the arrival check was not cleared: next %v, failures %d", ps.NextCheckAt, ps.CheckFailures)
 	}
 }

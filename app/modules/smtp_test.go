@@ -61,7 +61,7 @@ func TestSendMailPlainAuthOverPlaintext(t *testing.T) {
 	if got := decodeSubject(t, m.Data); got != "テスト Subject" {
 		t.Errorf("subject = %q", got)
 	}
-	for _, want := range []string{"From: MailCare <mailcare@example.test>\r\n", "To: a@example.test, b@example.test\r\n",
+	for _, want := range []string{"From: \"MailCare\" <mailcare@example.test>\r\n", "To: a@example.test, b@example.test\r\n",
 		"MIME-Version: 1.0\r\n", "Content-Type: text/plain; charset=UTF-8\r\n", "Content-Transfer-Encoding: 8bit\r\n",
 		"Date: ", "Message-ID: <", "@example.test>\r\n", "\r\n\r\nこんにちは\r\nline two\r\n.leading dot\r\n"} {
 		if !strings.Contains(m.Data, want) {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"strconv"
+	"time"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
@@ -23,9 +24,15 @@ func requestedBy(r *http.Request) string {
 	return "control"
 }
 
-// enqueueAndRespond queues a job and answers {job, created}. An identical
-// active job answers 200 with created=false; a new one answers 201.
+// enqueueAndRespond queues a job asked for by hand and answers {job,
+// created}. An identical active job answers 200 with created=false; a new
+// one answers 201. A job that cannot do anything now is refused with the
+// reason (modules.ManualJobRefusal, 400).
 func (c *core) enqueueAndRespond(w http.ResponseWriter, r *http.Request, kind string, mailboxID int64, target string) {
+	if err := modules.ManualJobRefusal(c.db, kind, time.Now()); err != nil {
+		writeErrorMessage(w, r, err)
+		return
+	}
 	job, created, err := c.jm.Enqueue(kind, mailboxID, target, requestedBy(r))
 	if err != nil {
 		writeErrorMessage(w, r, err)

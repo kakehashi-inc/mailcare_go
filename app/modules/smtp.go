@@ -11,6 +11,7 @@ import (
 	"mailcare/app/modules/wording"
 	"mime"
 	"net"
+	netmail "net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
@@ -52,10 +53,31 @@ func (c SMTPConfig) Configured() bool {
 	return strings.TrimSpace(c.Host) != "" && strings.TrimSpace(c.From) != ""
 }
 
+// MailHeader is an extra header line of an outgoing message (ASCII name
+// and value).
+type MailHeader struct {
+	Name  string
+	Value string
+}
+
+// OutgoingMail is the content of one outgoing message.
+type OutgoingMail struct {
+	FromName string // display name of the sender ("" = SMTPFromName)
+	Subject  string
+	Body     string // UTF-8 plain text
+	Headers  []MailHeader
+}
+
 // SendMail delivers one UTF-8 text/plain mail through the configured server.
 // from is the envelope and header sender, to the envelope and header
 // recipients. The whole session is bounded by SMTPTimeout and by ctx.
 func SendMail(ctx context.Context, cfg SMTPConfig, from string, to []string, subject, textBody string) error {
+	return SendMessage(ctx, cfg, from, to, OutgoingMail{Subject: subject, Body: textBody})
+}
+
+// SendMessage is SendMail for a message with another display name or extra
+// headers.
+func SendMessage(ctx context.Context, cfg SMTPConfig, from string, to []string, mail OutgoingMail) error {
 	if !cfg.Configured() {
 		return ErrSMTPNotConfigured
 	}
@@ -138,7 +160,7 @@ func SendMail(ctx context.Context, cfg SMTPConfig, from string, to []string, sub
 	if err != nil {
 		return fmt.Errorf("DATA: %w", err)
 	}
-	if _, err := w.Write([]byte(BuildMessage(from, recipients, subject, textBody, time.Now()))); err != nil {
+	if _, err := w.Write([]byte(buildMessage(from, recipients, mail, time.Now()))); err != nil {
 		w.Close()
 		return fmt.Errorf("send message: %w", err)
 	}
@@ -233,12 +255,29 @@ const maxLineLength = 998
 // Content-Type text/plain UTF-8 and the body as 8bit, or base64 when a line is
 // too long for 8bit. Lines end with CRLF.
 func BuildMessage(from string, to []string, subject, textBody string, now time.Time) string {
+	return buildMessage(from, to, OutgoingMail{Subject: subject, Body: textBody}, now)
+}
+
+// buildMessage is BuildMessage with the display name and the extra headers
+// of mail (header lines with a CR or LF in the name or value are dropped).
+func buildMessage(from string, to []string, mail OutgoingMail, now time.Time) string {
+	fromName := mail.FromName
+	if fromName == "" {
+		fromName = SMTPFromName
+	}
+	textBody := mail.Body
 	var b strings.Builder
 	b.WriteString("Date: " + now.Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("Message-ID: " + messageID(from, now) + "\r\n")
-	b.WriteString("From: " + SMTPFromName + " <" + from + ">\r\n")
+	b.WriteString(headerLine("From", formatAddress(fromName, from)))
 	b.WriteString("To: " + strings.Join(to, ", ") + "\r\n")
-	b.WriteString("Subject: " + encodeHeader(subject) + "\r\n")
+	b.WriteString(headerLine("Subject", encodeHeader(mail.Subject)))
+	for _, h := range mail.Headers {
+		if h.Name == "" || strings.ContainsAny(h.Name, ": \r\n") || strings.ContainsAny(h.Value, "\r\n") {
+			continue
+		}
+		b.WriteString(h.Name + ": " + h.Value + "\r\n")
+	}
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	body := strings.ReplaceAll(strings.ReplaceAll(textBody, "\r\n", "\n"), "\n", "\r\n")
@@ -252,6 +291,40 @@ func BuildMessage(from string, to []string, subject, textBody string, now time.T
 	if !strings.HasSuffix(b.String(), "\r\n") {
 		b.WriteString("\r\n")
 	}
+	return b.String()
+}
+
+// formatAddress renders a display name and an address for the From header
+// (net/mail: an ASCII name is quoted, so a comma, colon or @ in it keeps the
+// header readable; other names become RFC 2047 encoded words). White space
+// in the name is collapsed.
+func formatAddress(name, address string) string {
+	return (&netmail.Address{Name: strings.Join(strings.Fields(name), " "), Address: address}).String()
+}
+
+// headerLine renders one header line ending in CRLF. A line longer than the
+// line limit (maxLineLength octets, such as a long encoded display name) is
+// folded at its spaces into lines of about 78 characters; shorter lines are
+// left as they are.
+func headerLine(name, value string) string {
+	line := name + ": " + value
+	if len(line) <= maxLineLength {
+		return line + "\r\n"
+	}
+	var b strings.Builder
+	for len(line) > 78 {
+		cut := strings.LastIndexByte(line[1:79], ' ') + 1
+		if cut == 0 {
+			next := strings.IndexByte(line[1:], ' ')
+			if next < 0 {
+				break
+			}
+			cut = next + 1
+		}
+		b.WriteString(line[:cut] + "\r\n")
+		line = line[cut:] // the space starts the continuation line
+	}
+	b.WriteString(line + "\r\n")
 	return b.String()
 }
 

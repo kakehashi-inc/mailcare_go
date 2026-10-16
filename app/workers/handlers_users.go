@@ -90,11 +90,6 @@ func (c *core) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if body.DisplayName != nil && *body.DisplayName == "" {
-		// An empty display name keeps the current one (the profile falls
-		// back to the username only on creation).
-		body.DisplayName = nil
-	}
 	displayName, email, language, timezone, theme, err := modules.ApplyProfile(u, modules.ProfileInput{
 		DisplayName: body.DisplayName, Email: body.Email, Language: body.Language, Timezone: body.Timezone, Theme: body.Theme})
 	if err != nil {

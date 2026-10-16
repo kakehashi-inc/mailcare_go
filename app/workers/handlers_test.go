@@ -112,7 +112,23 @@ func seededGroupCounts(t *testing.T, s *seededCore) (all groupsResponse, actiona
 	return all, actionable, excluded
 }
 
+// fakeAgentCLI puts a stand-in for the CLI of the default agent provider
+// (codex) on an otherwise empty PATH, so an analysis can be queued (the
+// provider counts as available) and nothing real could ever run. It exits
+// with an error when started.
+func fakeAgentCLI(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range map[string]string{"codex": "#!/bin/sh\nexit 1\n", "codex.bat": "@exit /b 1\r\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+}
+
 func TestGroupsEndpoints(t *testing.T) {
+	fakeAgentCLI(t)
 	s := newSeededCore(t)
 	all, actionable, excluded := seededGroupCounts(t, s)
 	if all.Counts.Open != len(all.Groups) || all.Counts.Resolved != 0 || excluded == 0 {
@@ -548,6 +564,7 @@ func TestMessagesEndpoints(t *testing.T) {
 }
 
 func TestJobsEndpoints(t *testing.T) {
+	fakeAgentCLI(t)
 	s := newSeededCore(t)
 	// Only administrators queue jobs (the user role is read-only).
 	for _, kind := range []string{"reindex", "reclassify", "fetch", "group", "analyze", "sync", "cleanup"} {

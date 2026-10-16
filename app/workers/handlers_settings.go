@@ -3,6 +3,7 @@ package workers
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
@@ -65,6 +66,15 @@ func (c *core) settingsDTO(u *models.User) (map[string]any, error) {
 		dto["sending_source_mailbox_hosts"] = sources.MailboxHosts
 		dto["sending_source_mailboxes_without_host"] = sources.MailboxesWithoutHost
 		dto["dns_check_resolvers"] = dnsCheck.Resolvers
+		// Why an analysis asked for now cannot run ("" when it can: the CLI
+		// of the provider is there and no recorded usage limit lasts): the
+		// analyze buttons are enabled by it and show the reason.
+		dto["analyze_refusal"] = ""
+		if err := modules.AnalyzeRefusal(c.db, time.Now()); err != nil {
+			if m, ok := wording.As(err); ok {
+				dto["analyze_refusal"] = m.Key
+			}
+		}
 	}
 	return dto, nil
 }

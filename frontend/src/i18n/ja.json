@@ -21,7 +21,9 @@
             "settingsMailboxes": "メールアドレス",
             "settingsUsers": "利用者",
             "settingsTokens": "トークン",
-            "settingsProfile": "プロフィール"
+            "settingsProfile": "プロフィール",
+            "settingsProbe": "確認メール",
+            "probes": "確認メール"
         },
         "renderError": {
             "title": "画面の表示中にエラーが発生しました",
@@ -61,7 +63,8 @@
             "seconds": "{{count}} 秒",
             "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
             "hoursMinutes": "{{hours}} 時間 {{minutes}} 分",
-            "days": "{{count}} 日"
+            "days": "{{count}} 日",
+            "minutes": "{{count}} 分"
         }
     },
     "component": {
@@ -155,6 +158,8 @@
             "addressConflicts": "登録済みの {{other}} とデータの保存先の名前が重なるため、このメールアドレスは登録できません。",
             "folderInvalid": "フォルダー名に改行は使用できません。",
             "smtpHostInvalid": "「{{value}}」はホスト名として正しくありません。英数字とハイフンで入力してください。IP アドレス、ポート番号、localhost は指定できません。",
+            "smtpHostRequiredForProbe": "送信確認をするときは、ホスト名を入力してください。",
+            "smtpPortRequired": "送信確認をするときは、ポートを入力してください。",
             "serverKeepDaysOverMailKeep": "サーバーでの保持日数は、メールの保持日数（{{max}} 日）以下で入力してください。"
         },
         "group": {
@@ -172,7 +177,8 @@
             "publicUrlQuery": "URL には「?」や「#」以降を含めないでください。",
             "recipientsTooMany": "通知先は {{max}} 人まで選択できます。",
             "recipientNotFound": "選択した通知先の利用者が見つかりません。ページを再読み込みしてから選択し直してください。",
-            "testRecipientRequired": "送信先を入力してください。"
+            "testRecipientRequired": "送信先を入力してください。",
+            "smtpRequired": "通知を有効にするには、SMTP ホストと差出人アドレスを入力してください。"
         },
         "token": {
             "nameRequired": "名前を入力してください。",
@@ -190,6 +196,15 @@
             "resolverInvalid": "{{line}} 行目の「{{value}}」はリゾルバーの IP アドレスとして正しくありません。ポート番号や CIDR は付けずに入力してください。ループバックアドレス、0.0.0.0、:: は指定できません。",
             "resolversTooMany": "リゾルバーは {{max}} 件まで入力できます。",
             "noResolver": "DNS 検証を有効にする場合は、リゾルバーを 1 件以上入力するか、「OS のリゾルバーだけを使う」をオンにしてください。"
+        },
+        "probe": {
+            "failureNotAfterDelay": "障害判断時間は遅延判断時間より長くしてください。",
+            "reasonRequired": "対応の理由を選択してください。",
+            "sendTimesTooMany": "送信時刻は {{max}} 個までです。",
+            "sendTimesTooClose": "送信時刻は {{min}} 分以上空けてください。",
+            "delayNotBeforeNextSend": "遅延判断時間は送信時刻の間隔より短くしてください（{{max}} 分以下）。",
+            "offFirst": "先に確認メールを無効にしてください（未対応の確認メールは対応済になります）。",
+            "subjectTagInvalid": "識別子は英数字と . _ - の 16 文字以内にしてください。"
         }
     },
     "result": {
@@ -244,6 +259,23 @@
         "token": {
             "created": "トークン「{{name}}」を発行しました。",
             "deleted": "トークン「{{name}}」を削除しました。"
+        },
+        "probe": {
+            "sendQueued": "確認メールの送信を開始しました。結果はジョブ画面で確認できます。",
+            "checkQueued": "到着確認を開始しました。結果はジョブ画面で確認できます。",
+            "alreadyQueued": "同じジョブが待機中または実行中です。",
+            "resolved": "確認メールを対応済にしました。",
+            "notConfigured": "先に確認メールの宛先と確認メールサーバーを設定してください。",
+            "addressNotSet": "確認メールの宛先が設定されていません。",
+            "notOpen": "この確認メールは対応済にできません。",
+            "disabled": "確認メールは無効です。",
+            "smtpTestSent": "{{to}} にテストメールを送信しました。",
+            "noMailbox": "確認メールを送るメールアドレスがありません。",
+            "nothingOpen": "到着を待っている確認メールはありません。"
+        },
+        "agent": {
+            "unavailable": "AI エージェントの CLI が見つかりません。",
+            "usageLimited": "AI エージェントの利用上限に達しています。解除後に分析できます。"
         }
     },
     "action": {
@@ -253,7 +285,6 @@
             "openFor": "{{address}} を開く",
             "editFor": "{{address}} を編集",
             "test": "接続テスト",
-            "testFor": "{{address}} の接続テスト",
             "delete": "メールアドレスを削除",
             "deleteFor": "{{address}} を削除",
             "deleteConfirm": "{{address}} を削除しますか？索引とグループも削除され、元に戻せません。",
@@ -318,6 +349,14 @@
         "setting": {
             "addTime": "時刻を追加",
             "removeTime": "{{time}} を削除"
+        },
+        "probe": {
+            "sendNow": "今すぐ送信",
+            "checkNow": "今すぐ到着確認",
+            "resolve": "対応済にする",
+            "test": "接続テスト",
+            "smtpTest": "テスト送信",
+            "open": "確認メール画面を開く"
         }
     },
     "value": {
@@ -397,7 +436,9 @@
             "reindex": "索引の再構築",
             "reclassify": "再判定",
             "cleanup": "クリーンアップ",
-            "notify": "通知メール送信"
+            "notify": "通知メール送信",
+            "probe_send": "確認メール送信",
+            "probe_check": "確認メール到着確認"
         },
         "checkStatus": {
             "never": "未同期",
@@ -520,6 +561,33 @@
             "text": "テキスト",
             "html": "HTML",
             "none": "なし"
+        },
+        "probeStatus": {
+            "pending": "到着待ち",
+            "delayed": "遅延",
+            "failure": "障害",
+            "send_failed": "送信失敗",
+            "arrived": "到着",
+            "recovered": "回復",
+            "resolved": "対応済"
+        },
+        "probeLevel": {
+            "delayed": "遅延あり",
+            "failure": "障害あり"
+        },
+        "probeResolveReason": {
+            "server_recovered": "メールサーバーの復旧を確認した",
+            "arrived_elsewhere": "届いていたが別のフォルダーに振り分けられていた",
+            "maintenance": "計画メンテナンスによるもの",
+            "config_error": "設定の誤りを修正した",
+            "probe_server_issue": "確認メールサーバー側の問題だった",
+            "other": "その他",
+            "probe_disabled": "確認メールの停止"
+        },
+        "probeFilter": {
+            "open": "未対応",
+            "issues": "遅延・障害の履歴",
+            "all": "すべて"
         }
     },
     "field": {
@@ -562,7 +630,6 @@
         "mailbox": {
             "address": "メールアドレス",
             "addressHint": "英字は小文字に変換して保存します。",
-            "domain": "ドメイン",
             "enabled": "監視を有効にする",
             "enabledHint": "オフにすると、自動同期の対象外になります。",
             "server": "サーバー",
@@ -572,10 +639,12 @@
             "recentDaysHint": "2 回目以降の同期でさかのぼる日数です（既定 10 日）。",
             "fetchDays": "受信日数",
             "serverKeepDays": "サーバーでの保持日数",
+            "keepDays": "保持日数",
             "serverKeepDaysHint": "メールの日付からこの日数を過ぎたメールを IMAP サーバーから削除します（0 は削除しない）。迷惑メールの判定は誤ることがあるため、保存が必要なメールが届くアドレスでは 0 にしてください。",
             "serverKeepDaysMax": "メールの保持日数（{{max}} 日）以下で入力します。",
-            "smtpHost": "SMTP サーバー（送信）",
-            "smtpHostHint": "このメールアドレスの送信に使う SMTP サーバーのホスト名です。変更後はツールの「再判定」で既存のメールに反映します。",
+            "smtpHost": "SMTP サーバー",
+            "probeEnabled": "送信確認をする",
+            "probeEnabledHint": "オンにすると、このサーバーから確認メールを送り、到着を確認します。",
             "lastChecked": "最終同期",
             "openGroups": "未対応",
             "recheckGroups": "再確認",
@@ -698,7 +767,6 @@
         },
         "notification": {
             "host": "SMTP ホスト",
-            "authHint": "認証が不要な場合は空欄にします。",
             "from": "差出人アドレス",
             "testTo": "送信先",
             "testToHint": "空欄の場合は、ログイン中の利用者のメールアドレスに送信します。",
@@ -725,6 +793,37 @@
             "isDefault": "既定",
             "expires": "有効期限",
             "expiresAt": "有効期限の日時"
+        },
+        "probe": {
+            "enabled": "確認メールを有効にする",
+            "enabledHint": "送信時刻に、送信確認をするメールアドレスから確認メールを送ります。",
+            "address": "確認メールの宛先",
+            "addressHint": "確認メールサーバーで受信するアドレスです。専用のアドレスを推奨します。",
+            "sendTimes": "送信時刻",
+            "sendTimesHint": "送信確認をする有効なメールアドレスから、確認メールを 1 通ずつ送ります。",
+            "delayMinutes": "遅延判断時間（分）",
+            "delayMinutesHint": "最後の送信からこの間隔で到着を確認し、届いていないものを「遅延」として通知します。",
+            "failureMinutes": "障害判断時間（分）",
+            "failureMinutesHint": "送信からこの時間が経っても届かないものを「障害」として通知します。以降はこの間隔で確認します。",
+            "slot": "送信時刻",
+            "mailbox": "メールアドレス",
+            "status": "状態",
+            "delay": "遅延",
+            "arrivedAt": "到着日時",
+            "lastChecked": "最終確認",
+            "detail": "備考",
+            "lastSend": "最後の送信",
+            "nextSend": "次回送信",
+            "nextCheck": "次回到着確認",
+            "lastCheck": "最後の到着確認",
+            "thresholds": "判断時間",
+            "thresholdsValue": "遅延 {{delay}} / 障害 {{failure}}",
+            "resolveReason": "対応の理由",
+            "resolveNote": "詳細",
+            "resolvedBy": "{{user}} が {{date}} に対応済",
+            "resolvedAuto": "{{date}} に自動で対応済",
+            "subjectTag": "識別子",
+            "subjectTagHint": "確認メールの件名の先頭に付ける識別子です（例: [MC:…]）。確認メールサーバーを共有する場合は別の識別子にします。"
         }
     },
     "page": {
@@ -743,7 +842,8 @@
                 "ignored": "無視したグループはありません。",
                 "ignored_recheck": "無視（再確認）のグループはありません。",
                 "excluded": "対象外のグループはありません。"
-            }
+            },
+            "probeCard": "確認メールの到着状況から、メールの遅延や障害を確認します。"
         },
         "login": {
             "title": "ログイン",
@@ -764,6 +864,7 @@
             "totals": "合計",
             "mailboxes": "メールアドレス",
             "mailboxDisabled": "このメールアドレスは無効のため、自動同期の対象外です。",
+            "fetchError": "最後の同期に失敗しました。",
             "schedule": "スケジュール",
             "nextCheck": "次回同期",
             "noSchedule": "スケジュール未設定",
@@ -775,7 +876,15 @@
             "agentDisabledTitle": "自動分析は無効です",
             "agentDisabled": "新しいバウンスは自動で分析されません。一般設定で有効にできます。",
             "agentUnavailableTitle": "AI エージェントの CLI が見つかりません",
-            "agentUnavailable": "プロバイダー「{{provider}}」のコマンドがサーバーに見つからないため、分析は失敗します。"
+            "agentUnavailable": "プロバイダー「{{provider}}」のコマンドがサーバーに見つからないため、分析は失敗します。",
+            "probe": "確認メール",
+            "probeFailureTitle": "確認メールの障害",
+            "probeFailure": "障害または送信失敗の確認メールが {{count}} 件あります。",
+            "probeDelayTitle": "確認メールの遅延",
+            "probeDelay": "遅延している確認メールが {{count}} 件あります。",
+            "probeOk": "未対応の遅延・障害はありません。",
+            "probeOff": "確認メールは無効です。",
+            "probeCheckError": "到着確認に失敗"
         },
         "groupDetail": {
             "title": "グループ詳細",
@@ -910,7 +1019,8 @@
                 "notifications": "SMTP サーバーと、通知メールの時刻・間隔・通知先",
                 "mailboxes": "監視するメールアドレスの登録・編集・接続テスト",
                 "users": "利用者の追加、役割の変更、パスワードの再設定",
-                "tokens": "将来の API 連携に使うトークンの発行と削除"
+                "tokens": "将来の API 連携に使うトークンの発行と削除",
+                "probe": "確認メールサーバー、送信時刻、遅延・障害の判断時間"
             }
         },
         "settingsGeneral": {
@@ -925,7 +1035,7 @@
             "dnsCheckHint": "送信元から送信したメールのバウンスの判定と、名前解決の失敗の原因の切り分けに使います。",
             "sendingSourceEmpty": "送信元が未設定のため、送信元以外から送信されたメールのバウンスを見分けられません。",
             "sendingSourceNoHost": "送信元ホスト名が未設定のメールアドレス（送信元以外から送信されたメールのバウンスを見分けられません）",
-            "sendingSourceNoHostAction": "各メールアドレスの「SMTP サーバー（送信）」か、この画面の「送信元ホスト名」を入力してください。",
+            "sendingSourceNoHostAction": "各メールアドレスの「SMTP サーバー」か、この画面の「送信元ホスト名」を入力してください。",
             "sendingSourceNoHostNoAddress": "これらのメールアドレスでは、名前解決の失敗もすべて送信側のメールサーバーの問題として扱います。",
             "jobs": "ジョブの実行",
             "agent": "AI エージェント",
@@ -947,33 +1057,23 @@
             "sectionRange": "受信期間",
             "sectionRangeHint": "初回の同期では初回の受信日数、2 回目以降は通常の受信日数の範囲で、未受信のメールを探します。ツール画面で受信期間に「全期間」を選ぶと、期間に関係なくすべてのメールを確認します。",
             "sectionServerKeep": "サーバー上のメールの削除",
-            "sectionServerKeepHint": "毎日のクリーンアップで、バウンス・自動返信・DMARC レポートなどの通知メールと迷惑メールを IMAP サーバーから削除します。件名や差出人名だけで判定した通知メール、自動生成メール、一般のメールは削除しません。削除したメールは元に戻せません。MailCare に保存したメールは、メールの保持日数まで残ります。"
+            "sectionServerKeepHint": "毎日のクリーンアップで、バウンス・自動返信・DMARC レポートなどの通知メールと迷惑メールを IMAP サーバーから削除します。件名や差出人名だけで判定した通知メール、自動生成メール、一般のメールは削除しません。削除したメールは元に戻せません。MailCare に保存したメールは、メールの保持日数まで残ります。",
+            "probeNoAddress": "確認メールの宛先が未設定のため、テスト送信できません（設定 → 確認メール）。",
+            "probeDisabledNote": "このメールアドレスは無効なため、確認メールを送りません。"
         },
         "notifications": {
             "description": "対応が必要なアラートの一覧を、通知先の利用者にメールで送信します。",
-            "status": {
-                "blockedTitle": "通知メールは送信されません",
-                "readyTitle": "通知は有効です",
-                "disabled": "通知が無効です。有効にして保存すると、通知時刻に通知先へメールを送信します。",
-                "smtpIncomplete": "SMTP ホストと差出人アドレスが未設定です。SMTP 設定を入力して保存してください。",
-                "noRecipients": "メールアドレスが登録された通知先がありません。通知先を選択するか、利用者のメールアドレスを登録してください。",
-                "ready": "{{time}} に{{interval}}、対応が必要なグループがある場合に通知先へメールを送信します。",
-                "unsaved": "未保存の変更があります。保存すると、この表示も更新されます。"
-            },
             "smtp": "SMTP 設定",
             "smtpHint": "通知メールの送信に使うメールサーバーです。",
-            "testHint": "保存済みの SMTP 設定で、テストメールを送信します。",
+            "testHint": "入力中の SMTP 設定で、テストメールを送信します。",
             "testNoAddress": "メールアドレスが未登録です。送信先を入力するか、プロフィールでメールアドレスを登録してください。",
-            "testNeedsSmtp": "SMTP ホストと差出人アドレスを入力して保存すると、テスト送信できます。",
-            "testSaveFirst": "SMTP 設定が変更されています。保存してからテスト送信してください。",
             "settings": "通知設定",
             "recipientsSelected": "送信対象: {{count}} 人",
             "recipientsWithoutEmail": "（メールアドレス未登録: {{count}} 人）",
             "noEmail": "メールアドレス未登録",
             "noUsers": "利用者がいません。",
             "publicUrlEffective": "使用する URL:",
-            "sendNowHint": "通知時刻を待たずに、保存済みの設定で通知メールを送信します。",
-            "sendBlocked": "保存済みの設定では送信できません。上の案内を確認してください。"
+            "sendNowHint": "通知時刻を待たずに、保存済みの設定で通知メールを送信します。"
         },
         "users": {
             "currentUser": "あなた",
@@ -992,6 +1092,44 @@
             "emailHint": "通知メールの宛先です。管理者が通知先に選択すると、このアドレスにアラートの一覧が届きます。ログインにも使用できます。空欄にすると登録を解除します。",
             "changePasswordHint": "現在のパスワードと新しいパスワードを入力してください。",
             "sessionNote": "パスワードを変更すると、他の端末ではログアウトされます。"
+        },
+        "probeSettings": {
+            "description": "各メールアドレスから確認メールを送り、到着を確認して、メールの遅延や障害を検知します。",
+            "server": "確認メールサーバー（IMAP）",
+            "serverHint": "確認メールを受信するメールボックスです。メールを削除できる権限が必要です。",
+            "schedule": "送信と判断時間",
+            "noSendTimes": "送信時刻がないため、確認メールは自動では送られません。",
+            "testOk": "確認メールサーバーに接続できました。",
+            "mailboxesCount": "確認メールを送るメールアドレス: {{count}} 件",
+            "noMailboxes": "送信確認をする有効なメールアドレスがありません。",
+            "notifyHint": "遅延と障害は、通知メールが無効のときも通知先に送ります。"
+        },
+        "probes": {
+            "description": "各メールアドレスから送った確認メールの到着状況です。",
+            "counts": "状態",
+            "recentHint": "回復と対応済は直近 {{days}} 日の件数です。",
+            "mailboxes": "メールアドレスごとの最新の確認メール",
+            "notSending": "送信しない",
+            "neverSent": "未送信",
+            "list": "確認メール",
+            "manual": "手動",
+            "arrivedAfter": "{{duration}} で到着",
+            "missingFor": "未着 {{duration}}",
+            "notConfiguredTitle": "確認メールは未設定です",
+            "notConfigured": "確認メールサーバーと宛先を設定すると、遅延や障害を確認できます。",
+            "checkErrorTitle": "直近の到着確認に失敗しました",
+            "checkError": "確認メールサーバーを読めませんでした（{{error}}）。自動で再試行します。",
+            "checkErrorMember": "確認メールサーバーを読めませんでした。自動で再試行します。",
+            "deleteErrorTitle": "確認メールを削除できませんでした",
+            "deleteError": "確認メールサーバーから削除できませんでした（{{error}}）。次の到着確認で再試行します。",
+            "resolveTitle": "確認メールを対応済にする",
+            "resolveFor": "{{address}}（{{slot}}）",
+            "resolveHint": "遅延・障害の記録は残ります。",
+            "empty": {
+                "open": "未対応の確認メールはありません。",
+                "issues": "遅延・障害になった確認メールはありません。",
+                "all": "確認メールはまだありません。"
+            }
         }
     }
 }

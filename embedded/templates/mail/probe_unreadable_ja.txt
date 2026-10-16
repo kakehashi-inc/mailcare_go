@@ -1,0 +1,35 @@
+{{/*
+  Probe server unreadable mail (Japanese). Sent once to the notification
+  recipients when the arrival check could not read the probe server for the
+  failure threshold. Fields:
+    .Date     date and time the mail is built (recipient's time zone)
+    .Since    when the first failed check of the run ran (recipient's time zone)
+    .Error    the error of the latest check ("" for recipients other than
+              administrators)
+    .Admin    the recipient is an administrator
+    .URL      the probe screen of MailCare
+    .BaseURL  the public URL of MailCare
+*/ -}}
+{{define "subject" -}}
+[MailCare] 確認メールサーバーを読めません（{{.Date}}）
+{{- end}}
+
+{{define "body" -}}
+MailCare からの通知です。
+{{.Since}} から確認メールサーバーを読めないため、確認メールの到着を確認できません（{{.Date}} 時点）。
+到着確認は間隔を空けて再試行します。
+{{- if .Error}}
+
+エラー: {{.Error}}
+{{- else if not .Admin}}
+
+詳細は管理者に表示されます。
+{{- end}}
+
+状況は次の URL から確認できます。
+{{.URL}}
+
+--------------------------------------------------
+このメールは MailCare が自動で送信しています。
+通知の設定は {{.BaseURL}}/settings/notifications から変更できます。
+{{- end}}

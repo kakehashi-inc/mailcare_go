@@ -1,0 +1,70 @@
+{{/*
+  Delivery probe alert mail (Japanese). Sent to the notification recipients
+  once per probe mail when it becomes delayed and once when it becomes a
+  failure or could not be sent (both groups in one mail). Fields:
+    .Date     date and time the mail is built (recipient's time zone)
+    .Failures entries of the failures and send failures
+    .Delays   entries of the delayed probe mails
+    .URL      the probe screen of MailCare
+    .BaseURL  the public URL of MailCare
+    .Admin    the recipient is an administrator (the error texts are for
+              administrators only)
+    .SendFailures  whether an entry is a send failure
+    Every entry:
+      .Address .Slot (send time, server time as in the subject) .Manual
+      (sent by hand) .SentAt (date and time of sending, recipient's time
+      zone, as .Date)
+      .SendFailed (the SMTP server did not accept it) .Error (why;
+      "" for recipients other than administrators)
+      .Hours .Minutes (time without arrival)
+*/ -}}
+{{define "subject" -}}
+[MailCare] 確認メールの
+{{- if .Failures}}障害 {{len .Failures}} 件{{end}}
+{{- if and .Failures .Delays}}・{{end}}
+{{- if .Delays}}遅延 {{len .Delays}} 件{{end}}（{{.Date}}）
+{{- end}}
+
+{{define "body" -}}
+MailCare からの通知です。
+{{- if .Failures}}
+
+障害判断時間を過ぎても届いていない、または送信できなかった確認メールが {{len .Failures}} 件あります（{{.Date}} 時点）。
+メールの送受信に障害が起きている可能性があります。
+{{- range .Failures}}
+
+■ {{.Address}}
+   送信日時: {{.SentAt}}{{if .Manual}}（手動）{{end}}
+{{- if .SendFailed}}
+   状態: 送信失敗
+{{- if .Error}}
+   エラー: {{.Error}}
+{{- end}}
+{{- else}}
+   状態: 障害（未着 {{.Hours}} 時間 {{.Minutes}} 分）
+{{- end}}
+{{- end}}
+{{- if and .SendFailures (not .Admin)}}
+
+送信エラーの詳細は管理者に表示されます。
+{{- end}}
+{{- end}}
+{{- if .Delays}}
+
+遅延判断時間を過ぎても届いていない確認メールが {{len .Delays}} 件あります（{{.Date}} 時点）。
+障害判断時間までに届かなければ、障害としてもう一度お知らせします。
+{{- range .Delays}}
+
+■ {{.Address}}
+   送信日時: {{.SentAt}}{{if .Manual}}（手動）{{end}}
+   状態: 遅延（未着 {{.Hours}} 時間 {{.Minutes}} 分）
+{{- end}}
+{{- end}}
+
+状況の確認と対応済にする操作は、次の URL から行えます。
+{{.URL}}
+
+--------------------------------------------------
+このメールは MailCare が自動で送信しています。
+通知の設定は {{.BaseURL}}/settings/notifications から変更できます。
+{{- end}}

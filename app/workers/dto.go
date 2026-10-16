@@ -124,28 +124,39 @@ type MailboxStatsDTO struct {
 
 // MailboxDTO is a mailbox without its password. The connection settings
 // (host, port, security, username, folder), the fetch ranges, the server
-// retention and the SMTP host (one of the sending sources, which the
-// settings show to administrators only as well) are shown to
-// administrators only; redactMailboxDTO blanks them for other users.
+// retention and the SMTP connection (host, port, security, username,
+// whether a password is stored; the host is one of the sending sources,
+// which the settings show to administrators only as well) are shown to
+// administrators only; redactMailboxDTO blanks them for other users. Whether
+// the send check is on is shown to every user.
 type MailboxDTO struct {
-	ID             int64            `json:"id"`
-	Address        string           `json:"address"`
-	DisplayName    string           `json:"display_name"`
-	ImapHost       string           `json:"imap_host"`
-	ImapPort       int              `json:"imap_port"`
-	ImapSecurity   string           `json:"imap_security"`
-	ImapUsername   string           `json:"imap_username"`
-	Folder         string           `json:"folder"`
-	Enabled        bool             `json:"enabled"`
-	InitialDays    int              `json:"initial_days"`
-	RecentDays     int              `json:"recent_days"`
-	ServerKeepDays int              `json:"server_keep_days"` // 0 = the mails stay on the server
-	SmtpHost       string           `json:"smtp_host"`        // "" = not set
-	LastFetchedAt  *string          `json:"last_fetched_at"`
-	LastFetchError string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
-	CreatedAt      string           `json:"created_at"`
-	UpdatedAt      string           `json:"updated_at"`
-	Stats          *MailboxStatsDTO `json:"stats,omitempty"`
+	ID             int64  `json:"id"`
+	Address        string `json:"address"`
+	DisplayName    string `json:"display_name"`
+	ImapHost       string `json:"imap_host"`
+	ImapPort       int    `json:"imap_port"`
+	ImapSecurity   string `json:"imap_security"`
+	ImapUsername   string `json:"imap_username"`
+	Folder         string `json:"folder"`
+	Enabled        bool   `json:"enabled"`
+	InitialDays    int    `json:"initial_days"`
+	RecentDays     int    `json:"recent_days"`
+	ServerKeepDays int    `json:"server_keep_days"` // 0 = the mails stay on the server
+	SmtpHost       string `json:"smtp_host"`        // "" = not set
+	// The send check and, while it is on, the rest of the SMTP connection
+	// of smtp_host the probe mails are sent through (0 / "" while off; the
+	// security shows its default then). The password is never returned,
+	// only whether one is stored.
+	ProbeEnabled    bool             `json:"probe_enabled"` // the send check
+	SmtpPort        int              `json:"smtp_port"`
+	SmtpSecurity    string           `json:"smtp_security"`
+	SmtpUsername    string           `json:"smtp_username"`
+	SmtpPasswordSet bool             `json:"smtp_password_set"`
+	LastFetchedAt   *string          `json:"last_fetched_at"`
+	LastFetchError  string           `json:"last_fetch_error"` // "" = the last fetch succeeded (the UI derives never / ok / error)
+	CreatedAt       string           `json:"created_at"`
+	UpdatedAt       string           `json:"updated_at"`
+	Stats           *MailboxStatsDTO `json:"stats,omitempty"`
 }
 
 func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
@@ -153,7 +164,9 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost, ImapPort: mb.ImapPort,
 		ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername, Folder: mb.Folder, Enabled: mb.Enabled,
 		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, ServerKeepDays: mb.ServerKeepDays,
-		SmtpHost:       mb.SmtpHost,
+		SmtpHost:     mb.SmtpHost,
+		ProbeEnabled: mb.ProbeEnabled, SmtpPort: mb.SmtpPort, SmtpSecurity: orDefaultStr(mb.SmtpSecurity, modules.DefaultSMTPSecurity),
+		SmtpUsername: mb.SmtpUsername, SmtpPasswordSet: mb.SmtpPasswordEnc != "",
 		LastFetchedAt:  nullTimeString(mb.LastFetchedAt),
 		LastFetchError: mb.LastFetchError,
 		CreatedAt:      timeString(mb.CreatedAt), UpdatedAt: timeString(mb.UpdatedAt),
@@ -162,7 +175,8 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 
 // mailboxDTOFor converts a mailbox for the given user: administrators get
 // every field, other users get the connection settings, fetch ranges,
-// retentions and the SMTP host blanked (empty strings and zeros).
+// retentions and the SMTP connection blanked (empty strings, zeros and
+// false), and the error of the last fetch reduced to "error".
 func mailboxDTOFor(mb *models.Mailbox, u *models.User) MailboxDTO {
 	dto := toMailboxDTO(mb)
 	if u == nil || u.Role != modules.RoleAdmin {
@@ -176,6 +190,13 @@ func redactMailboxDTO(dto *MailboxDTO) {
 	dto.ImapHost, dto.ImapPort, dto.ImapSecurity, dto.ImapUsername, dto.Folder = "", 0, "", "", ""
 	dto.InitialDays, dto.RecentDays, dto.ServerKeepDays = 0, 0, 0
 	dto.SmtpHost = ""
+	// The send check itself (on / off) is operational status and stays.
+	dto.SmtpPort, dto.SmtpSecurity, dto.SmtpUsername, dto.SmtpPasswordSet = 0, "", "", false
+	// The error text of the last fetch names the IMAP server: only that
+	// there was one.
+	if dto.LastFetchError != "" {
+		dto.LastFetchError = "error"
+	}
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.
@@ -430,6 +451,8 @@ type DashboardDTO struct {
 	NextCheckAt *string           `json:"next_check_at"`
 	CheckTimes  []string          `json:"check_times"`
 	Agent       DashboardAgentDTO `json:"agent"`
+	// Probe is the state of the delivery probe (every user).
+	Probe ProbeSummaryDTO `json:"probe"`
 }
 
 // DashboardTotalsDTO sums the per-mailbox counters (the same ones as the
@@ -556,4 +579,12 @@ func toDMARCRecordDTO(r *models.DMARCRecord) DMARCRecordDTO {
 		MessageCount: r.MessageCount, Disposition: r.Disposition, DKIMResult: r.DKIMResult, SPFResult: r.SPFResult,
 		DKIMAuth: r.DKIMAuth, SPFAuth: r.SPFAuth,
 	}
+}
+
+// orDefaultStr returns v, or def when v is "" (no value saved).
+func orDefaultStr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }

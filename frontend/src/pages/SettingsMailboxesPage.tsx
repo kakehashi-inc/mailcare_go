@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { deleteMailbox, listMailboxes, testMailbox, ApiError } from '../api/client';
+import { deleteMailbox, listMailboxes, ApiError } from '../api/client';
 import { EnabledBadge, CheckStatusBadge, fetchStatus } from '../components/domain/StatusBadges';
 import { Button, LinkButton } from '../components/ui/Button';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
@@ -23,30 +23,9 @@ export function SettingsMailboxesPage() {
     const toast = useToast();
     const navigate = useNavigate();
     const list = useAsync(listMailboxes, []);
-    const [testing, setTesting] = useState<number | null>(null);
     const [deleting, setDeleting] = useState<MailboxDTO | null>(null);
     const [keepData, setKeepData] = useState(false);
     const [busy, setBusy] = useState(false);
-
-    async function test(mb: MailboxDTO) {
-        setTesting(mb.id);
-        try {
-            await testMailbox({
-                id: mb.id,
-                address: mb.address,
-                imap_host: mb.imap_host,
-                imap_port: mb.imap_port,
-                imap_security: mb.imap_security,
-                imap_username: mb.imap_username,
-                folder: mb.folder,
-            });
-            toast.success(t('result.mailbox.testOk', { address: mb.address }));
-        } catch (err) {
-            toast.error(t((err as ApiError).key, (err as ApiError).params));
-        } finally {
-            setTesting(null);
-        }
-    }
 
     async function remove() {
         if (!deleting) return;
@@ -77,13 +56,6 @@ export function SettingsMailboxesPage() {
             ),
         },
         {
-            key: 'domain',
-            header: t('field.mailbox.domain'),
-            // The card heading already shows the full address.
-            hideInCard: true,
-            cell: mb => <span className='break-all'>{mb.address.slice(mb.address.indexOf('@') + 1)}</span>,
-        },
-        {
             key: 'server',
             header: t('field.mailbox.server'),
             cell: mb => (
@@ -103,7 +75,7 @@ export function SettingsMailboxesPage() {
         },
         {
             key: 'serverKeep',
-            header: t('field.mailbox.serverKeepDays'),
+            header: t('field.mailbox.keepDays'),
             className: 'whitespace-nowrap',
             cell: mb =>
                 mb.server_keep_days > 0
@@ -133,15 +105,6 @@ export function SettingsMailboxesPage() {
             className: 'whitespace-nowrap',
             cell: mb => (
                 <span className='flex flex-wrap gap-1' onClick={e => e.stopPropagation()}>
-                    <Button
-                        size='sm'
-                        icon='network_check'
-                        loading={testing === mb.id}
-                        aria-label={t('action.mailbox.testFor', { address: mb.address })}
-                        onClick={() => void test(mb)}
-                    >
-                        {t('action.mailbox.test')}
-                    </Button>
                     <LinkButton
                         size='sm'
                         icon='edit'

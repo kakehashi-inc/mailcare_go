@@ -61,5 +61,23 @@ export const DEFAULT_NOTIFY_TIME = '09:00';
 export const NOTIFY_INTERVAL_MIN_DAYS = 1;
 export const NOTIFY_INTERVAL_MAX_DAYS = 7;
 
+// Default values of the delivery probe settings form (mirrors the server defaults).
+export const DEFAULT_PROBE_SEND_TIMES = ['07:00', '11:00', '15:00', '19:00'];
+export const DEFAULT_PROBE_DELAY_MINUTES = 15;
+export const DEFAULT_PROBE_FAILURE_MINUTES = 60;
+/** Bounds of the two probe thresholds (minutes). */
+export const MIN_PROBE_MINUTES = 1;
+export const MAX_PROBE_MINUTES = 7 * 24 * 60;
+/** At most this many probe send times a day, at least this many minutes apart (the server checks the same). */
+export const MAX_PROBE_SEND_TIMES = 24;
+export const MIN_PROBE_SEND_GAP_MINUTES = 15;
+/** The default identifier of the probe mails and its rule (the server checks the same). */
+export const DEFAULT_PROBE_SUBJECT_TAG = 'MC';
+export const PROBE_SUBJECT_TAG_RE = /^[A-Za-z0-9._-]{1,16}$/;
+/** Maximum length of the details written when a probe mail is resolved by hand (characters). */
+export const MAX_PROBE_NOTE_LENGTH = 2000;
+// Page size of the probe mail list.
+export const PROBE_PAGE_SIZE = 50;
+
 // Minimum password length enforced client-side (the server validates too).
 export const MIN_PASSWORD_LENGTH = 8;

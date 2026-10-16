@@ -221,7 +221,8 @@ func (c *core) sessionRemember(r *http.Request) bool {
 
 // handleChangeCurrentUserProfile changes the profile of the caller: display name,
 // notification address, language, timezone and theme. Absent fields are
-// left unchanged; an empty email clears the address; an empty preference
+// left unchanged; an empty display name falls back to the username (as on
+// creation); an empty email clears the address; an empty preference
 // restores its default.
 func (c *core) handleChangeCurrentUserProfile(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
@@ -234,9 +235,6 @@ func (c *core) handleChangeCurrentUserProfile(w http.ResponseWriter, r *http.Req
 	}
 	if !decodeJSON(w, r, &body) {
 		return
-	}
-	if body.DisplayName != nil && *body.DisplayName == "" {
-		body.DisplayName = nil
 	}
 	in := modules.ProfileInput{DisplayName: body.DisplayName, Email: body.Email, Language: body.Language, Timezone: body.Timezone, Theme: body.Theme}
 	if err := modules.UpdateProfile(c.db, u, in); err != nil {

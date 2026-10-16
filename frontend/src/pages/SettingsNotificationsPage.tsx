@@ -46,8 +46,6 @@ interface FormState {
     notify_user_ids: number[];
 }
 
-const SMTP_KEYS = ['smtp_host', 'smtp_port', 'smtp_security', 'smtp_username', 'smtp_password', 'smtp_from'] as const;
-
 /** The keys that name the server the stored password belongs to; changing one of them needs the password again. */
 const CONNECTION_KEYS = ['smtp_host', 'smtp_port', 'smtp_security', 'smtp_username'] as const;
 
@@ -80,14 +78,22 @@ function sameIds(a: number[], b: number[]): boolean {
     return sa.every((v, i) => v === sb[i]);
 }
 
-/** The fields that differ from the saved settings; password only when typed. */
+/** A host name or IP address as the server accepts it (no blank, slash, backslash or "@"). */
+function isSmtpHost(value: string): boolean {
+    return value.trim() !== '' && !/[\s/\\@]/.test(value.trim());
+}
+
+/**
+ * The fields that differ from the saved settings; the password only when typed and a username is set (without a
+ * username the server removes the stored password).
+ */
 function diff(form: FormState, saved: FormState): NotificationSettingsInput {
     const out: NotificationSettingsInput = {};
     if (form.smtp_host.trim() !== saved.smtp_host) out.smtp_host = form.smtp_host.trim();
     if (form.smtp_port !== saved.smtp_port) out.smtp_port = Number(form.smtp_port);
     if (form.smtp_security !== saved.smtp_security) out.smtp_security = form.smtp_security;
     if (form.smtp_username.trim() !== saved.smtp_username) out.smtp_username = form.smtp_username.trim();
-    if (form.smtp_password !== '') out.smtp_password = form.smtp_password;
+    if (form.smtp_password !== '' && form.smtp_username.trim() !== '') out.smtp_password = form.smtp_password;
     if (form.smtp_from.trim() !== saved.smtp_from) out.smtp_from = form.smtp_from.trim();
     if (form.public_base_url.trim() !== saved.public_base_url) out.public_base_url = form.public_base_url.trim();
     if (form.notify_enabled !== saved.notify_enabled) out.notify_enabled = form.notify_enabled;
@@ -99,16 +105,11 @@ function diff(form: FormState, saved: FormState): NotificationSettingsInput {
     return out;
 }
 
-type Blocker = 'disabled' | 'smtpIncomplete' | 'noRecipients' | null;
-
-/** Why the server would skip sending, judged from the saved settings (design document 7.4). */
-function blockerOf(dto: NotificationSettingsDTO): Blocker {
-    if (!dto.notify_enabled) return 'disabled';
-    if (!dto.smtp_host || !dto.smtp_from) return 'smtpIncomplete';
+/** Whether the saved settings let "Send now" send (design document 7.4: also while notifications are off). */
+function canSendNow(dto: NotificationSettingsDTO): boolean {
+    if (!dto.smtp_host || !dto.smtp_from) return false;
     const selected = new Set(dto.notify_user_ids ?? []);
-    const withEmail = (dto.recipients ?? []).some(r => selected.has(r.id) && r.email);
-    if (!withEmail) return 'noRecipients';
-    return null;
+    return (dto.recipients ?? []).some(r => selected.has(r.id) && r.email);
 }
 
 export function SettingsNotificationsPage() {
@@ -162,10 +163,21 @@ export function SettingsNotificationsPage() {
     }
 
     async function test() {
+        if (!form) return;
         const to = testTo.trim();
+        const username = form.smtp_username.trim();
         setTesting(true);
         try {
-            await sendTestNotification(to || undefined);
+            // The typed values are tried; the stored password serves only the saved connection.
+            await sendTestNotification({
+                to: to || undefined,
+                smtp_host: form.smtp_host.trim(),
+                smtp_port: Number(form.smtp_port),
+                smtp_security: form.smtp_security,
+                smtp_username: username,
+                smtp_password: username !== '' && form.smtp_password !== '' ? form.smtp_password : undefined,
+                smtp_from: form.smtp_from.trim(),
+            });
             toast.success(t('result.notification.testSent', { to: to || currentUser?.user.email || '' }));
         } catch (err) {
             toast.error(t((err as ApiError).key, (err as ApiError).params));
@@ -202,14 +214,24 @@ export function SettingsNotificationsPage() {
     const dto = settings.data;
     const changes = diff(form, saved);
     const dirty = Object.keys(changes).length > 0;
-    const smtpDirty = SMTP_KEYS.some(key => key in changes);
     const portError = isIntegerInRange(form.smtp_port, 1, 65535)
         ? undefined
         : t('validation.common.numberOutOfRange', { min: 1, max: 65535 });
+    // Notifications are on only with an SMTP host and a sender address (the
+    // server refuses the rest with the same message).
+    const smtpRequired = t('validation.notification.smtpRequired');
+    const hostError =
+        form.smtp_host.trim() !== '' && !isSmtpHost(form.smtp_host)
+            ? t('validation.connection.hostInvalid')
+            : form.notify_enabled && form.smtp_host.trim() === ''
+              ? smtpRequired
+              : undefined;
     const fromError =
         form.smtp_from.trim() !== '' && !isEmailAddress(form.smtp_from)
             ? t('validation.common.emailFormat')
-            : undefined;
+            : form.notify_enabled && form.smtp_from.trim() === ''
+              ? smtpRequired
+              : undefined;
     const timeError = isClockTime(form.notify_time) ? undefined : t('validation.common.timeFormat');
     const urlError =
         form.public_base_url.trim() !== '' && !isHttpUrl(form.public_base_url)
@@ -217,19 +239,33 @@ export function SettingsNotificationsPage() {
             : undefined;
     const testToError =
         testTo.trim() !== '' && !isEmailAddress(testTo) ? t('validation.common.emailFormat') : undefined;
-    // The server refuses to point a stored password at another server: a
-    // change of the connection settings must carry the password.
+    // The password belongs to the username: without one no password is used
+    // (the server removes the stored one). With one, a password is needed:
+    // the stored one serves only the saved connection (host, port, security,
+    // username), so a change of it must carry the password.
+    const username = form.smtp_username.trim();
     const connectionDirty = CONNECTION_KEYS.some(key => key in changes);
-    const passwordError =
-        connectionDirty && dto.smtp_password_set && form.smtp_password === ''
-            ? t('validation.connection.passwordRequiredOnChange')
+    const needsPassword = username !== '' && form.smtp_password === '' && (!dto.smtp_password_set || connectionDirty);
+    const passwordError = !needsPassword
+        ? undefined
+        : dto.smtp_password_set
+          ? t('validation.connection.passwordRequiredOnChange')
+          : 'smtp_username' in changes
+            ? t('validation.connection.passwordRequired')
             : undefined;
-    const valid = !portError && !fromError && !timeError && !urlError && !passwordError;
+    const valid = !hostError && !portError && !fromError && !timeError && !urlError && !passwordError;
     const canSave = dirty && valid && !saving;
-    const smtpSaved = dto.smtp_host !== '' && dto.smtp_from !== '';
+    // The test mail is sent with the typed values, saved or not.
     const testAddress = testTo.trim() || currentUser?.user.email || '';
-    const canTest = smtpSaved && !smtpDirty && testAddress !== '' && !testToError && !testing;
-    const blocker = blockerOf(dto);
+    const canTest =
+        isSmtpHost(form.smtp_host) &&
+        !portError &&
+        isEmailAddress(form.smtp_from) &&
+        !needsPassword &&
+        testAddress !== '' &&
+        !testToError &&
+        !testing;
+    const sendable = canSendNow(dto);
     const recipients = dto.recipients ?? [];
     const selectedWithEmail = recipients.filter(r => form.notify_user_ids.includes(r.id) && r.email).length;
     const selectedWithoutEmail = form.notify_user_ids.length - selectedWithEmail;
@@ -256,26 +292,6 @@ export function SettingsNotificationsPage() {
             />
 
             <div className='flex flex-col gap-6'>
-                {blocker ? (
-                    <Alert
-                        tone={blocker === 'disabled' ? 'info' : 'warning'}
-                        title={t('page.notifications.status.blockedTitle')}
-                    >
-                        <p>{t(`page.notifications.status.${blocker}`)}</p>
-                        {dirty && <p className='mt-1'>{t('page.notifications.status.unsaved')}</p>}
-                    </Alert>
-                ) : (
-                    <Alert tone='success' title={t('page.notifications.status.readyTitle')}>
-                        <p>
-                            {t('page.notifications.status.ready', {
-                                time: dto.notify_time,
-                                interval: intervalLabel(dto.notify_interval_days),
-                            })}
-                        </p>
-                        {dirty && <p className='mt-1'>{t('page.notifications.status.unsaved')}</p>}
-                    </Alert>
-                )}
-
                 <Card>
                     <CardHeader title={t('page.notifications.smtp')} description={t('page.notifications.smtpHint')} />
                     <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
@@ -285,6 +301,7 @@ export function SettingsNotificationsPage() {
                             value={form.smtp_host}
                             onChange={e => set('smtp_host', e.target.value)}
                             placeholder='smtp.example.com'
+                            error={hostError}
                         />
                         <div className='grid grid-cols-2 gap-4'>
                             <InputField
@@ -318,14 +335,13 @@ export function SettingsNotificationsPage() {
                             autoComplete='off'
                             value={form.smtp_username}
                             onChange={e => set('smtp_username', e.target.value)}
-                            hint={t('field.notification.authHint')}
                         />
                         <div>
                             <InputField
                                 label={
                                     <span className='inline-flex flex-wrap items-center gap-2'>
                                         {t('field.connection.password')}
-                                        {dto.smtp_password_set && (
+                                        {dto.smtp_password_set && username !== '' && (
                                             <Badge tone='success' icon='check_circle'>
                                                 {t('field.connection.passwordSet')}
                                             </Badge>
@@ -334,12 +350,13 @@ export function SettingsNotificationsPage() {
                                 }
                                 type={showPassword ? 'text' : 'password'}
                                 autoComplete='new-password'
-                                value={form.smtp_password}
+                                value={username === '' ? '' : form.smtp_password}
                                 onChange={e => set('smtp_password', e.target.value)}
+                                disabled={username === ''}
                                 hint={
-                                    dto.smtp_password_set
+                                    dto.smtp_password_set && username !== ''
                                         ? t('field.connection.passwordKeepHint')
-                                        : t('field.notification.authHint')
+                                        : undefined
                                 }
                                 error={passwordError}
                             />
@@ -391,8 +408,6 @@ export function SettingsNotificationsPage() {
                                 {t('action.notification.test')}
                             </Button>
                         </div>
-                        {!smtpSaved && <Alert tone='info'>{t('page.notifications.testNeedsSmtp')}</Alert>}
-                        {smtpSaved && smtpDirty && <Alert tone='info'>{t('page.notifications.testSaveFirst')}</Alert>}
                     </div>
                 </Card>
 
@@ -535,15 +550,13 @@ export function SettingsNotificationsPage() {
                                 <Button
                                     icon='forward_to_inbox'
                                     loading={sending}
-                                    disabled={blocker !== null || sending}
+                                    disabled={!sendable || sending}
                                     onClick={() => void sendNow()}
                                 >
                                     {t('action.notification.sendNow')}
                                 </Button>
                             </div>
-                            <p className='text-sm text-muted'>
-                                {blocker ? t('page.notifications.sendBlocked') : t('page.notifications.sendNowHint')}
-                            </p>
+                            <p className='text-sm text-muted'>{t('page.notifications.sendNowHint')}</p>
                         </div>
                     </div>
                 </Card>

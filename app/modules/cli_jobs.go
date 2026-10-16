@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/wording"
 )
 
 // --- job-running commands (sync / fetch / group / reindex / reclassify / analyze / notify / cleanup / jobs) ---
@@ -43,8 +44,20 @@ func echoProgress(line string) {
 // answers but serves another data directory is left alone (the mailbox ids
 // of the specs were resolved in the database of this process and would mean other
 // mailboxes there), and the specs run in this process just as when no server
-// runs. It returns a non-nil error when any job failed.
+// runs. A server of this data directory that refuses the control token of
+// this process stops the command instead (running the jobs here would work
+// on the same data). It returns a non-nil error when any job failed.
 func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {
+	// A job that cannot do anything now is refused before anything is
+	// queued (the server refuses it as well).
+	for _, spec := range specs {
+		if err := ManualJobRefusal(db, spec.kind, time.Now()); err != nil {
+			if _, refused := wording.As(err); refused {
+				return NewExitError(ExitConfig, err.Error())
+			}
+			return NewExitError(ExitGeneral, err.Error())
+		}
+	}
 	port := ResolveWebPort(db, 0)
 	dataDir, err := DataDir()
 	if err != nil {
@@ -54,6 +67,11 @@ func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {
 	defer cancel()
 	failed := 0
 	server := LocalServer(port)
+	if server != nil && server.RefusedOwnDir {
+		// The server of this data directory runs, but this command cannot
+		// talk to it: running the jobs here would touch the same data.
+		return NewExitErrorf(ExitExec, "the server on port %d serves this data directory but refused the control token of this command: run it as the OS user of the service with the same --data-dir, or restart the server", port)
+	}
 	if server != nil && !server.ServesDataDir(dataDir) {
 		fmt.Printf("A server is running on port %d for another data directory; running in this process.\n", port)
 		server = nil
@@ -426,6 +444,34 @@ func (c *NotifyCmd) Run() error {
 		specs = append(specs, jobSpec{kind: JobKindNotify, target: NotifyTestTarget(a)})
 	}
 	return runJobs(db, specs, true)
+}
+
+// ProbeCmd groups the delivery probe subcommands: "probe send" sends a
+// probe mail from every participating mailbox now and "probe check" looks
+// for the missing ones on the probe server now. Like the other job
+// commands they go through the running server when there is one.
+type ProbeCmd struct {
+	Send  ProbeSendCmd  `cmd:"" help:"Send a probe mail now from every enabled mailbox with the send check on"`
+	Check ProbeCheckCmd `cmd:"" help:"Look for the probe mails not arrived yet on the probe server now"`
+}
+
+// ProbeSendCmd queues a probe_send job (recorded without a send time).
+type ProbeSendCmd struct{}
+
+func (c *ProbeSendCmd) Run() error { return runProbeJob(JobKindProbeSend) }
+
+// ProbeCheckCmd queues a probe_check job.
+type ProbeCheckCmd struct{}
+
+func (c *ProbeCheckCmd) Run() error { return runProbeJob(JobKindProbeCheck) }
+
+func runProbeJob(kind string) error {
+	db, err := openDBForCLI()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return runJobs(db, []jobSpec{{kind: kind}}, true)
 }
 
 // JobsCmd groups the job history subcommands: "jobs" (the default

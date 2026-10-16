@@ -209,3 +209,21 @@ func TestMailboxSmtpHostThroughTheAPI(t *testing.T) {
 		t.Errorf("stored %q (%v)", v, err)
 	}
 }
+
+// The error of the last fetch names the IMAP server: members read only that
+// there was one.
+func TestLastFetchErrorRedactedForMembers(t *testing.T) {
+	s := newSeededCore(t)
+	if err := models.UpdateMailboxFetchResult(s.db, s.mb.ID, "dial tcp imap.example.test:993: connection refused"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/mailboxes/1", "/api/v1/mailboxes", "/api/v1/dashboard"} {
+		rec := do(t, s.h, http.MethodGet, path, nil, s.user)
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "imap.example.test") || !strings.Contains(rec.Body.String(), `"last_fetch_error":"error"`) {
+			t.Errorf("%s as a member: %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := do(t, s.h, http.MethodGet, "/api/v1/mailboxes/1", nil, s.admin); !strings.Contains(rec.Body.String(), "imap.example.test:993") {
+		t.Errorf("admin: %s", rec.Body.String())
+	}
+}

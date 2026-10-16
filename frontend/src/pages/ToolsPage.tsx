@@ -1,7 +1,7 @@
 import type { ParseKeys } from 'i18next';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { createJob, ApiError } from '../api/client';
+import { createJob, getSettings, ApiError } from '../api/client';
 import { MailboxSelect } from '../components/domain/MailboxSelect';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
@@ -10,6 +10,7 @@ import { SelectField } from '../components/ui/Field';
 import { Icon } from '../components/ui/Icon';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { useToast } from '../components/ui/Toast';
+import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useMailboxes } from '../hooks/useMailboxes';
 import { JOB_KINDS, type ToolKind } from '../types';
@@ -47,6 +48,8 @@ export function ToolsPage() {
     useDocumentTitle(t('layout.nav.tools'));
     const toast = useToast();
     const { mailboxes } = useMailboxes();
+    const settings = useAsync(getSettings, []);
+    const analyzeRefusal = settings.data?.analyze_refusal ?? '';
     // Selected mailbox per tool ("" = all addresses).
     const [targets, setTargets] = useState<Record<ToolKind, string>>(emptyTargets);
     const [scope, setScope] = useState<AnalyzeScope>('needs');
@@ -58,7 +61,22 @@ export function ToolsPage() {
     const [submitting, setSubmitting] = useState(false);
 
     const toolTitle = (kind: ToolKind) => t(`page.tools.tool.${kind}.title`);
-    const canRun = () => mailboxes.length > 0;
+    // A tool is enabled when its job can do something: the cleanup always (it also prunes the job history and
+    // the stored results), sync and fetch of every address with an enabled one, the analysis with the agent
+    // available, the others with a mailbox.
+    const canRun = (kind: ToolKind) => {
+        switch (kind) {
+            case 'cleanup':
+                return true;
+            case 'sync':
+            case 'fetch':
+                return targets[kind] !== '' || mailboxes.some(mb => mb.enabled);
+            case 'analyze':
+                return mailboxes.length > 0 && !!settings.data && analyzeRefusal === '';
+            default:
+                return mailboxes.length > 0;
+        }
+    };
     const targetLabel = (kind: ToolKind) => {
         const v = targets[kind];
         return v ? (mailboxes.find(mb => String(mb.id) === v)?.address ?? v) : t('component.mailboxSelect.all');
@@ -150,7 +168,8 @@ export function ToolsPage() {
                                     <Button
                                         variant='primary'
                                         icon='play_arrow'
-                                        disabled={!canRun()}
+                                        disabled={!canRun(kind)}
+                                        title={kind === 'analyze' && analyzeRefusal ? t(analyzeRefusal) : undefined}
                                         onClick={() => setPending(kind)}
                                         aria-label={t('page.tools.runFor', { tool: toolTitle(kind) })}
                                     >

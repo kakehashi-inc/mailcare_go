@@ -7,22 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
 ### Added
 
-- Bounces that report a failed name lookup ("Host not found, try again" and the like) are checked by looking the name up again. A recipient domain that does not exist stays "Recipient domain not found"; a failure on the receiving side becomes the new excluded type "DNS failure (receiving side or external)"; a failure of the sending side's mail server becomes the new alert type "DNS resolver failure (sending side's mail server)". The AI analysis receives the check results.
-- "Sending sources and DNS check" in General settings. The DNS check is on by default and can be turned off, pointed at other resolvers or limited to the OS resolver. The README section "Outbound connections" describes what is sent and where.
-- Sending sources: "SMTP server (sending)" for each mailbox, and "Sending source IPv4", "Sending source IPv6" and "Sending source host names" in General settings (administrators only). Register every server used for sending.
-- Fake delivery failure notices are classified as junk: notices with links to other sites, notices that fail the sender check, and bounces of mail not sent from the sending sources. The last check needs a host name for the mailbox; General settings list the mailboxes without one.
+- Bounces that report a failed name lookup are checked by looking the name up again, and are classified as a missing recipient domain, a DNS failure on the receiving side or a DNS failure of the sending side's mail server (new alert type). The check can be turned off or pointed at other resolvers in General settings.
+- Sending sources can be registered: the SMTP server of each mailbox, and sending source addresses and host names in General settings.
+- Fake delivery failure notices are classified as junk, including bounces of mail that was not sent from the sending sources.
+- Delivery probe: mailboxes can send probe mails through their SMTP server at set times, and MailCare checks their arrival in a probe mailbox and reports delays and failures on the screen and by mail.
 
 ### Changed
 
 - After upgrading, or after changing the sending sources or the DNS check, run "Reclassify" on the Tools page. Older bounces can become junk, which cleanup deletes from the IMAP server after the server retention: review the Junk tab first, or set the server retention to 0 until then. Alerts left without messages are removed.
+- Notifications can be turned on only with an SMTP host and a sender address, and an SMTP username needs a password. The test email uses the SMTP settings as entered, and "Send now" works while notifications are off.
+- "Analyze" and the tools are available only when the job can do something, and scheduled syncs and notifications that could do nothing are no longer queued. "Cleanup" is available without mailboxes.
+- Command-line tools must run as the OS user of the service, with the same data directory, to reach the running server.
 - Simpler, consistent wording on the screens and in notification emails. Alerts that come back for review are labelled "Resolved (re-check)" and "Ignored (re-check)"; renamed labels include "Mails" to "Messages", "Workers" to "Concurrent jobs", "Reindex" to "Rebuild index" and the mailbox retention to "Server retention (days)".
 
 ### Fixed
 
-- Administrators saving settings at the same time can no longer leave an invalid combination of settings.
-- Starting the server and running command-line tools at the same time right after an upgrade is now safe.
+- The local control interface used by the command-line tools can no longer be reached through a reverse proxy on the same host.
+- Settings saved by several administrators at the same time, or changed from the command line, can no longer end in an invalid combination.
+- Starting the server and command-line tools at the same time right after an upgrade is now safe.
+- Clearing the display name of a user restores the username instead of keeping the old name.
 
 ## [0.2.3] - 2026-09-30
 

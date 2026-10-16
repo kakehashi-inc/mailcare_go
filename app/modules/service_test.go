@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -363,4 +364,115 @@ func TestServiceStartFlagsDistinguishZeroFromOmitted(t *testing.T) {
 	if err := svc.Status.Run(); !errors.As(err, &exitErr) || exitErr.Code != ExitArgument || exitErr.Message != "web-port must be between 1 and 65535" {
 		t.Errorf("service status --web-port 0: %v, want an argument error", err)
 	}
+}
+
+// The control token is written with its port and mode 0600, replaced in one
+// step, and removed only by the server that wrote it.
+func TestControlTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteControlToken(dir, 9790, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteControlToken(dir, 9791, "second"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, ControlTokenFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v", info.Mode().Perm())
+	}
+	if port, got := ReadControlToken(dir); port != 9791 || got != "second" {
+		t.Errorf("token %d %q", port, got)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("left over files: %v", entries)
+	}
+	RemoveControlToken(dir, "first") // not the current token: kept
+	if _, got := ReadControlToken(dir); got != "second" {
+		t.Error("removed another server's token")
+	}
+	RemoveControlToken(dir, "second")
+	if _, got := ReadControlToken(dir); got != "" {
+		t.Error("token file kept")
+	}
+}
+
+// refusingServer answers every request with the refusal of a server of the
+// data directory dir and records the token it received.
+func refusingServer(t *testing.T, dir string, got *string) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*got = r.Header.Get(ControlTokenHeader)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"` + ControlTokenRefused + `","data_dir_id":"` + DataDirID(dir) + `"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().(*net.TCPAddr).Port
+}
+
+// The CLI sends the token of its data directory only to the port stored
+// with it. A server that refuses the token while it serves the data
+// directory of the CLI (another OS user, a stale token) is reported as such,
+// so the CLI never works on the data in the CLI process; a server of another
+// data directory leaves the CLI free to do so.
+func TestControlTokenSentAndRefused(t *testing.T) {
+	dir := t.TempDir()
+	SetDataDir(dir)
+	t.Cleanup(func() { SetDataDir("") })
+	var got string
+	port := refusingServer(t, dir, &got)
+	if err := WriteControlToken(dir, port, "cli-token"); err != nil {
+		t.Fatal(err)
+	}
+	st := LocalServer(port)
+	if got != "cli-token" || st == nil || !st.RefusedOwnDir || st.ServesDataDir(dir) {
+		t.Errorf("token sent %q, status %+v", got, st)
+	}
+	if _, err := GetServerStatus(port); err == nil || !strings.Contains(err.Error(), "serves this data directory but refused") {
+		t.Errorf("status error: %v", err)
+	}
+	// Another port gets no token.
+	otherPort := refusingServer(t, dir, &got)
+	if LocalServer(otherPort); got != "" {
+		t.Errorf("token sent to another port: %q", got)
+	}
+	// A server of another data directory.
+	other := refusingServer(t, filepath.Join(t.TempDir(), "other"), &got)
+	if st := LocalServer(other); st == nil || st.RefusedOwnDir {
+		t.Errorf("other data directory: %+v", st)
+	}
+	if _, err := GetServerStatus(other); err == nil || !strings.Contains(err.Error(), "serves another data directory") {
+		t.Errorf("other status error: %v", err)
+	}
+	// A refusal that is not about the token keeps its message.
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"forwarded requests are refused"}`))
+	}))
+	defer plain.Close()
+	if _, err := GetServerStatus(plain.Listener.Addr().(*net.TCPAddr).Port); err == nil || err.Error() != "forwarded requests are refused" {
+		t.Errorf("plain 403: %v", err)
+	}
+}
+
+// The server lock admits one holder per data directory; it is free again
+// once released.
+func TestServerLock(t *testing.T) {
+	dir := t.TempDir()
+	release, err := AcquireServerLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcquireServerLock(dir); !errors.Is(err, ErrServerRunning) {
+		t.Errorf("second lock: %v", err)
+	}
+	release()
+	release2, err := AcquireServerLock(dir)
+	if err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	release2()
 }
