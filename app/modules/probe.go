@@ -772,8 +772,8 @@ type ProbeCheckResult struct {
 }
 
 // CheckProbes looks for every waiting probe mail on the probe server and
-// updates them (ApplyProbeCheck), mails the new failures, removes the
-// closed mails older than ProbeKeepDays and schedules the next check
+// updates them (ApplyProbeCheck), deletes the probe mails from the probe
+// server (sortProbeMessages), mails the new failures and schedules the next check
 // (NextProbeCheckAt; none when nothing is missing). When the probe server
 // cannot be read the check is tried again ProbeCheckRetryInterval later.
 func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, progress func(string)) (res *ProbeCheckResult, err error) {
@@ -804,11 +804,6 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 	if !settings.Configured() {
 		res.Skipped = SkipProbeNotConfigured
 		return res, nil
-	}
-	if n, err := models.DeleteOldProbeMails(db, now.AddDate(0, 0, -ProbeKeepDays)); err != nil {
-		log.Printf("probe: failed to remove old probe mails: %v", err)
-	} else if n > 0 {
-		progress(fmt.Sprintf("removed %d probe mails older than %d days", n, ProbeKeepDays))
 	}
 	waiting, err := models.ListWaitingProbeMails(db)
 	if err != nil {

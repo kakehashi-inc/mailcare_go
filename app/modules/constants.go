@@ -383,12 +383,6 @@ const (
 	ProbeSubjectMarker = "MCPROBE-"
 	// ProbeHeader carries the token of a probe mail as a header as well.
 	ProbeHeader = "X-MailCare-Probe"
-	// ProbeKeepDays is how long the records of the finished probe mails
-	// (arrived, recovered, resolved: the history of the probe screen) are
-	// kept in the database; the arrival check removes older ones. The mails
-	// themselves are deleted from the probe server once their arrival is
-	// recorded (or after ProbeLeftoverAge).
-	ProbeKeepDays = 90
 	// ProbeLeftoverAge is how long a probe mail may stay on the probe
 	// server when it was not deleted at its arrival (the deletion failed, it
 	// arrived after it was resolved, its record is gone): the next reading

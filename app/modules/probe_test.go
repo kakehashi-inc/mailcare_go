@@ -607,3 +607,41 @@ func TestSchedulerQueuesProbeSweep(t *testing.T) {
 		t.Errorf("not read after a day: %d", checks())
 	}
 }
+
+// The records of the closed probe mails of a mailbox older than the mail
+// retention are removed; the open ones and the other mailboxes' stay.
+func TestDeleteOldProbeMails(t *testing.T) {
+	db := newTestDB(t)
+	key, err := LoadSecretKey(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, addr := range []string{"a@example.test", "b@example.test"} {
+		mb, err := CreateMailbox(db, key, &MailboxInput{Address: addr, ImapHost: "imap.example.test", ImapUsername: "u", ImapPassword: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, mb.ID)
+	}
+	now := time.Now()
+	old := now.AddDate(0, 0, -DefaultMailKeepDays-1)
+	insert := func(mailboxID int64, token, status string, sent time.Time) {
+		if err := models.InsertProbeMail(db, &models.ProbeMail{MailboxID: mailboxID, Address: "x@example.test",
+			Token: ProbeSubjectMarker + token, Slot: "2026-01-01 07:00", Subject: "s", SentAt: sent, Status: status}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(ids[0], "01", models.ProbeStatusArrived, old)
+	insert(ids[0], "02", models.ProbeStatusResolved, old)
+	insert(ids[0], "03", models.ProbeStatusFailure, old)
+	insert(ids[0], "04", models.ProbeStatusArrived, now)
+	insert(ids[1], "05", models.ProbeStatusArrived, old)
+	n, err := models.DeleteOldProbeMails(db, ids[0], now.AddDate(0, 0, -DefaultMailKeepDays))
+	if err != nil || n != 2 {
+		t.Fatalf("removed %d: %v", n, err)
+	}
+	if _, total, _ := models.ListProbeMails(db, models.ProbeFilterAll, 0, 0, 10); total != 3 {
+		t.Errorf("left %d records", total)
+	}
+}
