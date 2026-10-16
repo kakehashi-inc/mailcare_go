@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-17
+
 ### Changed
 
 - Several notification times can be set (09:00 and 17:00 by default); on a notification day the notification mail goes out at each of them.
