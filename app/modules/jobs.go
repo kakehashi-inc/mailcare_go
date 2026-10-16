@@ -384,7 +384,7 @@ func (m *JobManager) Enqueue(kind string, mailboxID int64, target, requestedBy s
 }
 
 // enqueueChild queues a job caused by parent (same requester, parent id
-// recorded) so that the CLI can follow the jobs its own request caused.
+// recorded) so that the CLI can follow the jobs its request caused.
 func (m *JobManager) enqueueChild(kind string, mailboxID int64, target string, parent *models.Job) (*models.Job, bool, error) {
 	return EnqueueJob(m.db, kind, mailboxID, target, parent.RequestedBy, parent.ID, m.wake)
 }
@@ -688,15 +688,15 @@ func (m *JobManager) RunJobInline(ctx context.Context, kind string, mailboxID in
 	m.releaseLocks(first.ID)
 	// Only the jobs this run caused (children and their follow-ups) are
 	// executed here; jobs another CLI process queued meanwhile are left alone.
-	mine := map[int64]bool{first.ID: true}
+	chain := map[int64]bool{first.ID: true}
 	for ctx.Err() == nil {
 		next, err := m.claimRunnable(func(j *models.Job) bool {
-			return mine[j.ParentID]
+			return chain[j.ParentID]
 		})
 		if err != nil || next == nil {
 			return first, err
 		}
-		mine[next.ID] = true
+		chain[next.ID] = true
 		if echo != nil {
 			echo(fmt.Sprintf("--- job #%d (%s %s)", next.ID, next.Kind, strings.TrimSpace(next.Target+" "+m.addressOf(next))))
 		}

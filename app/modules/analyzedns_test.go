@@ -21,13 +21,13 @@ func TestDNSCheckLookupReuseRule(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	insert("example.jp", "MX", "not_found", notice.Add(-25*time.Hour))    // before the window
-	insert("example.jp", "MX", "broken", notice.Add(time.Hour))           // in the window, but later
-	insert("example.jp", "MX", "exists", notice.Add(-23*time.Hour))       // the earliest in the window
-	insert("example.jp", "A", "not_found", notice.Add(-time.Hour))        // another type
-	insert("odd.example.jp", "MX", "inconclusive", notice)                // not an outcome
-	insert("today.example.jp", "MX", "exists", time.Now())                // verified today for a recent notice
-	insert("own.example.jp", "MX", "not_found", notice.Add(30*time.Hour)) // its own verification, 30 hours after it
+	insert("example.jp", "MX", "not_found", notice.Add(-25*time.Hour))     // before the window
+	insert("example.jp", "MX", "broken", notice.Add(time.Hour))            // in the window, but later
+	insert("example.jp", "MX", "exists", notice.Add(-23*time.Hour))        // the earliest in the window
+	insert("example.jp", "A", "not_found", notice.Add(-time.Hour))         // another type
+	insert("odd.example.jp", "MX", "inconclusive", notice)                 // not an outcome
+	insert("today.example.jp", "MX", "exists", time.Now())                 // verified today for a recent notice
+	insert("late.example.jp", "MX", "not_found", notice.Add(30*time.Hour)) // its verification, 30 hours after it
 
 	lookup := jm.dnsCheckLookup()
 	res, ok := lookup("example.jp", "MX", notice)
@@ -50,7 +50,7 @@ func TestDNSCheckLookupReuseRule(t *testing.T) {
 	}
 	// A row stored today (72 hours after the notice) is no evidence for it;
 	// the one checked 30 hours after it is.
-	if res, ok := lookup("own.example.jp", "MX", notice); !ok || res.Outcome != "not_found" {
+	if res, ok := lookup("late.example.jp", "MX", notice); !ok || res.Outcome != "not_found" {
 		t.Errorf("30h after = %+v, %v (want the row)", res, ok)
 	}
 	for _, name := range []string{"other.example.jp", "odd.example.jp", "today.example.jp"} {
@@ -102,5 +102,29 @@ func TestStoredDNSCheckFutureNoticeCountsAsNow(t *testing.T) {
 		if res, ok := storedDNSCheck(db, "example.jp", "MX", notice, now); !ok || res.Outcome != "exists" {
 			t.Errorf("notice %v = %+v, %v", notice, res, ok)
 		}
+	}
+}
+
+// TestStoredDNSCheckDirect: the analysis shows the earliest row of the
+// window whichever its kind, and says whether the authoritative servers were
+// asked for it (dns_checks.direct).
+func TestStoredDNSCheckDirect(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	notice := now.Add(-time.Hour)
+	for _, r := range []*models.DNSCheck{
+		{Name: "direct.example.jp", QType: "MX", Outcome: "broken", Detail: "direct", Direct: true, CheckedAt: notice},
+		{Name: "both.example.jp", QType: "MX", Outcome: "exists", Detail: "resolvers", CheckedAt: notice},
+		{Name: "both.example.jp", QType: "MX", Outcome: "broken", Detail: "direct", Direct: true, CheckedAt: notice.Add(time.Minute)},
+	} {
+		if err := models.InsertDNSCheck(db, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if res, ok := storedDNSCheck(db, "direct.example.jp", "MX", notice, now); !ok || !res.Direct || res.Outcome != "broken" {
+		t.Errorf("direct row = %+v, %v", res, ok)
+	}
+	if res, ok := storedDNSCheck(db, "both.example.jp", "MX", notice, now); !ok || res.Direct || res.Detail != "resolvers" {
+		t.Errorf("both kinds = %+v, %v; want the earliest, of the resolvers alone", res, ok)
 	}
 }

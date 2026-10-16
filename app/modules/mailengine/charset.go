@@ -36,7 +36,7 @@ import (
 
 // charsetAliases maps lower-cased charset labels that ianaindex / htmlindex
 // do not know (or map badly) to their decoder. Labels not listed here go
-// through go-message's own resolution (IANA names, then "cs" + name, then
+// through the resolution of go-message (IANA names, then "cs" + name, then
 // the HTML index).
 var charsetAliases = map[string]encoding.Encoding{
 	// Shift_JIS family: x/text's ShiftJIS is the WHATWG decoder, i.e. the
@@ -70,7 +70,7 @@ var asciiLabels = map[string]bool{"us-ascii": true, "ascii": true, "ansi_x3.4-19
 
 func init() {
 	// Importing go-message/charset (parse.go) set message.CharsetReader to
-	// its resolver; replace it with ours, which falls back to it.
+	// its resolver; replace it with charsetReader, which falls back to it.
 	message.CharsetReader = charsetReader
 }
 
@@ -250,7 +250,7 @@ func decodeBodyBytes(data []byte, label string, isHTML bool) []byte {
 
 // asciiWordLabelRe matches the charset label of an RFC 2047 encoded word
 // that mime.WordDecoder decodes by itself (US-ASCII), which would turn
-// mislabeled Japanese bytes into replacement runes before our reader sees
+// mislabeled Japanese bytes into replacement runes before charsetReader sees
 // them. decodeHeaderWords rewrites the label so that the bytes reach
 // charsetReader and its detection.
 var asciiWordLabelRe = regexp.MustCompile(`(?i)=\?(?:us-ascii|ascii|ansi_x3\.4-1968)(\*[^?]*)?\?([bq])\?`)

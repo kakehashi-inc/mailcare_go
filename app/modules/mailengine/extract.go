@@ -202,13 +202,13 @@ var bodyRules = []bodyRule{
 	{"sendmail_transcript", regexp.MustCompile(`(?s)while talking to ` + reHost + `\.?:.*?<<< ` + reReply)},
 	// Exchange / Office 365: "Remote Server returned '550 5.1.1 RESOLVER.ADR.RecipNotFound; not found'"
 	{"exchange_remote_server", regexp.MustCompile(`Remote Server(?: at ` + reHost + `(?: \(` + reIP + `\))?)? returned '` + reReply + `'`)},
-	// Office 365: "Your message to addr couldn't be delivered."
+	// Office 365: "... message to addr couldn't be delivered."
 	{"o365_recipient", regexp.MustCompile(`Your message to ` + reAddr + ` couldn'?t be delivered`)},
 	// Exchange legacy: "Delivery has failed to these recipients or groups:\n\nName (addr)"
 	{"exchange_recipient_list", regexp.MustCompile(`(?s)(?:Delivery has failed to these recipients or groups|The following recipient\(s\) cannot be reached):\s*(?:[^\n(]*\()?` + reAddr + `\)?`)},
 	// Exchange legacy diagnostic: "#5.1.1 smtp;550 5.1.1 ..." / "#< #5.1.1 smtp; ... >"
 	{"exchange_legacy_status", regexp.MustCompile(`#` + reStatus + `(?:\s*smtp;\s*` + reReply + `)?`)},
-	// Gmail: "Your message wasn't delivered to addr because ..."
+	// Gmail: "... message wasn't delivered to addr because ..."
 	{"gmail_recipient", regexp.MustCompile(`message (?:wasn't|was not|couldn't be) delivered to ` + reAddr)},
 	// Gmail: "The response from the remote server was:\n550 5.1.1 ..." / "The response was:\n\n550 ..."
 	{"gmail_response", regexp.MustCompile(`(?s)The response (?:from the remote server )?was:\s*` + reReply)},
@@ -222,7 +222,7 @@ var bodyRules = []bodyRule{
 	{"text_final_recipient", regexp.MustCompile(`(?i)Final-Recipient:\s*(?:rfc822;)?\s*` + reAddr)},
 	// Generic: a quoted SMTP reply with an extended status code anywhere in the text
 	{"generic_reply", regexp.MustCompile(`(?m)(?:^|[:\s])` + `(?P<diag>(?P<code>[245][0-9]{2})[ \-]` + reStatus + `[^\n]*)`)},
-	// Generic: an extended status code on its own
+	// Generic: an extended status code alone
 	{"generic_status", regexp.MustCompile(`(?:^|[^0-9.])` + reStatus + `(?:[^0-9.]|$)`)},
 }
 
@@ -329,7 +329,7 @@ func unfold(body string) string {
 		trimmed := strings.TrimRight(line, " \t\r")
 		if len(out) > 0 && trimmed != "" && (line[0] == ' ' || line[0] == '\t') && out[len(out)-1] != "" {
 			prev := out[len(out)-1]
-			// Keep list-style blocks (address on its own line followed by an
+			// Keep list-style blocks (address alone on a line followed by an
 			// indented reason) on separate lines: those are matched with \s*.
 			if strings.HasSuffix(prev, ":") || strings.HasSuffix(prev, "said:") || strings.Contains(prev, " said: ") ||
 				strings.Contains(prev, "returned '") || strings.HasSuffix(prev, ",") {

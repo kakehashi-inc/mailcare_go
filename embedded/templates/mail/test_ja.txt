@@ -3,14 +3,14 @@
   time zone), .Host, .Port, .Security, .From.
 */ -}}
 {{define "subject" -}}
-[MailCare] テスト送信 ({{.Date}})
+[MailCare] テストメール（{{.Date}}）
 {{- end}}
 
 {{define "body" -}}
-MailCare の SMTP 設定のテスト送信です。
-このメールが届いていれば、通知メールを送る準備ができています。
+MailCare の SMTP 設定のテストメールです。
+このメールが届いていれば、通知メールを送信できます。
 
-送信サーバー: {{.Host}}:{{.Port}} ({{.Security}})
-送信元: {{.From}}
+送信サーバー: {{.Host}}:{{.Port}}（{{.Security}}）
+差出人: {{.From}}
 送信日時: {{.Date}}
 {{- end}}

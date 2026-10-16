@@ -1,9 +1,9 @@
 -- +goose Up
--- DMARC aggregate reports become notices of their own kind (bounce kind
+-- DMARC aggregate reports become notices of a separate kind (bounce kind
 -- "report", rule "dmarc_report") and every record of a report that failed
 -- DMARC is filed into a group like a bounce. A report can hold several
 -- failing records that belong to different groups, so the records get a
--- table of their own instead of the 1:1 bounces row (dmarc_records, one row
+-- separate table instead of the 1:1 bounces row (dmarc_records, one row
 -- per failing record, deleted with its message). The group counters, the
 -- pattern coverage and the empty-group cleanup read the members of a group
 -- from both tables, each filtered by the group key.

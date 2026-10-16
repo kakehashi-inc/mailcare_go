@@ -16,16 +16,17 @@ import (
 
 // Received headers of returned originals (design document "mail
 // classification" 2.6): a hop of forged mail from a host that is none of
-// ours, a hop whose only sign of our own network is its address (the name
-// is not registered), and a hop whose only sign of our server is its name.
+// the sending sources, a hop whose only sign of the sending network is its
+// address (the name is not registered), and a hop whose only sign of the
+// sending server is its name.
 const (
 	spoofHop = "Received: from spam-sender.example (unknown [198.51.100.7])\r\n" +
 		"\tby mx.partner.example.net (Postfix) with ESMTP id 4ZbCdE1fG2z9tLm\r\n" +
 		"\tfor <nobody@partner.example.net>; Wed, 10 Sep 2025 03:12:44 +0900 (JST)\r\n"
-	ownHop = "Received: from app02.example.jp (app02.example.jp [203.0.113.5])\r\n" +
+	sourceHop = "Received: from app02.example.jp (app02.example.jp [203.0.113.5])\r\n" +
 		"\tby mx.partner.example.net (Postfix) with ESMTPS id 4ZbCdE1fG2z9tLn\r\n" +
 		"\tfor <nobody@partner.example.net>; Wed, 10 Sep 2025 03:12:44 +0900 (JST)\r\n"
-	ownNameHop = "Received: from mail.example.jp (unknown [198.51.100.99])\r\n" +
+	sourceNameHop = "Received: from mail.example.jp (unknown [198.51.100.99])\r\n" +
 		"\tby mx.partner.example.net (Postfix) with ESMTPS id 4ZbCdE1fG2z9tLp\r\n" +
 		"\tfor <nobody@partner.example.net>; Wed, 10 Sep 2025 03:12:44 +0900 (JST)\r\n"
 	partnerHop = "Received: from mx.partner.example.net (localhost [127.0.0.1])\r\n" +
@@ -34,10 +35,10 @@ const (
 
 // returnedPart is the returned original attached as container
 // (message/rfc822 or text/rfc822-headers) with the given headers before
-// its own.
+// the headers of the original.
 func returnedPart(container, headers string) string {
 	part := "Content-Type: " + container + "\r\n\r\n" + headers +
-		"From: Newsletter <newsletter@example.jp>\r\nTo: nobody@partner.example.net\r\nSubject: Your invoice\r\n" +
+		"From: Newsletter <newsletter@example.jp>\r\nTo: nobody@partner.example.net\r\nSubject: Invoice\r\n" +
 		"Date: Wed, 10 Sep 2025 03:12:40 +0900\r\nMessage-ID: <inv-1@example.jp>\r\n"
 	if container == "message/rfc822" {
 		part += "\r\nPlease find the invoice.\r\n"
@@ -89,7 +90,7 @@ func TestOriginalReceived(t *testing.T) {
 			if strings.Join(om.Received, "\n") != strings.Join(want, "\n") {
 				t.Errorf("Received = %q, want %q", om.Received, want)
 			}
-			if om.Subject != "Your invoice" {
+			if om.Subject != "Invoice" {
 				t.Errorf("subject = %q: the headers after Received were not read", om.Subject)
 			}
 			if om := ParseMessage(returnedNotice(container, "")).OriginalMessage; om == nil || len(om.Received) != 0 {
@@ -97,7 +98,7 @@ func TestOriginalReceived(t *testing.T) {
 			}
 		})
 	}
-	// The notice's own Received headers are not the original's.
+	// The Received headers of the notice are not the original's.
 	pm := ParseMessage(readSample(t, "postfix_backscatter.eml"))
 	if pm.OriginalMessage == nil || len(pm.OriginalMessage.Received) != 1 ||
 		!strings.HasPrefix(pm.OriginalMessage.Received[0], "from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net") {
@@ -109,37 +110,37 @@ func TestOriginalReceived(t *testing.T) {
 }
 
 func TestMatchReceived(t *testing.T) {
-	own4 := NewOwnSources([]string{"203.0.113.0/24"}, nil, nil, nil)
-	own6 := NewOwnSources(nil, []string{"2001:db8::/32"}, nil, nil)
-	hosts := NewOwnSources(nil, nil, []string{"mail.example.jp", "mailhost"}, nil)
-	all := NewOwnSources([]string{"203.0.113.0/24"}, []string{"2001:db8::/32"}, []string{"mail.example.jp", "mailhost"}, nil)
+	source4 := NewSendingSources([]string{"203.0.113.0/24"}, nil, nil, nil)
+	source6 := NewSendingSources(nil, []string{"2001:db8::/32"}, nil, nil)
+	hosts := NewSendingSources(nil, nil, []string{"mail.example.jp", "mailhost"}, nil)
+	all := NewSendingSources([]string{"203.0.113.0/24"}, []string{"2001:db8::/32"}, []string{"mail.example.jp", "mailhost"}, nil)
 	const postfix = "from mail.example.jp (mail.example.jp [203.0.113.5]) by mx.partner.example.net (Postfix) with ESMTPS id 4ZbCdE1fG2z9tLn " +
 		"for <taro@partner.example.net>; Wed, 10 Sep 2025 03:12:44 +0900 (JST)"
 	cases := []struct {
-		name string
-		own  OwnSources
-		line string
-		want bool
+		name    string
+		sources SendingSources
+		line    string
+		want    bool
 	}{
-		{"postfix, by address", own4, postfix, true},
+		{"postfix, by address", source4, postfix, true},
 		{"postfix, by name", hosts, postfix, true},
-		{"postfix, nothing configured", OwnSources{}, postfix, false},
+		{"postfix, nothing configured", SendingSources{}, postfix, false},
 		{"postfix, foreign client", all,
 			"from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net (Postfix) with ESMTP id 4ZbC; Wed, 10 Sep 2025 03:12:44 +0900", false},
-		{"postfix, client address only", own4, "from relay.other.example (unknown [203.0.113.77]) by mx.partner.example.net (Postfix) with ESMTP id 4Z", true},
-		{"gmail, IPv6 client with a dotted name", own6,
+		{"postfix, client address only", source4, "from relay.other.example (unknown [203.0.113.77]) by mx.partner.example.net (Postfix) with ESMTP id 4Z", true},
+		{"gmail, IPv6 client with a dotted name", source6,
 			"from mail.other.example (mail.other.example. [2001:db8::25]) by mx.google.com with ESMTPS id d9443c01a7336-2a1b " +
 				"for <user2@gmail.com> (version=TLS1_3 cipher=TLS_AES_256_GCM_SHA384 bits=256/256); Sun, 07 Sep 2025 00:59:51 -0700 (PDT)", true},
-		{"gmail, bare IPv6 after by", own6, "by 2001:db8::1 with SMTP id m5csp1234567; Sun, 7 Sep 2025 00:59:52 -0700 (PDT)", true},
-		{"IPv6 tag in parentheses", own6, "from relay.other.example (IPv6:2001:db8::25) by mx.partner.example.net with ESMTP", true},
-		{"IPv6 tag in brackets", own6, "from relay.other.example (unknown [IPv6:2001:db8::25]) by mx.partner.example.net with ESMTP", true},
-		{"IPv4-mapped address", own4, "from relay.other.example ([::ffff:203.0.113.5]) by mx.partner.example.net with LMTP id x", true},
-		{"exchange, bare address in parentheses", own4,
+		{"gmail, bare IPv6 after by", source6, "by 2001:db8::1 with SMTP id m5csp1234567; Sun, 7 Sep 2025 00:59:52 -0700 (PDT)", true},
+		{"IPv6 tag in parentheses", source6, "from relay.other.example (IPv6:2001:db8::25) by mx.partner.example.net with ESMTP", true},
+		{"IPv6 tag in brackets", source6, "from relay.other.example (unknown [IPv6:2001:db8::25]) by mx.partner.example.net with ESMTP", true},
+		{"IPv4-mapped address", source4, "from relay.other.example ([::ffff:203.0.113.5]) by mx.partner.example.net with LMTP id x", true},
+		{"exchange, bare address in parentheses", source4,
 			"from EXCH01.corp.other.example (203.0.113.30) by mx.partner.example.net with Microsoft SMTP Server id 15.20.8205.10; Tue, 9 Sep 2025 10:00:00 +0900", true},
-		{"exchange, bare IPv6 in parentheses", own6,
+		{"exchange, bare IPv6 in parentheses", source6,
 			"from JPXP123MB4567.JPNP123.PROD.OUTLOOK.COM (2001:db8:400:1::10) by JPXP123MB9999.JPNP123.PROD.OUTLOOK.COM (2603:1096:400::20) with Microsoft SMTP Server", true},
-		{"address with a port in parentheses", own4, "from unknown (HELO relay) (203.0.113.5:41234) by mx.partner.example.net with SMTP", true},
-		{"bare address after from", own4, "from 203.0.113.5 by mx.partner.example.net with SMTP", true},
+		{"address with a port in parentheses", source4, "from unknown (HELO relay) (203.0.113.5:41234) by mx.partner.example.net with SMTP", true},
+		{"bare address after from", source4, "from 203.0.113.5 by mx.partner.example.net with SMTP", true},
 		{"host name, case and trailing dot", hosts, "from MAIL.Example.JP. (unknown [198.51.100.7]) by mx.partner.example.net with ESMTP", true},
 		{"host name after by", hosts, "from app01.other.example (app01.other.example [198.51.100.20]) by mail.example.jp (Postfix) with ESMTP id 4Xk1", true},
 		{"host name looked up by the receiver", hosts, "from localhost.localdomain (mail.example.jp [198.51.100.7]) by mx.partner.example.net with ESMTP", true},
@@ -147,9 +148,9 @@ func TestMatchReceived(t *testing.T) {
 		{"qmail HELO name, single label", hosts, "from unknown (HELO mailhost) (198.51.100.7) by mx.partner.example.net with SMTP; 5 Sep 2025 02:29:58 -0000", true},
 		{"host names only, the address is not looked up", hosts, "from relay.other.example (relay.other.example [203.0.113.5]) by mx.partner.example.net", false},
 		{"look-alike host names", hosts, "from mail.example.jp.evil.example (notmail.example.jp [198.51.100.7]) by mx.mail-example.jp", false},
-		{"IPv4 configured, IPv6 seen", own4, "from relay.other.example (unknown [2001:db8::25]) by mx.partner.example.net", false},
-		{"IPv6 configured, IPv4 seen", own6, "from relay.other.example (unknown [203.0.113.5]) by mx.partner.example.net", false},
-		{"address outside the hop positions", own4, "from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net with ESMTP id 203.0.113.5", false},
+		{"IPv4 configured, IPv6 seen", source4, "from relay.other.example (unknown [2001:db8::25]) by mx.partner.example.net", false},
+		{"IPv6 configured, IPv4 seen", source6, "from relay.other.example (unknown [203.0.113.5]) by mx.partner.example.net", false},
+		{"address outside the hop positions", source4, "from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net with ESMTP id 203.0.113.5", false},
 		{"names inside other comments", hosts, "from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net (mailhost) with ESMTP", false},
 		{"qmail without a hop", all, "(qmail 12300 invoked by uid 1001); 5 Sep 2025 02:29:58 -0000", false},
 		{"qmail from network", all, "(qmail 4711 invoked from network); 5 Sep 2025 02:29:58 -0000", false},
@@ -161,7 +162,7 @@ func TestMatchReceived(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := c.own.MatchReceived(c.line); got != c.want {
+			if got := c.sources.MatchReceived(c.line); got != c.want {
 				addrs, hosts, ok := receivedSources(c.line)
 				t.Errorf("MatchReceived(%q) = %v, want %v (addresses %v, names %q, judged %v)", c.line, got, c.want, addrs, hosts, ok)
 			}
@@ -169,7 +170,7 @@ func TestMatchReceived(t *testing.T) {
 	}
 }
 
-// bracketedHops returns a Received header from a host none of ours with n
+// bracketedHops returns a Received header from a host that is no sending source, with n
 // distinct IPv4 literals in brackets (and each repeated `repeat` times).
 func bracketedHops(n, repeat int) string {
 	var b strings.Builder
@@ -186,10 +187,10 @@ func bracketedHops(n, repeat int) string {
 // TestReceivedBounds: the Received headers of an original are judged only
 // within the bounds (at most 100 headers, 8 KB per header, 64 distinct
 // addresses per header, repeats counted once); past one the original is not
-// judged, MatchReceived counts the line as showing ours, and the backscatter
+// judged, MatchReceived counts the line as showing a sending source, and the backscatter
 // rule leaves the notice alone. Up to the bounds the rule applies as before.
 func TestReceivedBounds(t *testing.T) {
-	own := NewOwnSources([]string{"203.0.113.0/24"}, nil, []string{"mail.example.jp"}, nil)
+	sources := NewSendingSources([]string{"203.0.113.0/24"}, nil, []string{"mail.example.jp"}, nil)
 	const hop = "from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net (Postfix) with ESMTP"
 	pad := func(size int) string {
 		return hop + " id " + strings.Repeat("x", size-len(hop)-len(" id "))
@@ -208,17 +209,17 @@ func TestReceivedBounds(t *testing.T) {
 		{"101 headers", slices.Repeat([]string{hop}, 101), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if ours, judged := own.matchReceivedLines(c.lines); ours || judged != c.judged {
-				t.Errorf("matchReceivedLines = %v, %v; want not ours, judged %v", ours, judged, c.judged)
+			if matched, judged := sources.matchReceivedLines(c.lines); matched || judged != c.judged {
+				t.Errorf("matchReceivedLines = %v, %v; want no match, judged %v", matched, judged, c.judged)
 			}
-			if got := own.MatchReceived(c.lines[0]); len(c.lines) == 1 && got != !c.judged {
+			if got := sources.MatchReceived(c.lines[0]); len(c.lines) == 1 && got != !c.judged {
 				t.Errorf("MatchReceived = %v, want %v", got, !c.judged)
 			}
 			var headers strings.Builder
 			for _, l := range c.lines {
 				headers.WriteString("Received: " + l + "\r\n")
 			}
-			cls := ClassifyWith(ParseMessage(returnedNotice("message/rfc822", headers.String())), "newsletter@example.jp", own)
+			cls := ClassifyWith(ParseMessage(returnedNotice("message/rfc822", headers.String())), "newsletter@example.jp", sources)
 			want := ruleDSNReport
 			if c.judged {
 				want = ruleBackscatter
@@ -228,15 +229,15 @@ func TestReceivedBounds(t *testing.T) {
 			}
 		})
 	}
-	// An address of ours past the bounds is not looked for: the line is not
+	// An address of a sending source past the bounds is not looked for: the line is not
 	// judged either way.
-	if own.MatchReceived(bracketedHops(70, 1)+" [203.0.113.5]") != true {
-		t.Error("an unjudged line does not count as showing ours")
+	if sources.MatchReceived(bracketedHops(70, 1)+" [203.0.113.5]") != true {
+		t.Error("an unjudged line does not count as showing a sending source")
 	}
 }
 
 // hugeHop returns a Received header of at least size bytes of bracketed
-// addresses, none of ours.
+// addresses, none of them a sending source.
 func hugeHop(size int) string {
 	var b strings.Builder
 	b.WriteString("from spam-sender.example (unknown")
@@ -257,15 +258,15 @@ func TestReceivedHostileOriginalIsCheap(t *testing.T) {
 	for i := range 1000 {
 		prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(i / 250), byte(i % 250), 0}), 24))
 	}
-	own := NewOwnSources(nil, nil, []string{"mail.example.jp"}, nil).withResolved(nil, prefixes, nil)
+	sources := NewSendingSources(nil, nil, []string{"mail.example.jp"}, nil).withResolved(nil, prefixes, nil)
 	line := hugeHop(8 << 20)
 	start := time.Now()
-	ours, judged := own.matchReceivedLines([]string{line})
+	matched, judged := sources.matchReceivedLines([]string{line})
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("an 8 MB header judged in %v", elapsed)
 	}
-	if ours || judged || !own.MatchReceived(line) {
-		t.Errorf("an 8 MB header: ours %v, judged %v; want not judged (counted as ours by MatchReceived)", ours, judged)
+	if matched || judged || !sources.MatchReceived(line) {
+		t.Errorf("an 8 MB header: matched %v, judged %v; want not judged (counted as a match by MatchReceived)", matched, judged)
 	}
 	big := "Received: " + hugeHop(1<<20-4096) + "\r\n"
 	many := strings.Repeat("Received: from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net\r\n", 5000)
@@ -275,7 +276,7 @@ func TestReceivedHostileOriginalIsCheap(t *testing.T) {
 			t.Fatalf("%s: the original was not read", name)
 		}
 		start := time.Now()
-		cls := ClassifyWith(pm, "newsletter@example.jp", own)
+		cls := ClassifyWith(pm, "newsletter@example.jp", sources)
 		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 			t.Errorf("%s: classified in %v", name, elapsed)
 		}
@@ -286,58 +287,58 @@ func TestReceivedHostileOriginalIsCheap(t *testing.T) {
 }
 
 // TestMatchReceivedNothingConfigured: without an entry in any of the three
-// settings nothing matches, not even an address handed to NewOwnSources as
+// settings nothing matches, not even an address handed to NewSendingSources as
 // already resolved (resolved addresses alone are no configuration), nor the
 // host name of a blank entry.
 func TestMatchReceivedNothingConfigured(t *testing.T) {
 	const line = "from mail.example.jp (mail.example.jp [203.0.113.5]) by mx.partner.example.net (Postfix) with ESMTPS id 4Zb"
-	own := NewOwnSources([]string{" "}, []string{""}, []string{" "}, addrs("203.0.113.5"))
-	if !own.Empty() {
+	sources := NewSendingSources([]string{" "}, []string{""}, []string{" "}, addrs("203.0.113.5"))
+	if !sources.Empty() {
 		t.Fatal("blank entries and resolved addresses count as configured")
 	}
-	if own.MatchReceived(line) {
+	if sources.MatchReceived(line) {
 		t.Errorf("MatchReceived(%q) = true with nothing configured", line)
 	}
 	// The same resolved address matches once an entry is configured.
-	if !NewOwnSources(nil, nil, []string{"other.example.jp"}, addrs("203.0.113.5")).MatchReceived(line) {
+	if !NewSendingSources(nil, nil, []string{"other.example.jp"}, addrs("203.0.113.5")).MatchReceived(line) {
 		t.Error("the resolved address does not match with a host name configured")
 	}
 }
 
 // TestClassifyBackscatter covers the backscatter rule (design document "mail
-// classification" 2.6): the return notice of a message none of our own
-// sending servers handed on is junk, and the notices about our own mail
-// (shown in the Received headers or reported by our own MTA), the notices
-// without a returned original or its Received headers, the other reports
-// (DMARC, read receipts), the automatic replies, the forwards of a person
-// and every message without one of our host names configured keep their
-// classification.
+// classification" 2.6): the return notice of a message none of the sending
+// sources handed on is junk, and the notices about mail from the sending
+// sources (shown in the Received headers or reported by a sending server),
+// the notices without a returned original or its Received headers, the
+// other reports (DMARC, read receipts), the automatic replies, the forwards
+// of a person and every message without a source host name configured keep
+// their classification.
 func TestClassifyBackscatter(t *testing.T) {
 	const mailbox = "newsletter@example.jp"
-	ownNet := NewOwnSources([]string{"203.0.113.0/24"}, nil, []string{"mail.example.jp"}, nil)
-	ownAll := NewOwnSources([]string{"203.0.113.0/24"}, []string{"2001:db8::/32"}, []string{"mail.example.jp"}, nil)
-	ownHosts := NewOwnSources(nil, nil, []string{"mail.example.jp"}, nil)
-	ownAddrs := NewOwnSources([]string{"203.0.113.0/24"}, []string{"2001:db8::/32"}, nil, nil)
-	ownMTA := NewOwnSources(nil, nil, []string{"mx1.example.jp"}, nil)
-	elsewhere := NewOwnSources([]string{"192.0.2.250"}, nil, []string{"elsewhere.example.jp"}, nil)
+	sourceNet := NewSendingSources([]string{"203.0.113.0/24"}, nil, []string{"mail.example.jp"}, nil)
+	sourceAll := NewSendingSources([]string{"203.0.113.0/24"}, []string{"2001:db8::/32"}, []string{"mail.example.jp"}, nil)
+	sourceHosts := NewSendingSources(nil, nil, []string{"mail.example.jp"}, nil)
+	sourceAddrs := NewSendingSources([]string{"203.0.113.0/24"}, []string{"2001:db8::/32"}, nil, nil)
+	sourceMTA := NewSendingSources(nil, nil, []string{"mx1.example.jp"}, nil)
+	elsewhere := NewSendingSources([]string{"192.0.2.250"}, nil, []string{"elsewhere.example.jp"}, nil)
 	rfc822 := func(headers string) []byte { return returnedNotice("message/rfc822", headers) }
-	// The delayed warning of our own MTA (mx1.example.jp), returning the
-	// headers of our mail with the hop from the application server to the
-	// MTA, and the same warning about mail whose hops name none of our hosts
-	// (submitted through a server that is not registered).
+	// The delayed warning of a sending server (mx1.example.jp), returning the
+	// headers of the sent mail with the hop from the application server to
+	// the MTA, and the same warning about mail whose hops name none of the
+	// source hosts (submitted through a server that is not registered).
 	delayedWith := func(received string) []byte {
 		return bytes.Replace(readSample(t, "postfix_delayed_dns.eml"), []byte("From: Newsletter <newsletter@example.jp>\n"),
 			[]byte(received+"From: Newsletter <newsletter@example.jp>\n"), 1)
 	}
-	ownDelayed := delayedWith("Received: from app01.example.jp (app01.example.jp [192.0.2.20])\n\tby mx1.example.jp (Postfix) with ESMTP id 4Xk1Yy6Q8Fz9tLn\n" +
+	sourceDelayed := delayedWith("Received: from app01.example.jp (app01.example.jp [192.0.2.20])\n\tby mx1.example.jp (Postfix) with ESMTP id 4Xk1Yy6Q8Fz9tLn\n" +
 		"\tfor <user1@infoseek.jp>; Wed, 3 Sep 2025 08:59:01 +0900 (JST)\n")
-	ownDelayedForeignHops := delayedWith("Received: from laptop.home.example (unknown [198.51.100.7])\n" +
+	sourceDelayedForeignHops := delayedWith("Received: from laptop.home.example (unknown [198.51.100.7])\n" +
 		"\tby submit.other.example (Postfix) with ESMTPSA id 4Xk1Yy6Q8Fz9tLm; Wed, 3 Sep 2025 08:59:01 +0900 (JST)\n")
-	// A notice whose reporting MTA is an address of our network.
+	// A notice whose reporting MTA is an address of the sending network.
 	reportedByAddress := bytes.Replace(dnsNotice(bounceKindFailed, "5.4.4", "n@nowhere.example", "[203.0.113.25]",
 		"Name service error for name=nowhere.example type=MX: Host not found"),
 		[]byte("From: Newsletter <newsletter@example.jp>\r\n"), []byte(spoofHop+"From: Newsletter <newsletter@example.jp>\r\n"), 1)
-	notice := "From: postmaster@mx.partner.example.net\r\nTo: newsletter@example.jp\r\nSubject: Undeliverable: Your invoice\r\n"
+	notice := "From: postmaster@mx.partner.example.net\r\nTo: newsletter@example.jp\r\nSubject: Undeliverable: Invoice\r\n"
 	wording := "Delivery has failed to these recipients or groups:\r\nnobody@partner.example.net"
 	relay := "From: Notifications <notify@relay.partner.example.net>\r\nTo: newsletter@example.jp\r\nSubject: Message notification\r\n"
 	person := "From: Hanako <hanako@partner.example.com>\r\nTo: newsletter@example.jp\r\n"
@@ -346,111 +347,116 @@ func TestClassifyBackscatter(t *testing.T) {
 	cases := []struct {
 		name    string
 		raw     []byte
-		own     OwnSources
+		sources SendingSources
 		mailbox string // "" = mailbox; "-" = unknown
 		kind    string
 		rule    string
 		// foreign, when set, is a configuration under which the same message
 		// is backscatter: the case reaches the rule and is spared only by
 		// what it tests.
-		foreign OwnSources
-		// without is the rule of a backscatter case without our own sources
+		foreign SendingSources
+		// without is the rule of a backscatter case without sending sources
 		// ("" = dsn_report, "-" = ordinary mail).
 		without string
 	}{
 		// The return notices of forged mail, reported by the receiver's MTA.
-		{name: "spoofed postfix sample", raw: readSample(t, "postfix_backscatter.eml"), own: ownNet, kind: bounceKindJunk, rule: ruleBackscatter},
-		{name: "spoofed, original attached whole", raw: rfc822(spoofHop), own: ownNet, kind: bounceKindJunk, rule: ruleBackscatter},
-		{name: "spoofed, original headers only", raw: returnedNotice("text/rfc822-headers", spoofHop), own: ownNet, kind: bounceKindJunk, rule: ruleBackscatter},
-		{name: "spoofed, several hops", raw: rfc822(partnerHop + spoofHop), own: ownAll, kind: bounceKindJunk, rule: ruleBackscatter},
-		{name: "spoofed, host names configured", raw: rfc822(spoofHop), own: ownHosts, kind: bounceKindJunk, rule: ruleBackscatter},
-		{name: "spoofed, our MTA configured", raw: rfc822(spoofHop), own: ownMTA, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "spoofed postfix sample", raw: readSample(t, "postfix_backscatter.eml"), sources: sourceNet, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "spoofed, original attached whole", raw: rfc822(spoofHop), sources: sourceNet, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "spoofed, original headers only", raw: returnedNotice("text/rfc822-headers", spoofHop), sources: sourceNet, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "spoofed, several hops", raw: rfc822(partnerHop + spoofHop), sources: sourceAll, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "spoofed, host names configured", raw: rfc822(spoofHop), sources: sourceHosts, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "spoofed, the sending MTA configured", raw: rfc822(spoofHop), sources: sourceMTA, kind: bounceKindJunk, rule: ruleBackscatter},
 		{name: "spoofed, signed by another domain", raw: rfc822("DKIM-Signature: v=1; a=rsa-sha256; d=spam-sender.example; s=s1; bh=x; b=y\r\n" + spoofHop),
-			own: ownNet, kind: bounceKindJunk, rule: ruleBackscatter},
-		{name: "spoofed, signed with our domain, monitored domain unknown",
-			raw: rfc822("DKIM-Signature: v=1; a=rsa-sha256; d=example.jp; s=s1; bh=x; b=y\r\n" + spoofHop),
-			own: ownNet, mailbox: "-", kind: bounceKindJunk, rule: ruleBackscatter},
+			sources: sourceNet, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "spoofed, signed with the monitored domain, monitored domain unknown",
+			raw:     rfc822("DKIM-Signature: v=1; a=rsa-sha256; d=example.jp; s=s1; bh=x; b=y\r\n" + spoofHop),
+			sources: sourceNet, mailbox: "-", kind: bounceKindJunk, rule: ruleBackscatter},
 		// Only an address is shown for a host registered by its name: the
 		// name is not looked up (a documented limit: register the addresses
 		// too).
 		{name: "host names configured, hop shown by its address only",
-			raw: rfc822("Received: from relay.other.example (relay.other.example [203.0.113.5]) by mx.partner.example.net with ESMTP\r\n"),
-			own: ownHosts, kind: bounceKindJunk, rule: ruleBackscatter},
-		{name: "notice without delivery-status, by the subject and the sender", own: ownNet, kind: bounceKindJunk, rule: ruleBackscatter, without: ruleDaemonSender,
+			raw:     rfc822("Received: from relay.other.example (relay.other.example [203.0.113.5]) by mx.partner.example.net with ESMTP\r\n"),
+			sources: sourceHosts, kind: bounceKindJunk, rule: ruleBackscatter},
+		{name: "notice without delivery-status, by the subject and the sender", sources: sourceNet, kind: bounceKindJunk, rule: ruleBackscatter, without: ruleDaemonSender,
 			raw: multipartMessage(notice, "mixed", textPart(wording), returnedPart("message/rfc822", spoofHop))},
-		{name: "notice without delivery-status, by the HTML wording only", own: ownNet, kind: bounceKindJunk, rule: ruleBackscatter, without: ruleBodyPattern,
-			raw: multipartMessage(relay, "mixed", textPart("You have a new notification."), htmlPart("<p>"+wording+"</p>"),
+		{name: "notice without delivery-status, by the HTML wording only", sources: sourceNet, kind: bounceKindJunk, rule: ruleBackscatter, without: ruleBodyPattern,
+			raw: multipartMessage(relay, "mixed", textPart("A new notification is available."), htmlPart("<p>"+wording+"</p>"),
 				returnedPart("message/rfc822", spoofHop))},
 		// A forward prefix does not spare a daemon's mail.
-		{name: "forward prefix from a daemon address", own: ownNet, kind: bounceKindJunk, rule: ruleBackscatter, without: ruleDaemonSender,
-			raw: multipartMessage("From: MAILER-DAEMON@relay.partner.example.net\r\nTo: newsletter@example.jp\r\nSubject: Fwd: Undeliverable: Your invoice\r\n",
+		{name: "forward prefix from a daemon address", sources: sourceNet, kind: bounceKindJunk, rule: ruleBackscatter, without: ruleDaemonSender,
+			raw: multipartMessage("From: MAILER-DAEMON@relay.partner.example.net\r\nTo: newsletter@example.jp\r\nSubject: Fwd: Undeliverable: Invoice\r\n",
 				"mixed", textPart(wording), returnedPart("message/rfc822", spoofHop))},
 
-		// Without one of our host names nothing is judged: our own MTA names
-		// itself in the hops of our mail, the addresses there are the peers'.
-		{name: "addresses only configured", raw: rfc822(spoofHop), own: ownAddrs, kind: bounceKindFailed, rule: ruleDSNReport, foreign: ownNet},
-		{name: "delayed warning of our own MTA, only the MTA's address configured", raw: ownDelayed,
-			own: NewOwnSources([]string{"192.0.2.10"}, nil, nil, nil), kind: bounceKindDelayed, rule: ruleDSNReport, foreign: elsewhere},
+		// Without a source host name nothing is judged: a sending server names
+		// itself in the hops of the sent mail, the addresses there are the peers'.
+		{name: "addresses only configured", raw: rfc822(spoofHop), sources: sourceAddrs, kind: bounceKindFailed, rule: ruleDSNReport, foreign: sourceNet},
+		{name: "delayed warning of the sending MTA, only the MTA's address configured", raw: sourceDelayed,
+			sources: NewSendingSources([]string{"192.0.2.10"}, nil, nil, nil), kind: bounceKindDelayed, rule: ruleDSNReport, foreign: elsewhere},
 
-		// The notices about our own mail.
-		{name: "own hop by address", raw: rfc822(ownHop), own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
-		{name: "own hop by name", raw: rfc822(ownNameHop), own: ownAll, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
-		{name: "own hop by name, host names configured", raw: rfc822(ownNameHop), own: ownHosts, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
-		{name: "own hop below the receiver's hops", raw: rfc822(partnerHop + ownHop), own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
-		{name: "own hop by IPv6", own: ownAll, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere,
+		// The notices about mail from the sending sources.
+		{name: "source hop by address", raw: rfc822(sourceHop), sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
+		{name: "source hop by name", raw: rfc822(sourceNameHop), sources: sourceAll, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
+		{name: "source hop by name, host names configured", raw: rfc822(sourceNameHop), sources: sourceHosts, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
+		{name: "source hop below the receiver's hops", raw: rfc822(partnerHop + sourceHop), sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
+		{name: "source hop by IPv6", sources: sourceAll, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere,
 			raw: rfc822("Received: from mail6.other.example (mail6.other.example [IPv6:2001:db8::25]) by mx.partner.example.net with ESMTPS\r\n")},
-		{name: "signed with our domain", raw: rfc822("DKIM-Signature: v=1; a=rsa-sha256; d=example.jp; s=s1; bh=x; b=y\r\n" + spoofHop),
-			own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport},
-		{name: "signed with a subdomain of ours", raw: rfc822("DKIM-Signature: v=1; a=rsa-sha256; d=Mail.Example.JP; s=s1; bh=x; b=y\r\n" + spoofHop),
-			own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport},
-		{name: "delayed warning of our own MTA", raw: ownDelayed, own: ownMTA, kind: bounceKindDelayed, rule: ruleDSNReport, foreign: elsewhere},
-		// Our own MTA reports about mail it handled, whatever the hops say.
-		{name: "delayed warning of our own MTA, hops naming none of ours", raw: ownDelayedForeignHops,
-			own: ownMTA, kind: bounceKindDelayed, rule: ruleDSNReport, foreign: elsewhere},
-		{name: "reported by an address of our network", raw: reportedByAddress, own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
+		{name: "signed with the monitored domain", raw: rfc822("DKIM-Signature: v=1; a=rsa-sha256; d=example.jp; s=s1; bh=x; b=y\r\n" + spoofHop),
+			sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport},
+		{name: "signed with a subdomain of the monitored domain", raw: rfc822("DKIM-Signature: v=1; a=rsa-sha256; d=Mail.Example.JP; s=s1; bh=x; b=y\r\n" + spoofHop),
+			sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport},
+		{name: "delayed warning of the sending MTA", raw: sourceDelayed, sources: sourceMTA, kind: bounceKindDelayed, rule: ruleDSNReport, foreign: elsewhere},
+		// A sending server reports about mail it handled, whatever the hops say.
+		{name: "delayed warning of the sending MTA, hops naming no sending source", raw: sourceDelayedForeignHops,
+			sources: sourceMTA, kind: bounceKindDelayed, rule: ruleDSNReport, foreign: elsewhere},
+		{name: "reported by an address of the sending network", raw: reportedByAddress, sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport, foreign: elsewhere},
 		{name: "delayed warning sample without Received", raw: readSample(t, "postfix_delayed_dns.eml"),
-			own: ownMTA, kind: bounceKindDelayed, rule: ruleDSNReport},
+			sources: sourceMTA, kind: bounceKindDelayed, rule: ruleDSNReport},
 
 		// Nothing to judge.
-		{name: "nothing configured", raw: readSample(t, "postfix_backscatter.eml"), kind: bounceKindFailed, rule: ruleDSNReport, foreign: ownNet},
-		{name: "original without Received", raw: rfc822(""), own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport},
-		{name: "original headers without Received", raw: returnedNotice("text/rfc822-headers", ""), own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport},
+		{name: "nothing configured", raw: readSample(t, "postfix_backscatter.eml"), kind: bounceKindFailed, rule: ruleDSNReport, foreign: sourceNet},
+		{name: "original without Received", raw: rfc822(""), sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport},
+		{name: "original headers without Received", raw: returnedNotice("text/rfc822-headers", ""), sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport},
 		{name: "no original attached", raw: dsnMessage("Undelivered Mail Returned to Sender", "Action: failed\r\nStatus: 5.1.1\r\n"),
-			own: ownNet, kind: bounceKindFailed, rule: ruleDSNReport},
+			sources: sourceNet, kind: bounceKindFailed, rule: ruleDSNReport},
 		{name: "DMARC aggregate report", raw: dmarcMail("application/gzip", "r.xml.gz", report), mailbox: "dmarc@example.jp",
-			own: ownNet, kind: bounceKindReport, rule: ruleDMARCReport},
+			sources: sourceNet, kind: bounceKindReport, rule: ruleDMARCReport},
 		// A read receipt is a report of another type, never a return notice.
-		{name: "read receipt of forged mail", own: ownNet, kind: "", rule: "",
-			raw: multipartMessage("From: Taro <nobody@partner.example.net>\r\nTo: newsletter@example.jp\r\nSubject: Read: Your invoice\r\n",
-				"report; report-type=disposition-notification", textPart("Your message was displayed."),
+		{name: "read receipt of forged mail", sources: sourceNet, kind: "", rule: "",
+			raw: multipartMessage("From: Taro <nobody@partner.example.net>\r\nTo: newsletter@example.jp\r\nSubject: Read: Invoice\r\n",
+				"report; report-type=disposition-notification", textPart("The message was displayed."),
 				"Content-Type: message/disposition-notification\r\n\r\nReporting-UA: partner.example.net; Mailer\r\n"+
 					"Final-Recipient: rfc822; nobody@partner.example.net\r\nDisposition: manual-action/MDN-sent-manually; displayed\r\n",
 				returnedPart("text/rfc822-headers", spoofHop))},
-		{name: "read receipt that looks like a notice", own: ownNet, kind: bounceKindFailed, rule: ruleDaemonSender,
-			raw: multipartMessage("From: postmaster@partner.example.net\r\nTo: newsletter@example.jp\r\nSubject: Read: Undeliverable: Your invoice\r\n",
-				"report; report-type=disposition-notification", textPart("Your message was displayed."),
+		{name: "read receipt that looks like a notice", sources: sourceNet, kind: bounceKindFailed, rule: ruleDaemonSender,
+			raw: multipartMessage("From: postmaster@partner.example.net\r\nTo: newsletter@example.jp\r\nSubject: Read: Undeliverable: Invoice\r\n",
+				"report; report-type=disposition-notification", textPart("The message was displayed."),
 				"Content-Type: message/disposition-notification\r\n\r\nReporting-UA: partner.example.net; Mailer\r\n"+
 					"Final-Recipient: rfc822; nobody@partner.example.net\r\nDisposition: automatic-action/MDN-sent-automatically; displayed\r\n",
 				returnedPart("text/rfc822-headers", spoofHop))},
-		{name: "automatic reply sample", raw: readSample(t, "autoreply.eml"), own: ownNet, kind: bounceKindAutoReply, rule: ruleAutoReply},
-		{name: "out-of-office reply with the original attached", own: ownNet, kind: bounceKindAutoReply, rule: ruleAutoReply,
-			raw: multipartMessage(oof+"Subject: Automatic reply: Your invoice\r\n", "mixed",
-				textPart("I am out of the office until Monday."), returnedPart("message/rfc822", spoofHop))},
+		{name: "automatic reply sample", raw: readSample(t, "autoreply.eml"), sources: sourceNet, kind: bounceKindAutoReply, rule: ruleAutoReply},
+		{name: "out-of-office reply with the original attached", sources: sourceNet, kind: bounceKindAutoReply, rule: ruleAutoReply,
+			raw: multipartMessage(oof+"Subject: Automatic reply: Invoice\r\n", "mixed",
+				textPart("Out of the office until Monday."), returnedPart("message/rfc822", spoofHop))},
 		// An automatic reply quoting a bounce subject looks like a notice by
 		// its subject, but the out-of-office subject spares it.
-		{name: "automatic reply quoting a bounce subject, forged original", own: ownNet, kind: bounceKindAutoReply, rule: ruleAutoReply,
-			raw: multipartMessage(oof+"Subject: Automatic reply: Undeliverable: Your invoice\r\n", "mixed",
-				textPart("I am out of the office."), returnedPart("message/rfc822", spoofHop))},
-		{name: "out-of-office subject quoting a bounce subject, no Auto-Submitted", own: ownNet, kind: bounceKindAutoReply, rule: ruleAutoReplySubject,
-			raw: multipartMessage(person+"Subject: Out of Office: Undeliverable: Your invoice\r\n", "mixed",
-				textPart("I am out of the office."), returnedPart("message/rfc822", spoofHop))},
+		{name: "automatic reply quoting a bounce subject, forged original", sources: sourceNet, kind: bounceKindAutoReply, rule: ruleAutoReply,
+			raw: multipartMessage(oof+"Subject: Automatic reply: Undeliverable: Invoice\r\n", "mixed",
+				textPart("Out of the office."), returnedPart("message/rfc822", spoofHop))},
+		{name: "out-of-office subject quoting a bounce subject, no Auto-Submitted", sources: sourceNet, kind: bounceKindAutoReply, rule: ruleAutoReplySubject,
+			raw: multipartMessage(person+"Subject: Out of Office: Undeliverable: Invoice\r\n", "mixed",
+				textPart("Out of the office."), returnedPart("message/rfc822", spoofHop))},
 		// A person forwarding a notice of forged mail with the notice attached.
-		{name: "forward of a person", own: ownNet, kind: bounceKindFailed, rule: ruleSubjectPattern,
-			raw: multipartMessage(person+"Subject: Fwd: Undeliverable: Your invoice\r\n", "mixed",
-				textPart("Is this ours?"), returnedPart("message/rfc822", spoofHop))},
-		{name: "a forwarded message is no notice", own: ownNet, kind: "", rule: "",
-			raw: multipartMessage("From: Camille <camille@partner.example.fr>\r\nTo: newsletter@example.jp\r\nSubject: Fwd: Your invoice\r\n", "mixed",
-				textPart("Is this yours?"), returnedPart("message/rfc822", spoofHop))},
+		{name: "forward of a person", sources: sourceNet, kind: bounceKindFailed, rule: ruleSubjectPattern,
+			raw: multipartMessage(person+"Subject: Fwd: Undeliverable: Invoice\r\n", "mixed",
+				textPart("Is this genuine?"), returnedPart("message/rfc822", spoofHop))},
+		// A person forwarding a notice with the report wording quoted: it
+		// looks like a notice, and the forward prefix spares it.
+		{name: "forward of a person quoting the report wording", sources: sourceNet, kind: bounceKindFailed, rule: ruleSubjectPattern,
+			raw: multipartMessage(person+"Subject: Fwd: Undeliverable: Invoice\r\n", "mixed",
+				textPart("Is this genuine?\r\n> "+wording), returnedPart("message/rfc822", spoofHop))},
+		{name: "a forwarded message is no notice", sources: sourceNet, kind: "", rule: "",
+			raw: multipartMessage("From: Camille <camille@partner.example.fr>\r\nTo: newsletter@example.jp\r\nSubject: Fwd: Invoice\r\n", "mixed",
+				textPart("Is this genuine?"), returnedPart("message/rfc822", spoofHop))},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -463,13 +469,13 @@ func TestClassifyBackscatter(t *testing.T) {
 				mb = c.mailbox
 			}
 			pm := ParseMessage(c.raw)
-			cls := ClassifyWith(pm, mb, c.own)
+			cls := ClassifyWith(pm, mb, c.sources)
 			if cls.Kind != c.kind || cls.Rule != c.rule || cls.IsBounce != (c.kind != bounceKindJunk && c.kind != "") {
 				t.Fatalf("classification = %+v, want kind %q rule %q", cls, c.kind, c.rule)
 			}
 			plain := Classify(pm, mb)
 			if plain.Rule == ruleBackscatter {
-				t.Error("Classify without own sources judged backscatter")
+				t.Error("Classify without sending sources judged backscatter")
 			}
 			if !c.foreign.Empty() {
 				if got := ClassifyWith(pm, mb, c.foreign); got.Rule != ruleBackscatter {
@@ -486,12 +492,12 @@ func TestClassifyBackscatter(t *testing.T) {
 				c.without = ""
 			}
 			if plain.Rule != c.without {
-				t.Errorf("without own sources = %+v, want rule %q", plain, c.without)
+				t.Errorf("without sending sources = %+v, want rule %q", plain, c.without)
 			}
-			// The rule reads no body of its own: both passes give the same
+			// The rule reads no body: both passes give the same
 			// answer, and the first decides.
 			id := newMailboxIdentity(mb)
-			id.own = c.own
+			id.sources = c.sources
 			for _, body := range []string{"", pm.bodyForClassification(), pm.secondaryBody(), "Delayed: 4.4.1"} {
 				if got, ok := classifyWith(pm, body, id); !ok || got.Rule != ruleBackscatter {
 					t.Errorf("pass with body %q = %+v", body, got)
@@ -509,11 +515,11 @@ func TestClassifyBackscatter(t *testing.T) {
 		[]byte("From: noreply-dmarc@receiver.example.net"), []byte("From: MAILER-DAEMON@receiver.example.net"), 1),
 		[]byte("\r\n--b1--\r\n"), []byte("\r\n--b1\r\n"+returnedPart("message/rfc822", spoofHop)+"\r\n--b1--\r\n"), 1)
 	pm := ParseMessage(reportWithOriginal)
-	if cls := ClassifyWith(pm, "dmarc@example.jp", ownNet); cls.Rule != ruleDMARCReport {
+	if cls := ClassifyWith(pm, "dmarc@example.jp", sourceNet); cls.Rule != ruleDMARCReport {
 		t.Errorf("DMARC report with a forged original = %+v, want the report", cls)
 	}
 	pm.DMARC = nil
-	if id := newMailboxIdentity("dmarc@example.jp"); !isBackscatter(pm, mailboxIdentity{domain: id.domain, own: ownNet}) {
+	if id := newMailboxIdentity("dmarc@example.jp"); !isBackscatter(pm, mailboxIdentity{domain: id.domain, sources: sourceNet}) {
 		t.Error("the DMARC case does not reach the rule without its report")
 	}
 }
@@ -525,16 +531,16 @@ func TestClassifyBackscatter(t *testing.T) {
 // a report of another type, one of the type disposition-notification is.
 func TestBackscatterNoticeLookAlike(t *testing.T) {
 	const mailbox = "newsletter@example.jp"
-	own := NewOwnSources([]string{"203.0.113.0/24"}, nil, []string{"mail.example.jp"}, nil)
+	sources := NewSendingSources([]string{"203.0.113.0/24"}, nil, []string{"mail.example.jp"}, nil)
 	notice := func(from, subject, subtype string) []byte {
 		return multipartMessage("From: "+from+"\r\nTo: newsletter@example.jp\r\nSubject: "+subject+"\r\n", subtype,
-			textPart("You have a new notification."), returnedPart("message/rfc822", spoofHop))
+			textPart("A new notification is available."), returnedPart("message/rfc822", spoofHop))
 	}
 	const (
 		display = "Mail Delivery System <notify@relay.partner.example.net>"
 		plain   = "Notifications <notify@relay.partner.example.net>"
 		daemon  = "MAILER-DAEMON@relay.partner.example.net"
-		bounce  = "Undeliverable: Your invoice"
+		bounce  = "Undeliverable: Invoice"
 		neutral = "Message notification"
 	)
 	for _, c := range []struct {
@@ -550,22 +556,22 @@ func TestBackscatterNoticeLookAlike(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			pm := ParseMessage(c.raw)
-			if cls := ClassifyWith(pm, mailbox, own); cls.Kind != c.kind || cls.Rule != c.rule {
+			if cls := ClassifyWith(pm, mailbox, sources); cls.Kind != c.kind || cls.Rule != c.rule {
 				t.Errorf("classification = %+v, want kind %q by rule %q", cls, c.kind, c.rule)
 			}
 		})
 	}
 }
 
-// TestBackscatterSparesSamples: without our own sources configured nothing
-// changes for any sample, and with the network the samples' own hops come
+// TestBackscatterSparesSamples: without sending sources configured nothing
+// changes for any sample, and with the network the hops of the samples come
 // from (192.0.2.0/24) only the forged sample becomes backscatter.
 func TestBackscatterSparesSamples(t *testing.T) {
 	entries, err := os.ReadDir("testdata")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownNet := NewOwnSources([]string{"192.0.2.0/24"}, nil, []string{"mx1.example.jp"}, nil)
+	sourceNet := NewSendingSources([]string{"192.0.2.0/24"}, nil, []string{"mx1.example.jp"}, nil)
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".eml") {
 			continue
@@ -573,10 +579,10 @@ func TestBackscatterSparesSamples(t *testing.T) {
 		pm := ParseMessage(readSample(t, e.Name()))
 		for _, mailbox := range []string{"", "newsletter@example.jp"} {
 			want := Classify(pm, mailbox)
-			if got := ClassifyWith(pm, mailbox, OwnSources{}); got != want {
-				t.Errorf("%s (mailbox %q) without own sources = %+v, want %+v", e.Name(), mailbox, got, want)
+			if got := ClassifyWith(pm, mailbox, SendingSources{}); got != want {
+				t.Errorf("%s (mailbox %q) without sending sources = %+v, want %+v", e.Name(), mailbox, got, want)
 			}
-			got := ClassifyWith(pm, mailbox, ownNet)
+			got := ClassifyWith(pm, mailbox, sourceNet)
 			if e.Name() == "postfix_backscatter.eml" {
 				if got.Rule != ruleBackscatter || got.Kind != bounceKindJunk || got.IsBounce {
 					t.Errorf("%s (mailbox %q) = %+v, want backscatter", e.Name(), mailbox, got)
@@ -584,19 +590,19 @@ func TestBackscatterSparesSamples(t *testing.T) {
 				continue
 			}
 			if got != want {
-				t.Errorf("%s (mailbox %q) with our own network = %+v, want %+v", e.Name(), mailbox, got, want)
+				t.Errorf("%s (mailbox %q) with the sending network = %+v, want %+v", e.Name(), mailbox, got, want)
 			}
 		}
 	}
 }
 
-// TestNewGroupConfigOwnSources: the classification takes our own sources
-// from WithOwnSources alone; the verification of WithDNS uses them too
-// when given, in either order, and its own sources otherwise. A nil
-// verifier leaves the own sources in effect.
-func TestNewGroupConfigOwnSources(t *testing.T) {
-	ownA := NewOwnSources(nil, nil, []string{"mx-a.example.jp"}, nil)
-	ownB := NewOwnSources(nil, nil, []string{"mx-b.example.jp"}, nil)
+// TestNewGroupConfigSendingSources: the classification takes the sending
+// sources from WithSendingSources alone; the verification of WithDNS uses
+// them too when given, in either order, and the sources given to WithDNS
+// otherwise. A nil verifier leaves the sending sources in effect.
+func TestNewGroupConfigSendingSources(t *testing.T) {
+	sourceA := NewSendingSources(nil, nil, []string{"mx-a.example.jp"}, nil)
+	sourceB := NewSendingSources(nil, nil, []string{"mx-b.example.jp"}, nil)
 	fake := &fakeVerifier{outcome: DNSOutcomeExists, ok: true}
 	cases := []struct {
 		name     string
@@ -604,23 +610,23 @@ func TestNewGroupConfigOwnSources(t *testing.T) {
 		classify string // the host the classification's sources hold ("" = none)
 		dns      string // the host the verification's sources hold ("" = no verification)
 	}{
-		{"own sources only", []GroupOption{WithOwnSources(ownB)}, "mx-b.example.jp", ""},
-		{"verifier only", []GroupOption{WithDNS(fake, ownA)}, "", "mx-a.example.jp"},
-		{"verifier, then own sources", []GroupOption{WithDNS(fake, ownA), WithOwnSources(ownB)}, "mx-b.example.jp", "mx-b.example.jp"},
-		{"own sources, then verifier", []GroupOption{WithOwnSources(ownB), WithDNS(fake, ownA)}, "mx-b.example.jp", "mx-b.example.jp"},
-		{"nil verifier", []GroupOption{WithOwnSources(ownB), WithDNS(nil, ownA)}, "mx-b.example.jp", ""},
-		{"verifier switched off later", []GroupOption{WithDNS(fake, ownA), WithOwnSources(ownB), WithDNS(nil, ownA)}, "mx-b.example.jp", ""},
-		{"nil option", []GroupOption{nil, WithOwnSources(ownB)}, "mx-b.example.jp", ""},
+		{"sending sources only", []GroupOption{WithSendingSources(sourceB)}, "mx-b.example.jp", ""},
+		{"verifier only", []GroupOption{WithDNS(fake, sourceA)}, "", "mx-a.example.jp"},
+		{"verifier, then sending sources", []GroupOption{WithDNS(fake, sourceA), WithSendingSources(sourceB)}, "mx-b.example.jp", "mx-b.example.jp"},
+		{"sending sources, then verifier", []GroupOption{WithSendingSources(sourceB), WithDNS(fake, sourceA)}, "mx-b.example.jp", "mx-b.example.jp"},
+		{"nil verifier", []GroupOption{WithSendingSources(sourceB), WithDNS(nil, sourceA)}, "mx-b.example.jp", ""},
+		{"verifier switched off later", []GroupOption{WithDNS(fake, sourceA), WithSendingSources(sourceB), WithDNS(nil, sourceA)}, "mx-b.example.jp", ""},
+		{"nil option", []GroupOption{nil, WithSendingSources(sourceB)}, "mx-b.example.jp", ""},
 		{"no options", nil, "", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := newGroupConfig(c.opts)
 			if c.classify == "" {
-				if !cfg.own.Empty() {
-					t.Errorf("classification sources configured: %+v", cfg.own)
+				if !cfg.sources.Empty() {
+					t.Errorf("classification sources configured: %+v", cfg.sources)
 				}
-			} else if !cfg.own.MatchReceived("from " + c.classify + " (unknown [198.51.100.7]) by mx.partner.example.net") {
+			} else if !cfg.sources.MatchReceived("from " + c.classify + " (unknown [198.51.100.7]) by mx.partner.example.net") {
 				t.Errorf("classification sources do not hold %s", c.classify)
 			}
 			if c.dns == "" {
@@ -629,7 +635,7 @@ func TestNewGroupConfigOwnSources(t *testing.T) {
 				}
 				return
 			}
-			if cfg.dns == nil || !cfg.dns.own.own.Match(c.dns) || cfg.dns.verifier != fake {
+			if cfg.dns == nil || !cfg.dns.matcher.sources.Match(c.dns) || cfg.dns.verifier != fake {
 				t.Errorf("verification = %+v, want the verifier with %s", cfg.dns, c.dns)
 			}
 		})
@@ -643,19 +649,19 @@ func TestNewGroupConfigOwnSources(t *testing.T) {
 // sources given to WithDNS alone do not make the rule apply, nor do
 // addresses without a host name.
 func TestBackscatterIsJunk(t *testing.T) {
-	own := NewOwnSources([]string{"192.0.2.0/24"}, nil, []string{"mx1.example.jp"}, nil)
-	addresses := NewOwnSources([]string{"192.0.2.0/24"}, nil, nil, nil)
+	sources := NewSendingSources([]string{"192.0.2.0/24"}, nil, []string{"mx1.example.jp"}, nil)
+	addresses := NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil)
 	verifier := func() *fakeVerifier { return &fakeVerifier{outcome: DNSOutcomeExists, ok: true} }
 	cases := []struct {
 		name string
 		opts []GroupOption
 		junk bool
 	}{
-		{"own sources without the DNS option", []GroupOption{WithOwnSources(own)}, true},
-		{"own sources with the verification off", []GroupOption{WithOwnSources(own), WithDNS(nil, own)}, true},
-		{"own sources with the verification on", []GroupOption{WithDNS(verifier(), OwnSources{}), WithOwnSources(own)}, true},
-		{"the DNS option alone", []GroupOption{WithDNS(verifier(), own)}, false},
-		{"addresses only", []GroupOption{WithOwnSources(addresses)}, false},
+		{"sending sources without the DNS option", []GroupOption{WithSendingSources(sources)}, true},
+		{"sending sources with the verification off", []GroupOption{WithSendingSources(sources), WithDNS(nil, sources)}, true},
+		{"sending sources with the verification on", []GroupOption{WithDNS(verifier(), SendingSources{}), WithSendingSources(sources)}, true},
+		{"the DNS option alone", []GroupOption{WithDNS(verifier(), sources)}, false},
+		{"addresses only", []GroupOption{WithSendingSources(addresses)}, false},
 		{"no options", nil, false},
 	}
 	for _, c := range cases {
@@ -712,16 +718,16 @@ func TestBackscatterIsJunk(t *testing.T) {
 	}
 }
 
-// TestBackscatterFollowsTheSources: a full regroup after the own sources
+// TestBackscatterFollowsTheSources: a full regroup after the sending sources
 // changed moves the notice between bounce and junk (only while a host name
 // is configured), and the group it leaves is removed with it.
 func TestBackscatterFollowsTheSources(t *testing.T) {
 	root := t.TempDir()
 	address := "newsletter@example.jp"
 	msg, _ := storeRaw(t, root, address, readSample(t, "postfix_backscatter.eml"), 1, time.Now().UTC())
-	own := WithOwnSources(NewOwnSources([]string{"192.0.2.0/24"}, nil, []string{"mx1.example.jp"}, nil))
-	addresses := WithOwnSources(NewOwnSources([]string{"192.0.2.0/24"}, nil, nil, nil))
-	none := WithOwnSources(NewOwnSources(nil, nil, nil, nil))
+	sources := WithSendingSources(NewSendingSources([]string{"192.0.2.0/24"}, nil, []string{"mx1.example.jp"}, nil))
+	addresses := WithSendingSources(NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil))
+	none := WithSendingSources(NewSendingSources(nil, nil, nil, nil))
 	steps := []struct {
 		name string
 		full bool
@@ -729,10 +735,10 @@ func TestBackscatterFollowsTheSources(t *testing.T) {
 		junk bool
 	}{
 		{"first grouping, nothing configured", false, none, false},
-		{"reclassified with our network's addresses only", true, addresses, false},
-		{"reclassified with our network and MTA", true, own, true},
+		{"reclassified with the addresses of the sending network only", true, addresses, false},
+		{"reclassified with the sending network and MTA", true, sources, true},
 		{"reclassified again, configuration removed", true, none, false},
-		{"reclassified with our network and MTA once more", true, own, true},
+		{"reclassified with the sending network and MTA once more", true, sources, true},
 	}
 	var groupKey string
 	for _, s := range steps {
@@ -761,22 +767,22 @@ func TestBackscatterFollowsTheSources(t *testing.T) {
 	}
 }
 
-// TestOwnSourcesReachTheVerification: with both options the verification
-// tells our own reporting MTAs by the sources of WithOwnSources (the
+// TestSendingSourcesReachTheVerification: with both options the verification
+// tells which reporting MTAs are sending servers by the sources of WithSendingSources (the
 // reporting MTA resolves to an address that is none of them).
-func TestOwnSourcesReachTheVerification(t *testing.T) {
+func TestSendingSourcesReachTheVerification(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		opts     []GroupOption
 		category string
 		unit     string
 	}{
-		{"WithDNS sources (empty: every MTA is ours)", []GroupOption{WithDNS(&fakeVerifier{outcome: DNSOutcomeExists, ok: true}, OwnSources{})},
+		{"WithDNS sources (empty: every MTA is a sending server)", []GroupOption{WithDNS(&fakeVerifier{outcome: DNSOutcomeExists, ok: true}, SendingSources{})},
 			categoryDNSResolverFailure, "mx1.example.jp"},
-		{"WithOwnSources overrides them", []GroupOption{
+		{"WithSendingSources overrides them", []GroupOption{
 			WithDNS(&resolvingVerifier{fakeVerifier: fakeVerifier{outcome: DNSOutcomeExists, ok: true},
-				fakeResolver: fakeResolver{reporters: map[string][]netip.Addr{"mx1.example.jp": addrs("198.51.100.9")}}}, OwnSources{}),
-			WithOwnSources(NewOwnSources(nil, nil, []string{"mail.example.jp"}, nil)),
+				fakeResolver: fakeResolver{reporters: map[string][]netip.Addr{"mx1.example.jp": addrs("198.51.100.9")}}}, SendingSources{}),
+			WithSendingSources(NewSendingSources(nil, nil, []string{"mail.example.jp"}, nil)),
 		}, categoryDNSFailureExternal, "infoseek.jp"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

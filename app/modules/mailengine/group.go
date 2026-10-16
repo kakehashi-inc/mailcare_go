@@ -31,9 +31,9 @@ import (
 // WithDNS verifies the DNS lookup failures the notices report (design
 // document "mail classification" 4.4) before the transaction of each
 // message; without it every detected failure stays not verified.
-// WithOwnSources gives the classification our own sending servers for the
+// WithSendingSources gives the classification the sending sources for the
 // backscatter rule (2.6); without it the rule does not apply.
-// WithOwnHostResolver resolves their host names and WithOwnSPF reads the
+// WithSourceHostResolver resolves their host names and WithSourceSPF reads the
 // SPF records of the monitored domains for both judgements.
 func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, recheck RecheckDays, progress Progress, opts ...GroupOption) (*GroupResult, error) {
 	if err := ctx.Err(); err != nil {
@@ -160,7 +160,7 @@ func (c *noticeJunkCounts) reportSummary(progress Progress) {
 // notice itself is always excluded.
 //
 // Everything that needs no database runs before the transaction is opened
-// (planGrouping): classification (with the own sending servers of cfg),
+// (planGrouping): classification (with the sending sources of cfg),
 // extraction, the verification of a DNS lookup failure (cfg.dns, nil when
 // off; it may use the network, and a SQLite write transaction is never held
 // meanwhile) and the categorization. A cancellation noticed after that
@@ -194,18 +194,18 @@ type messageGrouping struct {
 	recordGroups []*reportGroup
 }
 
-// planGrouping classifies a message (with the own sending servers of the
-// run, which the backscatter rule needs: classifyOwn), extracts the bounce
+// planGrouping classifies a message (with the sending sources of the
+// run, which the backscatter rule needs: classifyWithSources), extracts the bounce
 // details of a failed or delayed notice, verifies the DNS lookup failure
 // its diagnostic reports (dnsVerification.verdict; only these notices reach
 // the verifier, never junk, DMARC reports or other mail) and categorizes
 // it, and categorizes the failing records of a DMARC report. It does not
 // touch the database.
 func planGrouping(ctx context.Context, msg *models.Message, pm *ParsedMessage, cfg groupConfig, exclude ...string) *messageGrouping {
-	plan := &messageGrouping{cls: classifyOwn(ctx, pm, mailboxOf(exclude), cfg)}
+	plan := &messageGrouping{cls: classifyWithSources(ctx, pm, mailboxOf(exclude), cfg)}
 	if plan.cls.IsBounce && isGroupedKind(plan.cls.Kind) {
 		plan.bounce = ExtractBounce(pm, plan.cls.Kind, append([]string{pm.FromAddress}, exclude...)...)
-		verdict := cfg.dns.verdict(ctx, plan.bounce, pm, mailboxOf(exclude), noticeTime(msg))
+		verdict := cfg.dns.verdict(ctx, plan.bounce, pm, noticeTime(msg))
 		plan.group = groupForBounceWith(plan.cls.Kind, plan.bounce, verdict)
 	}
 	if plan.cls.Kind == bounceKindReport {
@@ -215,30 +215,30 @@ func planGrouping(ctx context.Context, msg *models.Message, pm *ParsedMessage, c
 	return plan
 }
 
-// classifyOwn classifies a message with the own sending servers of the run
+// classifyWithSources classifies a message with the sending sources of the run
 // and, when it was taken for backscatter, again with the addresses the run
-// looks up (ownLookups: the addresses of the own host names and the SPF
+// looks up (sourceLookups: the addresses of the source host names and the SPF
 // records of the monitored domains, looked up on the first such message of
 // the run). The classification itself stays pure. The addresses can only
 // add matches, and the sources are read by the backscatter rule alone, so
 // they can only turn that verdict into another one: a message the rule does
 // not take without them needs no lookup, which keeps a run without a
 // backscatter candidate from looking anything up. While the lookups of the
-// run are incomplete (the lookup of an own host name was not answered, or
-// an SPF record could not be evaluated completely), an address of ours may
+// run are incomplete (the lookup of a source host name was not answered, or
+// an SPF record could not be evaluated completely), an address of a sending source may
 // be missing, so the message is classified without the rule instead: a
 // failure to look a source up never turns a genuine notice into junk.
-func classifyOwn(ctx context.Context, pm *ParsedMessage, mailbox string, cfg groupConfig) Classification {
-	cls := ClassifyWith(pm, mailbox, cfg.own)
+func classifyWithSources(ctx context.Context, pm *ParsedMessage, mailbox string, cfg groupConfig) Classification {
+	cls := ClassifyWith(pm, mailbox, cfg.sources)
 	if cls.Rule != ruleBackscatter {
 		return cls
 	}
 	extra := cfg.lookups.get(ctx)
 	if !extra.complete() {
-		return ClassifyWith(pm, mailbox, OwnSources{})
+		return ClassifyWith(pm, mailbox, SendingSources{})
 	}
 	if len(extra.addrs) > 0 || len(extra.prefixes) > 0 || len(extra.hosts) > 0 {
-		cls = ClassifyWith(pm, mailbox, cfg.own.withResolved(extra.addrs, extra.prefixes, extra.hosts))
+		cls = ClassifyWith(pm, mailbox, cfg.sources.withResolved(extra.addrs, extra.prefixes, extra.hosts))
 	}
 	return cls
 }
@@ -348,27 +348,27 @@ type GroupOption func(*groupConfig)
 
 // groupConfig is the configuration of one run built from its options.
 type groupConfig struct {
-	own     OwnSources       // our own sending servers (WithOwnSources); empty: no backscatter rule
-	lookups *ownLookups      // the addresses the run looks up for them (nil: none)
+	sources SendingSources   // the sending sources (WithSendingSources); empty: no backscatter rule
+	lookups *sourceLookups   // the addresses the run looks up for them (nil: none)
 	dns     *dnsVerification // nil: DNS lookup failures are not verified
 
-	// What the options gave, combined into own, lookups and dns by
+	// What the options gave, combined into sources, lookups and dns by
 	// newGroupConfig.
-	ownGiven    bool            // WithOwnSources was given
-	verifier    DNSVerifier     // WithDNS (nil: not verified)
-	dnsOwn      OwnSources      // the sources given to WithDNS
-	ownResolver OwnHostResolver // WithOwnHostResolver
-	spfResolver OwnSPFResolver  // WithOwnSPF
-	spfDomains  []string        // WithOwnSPF
+	sourcesGiven   bool               // WithSendingSources was given
+	verifier       DNSVerifier        // WithDNS (nil: not verified)
+	dnsSources     SendingSources     // the sources given to WithDNS
+	sourceResolver SourceHostResolver // WithSourceHostResolver
+	spfResolver    SourceSPFResolver  // WithSourceSPF
+	spfDomains     []string           // WithSourceSPF
 }
 
 // newGroupConfig applies the options of one run. The verification of WithDNS
-// tells our own reporting MTAs by the sources of WithOwnSources when that
-// option is given too, whatever the order of the options, else by the
-// sources given to WithDNS. The host names of those sources are resolved by
-// the resolver of WithOwnHostResolver, else by the verifier when it is a
-// HostResolver, and the SPF records of WithOwnSPF are evaluated, once for
-// the run and for both judgements (ownLookups).
+// tells which reporting MTAs are sending servers by the sources of
+// WithSendingSources when that option is given too, whatever the order of
+// the options, else by the sources given to WithDNS. The host names of those sources are resolved by
+// the resolver of WithSourceHostResolver, else by the verifier when it is a
+// HostResolver, and the SPF records of WithSourceSPF are evaluated, once for
+// the run and for both judgements (sourceLookups).
 func newGroupConfig(opts []GroupOption) groupConfig {
 	var cfg groupConfig
 	for _, opt := range opts {
@@ -376,26 +376,26 @@ func newGroupConfig(opts []GroupOption) groupConfig {
 			opt(&cfg)
 		}
 	}
-	dnsOwn := cfg.dnsOwn
-	if cfg.ownGiven {
-		dnsOwn = cfg.own
+	dnsSources := cfg.dnsSources
+	if cfg.sourcesGiven {
+		dnsSources = cfg.sources
 	}
-	resolver := cfg.ownResolver
+	resolver := cfg.sourceResolver
 	if resolver == nil {
 		if r, ok := cfg.verifier.(HostResolver); ok {
 			resolver = r
 		}
 	}
-	cfg.lookups = newOwnLookups(resolver, dnsOwn, cfg.spfResolver, cfg.spfDomains)
-	cfg.dns = newDNSVerification(cfg.verifier, dnsOwn, cfg.lookups)
+	cfg.lookups = newSourceLookups(resolver, dnsSources, cfg.spfResolver, cfg.spfDomains)
+	cfg.dns = newDNSVerification(cfg.verifier, dnsSources, cfg.lookups)
 	return cfg
 }
 
 // backscatterApplies reports whether the backscatter rule applies to the
-// run: our own sending servers were given (WithOwnSources) with a host name
-// configured for the mailbox (OwnSources.hasHosts).
+// run: the sending sources were given (WithSendingSources) with a host name
+// configured for the mailbox (SendingSources.hasHosts).
 func (cfg groupConfig) backscatterApplies() bool {
-	return cfg.ownGiven && cfg.own.hasHosts()
+	return cfg.sourcesGiven && cfg.sources.hasHosts()
 }
 
 // mailboxOf returns the monitored address among the excluded addresses

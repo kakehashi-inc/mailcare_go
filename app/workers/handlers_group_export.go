@@ -27,7 +27,7 @@ import (
 const groupExportWriteTimeout = 30 * time.Minute
 
 // Names inside the archive of a group export (at its top level: the archive
-// has no folder of its own).
+// has no folder).
 const (
 	groupExportJSONName   = "report.json"
 	groupExportReadmeName = "README.md"
@@ -338,7 +338,7 @@ func writeExportMessage(zw *zip.Writer, dir string, p exportMessageFiles, loc *t
 }
 
 // writeZipEntry adds one compressed file with the given content, dated by
-// modified in its own time zone (the MS-DOS date of the entry is the wall
+// modified in the time zone of modified (the MS-DOS date of the entry is the wall
 // clock of modified; an extended timestamp carries the exact instant).
 func writeZipEntry(zw *zip.Writer, name string, modified time.Time, data []byte) error {
 	f, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: modified})

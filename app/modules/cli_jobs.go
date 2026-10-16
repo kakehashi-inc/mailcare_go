@@ -41,7 +41,7 @@ func echoProgress(line string) {
 // the control port and serves this process's data directory (waiting for
 // completion when wait is true), otherwise in this process. A server that
 // answers but serves another data directory is left alone (the mailbox ids
-// of the specs were resolved in our own database and would mean other
+// of the specs were resolved in the database of this process and would mean other
 // mailboxes there), and the specs run in this process just as when no server
 // runs. It returns a non-nil error when any job failed.
 func runJobs(db *sql.DB, specs []jobSpec, wait bool) error {

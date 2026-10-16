@@ -44,7 +44,7 @@ func TestCleanupWorkspacesRemovesExpiredRunsAndEmptyGroups(t *testing.T) {
 	// Group C: a stray file next to an expired run keeps the group directory.
 	expiredC := makeRunDir(t, agentRoot, address, "cccccccccccccccc", "5", 3*keep)
 	stray := filepath.Join(agentRoot, address, "cccccccccccccccc", "notes.txt")
-	if err := os.WriteFile(stray, []byte("keep me"), 0o600); err != nil {
+	if err := os.WriteFile(stray, []byte("stray file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// Another address is never touched.
@@ -83,8 +83,8 @@ func TestCleanupWorkspacesMissingAddressAndSanitizedName(t *testing.T) {
 		t.Error("an empty root must be refused")
 	}
 	// The address directory is the sanitized address, as AnalyzeGroup makes it.
-	address := "we ird<addr>@example.com"
-	run := makeRunDir(t, agentRoot, "we_ird_addr_@example.com", "eeeeeeeeeeeeeeee", "7", 48*time.Hour)
+	address := "st range<addr>@example.com"
+	run := makeRunDir(t, agentRoot, "st_range_addr_@example.com", "eeeeeeeeeeeeeeee", "7", 48*time.Hour)
 	if got := RunDir(agentRoot, address, "eeeeeeeeeeeeeeee", 7); got != run {
 		t.Fatalf("RunDir = %s, want %s", got, run)
 	}

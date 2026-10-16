@@ -109,7 +109,7 @@ export interface UserDTO {
 }
 
 /** GET /api/v1/me */
-export interface Me {
+export interface CurrentUserResponse {
     user: UserDTO;
     version: string;
 }
@@ -165,7 +165,7 @@ export interface MailboxDTO {
     recent_days: number;
     /** Days (from the mail's date) a mail server notice classified with certain evidence (not by subject or sender name alone, not an auto-generated message) stays on the IMAP server, at most mail_keep_days; 0 = never deleted there. */
     server_keep_days: number;
-    /** Host name of the SMTP server that sends the mail of this address (one of the own sending servers); "" = not set. Blanked ("") for non-administrators, like the IMAP connection. */
+    /** Host name of the SMTP server that sends the mail of this address (one of the sending sources); "" = not set. Blanked ("") for non-administrators, like the IMAP connection. */
     smtp_host: string;
     /** Null until the first fetch; the status is derived: null = never, error text = error, otherwise ok. */
     last_fetched_at: string | null;
@@ -416,9 +416,9 @@ export interface ProviderStatus {
 export interface SettingsDTO {
     check_times: string[];
     agent_provider: string;
-    /** Model passed to the agent CLI; empty = the CLI's own default. */
+    /** Model passed to the agent CLI; empty = the default of the CLI. */
     agent_model: string;
-    /** Reasoning level passed to the agent CLI; empty = the CLI's own setting. */
+    /** Reasoning level passed to the agent CLI; empty = the setting of the CLI. */
     agent_reasoning_effort: string;
     agent_enabled: boolean;
     /** Days the workspace directory of an analysis run is kept (1-365). */
@@ -428,22 +428,22 @@ export interface SettingsDTO {
     /** Local time (HH:MM) of the daily cleanup. */
     cleanup_time: string;
     /**
-     * Own sending servers, normalized: IPv4 / IPv6 addresses and CIDRs, and host names. Together with the SMTP
-     * host of each mailbox (own_sending_mailbox_hosts) they tell whether a bounce is about mail we sent and
-     * whether a notice about a failed DNS lookup came from our own mail server, judged per mail address
-     * (Documents/メール判定仕様.md 2.6, 4.4). Present for administrators only, like every own_sending_* field and
+     * Sending sources, normalized: IPv4 / IPv6 addresses and CIDRs, and host names. Together with the SMTP
+     * host of each mailbox (sending_source_mailbox_hosts) they tell whether a bounce is about mail from the sending
+     * sources and whether a notice about a failed DNS lookup came from a sending server, judged per mail address
+     * (Documents/メール判定仕様.md 2.6, 4.4). Present for administrators only, like every sending_source_* field and
      * dns_check_resolvers.
      */
-    own_sending_ipv4?: string[];
-    own_sending_ipv6?: string[];
-    own_sending_hosts?: string[];
+    sending_source_ipv4?: string[];
+    sending_source_ipv6?: string[];
+    sending_source_hosts?: string[];
     /** Read-only: the distinct SMTP hosts of the mailboxes in mailbox order (set on each mailbox, not here). */
-    own_sending_mailbox_hosts?: string[];
+    sending_source_mailbox_hosts?: string[];
     /**
-     * Read-only: the addresses of the mailboxes (in mailbox order) without an SMTP host while own_sending_hosts is
-     * empty; notices about mail not sent from our servers are not judged for them. [] while own_sending_hosts is set.
+     * Read-only: the addresses of the mailboxes (in mailbox order) without an SMTP host while sending_source_hosts is
+     * empty; notices about mail not sent from the sending sources are not judged for them. [] while sending_source_hosts is set.
      */
-    own_sending_mailboxes_without_host?: string[];
+    sending_source_mailboxes_without_host?: string[];
     /** Whether a DNS lookup failure in a notice is verified by looking the name up again. */
     dns_check_enabled: boolean;
     /** IP addresses of the resolvers asked (kept but not used while dns_check_system_resolver_only is on). */
@@ -468,16 +468,16 @@ export interface SettingsInput {
     agent_provider?: string;
     /** Empty restores the CLI default. */
     agent_model?: string;
-    /** Empty restores the CLI's own setting. */
+    /** Empty restores the setting of the CLI. */
     agent_reasoning_effort?: string;
     agent_enabled?: boolean;
     agent_keep_days?: number;
     mail_keep_days?: number;
     cleanup_time?: string;
     /** Each list replaces the saved one (one entry per element; blank entries are ignored). */
-    own_sending_ipv4?: string[];
-    own_sending_ipv6?: string[];
-    own_sending_hosts?: string[];
+    sending_source_ipv4?: string[];
+    sending_source_ipv6?: string[];
+    sending_source_hosts?: string[];
     dns_check_enabled?: boolean;
     /** An empty list is saved as empty (not the default); refused while the check needs a resolver. */
     dns_check_resolvers?: string[];
@@ -505,7 +505,7 @@ export interface NotificationSettingsDTO {
     smtp_password_set: boolean;
     smtp_from: string;
     public_base_url: string;
-    /** public_base_url, or the server's own address when it is empty. */
+    /** public_base_url, or the address of the server when it is empty. */
     effective_base_url: string;
     notify_enabled: boolean;
     /** HH:MM, server local time. */
@@ -533,7 +533,7 @@ export interface NotificationSettingsInput {
     notify_user_ids?: number[];
 }
 
-/** POST /api/v1/notifications/test: "to" defaults to the caller's own address on the server. */
+/** POST /api/v1/notifications/test: "to" defaults to the address of the caller on the server. */
 export interface NotificationTestInput {
     to?: string;
 }

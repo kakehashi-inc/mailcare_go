@@ -29,45 +29,45 @@
 
 {{define "body" -}}
 This is a notification from MailCare.
-{{.Total}} group(s) need the mail administrator's attention or a new decision (as of {{.Date}}).
+{{.Total}} group(s) need action or a re-check (as of {{.Date}}).
 Open the URL of each group for the details and the recommended actions.
 {{range .Mailboxes}}
 ==================================================
-Mail address: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}} ({{.DisplayName}}){{end}}
+Mailbox: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}} ({{.DisplayName}}){{end}}
 ==================================================
 {{- if .Groups}}
 
 [Open]
 {{range .Groups}}
 * {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}} (decided by: {{.Authority}}){{end}}
-   Mails: {{.MessageCount}}{{if .RecipientCount}} / Recipients: {{.RecipientCount}}{{end}}
+   Messages: {{.MessageCount}}{{if .RecipientCount}} / Recipients: {{.RecipientCount}}{{end}}
    Period: {{.FirstSeen}} - {{.LastSeen}}
-   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(the analysis report has no summary){{end}}
+   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(no summary in the analysis report){{end}}
    URL: {{.URL}}
 {{end}}{{end}}
 {{- if .ResolvedRecheck}}
 
-[Resolved (re)]
+[Resolved (re-check)]
 {{range .ResolvedRecheck}}
 * {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}} (decided by: {{.Authority}}){{end}}
    Action taken: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}(not recorded){{end}}{{if .Note}}
    Details: {{.Note}}{{end}}
-   Mails: {{.MessageCount}} / Last: {{.LastSeen}}
-   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(the analysis report has no summary){{end}}
+   Messages: {{.MessageCount}} / Last seen: {{.LastSeen}}
+   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(no summary in the analysis report){{end}}
    URL: {{.URL}}
 {{end}}{{end}}
 {{- if .IgnoredRecheck}}
 
-[Ignored (re)]
+[Ignored (re-check)]
 {{range .IgnoredRecheck}}
 * {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}} (decided by: {{.Authority}}){{end}}
    Reason: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}(not recorded){{end}}{{if .Note}}
    Details: {{.Note}}{{end}}
-   Mails: {{.MessageCount}} / Last: {{.LastSeen}}
-   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(the analysis report has no summary){{end}}
+   Messages: {{.MessageCount}} / Last seen: {{.LastSeen}}
+   Summary: {{if .NeedsReview}}[Needs review] {{end}}{{if .Summary}}{{.Summary}}{{else}}(no summary in the analysis report){{end}}
    URL: {{.URL}}
 {{end}}{{end}}{{end}}
 --------------------------------------------------
 This mail was sent automatically by MailCare.
-You can change the notification settings at {{.BaseURL}}/settings/notifications
+Notification settings: {{.BaseURL}}/settings/notifications
 {{- end}}

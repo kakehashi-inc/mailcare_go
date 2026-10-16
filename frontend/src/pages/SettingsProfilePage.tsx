@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { changeMyPassword, updateMyProfile, ApiError } from '../api/client';
+import { changeCurrentUserPassword, updateCurrentUserProfile, ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 import { RoleBadge } from '../components/domain/StatusBadges';
 import { UserPreferenceFields } from '../components/domain/UserPreferenceFields';
@@ -49,7 +49,7 @@ function diff(form: ProfileForm, saved: ProfileForm): ProfileInput {
 }
 
 /**
- * The signed-in user's own settings: one card with display name, email,
+ * The settings of the signed-in user: one card with display name, email,
  * language, time zone and theme (field order shared with the user forms) and
  * a separate password card. After a save the user is reloaded, which
  * re-applies language, theme and time zone through the AuthProvider.
@@ -57,9 +57,9 @@ function diff(form: ProfileForm, saved: ProfileForm): ProfileInput {
 export function SettingsProfilePage() {
     const { t } = useTranslation();
     useDocumentTitle(t('layout.nav.settingsProfile'));
-    const { me, refresh } = useAuth();
+    const { currentUser, refresh } = useAuth();
     const toast = useToast();
-    const saved = fromUser(me?.user);
+    const saved = fromUser(currentUser?.user);
     const [form, setForm] = useState<ProfileForm>(saved);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
@@ -71,8 +71,8 @@ export function SettingsProfilePage() {
 
     // Reset the form when the user is reloaded (after a save, or a change made elsewhere).
     useEffect(() => {
-        setForm(fromUser(me?.user));
-    }, [me]);
+        setForm(fromUser(currentUser?.user));
+    }, [currentUser]);
 
     function set<K extends keyof ProfileForm>(key: K, value: ProfileForm[K]) {
         setForm(prev => ({ ...prev, [key]: value }));
@@ -88,7 +88,7 @@ export function SettingsProfilePage() {
         setSaving(true);
         setSaveError(null);
         try {
-            await updateMyProfile(changes);
+            await updateCurrentUserProfile(changes);
             toast.success(t('result.user.profileSaved'));
             await refresh();
         } catch (err) {
@@ -108,13 +108,13 @@ export function SettingsProfilePage() {
         setSubmitting(true);
         setError(null);
         try {
-            await changeMyPassword(current, next);
+            await changeCurrentUserPassword(current, next);
             toast.success(t('result.user.passwordChanged'));
             setCurrent('');
             setNext('');
             setConfirm('');
             // The server invalidates sessions on password change; refresh to
-            // find out whether ours survived.
+            // find out whether the session of this page survived.
             await refresh();
         } catch (err) {
             setError(t((err as ApiError).key, (err as ApiError).params));
@@ -138,7 +138,7 @@ export function SettingsProfilePage() {
                     <form onSubmit={saveProfile} noValidate className='flex max-w-md flex-col gap-4'>
                         <InputField
                             label={t('field.user.username')}
-                            value={me?.user.username ?? ''}
+                            value={currentUser?.user.username ?? ''}
                             readOnly
                             disabled
                         />
@@ -155,7 +155,7 @@ export function SettingsProfilePage() {
                             autoComplete='email'
                             value={form.email}
                             onChange={e => set('email', e.target.value)}
-                            placeholder='you@example.com'
+                            placeholder='user@example.com'
                             hint={t('page.profile.emailHint')}
                             error={emailInvalid ? t('validation.common.emailFormat') : undefined}
                         />
@@ -167,9 +167,9 @@ export function SettingsProfilePage() {
                             onTimezone={v => set('timezone', v)}
                             onTheme={v => set('theme', v)}
                         />
-                        {me && (
+                        {currentUser && (
                             <p className='text-sm text-muted'>
-                                {t('field.user.role')}: <RoleBadge role={me.user.role} />
+                                {t('field.user.role')}: <RoleBadge role={currentUser.user.role} />
                             </p>
                         )}
                         {saveError && <InlineError message={saveError} />}

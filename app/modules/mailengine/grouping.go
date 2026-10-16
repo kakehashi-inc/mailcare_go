@@ -85,7 +85,7 @@ func DiagnosticTemplate(diagnostic string) string {
 		s = strings.Replace(s, sentinelSMTP, v, 1)
 	}
 	s = tplPunctRe.ReplaceAllStringFunc(s, func(m string) string {
-		// Keep the placeholders' own angle brackets; drop stray quotes.
+		// Keep the angle brackets of the placeholders; drop stray quotes.
 		return strings.Map(func(r rune) rune {
 			switch r {
 			case '"', '\'', '`':

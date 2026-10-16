@@ -310,7 +310,7 @@ func TestConnectionTestUsesStoredPasswordOnlyForSameConnection(t *testing.T) {
 			t.Errorf("changed %s without password: %v, want the password to be required", name, err)
 		}
 	}
-	// With a password of its own the changed connection is tried.
+	// With a password in the request the changed connection is tried.
 	in := MailboxInputFrom(mb)
 	in.ImapUsername = "someone-else"
 	in.ImapPassword = "secret"
@@ -416,7 +416,7 @@ func TestUpdateMailboxRequiresPasswordWhenConnectionChanges(t *testing.T) {
 // TestMailboxAddressConflictsOnSanitizedName checks that an address whose
 // sanitized form (the data directory name) is the sanitized form of another
 // mailbox's address is refused on registration and on rename, in both
-// directions, while a rename that keeps the mailbox's own name is allowed.
+// directions, while a rename that keeps the sanitized name of the mailbox is allowed.
 func TestMailboxAddressConflictsOnSanitizedName(t *testing.T) {
 	db := newTestDB(t)
 	key, err := LoadSecretKey(db)
@@ -465,7 +465,7 @@ func TestMailboxAddressConflictsOnSanitizedName(t *testing.T) {
 		t.Errorf("create a!b@ twice: %v, want the already-exists error", err)
 	}
 
-	// Rename: the mailbox's own sanitized name does not conflict with itself
+	// Rename: the sanitized name of the mailbox does not conflict with itself
 	// (a!b@ -> a?b@ keeps the name a_b@), another mailbox's name does.
 	in := MailboxInputFrom(second)
 	in.Address = "a?b@example.test"
@@ -680,7 +680,7 @@ func TestListMailboxesOrderedByDomain(t *testing.T) {
 }
 
 // TestMailboxSmtpHost checks the SMTP host of a mailbox: normalized like a
-// host name of our own sending servers (normalizeOwnHost), optional, kept
+// host name of the sending sources (normalizeSourceHost), optional, kept
 // by an update that does not carry it, cleared by "", refused with
 // validation.mailbox.smtpHostInvalid (nothing saved), and changed without
 // the password, which only the IMAP connection settings require.

@@ -5,7 +5,7 @@
 // The same message serves two audiences. The CLI prints Text, English
 // written for server administrators. The Web API returns only Key (a full
 // key of the Web UI's language files, e.g. "validation.user.emailTaken") and
-// Params, from which the Web UI shows its own wording for its users in the
+// Params, from which the Web UI shows the wording of its language files in the
 // viewer's language.
 //
 // A Message is also an error, so a function can return one where something

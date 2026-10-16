@@ -33,8 +33,8 @@ func (c *core) handleControlStatus(w http.ResponseWriter, r *http.Request) {
 	if s := c.nextCheckAt(); s != nil {
 		next = *s
 	}
-	// data_dir lets the CLI tell whether this server is the one of its own
-	// data directory before it hands jobs over or stops it.
+	// data_dir lets the CLI tell whether this server serves the data
+	// directory of the CLI before it hands jobs over or stops it.
 	writeJSON(w, http.StatusOK, modules.ServerStatus{
 		Status: "running", Name: modules.AppName, Version: modules.AppVersion,
 		WebListen: fmt.Sprintf("%s:%d", c.webListen, c.webPort), DataDir: c.dataDir,

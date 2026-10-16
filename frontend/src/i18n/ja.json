@@ -21,16 +21,16 @@
             "settingsMailboxes": "メールアドレス",
             "settingsUsers": "利用者",
             "settingsTokens": "トークン",
-            "settingsProfile": "プロファイル"
+            "settingsProfile": "プロフィール"
         },
         "renderError": {
             "title": "画面の表示中にエラーが発生しました",
-            "hint": "ページを再読み込みしてください。解決しない場合は、しばらく待ってからもう一度ページを再読み込みしてください。",
+            "hint": "ページを再読み込みしてください。解決しない場合は、しばらくしてからもう一度お試しください。",
             "reload": "再読み込み"
         },
         "notFound": {
             "title": "ページが見つかりません",
-            "description": "お探しのページは存在しないか、移動した可能性があります。",
+            "description": "ページが存在しないか、移動された可能性があります。",
             "back": "ダッシュボードへ戻る"
         }
     },
@@ -56,7 +56,7 @@
         "showMore": "さらに {{count}} 件を表示",
         "showLess": "表示を減らす",
         "showPassword": "パスワードを表示",
-        "emptyFiltered": "絞り込み条件を変えてみてください。",
+        "emptyFiltered": "絞り込み条件を変更してください。",
         "duration": {
             "seconds": "{{count}} 秒",
             "minutesSeconds": "{{minutes}} 分 {{seconds}} 秒",
@@ -66,7 +66,7 @@
     },
     "component": {
         "spinner": {
-            "loading": "読み込み中..."
+            "loading": "読み込み中…"
         },
         "errorState": {
             "title": "エラーが発生しました",
@@ -78,7 +78,7 @@
         "copyButton": {
             "copy": "コピー",
             "copied": "コピーしました",
-            "failed": "コピーできません"
+            "failed": "コピーできませんでした"
         },
         "pagination": {
             "label": "ページ送り",
@@ -94,16 +94,16 @@
             "all": "すべてのメールアドレス"
         },
         "mailboxPicker": {
-            "empty": "監視対象のメールアドレスはまだ登録されていません。"
+            "empty": "メールアドレスが登録されていません。"
         },
         "jobList": {
-            "empty": "ジョブはありません",
-            "waiting": "開始を待っています...",
+            "empty": "ジョブはありません。",
+            "waiting": "開始を待っています…",
             "requestedBy": "実行者: {{name}}",
-            "targetAll": "全グループ",
-            "targetNeeds": "解析待ちのグループ",
+            "targetAll": "すべてのグループ",
+            "targetNeeds": "分析待ちのグループ",
             "targetAllTime": "全期間",
-            "expanded": "アドレスごとに展開",
+            "expanded": "メールアドレスごとに実行",
             "deletedMailbox": "削除済みのメールアドレス"
         },
         "pageHeader": {
@@ -112,50 +112,50 @@
     },
     "system": {
         "network": "サーバーに接続できません。ネットワークを確認してください。",
-        "unauthorized": "ログインが必要です。",
+        "unauthorized": "ログインしてください。",
         "forbidden": "この操作を行う権限がありません。",
         "notFound": "対象が見つかりません。",
-        "unavailable": "サーバーが準備中です。しばらくしてから再試行してください。",
+        "unavailable": "サーバーを準備しています。しばらくしてからもう一度お試しください。",
         "internal": "サーバーでエラーが発生しました。しばらくしてからもう一度お試しください。",
-        "invalidRequest": "要求を処理できませんでした。画面を再読み込みしてからもう一度お試しください。",
+        "invalidRequest": "要求を処理できませんでした。ページを再読み込みしてから、もう一度お試しください。",
         "adminOnly": "このページは管理者のみ利用できます。"
     },
     "validation": {
         "common": {
-            "numberOutOfRange": "{{min}}〜{{max}} の整数を入力してください。",
-            "emailFormat": "メールアドレスの形式が正しくありません。",
-            "timeFormat": "時刻は HH:MM 形式で指定してください。",
-            "timeDuplicate": "同じ時刻が重複しています。",
-            "urlFormat": "http:// または https:// で始まる URL を指定してください。",
-            "displayNameTooLong": "表示名は {{max}} 文字以内にしてください。"
+            "numberOutOfRange": "{{min}}〜{{max}} の範囲の整数を入力してください。",
+            "emailFormat": "メールアドレスを正しい形式で入力してください。",
+            "timeFormat": "時刻は HH:MM の形式で入力してください。",
+            "timeDuplicate": "この時刻はすでに追加されています。",
+            "urlFormat": "URL は http:// または https:// で始まる形式で入力してください。",
+            "displayNameTooLong": "表示名は {{max}} 文字以内で入力してください。"
         },
         "user": {
-            "usernameInvalid": "ユーザー名は 1〜64 文字の半角英数字と「_」「.」「-」で入力してください。",
-            "usernameTaken": "そのユーザー名はすでに使われています。",
-            "passwordTooShort": "パスワードは {{min}} 文字以上にしてください。",
-            "passwordTooLong": "パスワードが長すぎます。半角 {{max}} 文字以内にしてください。",
+            "usernameInvalid": "ユーザー名は半角英数字と「_」「.」「-」を使い、1〜64 文字で入力してください。",
+            "usernameTaken": "このユーザー名はすでに使われています。",
+            "passwordTooShort": "パスワードは {{min}} 文字以上で入力してください。",
+            "passwordTooLong": "パスワードは半角 {{max}} 文字以内で入力してください。",
             "passwordMismatch": "パスワードが一致しません。",
             "currentPasswordWrong": "現在のパスワードが正しくありません。",
-            "emailTooLong": "メールアドレスは {{max}} 文字以内にしてください。",
-            "emailTaken": "そのメールアドレスはほかの利用者が使っています。",
+            "emailTooLong": "メールアドレスは {{max}} 文字以内で入力してください。",
+            "emailTaken": "このメールアドレスは他の利用者が使用しています。",
             "timezoneInvalid": "タイムゾーンが正しくありません。",
             "languageInvalid": "言語が正しくありません。",
             "themeInvalid": "テーマが正しくありません。"
         },
         "connection": {
-            "hostRequired": "サーバー（ホスト名）を入力してください。",
-            "hostInvalid": "ホスト名または IP アドレスだけを入力してください（ポート番号は別の欄に入力します）。",
+            "hostRequired": "ホスト名を入力してください。",
+            "hostInvalid": "ホスト名または IP アドレスを入力してください。ポート番号は「ポート」に入力します。",
             "usernameRequired": "ユーザー名を入力してください。",
             "passwordRequired": "パスワードを入力してください。",
-            "passwordRequiredOnChange": "接続設定 (ホスト、ポート、接続方式、ユーザー名) を変更するときは、パスワードをもう一度入力してください。"
+            "passwordRequiredOnChange": "ホスト名、ポート、接続方式、ユーザー名を変更する場合は、パスワードも入力してください。"
         },
         "mailbox": {
             "addressRequired": "メールアドレスを入力してください。",
-            "addressTaken": "そのメールアドレスはすでに登録されています。",
-            "addressConflicts": "このメールアドレスは、登録済みの {{other}} とデータの保存先が同じ名前になるため登録できません。",
-            "folderInvalid": "フォルダー名に改行は使えません。",
-            "smtpHostInvalid": "「{{value}}」はホスト名ではありません。英数字とハイフンで入力してください（IP アドレス、ポート番号、localhost は指定できません）。",
-            "serverKeepDaysOverMailKeep": "保持日数は、一般設定のメールの保持日数（{{max}} 日）以下にしてください。"
+            "addressTaken": "このメールアドレスはすでに登録されています。",
+            "addressConflicts": "登録済みの {{other}} とデータの保存先の名前が重なるため、このメールアドレスは登録できません。",
+            "folderInvalid": "フォルダー名に改行は使用できません。",
+            "smtpHostInvalid": "「{{value}}」はホスト名として正しくありません。英数字とハイフンで入力してください。IP アドレス、ポート番号、localhost は指定できません。",
+            "serverKeepDaysOverMailKeep": "サーバーでの保持日数は、メールの保持日数（{{max}} 日）以下で入力してください。"
         },
         "group": {
             "resolveActionRequired": "対応内容を選択してください。",
@@ -163,86 +163,86 @@
             "stateNoteTooLong": "詳細は {{max}} 文字以内で入力してください。"
         },
         "agent": {
-            "providerUnknown": "選択したエージェントは使用できません。",
-            "modelInvalid": "モデル名は英数字で始まり、英数字と . _ : / @ + - だけを使った {{max}} 文字以内で入力してください。",
-            "reasoningInvalid": "選択中のモデルでは使えない推論レベルです。選び直すか、未設定に戻してください。",
-            "reasoningUnsupported": "このエージェントでは推論レベルを指定できません。未設定にしてください。"
+            "providerUnknown": "選択したプロバイダーは使用できません。",
+            "modelInvalid": "モデル名は英数字で始め、英数字と . _ : / @ + - を使って {{max}} 文字以内で入力してください。",
+            "reasoningInvalid": "選択したモデルでは、この推論レベルは使用できません。別の推論レベルを選択するか、未設定にしてください。",
+            "reasoningUnsupported": "このプロバイダーでは推論レベルを指定できません。未設定にしてください。"
         },
         "notification": {
-            "publicUrlQuery": "URL に「?」や「#」以降の部分は含めないでください。",
-            "recipientsTooMany": "通知先は {{max}} 人まで選べます。",
-            "recipientNotFound": "通知先に選んだ利用者が見つかりません。画面を再読み込みしてから選び直してください。",
-            "testRecipientRequired": "テストメールの送信先を入力してください。"
+            "publicUrlQuery": "URL には「?」や「#」以降を含めないでください。",
+            "recipientsTooMany": "通知先は {{max}} 人まで選択できます。",
+            "recipientNotFound": "選択した通知先の利用者が見つかりません。ページを再読み込みしてから選択し直してください。",
+            "testRecipientRequired": "送信先を入力してください。"
         },
         "token": {
             "nameRequired": "名前を入力してください。",
-            "identifierInvalid": "識別子は {{max}} 文字以内の半角英数字と「_」「-」で入力してください。",
-            "identifierTaken": "その識別子はすでに使われています。",
-            "expiresInvalid": "有効期限は未来の日時で指定してください。"
+            "identifierInvalid": "識別子は半角英数字と「_」「-」を使い、{{max}} 文字以内で入力してください。",
+            "identifierTaken": "この識別子はすでに使われています。",
+            "expiresInvalid": "有効期限には未来の日時を入力してください。"
         },
-        "ownSending": {
-            "ipv4Invalid": "{{line}} 行目の「{{value}}」は IPv4 アドレスまたは CIDR（例: 203.0.113.0/24）ではありません。ループバックと 0.0.0.0 は指定できません。",
-            "ipv6Invalid": "{{line}} 行目の「{{value}}」は IPv6 アドレスまたは CIDR（例: 2001:db8::/32）ではありません。ループバック、::、ゾーン（%eth0 など）、::ffff: で始まる IPv4 射影アドレスは指定できません。",
-            "hostInvalid": "{{line}} 行目の「{{value}}」はホスト名ではありません。英数字とハイフンで入力してください（IP アドレスと localhost は指定できません）。",
+        "sendingSource": {
+            "ipv4Invalid": "{{line}} 行目の「{{value}}」は IPv4 アドレスまたは CIDR（例: 203.0.113.0/24）として正しくありません。ループバックアドレスと 0.0.0.0 は指定できません。",
+            "ipv6Invalid": "{{line}} 行目の「{{value}}」は IPv6 アドレスまたは CIDR（例: 2001:db8::/32）として正しくありません。ループバックアドレス、::、ゾーン付きのアドレス（%eth0 など）、::ffff: で始まる IPv4 射影アドレスは指定できません。",
+            "hostInvalid": "{{line}} 行目の「{{value}}」はホスト名として正しくありません。英数字とハイフンで入力してください。IP アドレスと localhost は指定できません。",
             "tooMany": "1 つの欄に入力できるのは {{max}} 件までです。"
         },
         "dnsCheck": {
-            "resolverInvalid": "{{line}} 行目の「{{value}}」はリゾルバーの IP アドレスではありません。ポート番号や CIDR を付けずに入力してください（ループバック、0.0.0.0、:: は指定できません）。",
-            "resolversTooMany": "リゾルバーは {{max}} 件まで指定できます。",
-            "noResolver": "DNS 検証を有効にするときは、リゾルバーの IP アドレスを 1 つ以上入力するか、「OS 既定のリゾルバーだけを使う」を有効にしてください。"
+            "resolverInvalid": "{{line}} 行目の「{{value}}」はリゾルバーの IP アドレスとして正しくありません。ポート番号や CIDR は付けずに入力してください。ループバックアドレス、0.0.0.0、:: は指定できません。",
+            "resolversTooMany": "リゾルバーは {{max}} 件まで入力できます。",
+            "noResolver": "DNS 検証を有効にする場合は、リゾルバーを 1 件以上入力するか、「OS のリゾルバーだけを使う」をオンにしてください。"
         }
     },
     "result": {
         "session": {
-            "loginFailed": "ログイン情報またはパスワードが正しくありません。",
-            "tooManyAttempts": "ログインの失敗が続いたため、{{seconds}} 秒ほど待ってから再試行してください。",
-            "setupDone": "初期設定はすでに完了しています。ログイン画面からログインしてください。"
+            "loginFailed": "ユーザー名・メールアドレスまたはパスワードが正しくありません。",
+            "tooManyAttempts": "ログインの失敗が続いたため、一時的にログインできません。{{seconds}} 秒ほど待ってから、もう一度お試しください。",
+            "setupDone": "初期設定は完了しています。ログインしてください。"
         },
         "user": {
-            "created": "{{username}}を作成しました。",
-            "updated": "{{username}}を更新しました。",
-            "passwordReset": "{{username}}のパスワードを再設定しました。",
-            "deleted": "{{username}}を削除しました。",
-            "deleteSelf": "自分自身は削除できません。",
-            "lastAdmin": "最後の管理者は削除・降格できません。",
-            "profileSaved": "プロフィールを保存しました。",
+            "created": "{{username}} を作成しました。",
+            "updated": "{{username}} を更新しました。",
+            "passwordReset": "{{username}} のパスワードを再設定しました。",
+            "deleted": "{{username}} を削除しました。",
+            "deleteSelf": "ログイン中の利用者は削除できません。",
+            "lastAdmin": "管理者が 1 人だけのため、削除や役割の変更はできません。",
+            "profileSaved": "保存しました。",
             "passwordChanged": "パスワードを変更しました。"
         },
         "mailbox": {
-            "created": "{{address}}を登録しました。",
-            "updated": "{{address}}を更新しました。",
-            "deleted": "{{address}}を削除しました。",
-            "busy": "このメールアドレスの処理を実行中のため、変更・削除できません。処理が終わってからもう一度お試しください。",
-            "dataExists": "変更後のメールアドレスのデータがすでにサーバー上にあるため、変更できません。サーバー管理者に確認してください。",
-            "testOk": "{{address}}に接続できました。",
+            "created": "{{address}} を登録しました。",
+            "updated": "{{address}} を更新しました。",
+            "deleted": "{{address}} を削除しました。",
+            "busy": "このメールアドレスのジョブを実行中のため、変更・削除できません。ジョブの完了後にもう一度お試しください。",
+            "dataExists": "変更後のメールアドレスのデータがサーバーにすでにあるため、変更できません。サーバーの管理者に確認してください。",
+            "testOk": "{{address}} に接続できました。",
             "testFailed": "メールサーバーに接続できませんでした（{{detail}}）。"
         },
         "notification": {
-            "smtpNotConfigured": "先に SMTP サーバーと送信元アドレスを設定してください。",
+            "smtpNotConfigured": "先に SMTP ホストと差出人アドレスを設定してください。",
             "testSent": "{{to}} にテストメールを送信しました。",
             "testFailed": "テストメールを送信できませんでした（{{detail}}）。",
             "sendQueued": "通知メールの送信を開始しました。結果はジョブ画面で確認できます。",
             "sendAlreadyQueued": "通知メールの送信はすでに待機中です。"
         },
         "job": {
-            "queued": "{{tool}}を投入しました。進捗はジョブ画面で確認できます。",
-            "alreadyActive": "同じジョブがすでに待機中または実行中です。",
+            "queued": "{{tool}}を開始しました。進捗はジョブ画面で確認できます。",
+            "alreadyActive": "同じジョブが待機中または実行中です。",
             "canceled": "ジョブを取り消しました。",
-            "notQueued": "このジョブはすでに開始しているため取り消せません。"
+            "notQueued": "このジョブは開始済みのため、取り消せません。"
         },
         "setting": {
-            "saved": "設定を保存しました。"
+            "saved": "保存しました。"
         },
         "group": {
             "stateChanged": "状態を「{{state}}」に変更しました。"
         },
         "report": {
-            "queued": "解析ジョブを投入しました。",
-            "completed": "解析が完了しました。",
-            "failed": "解析に失敗しました。"
+            "queued": "分析を開始しました。",
+            "completed": "分析が完了しました。",
+            "failed": "分析できませんでした。"
         },
         "token": {
-            "created": "トークン「{{name}}」を発行しました",
+            "created": "トークン「{{name}}」を発行しました。",
             "deleted": "トークン「{{name}}」を削除しました。"
         }
     },
@@ -250,24 +250,24 @@
         "mailbox": {
             "add": "メールアドレスを追加",
             "edit": "メールアドレスを編集",
-            "openFor": "{{address}}を開く",
-            "editFor": "{{address}}を編集",
+            "openFor": "{{address}} を開く",
+            "editFor": "{{address}} を編集",
             "test": "接続テスト",
-            "testFor": "{{address}}の接続テスト",
+            "testFor": "{{address}} の接続テスト",
             "delete": "メールアドレスを削除",
-            "deleteFor": "{{address}}を削除",
-            "deleteConfirm": "{{address}}を削除します。索引と纏めグループも削除され、元に戻せません。",
+            "deleteFor": "{{address}} を削除",
+            "deleteConfirm": "{{address}} を削除しますか？索引とグループも削除され、元に戻せません。",
             "keepData": "原文ファイルを残す",
-            "keepDataHint": "チェックした場合、保存済みのメール原文はディスクに残ります。"
+            "keepDataHint": "保存済みのメールの原文ファイルを、サーバーのディスクに残します。"
         },
         "user": {
             "add": "利用者を追加",
-            "editFor": "{{username}}を編集",
-            "resetPassword": "パスワード再設定",
-            "resetPasswordFor": "{{username}}のパスワードを再設定",
+            "editFor": "{{username}} を編集",
+            "resetPassword": "パスワードを再設定",
+            "resetPasswordFor": "{{username}} のパスワードを再設定",
             "delete": "利用者を削除",
-            "deleteFor": "{{username}}を削除",
-            "deleteConfirm": "{{username}}を削除します。この操作は元に戻せません。",
+            "deleteFor": "{{username}} を削除",
+            "deleteConfirm": "{{username}} を削除しますか？この操作は元に戻せません。",
             "changePassword": "パスワードを変更"
         },
         "token": {
@@ -275,12 +275,12 @@
             "copy": "トークンをコピー",
             "delete": "トークンを削除",
             "deleteFor": "トークン「{{name}}」を削除",
-            "deleteConfirm": "トークン「{{name}}」を削除します。このトークンは使えなくなります。"
+            "deleteConfirm": "トークン「{{name}}」を削除しますか？削除したトークンはすぐに使用できなくなります。"
         },
         "mail": {
             "openFor": "メール「{{subject}}」を開く",
             "downloadRaw": "原文をダウンロード",
-            "openGroup": "所属グループ"
+            "openGroup": "グループを開く"
         },
         "group": {
             "changeState": "対応状態を変更",
@@ -295,18 +295,18 @@
                 "ignored": "「{{group}}」を無視する"
             },
             "reopenConfirm": {
-                "resolved": "対応内容と詳細は消えます。対応履歴には残ります。",
-                "ignored": "判断理由と詳細は消えます。対応履歴には残ります。"
+                "resolved": "対応内容と詳細は消去されます。対応履歴には残ります。",
+                "ignored": "判断理由と詳細は消去されます。対応履歴には残ります。"
             },
             "copyAll": "{{what}}をすべてコピー",
-            "copyValue": "{{value}}をコピー",
+            "copyValue": "{{value}} をコピー",
             "copyUnit": "対応単位「{{value}}」をコピー",
-            "showReport": "レポート表示",
+            "showReport": "レポートを表示",
             "download": "ダウンロード"
         },
         "report": {
-            "analyze": "解析",
-            "reanalyze": "再解析"
+            "analyze": "分析",
+            "reanalyze": "再分析"
         },
         "job": {
             "cancel": "ジョブを取り消す"
@@ -317,7 +317,7 @@
         },
         "setting": {
             "addTime": "時刻を追加",
-            "removeTime": "{{time}}を削除"
+            "removeTime": "{{time}} を削除"
         }
     },
     "value": {
@@ -340,30 +340,30 @@
             "ignored": "無視"
         },
         "groupRecheck": {
-            "resolved": "対応済(再)",
-            "ignored": "無視(再)"
+            "resolved": "対応済（再確認）",
+            "ignored": "無視（再確認）"
         },
         "resolveAction": {
             "delisting": "ブラックリストの解除を申請した",
             "dns_fixed": "送信ドメインの DNS 設定（SPF・DKIM・DMARC）を修正した",
             "server_fixed": "送信サーバーの設定を修正した",
-            "sender_changed": "送信元アドレスを見直した",
+            "sender_changed": "差出人アドレスを見直した",
             "content_changed": "送信内容や添付ファイルを見直した",
             "volume_adjusted": "送信量や送信速度を調整した",
             "recipient_fixed": "宛先アドレスを修正または削除した",
-            "recipient_asked": "宛先側の管理者に連絡した",
+            "recipient_asked": "宛先ドメインの管理者に連絡した",
             "other": "その他"
         },
         "ignoreReason": {
             "temporary": "一時的な問題で、すでに解消しているため対応不要",
             "recipient_side": "宛先側の問題のため対応できない",
-            "input_error": "利用者が入力した宛先の誤りのため対応できない",
-            "stopped_sending": "宛先への送信をすでにやめているため対応不要",
-            "spoofing": "監視しているドメインを騙った第三者の送信のため対応できない",
-            "external_service": "送信に使っている外部サービス側の問題のため対応できない",
+            "input_error": "宛先アドレスの入力誤りのため対応できない",
+            "stopped_sending": "この宛先への送信をすでに停止しているため対応不要",
+            "spoofing": "監視ドメインを騙った第三者による送信のため対応できない",
+            "external_service": "送信に利用している外部サービス側の問題のため対応できない",
             "false_positive": "誤検知のため対応不要",
             "low_impact": "影響が小さいため対応不要",
-            "test_mail": "テスト送信または検証のためのメールのため対応不要",
+            "test_mail": "テストまたは検証用のメールのため対応不要",
             "other": "その他"
         },
         "groupScope": {
@@ -392,9 +392,9 @@
         "jobKind": {
             "sync": "同期",
             "fetch": "受信",
-            "group": "纏め",
-            "analyze": "解析",
-            "reindex": "再索引",
+            "group": "グループ化",
+            "analyze": "分析",
+            "reindex": "索引の再構築",
             "reclassify": "再判定",
             "cleanup": "クリーンアップ",
             "notify": "通知メール送信"
@@ -406,17 +406,17 @@
             "running": "同期中"
         },
         "reportStatus": {
-            "none": "報告なし",
-            "running": "解析中",
-            "completed": "解析済",
-            "error": "解析エラー",
-            "unanalyzable": "解析不能"
+            "none": "未分析",
+            "running": "分析中",
+            "completed": "分析済み",
+            "error": "分析エラー",
+            "unanalyzable": "分析不可"
         },
         "reportConfidence": {
             "low": "要確認"
         },
         "bounceKind": {
-            "none": "通常メール",
+            "none": "一般のメール",
             "failed": "配信失敗",
             "delayed": "配信遅延",
             "auto_reply": "自動返信",
@@ -445,75 +445,75 @@
         "category": {
             "ip_blocked": {
                 "label": "送信 IP のブロック",
-                "description": "送信サーバーの IP がブラックリストに登録されています。登録先（判断主体）のサイトで解除を申請し、原因となった送信内容を見直してください。"
+                "description": "送信側のメールサーバーの IP アドレスがブラックリストに登録されています。ブラックリストの提供元で解除を申請し、原因となった送信内容を見直してください。"
             },
             "rate_limited": {
                 "label": "送信レート制限",
-                "description": "宛先ドメインが短時間の大量送信を制限しています。送信速度や同時接続数を下げ、時間をおいて再送してください。"
+                "description": "宛先ドメインが短時間の大量送信を制限しています。送信速度と同時接続数を下げ、時間をおいて再送してください。"
             },
             "auth_failure": {
                 "label": "送信ドメイン認証の失敗",
-                "description": "SPF / DKIM / DMARC や逆引き DNS の検証に失敗しています。送信ドメインの DNS レコードと送信サーバーの設定を確認してください。"
+                "description": "SPF・DKIM・DMARC または逆引き DNS の検証に失敗しています。送信ドメインの DNS レコードと、送信側のメールサーバーの設定を確認してください。"
             },
             "sender_blocked": {
-                "label": "送信元アドレスの拒否",
-                "description": "宛先ドメインがこの送信元アドレスからのメールを拒否しています。宛先側の管理者に解除を依頼するか、送信元アドレスを見直してください。"
+                "label": "差出人アドレスの拒否",
+                "description": "宛先ドメインが、この差出人アドレスからのメールを拒否しています。宛先ドメインの管理者に解除を依頼するか、差出人アドレスを見直してください。"
             },
             "content_rejected": {
                 "label": "内容による拒否",
-                "description": "本文や添付ファイルがスパム・ウイルス・ポリシーなどの理由で拒否されています。送信内容と添付ファイルを見直してください。"
+                "description": "本文または添付ファイルが、スパム、ウイルス、ポリシーなどの理由で拒否されています。送信内容と添付ファイルを見直してください。"
             },
             "message_too_large": {
                 "label": "サイズ超過",
-                "description": "メールのサイズが宛先の上限を超えています。添付ファイルを小さくするか、別の手段で共有してください。"
+                "description": "メールのサイズが宛先の上限を超えています。添付ファイルを小さくするか、別の方法で共有してください。"
             },
             "server_config": {
                 "label": "送信サーバーの設定不備",
-                "description": "リレー・TLS・HELO などの設定が宛先の要件を満たしていません。送信サーバー（MTA）の設定を確認してください。"
+                "description": "リレー、TLS、HELO などの設定が宛先の要件を満たしていません。送信側のメールサーバー（MTA）の設定を確認してください。"
             },
             "dns_resolver_failure": {
-                "label": "DNS 名前解決の不調（自分たちのメールサーバー）",
-                "description": "自分たちのメールサーバーが DNS で宛先の名前を引けずに配信できていませんが、MailCare で引き直すと名前は存在しました。送信サーバーの名前解決（resolv.conf、unbound などのキャッシュ DNS、上位のリゾルバー、53 番ポートの UDP / TCP 通信、DNSSEC の検証）を確認してください。"
+                "label": "DNS 名前解決の不調（送信側のメールサーバー）",
+                "description": "送信側のメールサーバーが宛先の名前を DNS で解決できず、配信できていません。名前自体は存在します。送信側のメールサーバーの名前解決（resolv.conf、キャッシュ DNS、53 番ポート、DNSSEC など）を確認してください。"
             },
             "unknown_failure": {
                 "label": "原因不明の失敗",
-                "description": "既知のパターンに当てはまらない配信失敗です。診断文と元メールを確認し、必要に応じて分析報告を参照してください。"
+                "description": "既知のパターンに当てはまらない配信失敗です。診断文と元のメールを確認し、必要に応じて分析結果を参照してください。"
             },
             "dmarc_spf_missing": {
                 "label": "SPF レコードの未設定",
-                "description": "自ドメインを名乗るメールが、使える SPF レコードのないドメイン（送信サーバーのホスト名など）から送られ、DMARC で不合格になっています。送信元が自ドメインのサーバーであれば、SPF レコードと DKIM 署名を設定してください。"
+                "description": "このドメインを差出人とするメールが、有効な SPF レコードのないドメイン（送信サーバーのホスト名など）から送信され、DMARC で不合格になっています。このドメインのサーバーから送信している場合は、SPF レコードと DKIM 署名を設定してください。"
             },
             "dmarc_dkim_failed": {
                 "label": "DKIM 署名の検証失敗",
-                "description": "自ドメインの DKIM 署名付きメールが検証に失敗し、DMARC で不合格になっています。受信側の転送で署名が壊れた場合と、送信側の DKIM 設定の誤りの場合があります。送信元 IP を確認してください。"
+                "description": "このドメインの DKIM 署名付きのメールが検証に失敗し、DMARC で不合格になっています。受信側の転送で署名が壊れた場合と、送信側の DKIM の設定に誤りがある場合があります。送信 IP を確認してください。"
             },
             "dmarc_not_authenticated": {
                 "label": "送信認証なし",
-                "description": "自ドメインを名乗るメールが、DKIM 署名も SPF の許可もない送信元から送られ、DMARC で不合格になっています。SPF に登録していない正規のサービスか、なりすましかを送信元 IP で確認してください。"
+                "description": "このドメインを差出人とするメールが、DKIM 署名も SPF の許可もない IP アドレスから送信され、DMARC で不合格になっています。SPF に登録していない正規のサービスか、なりすましかを送信 IP で確認してください。"
             },
             "user_unknown": {
                 "label": "宛先アドレスが存在しない",
-                "description": "宛先アドレスが存在しません。宛先リストから該当アドレスを除外するか、相手に正しいアドレスを確認してください。"
+                "description": "宛先アドレスが存在しません。宛先リストからこのアドレスを除外するか、受信者に正しいアドレスを確認してください。"
             },
             "mailbox_full": {
                 "label": "宛先の容量超過",
-                "description": "宛先のメールボックスが容量上限に達しています。送信側でできることはなく、相手が整理するまで届きません。"
+                "description": "宛先のメールボックスが容量の上限に達しています。送信側でできる対応はなく、宛先アドレスの所有者が整理するまで届きません。"
             },
             "mailbox_disabled": {
                 "label": "宛先アドレスの停止",
-                "description": "宛先アドレスが無効化・停止されています。宛先リストから除外するか、相手に別の連絡先を確認してください。"
+                "description": "宛先アドレスが無効化または停止されています。宛先リストから除外するか、受信者に別の連絡先を確認してください。"
             },
             "domain_not_found": {
                 "label": "宛先ドメインが見つからない",
-                "description": "宛先ドメインの DNS（MX）が見つかりません。ドメインの綴りを確認し、誤りでなければ宛先側の DNS 復旧を待ちます。"
+                "description": "宛先ドメインの DNS（MX）が見つかりません。ドメインの綴りを確認し、誤りがなければ宛先側の DNS の復旧を待ってください。"
             },
             "dns_failure_external": {
                 "label": "DNS の障害（宛先側・外部）",
-                "description": "名前解決の失敗が通知されましたが、MailCare で引き直すと、宛先の名前は存在するか、答えが食い違う、または宛先側のネームサーバーが応答しない状態でした。宛先側の DNS の障害か、通知を出した他社サーバーのリゾルバーの問題で、送信側でできることはありません。長引く場合のみ宛先側に確認してください。"
+                "description": "名前解決の失敗を知らせる通知ですが、原因は宛先側の DNS か、通知を出した外部のサーバーにあり、送信側でできる対応はありません。長引く場合だけ宛先ドメインの管理者に確認してください。"
             },
             "delivery_delay": {
                 "label": "配信の遅延",
-                "description": "宛先サーバーに一時的に接続できず配信が遅れています。通常は自動で再送されるため、長引く場合のみ宛先側に確認してください。"
+                "description": "宛先のサーバーに一時的に接続できず、配信が遅れています。通常は自動で再送されるため、長引く場合だけ宛先ドメインの管理者に確認してください。"
             }
         },
         "bodySource": {
@@ -532,19 +532,17 @@
         },
         "user": {
             "username": "ユーザー名",
-            "usernameHint": "ログインに使う ID です。",
             "role": "役割",
-            "roleHint": "管理者は設定・利用者・メールアドレスの管理、ツールと解析の実行、ジョブの確認ができます。",
+            "roleHint": "管理者は、設定・利用者・メールアドレスの管理、ツールと分析の実行、ジョブの確認ができます。",
             "email": "メールアドレス",
-            "emailHint": "通知メールの宛先 (任意)。設定するとログインにも使えます。空欄の利用者には通知が送られません。",
+            "emailHint": "通知メールの宛先です（任意）。ログインにも使用できます。未入力の場合、通知メールは送信されません。",
             "language": "言語",
-            "languageHint": "画面と通知メールの言語",
+            "languageHint": "画面と通知メールに使う言語です。",
             "timezone": "タイムゾーン",
-            "timezoneHint": "画面と通知メールの日時を表示するタイムゾーン",
+            "timezoneHint": "画面と通知メールの日時に使うタイムゾーンです。",
             "theme": "テーマ",
-            "themeHint": "画面の配色",
             "password": "パスワード",
-            "passwordConfirm": "パスワード (確認)",
+            "passwordConfirm": "パスワード（確認）",
             "passwordHint": "{{min}} 文字以上",
             "currentPassword": "現在のパスワード",
             "newPassword": "新しいパスワード",
@@ -555,40 +553,40 @@
             "host": "ホスト名",
             "port": "ポート",
             "security": "接続方式",
-            "securityNoneWarning": "暗号化なしでは、パスワードとメール本文が平文でネットワークを流れます。同じネットワーク内の信頼できるサーバーにだけ使ってください。",
+            "securityNoneWarning": "暗号化なしでは、パスワードとメールの内容が平文で送受信されます。同じネットワーク内の信頼できるサーバーにだけ使用してください。",
             "username": "ユーザー名",
             "password": "パスワード",
             "passwordSet": "設定済み",
-            "passwordKeepHint": "空欄のままにすると、保存済みのパスワードを据え置きます。"
+            "passwordKeepHint": "変更しない場合は空欄のままにしてください。"
         },
         "mailbox": {
             "address": "メールアドレス",
-            "addressHint": "監視対象のアドレスです。登録後は小文字で保存されます。",
+            "addressHint": "英字は小文字に変換して保存します。",
             "domain": "ドメイン",
             "enabled": "監視を有効にする",
-            "enabledHint": "無効にするとスケジュールによる自動同期の対象外になります。",
+            "enabledHint": "オフにすると、自動同期の対象外になります。",
             "server": "サーバー",
-            "initialDays": "初回取得日数",
-            "initialDaysHint": "初回同期で遡る日数 (既定 90 日)",
-            "recentDays": "通常取得日数",
-            "recentDaysHint": "2 回目以降の同期で遡る日数 (既定 10 日)",
-            "fetchDays": "取得日数",
-            "serverKeepDays": "保持日数",
-            "serverKeepDaysHint": "メールの日付からこの日数を過ぎたバウンスなどの通知メールと迷惑メールをサーバーから削除します。0 でサーバーから削除しません。サーバーからの削除は元に戻せず、迷惑メールの判定が誤ることもあります。法令や社内規程で保存が必要なメール（電子取引の記録など）を受け取るアドレスでは、0 にするか、先にメールをアーカイブしてください。",
-            "serverKeepDaysMax": "一般設定のメールの保持日数（{{max}} 日）以下で指定します。",
+            "initialDays": "初回の受信日数",
+            "initialDaysHint": "初回の同期でさかのぼる日数です（既定 90 日）。",
+            "recentDays": "通常の受信日数",
+            "recentDaysHint": "2 回目以降の同期でさかのぼる日数です（既定 10 日）。",
+            "fetchDays": "受信日数",
+            "serverKeepDays": "サーバーでの保持日数",
+            "serverKeepDaysHint": "メールの日付からこの日数を過ぎたメールを IMAP サーバーから削除します（0 は削除しない）。迷惑メールの判定は誤ることがあるため、保存が必要なメールが届くアドレスでは 0 にしてください。",
+            "serverKeepDaysMax": "メールの保持日数（{{max}} 日）以下で入力します。",
             "smtpHost": "SMTP サーバー（送信）",
-            "smtpHostHint": "このアドレスのメールを送信するサーバーのホスト名です（例: mail.example.jp）。サーバーが自分で名乗る名前（そのサーバーが付ける Received ヘッダーの「by ...」や、通知の「This is the mail system at host ...」に現れる名前）を入力してください。このサーバーが出した配信不能の通知と、自分たちのメールサーバーから送っていないメールについての通知を見分けるのに使います。空欄で、一般設定にもホスト名が無いときは、このアドレスでは後者を見分けません。名前の IPv4 / IPv6 アドレスは自動で調べます。サーバーの送信元 IP アドレスも一般設定の「自分たちの送信元」に登録しておくと確実です。変更を受信済みのメールに反映するには、「ツール」画面の「再判定」を実行してください。",
+            "smtpHostHint": "このメールアドレスの送信に使う SMTP サーバーのホスト名です。変更後はツールの「再判定」で既存のメールに反映します。",
             "lastChecked": "最終同期",
             "openGroups": "未対応",
             "recheckGroups": "再確認",
-            "messages": "取得",
+            "messages": "受信メール",
             "targetMessages": "処理対象",
-            "junkMessages": "迷惑",
-            "unclassified": "纏め待ち"
+            "junkMessages": "迷惑メール",
+            "unclassified": "グループ化待ち"
         },
         "mail": {
             "subject": "件名",
-            "subjectNone": "(件名なし)",
+            "subjectNone": "（件名なし）",
             "from": "差出人",
             "to": "宛先",
             "date": "日時",
@@ -597,7 +595,7 @@
             "size": "サイズ",
             "kind": "種類",
             "key": "メールキー",
-            "serverDeletedAt": "サーバーから削除"
+            "serverDeletedAt": "サーバーからの削除日時"
         },
         "bounce": {
             "bodySource": "判定に使用した本文",
@@ -616,10 +614,10 @@
             "key": "グループキー",
             "category": "カテゴリ",
             "state": "対応状態",
-            "responsible": "対応者区分",
+            "responsible": "対応者",
             "severity": "重大度",
             "unitValue": "対応単位",
-            "authority": "判断主体",
+            "authority": "判定元",
             "statusCode": "状態コード",
             "diagnosticTemplate": "診断テンプレート",
             "needsAnalysis": "分析待ち",
@@ -637,7 +635,7 @@
             "recipientCountValue": "宛先 {{count}} 件",
             "ipCountValue": "IP {{count}} 件",
             "recipients": "宛先アドレス",
-            "ips": "送信元 IP",
+            "ips": "リモート IP",
             "title": "{{label}}: {{unit}}",
             "titleWithAuthority": "{{label}}: {{unit}}（{{authority}}）",
             "titleNoUnit": "{{label}}（{{where}}）"
@@ -648,73 +646,71 @@
             "reasoning": "推論レベル"
         },
         "report": {
-            "tokens": "トークン",
-            "commands": "コマンド実行",
-            "sampled": "参照メール {{count}} 件"
+            "tokens": "使用トークン数",
+            "commands": "実行コマンド数",
+            "sampled": "参照したメール {{count}} 件"
         },
         "job": {
-            "target": "対象アドレス"
+            "target": "対象のメールアドレス"
         },
         "setting": {
             "checkTimes": "同期時刻",
-            "checkTimesHint": "指定した時刻に、有効な全メールアドレスを自動で同期します。",
+            "checkTimesHint": "指定した時刻に、有効なすべてのメールアドレスを自動で同期します。",
             "mailKeepDays": "メールの保持日数",
-            "mailKeepDaysHint": "メールの日付からこの日数を過ぎたメールを、毎日のクリーンアップで削除します。所属していた纏めグループは件数を数え直し、メールが無くなったグループは分析報告ごと削除されます。",
+            "mailKeepDaysHint": "メールの日付からこの日数を過ぎたメールを、毎日のクリーンアップで削除します。メールが無くなったグループは、分析結果とともに削除されます。",
             "cleanupTime": "クリーンアップ時刻",
-            "cleanupTimeHint": "毎日この時刻に、保持日数を過ぎたメールや作業ディレクトリなどを削除します（ツール画面からも実行できます）。",
-            "workers": "ワーカー数",
-            "workersHint": "同時に実行するジョブ数。同じ IMAP サーバーのアカウントは自動的に順番に処理されます。",
+            "cleanupTimeHint": "毎日この時刻に、保持日数を過ぎたメールや作業ディレクトリなどを削除します。",
+            "workers": "同時実行数",
+            "workersHint": "同時に実行するジョブの数です。同じ IMAP サーバーのアカウントは順番に処理します。",
             "agentModelPlaceholder": "未指定（CLI の既定のモデル）",
             "agentModelExamples": "指定できるモデルの例（クリックで入力）",
             "agentModelUnsupported": "このプロバイダーはモデルの指定に対応していません。",
             "agentReasoningUnset": "未設定（CLI の設定に従う）",
             "agentReasoningUnsupported": "このプロバイダーは推論レベルの指定に対応していません。",
-            "agentEnabled": "エージェント分析を有効にする",
-            "agentEnabledHint": "有効にすると、同期で新しいバウンスが見つかったときに自動で分析します。",
+            "agentEnabled": "自動分析を有効にする",
+            "agentEnabledHint": "同期で新しいバウンスが見つかったときに、自動で分析します。",
             "agentKeepDays": "作業ディレクトリの保持日数",
-            "agentKeepDaysHint": "解析の実行ごとに作られる作業ディレクトリ（プロンプト、CLI の出力、報告）を残す日数。毎日のクリーンアップで、これより古いものを削除します。",
-            "recheckDays": "再判定までの日数",
-            "recheckDaysHint": "対応済にした後、ここで指定した日数を過ぎてから送ったメールの通知が届くと「対応済(再)」にします。それまでに届く通知は、ブラックリストの解除などが反映されるまでのものとして扱います。",
-            "ownSending": "自分たちの送信元",
-            "ownSendingHint": "組織のメールを送信するサーバーです。各メールアドレスの設定の「SMTP サーバー（送信）」と、ここに登録したものを合わせて使います。ここには、メールアドレスに結び付かない送信元（受信側のサーバーへ直接配信するアプリケーション、別の中継サーバー、外部の配信サービスなど）を登録します。配信できなかったことを知らせる通知（バウンス）のうち、自分たちのメールサーバーが出したものでなく、元のメールが自分たちの送信元を 1 つも通っていないものは、誰かが組織のアドレスを差出人に詐称して送ったメールの通知とみなし、迷惑メールとして扱います。この判定はメールアドレスごとに、そのアドレスのホスト名があるときだけ行います。ホスト名は、そのアドレスの SMTP サーバーか、ここに登録したもの（すべてのアドレスに使います）です（サーバーは、自分が扱ったメールのヘッダーに名前で現れるため、IP アドレスだけでは判定できません）。また、名前解決の失敗を知らせる通知が、自分たちのメールサーバーから届いたものかどうかを見分けるのにも使います（ここにも、そのアドレスの SMTP サーバーにも送信元が無いアドレスでは、どの通知も自分たちのメールサーバーから届いたものとして扱います）。ホスト名の IPv4 / IPv6 アドレスは自動で調べて照合に使います。DNS 検証が有効なときは、各メールアドレスのドメインの SPF レコードも読み、そこに載っている送信元アドレスも自分たちの送信元として扱います。注意: 自分たちの送信元に含まれない経路（外部の配信サービス、別のサーバー、個別の配信アプリなど）から送ったメールのバウンスは、組織のドメインの DKIM 署名が付いていない限り迷惑メールとして扱われ、アラートに載りません。送信元を変えたあとは、「ツール」画面の「再判定」を実行すると、受信済みのメールにも反映されます。1 行に 1 つ、欄ごとに {{max}} 件まで入力できます。",
-            "ownSendingIpv4": "自分たちの送信元 IPv4",
-            "ownSendingIpv4Hint": "IPv4 アドレスまたは CIDR。受信側のメールサーバーへ実際に接続するマシンのアドレスを登録します（SMTP サーバー自身の送信元アドレスと、SMTP サーバーを通さずに直接配信するアプリケーションのアドレス）。SMTP サーバーへメールを渡すだけのアプリケーションや端末のアドレスは不要です。",
-            "ownSendingIpv4Placeholder": "203.0.113.5\n203.0.113.0/24",
-            "ownSendingIpv6": "自分たちの送信元 IPv6",
-            "ownSendingIpv6Hint": "IPv6 アドレスまたは CIDR。受信側のメールサーバーへ実際に接続するマシンのアドレスを登録します（SMTP サーバー自身の送信元アドレスと、SMTP サーバーを通さずに直接配信するアプリケーションのアドレス）。SMTP サーバーへメールを渡すだけのアプリケーションや端末のアドレスは不要です。",
-            "ownSendingIpv6Placeholder": "2001:db8::25\n2001:db8::/48",
-            "ownSendingHosts": "自分たちの送信元ホスト名",
-            "ownSendingHostsHint": "メールアドレスに結び付かない送信サーバーのホスト名です（メールアドレスの SMTP サーバーは、各メールアドレスの設定で入力します）。サーバーが自分で名乗る名前（そのサーバーが付ける Received ヘッダーの「by ...」や、通知の「This is the mail system at host ...」に現れる名前）を入力してください。元のメールの経路や通知を出したサーバーとは書かれた名前のまま照合し、名前の IPv4 / IPv6 アドレスも自動で調べて照合に使います。別名で現れることもあるため、IP アドレスも登録しておくと確実です。ドメインの付かない短い名前（mailhost など）も指定できます。変更を受信済みのメールに反映するには、「ツール」画面の「再判定」を実行してください。",
-            "ownSendingHostsPlaceholder": "mail.example.jp",
-            "ownSendingMailboxHosts": "メールアドレスの SMTP サーバー",
-            "ownSendingMailboxHostsHint": "各メールアドレスの設定で入力した「SMTP サーバー（送信）」です。自分たちのメールサーバーから送っていないメールについての通知の判定は、それぞれ自分のアドレスについてだけ有効にします。照合では、どのアドレスでもすべてを自分たちの送信元として扱います。変更は各メールアドレスの設定で行います。",
-            "dnsCheckEnabled": "DNS 検証を行う",
-            "dnsCheckEnabledHint": "既定で有効です。名前を引けなかったという通知が届いたとき、その名前を引き直して、宛先ドメインが存在しないのか、通知を出したサーバーのリゾルバーの不調なのかを確かめます。そのために、通知に書かれた名前と、関係するドメインの MX / NS / SPF レコードを下のリゾルバーに問い合わせます。ドメインのネームサーバーへ直接問い合わせるのは、自分たちのメールについての通知のときだけです。自分たちのメールサーバーのホスト名は、まず OS のリゾルバーで引き、アドレスが得られなかったときだけ、下のリゾルバーにも問い合わせます（ドメインの付かない短い名前は OS のリゾルバーだけで引きます）。各メールアドレスのドメインの SPF レコードも読み、そこに載っている送信元アドレスを自分たちの送信元として扱います。無効にすると、OS のリゾルバーで自分たちのメールサーバーのホスト名を引くこと以外の問い合わせはすべて止まります。詳しくは README の「外部への接続」を参照してください。",
-            "dnsCheckResolvers": "リゾルバーの IP アドレス",
-            "dnsCheckResolversHint": "問い合わせ先の DNS リゾルバーです。IPv4 または IPv6 のアドレスを 1 行に 1 つ、{{max}} 件まで入力します（既定は Cloudflare の 1.1.1.1、Google の 8.8.8.8、Quad9 の 9.9.9.9）。問い合わせは暗号化されない通常の DNS（ポート 53）で行うため、リゾルバーと経路上のネットワークには、このサーバーの IP アドレスと問い合わせた名前が見えます。",
-            "dnsCheckSystemResolverOnly": "OS 既定のリゾルバーだけを使う",
-            "dnsCheckSystemResolverOnlyHint": "上のリゾルバーの代わりに、サーバーの OS に設定されたリゾルバーだけに問い合わせ、ネームサーバーへ直接は問い合わせません。OS のリゾルバーは自分たちのメールサーバーと同じ系統であることが多く、独立した確認としては弱くなります。また、リゾルバーが 1 つになるため、公開リゾルバーの間の食い違いによる判定はできません。",
-            "webListen": "待受アドレス",
-            "webPort": "待受ポート",
+            "agentKeepDaysHint": "分析ごとに作成する作業ディレクトリ（プロンプト、CLI の出力、分析結果）を残す日数です。",
+            "recheckDays": "再確認までの日数",
+            "recheckDaysHint": "対応済にしてからこの日数を過ぎた後に送信したメールのバウンスが届くと、「対応済（再確認）」にします。それより前に送信したメールのバウンスは、対応の反映待ちとして扱います。",
+            "sendingSource": "送信元",
+            "sendingSourceHint": "送信に使うサーバーをすべて登録してください。登録されていない送信元から送信したメールのバウンスは、迷惑メールと判定されることがあります。変更後はツールの「再判定」で既存のメールに反映します。",
+            "sendingSourceIpv4": "送信元 IPv4",
+            "sendingSourceIpv4Hint": "宛先のメールサーバーへ直接接続して送信する IP アドレスです。",
+            "sendingSourceIpv4Placeholder": "203.0.113.5\n203.0.113.0/24",
+            "sendingSourceIpv6": "送信元 IPv6",
+            "sendingSourceIpv6Hint": "宛先のメールサーバーへ直接接続して送信する IP アドレスです。",
+            "sendingSourceIpv6Placeholder": "2001:db8::25\n2001:db8::/48",
+            "sendingSourceHosts": "送信元ホスト名",
+            "sendingSourceHostsHint": "全メールアドレス共通の送信サーバーのホスト名です。メールアドレスごとの SMTP サーバーは、各メールアドレスの設定で入力します。",
+            "sendingSourceHostsPlaceholder": "mail.example.jp",
+            "sendingSourceMailboxHosts": "メールアドレスの設定にある SMTP サーバー",
+            "sendingSourceMailboxHostsHint": "各メールアドレスの設定で変更できます。",
+            "dnsCheckEnabled": "DNS 検証",
+            "dnsCheckEnabledHint": "名前解決の失敗を知らせるバウンスが届いたとき、その名前を引き直して原因を確かめます。",
+            "dnsCheckResolvers": "リゾルバー",
+            "dnsCheckResolversHint": "問い合わせ先の IP アドレスを 1 行に 1 件、{{max}} 件まで入力します。既定は Cloudflare、Google、Quad9 です。",
+            "dnsCheckSystemResolverOnly": "OS のリゾルバーだけを使う",
+            "dnsCheckSystemResolverOnlyHint": "上のリゾルバーにも、ドメインのネームサーバーにも問い合わせません。",
+            "webListen": "待ち受けアドレス",
+            "webPort": "待ち受けポート",
             "dataDir": "データディレクトリ"
         },
         "notification": {
             "host": "SMTP ホスト",
-            "authHint": "認証しない場合は空欄にします。",
-            "from": "送信元アドレス",
-            "fromHint": "通知メールの差出人 (From) に使うアドレスです。",
+            "authHint": "認証が不要な場合は空欄にします。",
+            "from": "差出人アドレス",
             "testTo": "送信先",
-            "testToHint": "空欄のときは自分のメールアドレスに送ります。",
+            "testToHint": "空欄の場合は、ログイン中の利用者のメールアドレスに送信します。",
             "enabled": "通知を有効にする",
-            "enabledHint": "有効にすると、通知時刻に対応対象で未対応のグループの要約を送ります。対象が 0 件のときは送りません。",
+            "enabledHint": "通知時刻に、対応が必要なグループの一覧を送信します。該当するグループがない場合は送信しません。",
             "time": "通知時刻",
-            "timeHint": "HH:MM 形式 (サーバーのローカル時刻)",
+            "timeHint": "サーバーの時刻を HH:MM の形式で入力します。",
             "interval": "通知間隔",
-            "intervalHint": "前回の送信から何日おきに送るかです。",
             "recipients": "通知先",
-            "recipientsHint": "通知メールを受け取る利用者を選びます。メールアドレスが未設定の利用者は選べますが、登録されるまで送られません。",
+            "recipientsHint": "通知メールを受け取る利用者を選択します。メールアドレスが未登録の利用者には、登録されるまで送信されません。",
             "publicUrl": "公開 URL",
-            "publicUrlHint": "通知メール内のリンクの元になる、ブラウザで開く MailCare の URL です。空欄のときはサーバーの待受アドレスを使います。",
+            "publicUrlHint": "通知メール内のリンクに使う、ブラウザで開く MailCare の URL です。空欄の場合は、サーバーの待ち受けアドレスを使います。",
             "lastSent": "最終送信",
             "lastSentNever": "未送信",
             "nextSend": "次回送信",
@@ -722,10 +718,10 @@
         },
         "token": {
             "name": "名前",
-            "nameHint": "用途がわかる名前 (例: 監視スクリプト)",
-            "nameNone": "(名前なし)",
+            "nameHint": "用途がわかる名前を入力します（例: 監視スクリプト）。",
+            "nameNone": "（名前なし）",
             "identifier": "識別子",
-            "identifierHint": "空欄のときはサーバーが自動で決めます。",
+            "identifierHint": "空欄の場合は自動で設定します。",
             "isDefault": "既定",
             "expires": "有効期限",
             "expiresAt": "有効期限の日時"
@@ -734,80 +730,80 @@
     "page": {
         "alerts": {
             "scope": "表示範囲",
-            "chooseMailbox": "アラートを確認するメールアドレスを選択してください。",
-            "excludedHint": "存在しないアドレスや容量超過など、宛先側で解決される問題です。解析は行われません。",
-            "searchPlaceholder": "対応単位、判断主体、ドメイン、診断文で検索",
-            "sortLastSeenDesc": "最終日時 (新しい順)",
-            "sortLastSeenAsc": "最終日時 (古い順)",
-            "sortCountDesc": "件数 (多い順)",
+            "chooseMailbox": "アラートを表示するメールアドレスを選択してください。",
+            "excludedHint": "宛先アドレスが存在しない、容量超過など、宛先側で解決する問題です。分析は行いません。",
+            "searchPlaceholder": "対応単位、判定元、ドメイン、診断文で検索",
+            "sortLastSeenDesc": "最終日時（新しい順）",
+            "sortLastSeenAsc": "最終日時（古い順）",
+            "sortCountDesc": "件数（多い順）",
             "empty": {
-                "open": "未対応のグループはありません",
-                "resolved": "対応済のグループはありません",
-                "resolved_recheck": "対応済(再)のグループはありません",
-                "ignored": "無視したグループはありません",
-                "ignored_recheck": "無視(再)のグループはありません",
-                "excluded": "対象外のグループはありません"
+                "open": "未対応のグループはありません。",
+                "resolved": "対応済のグループはありません。",
+                "resolved_recheck": "対応済（再確認）のグループはありません。",
+                "ignored": "無視したグループはありません。",
+                "ignored_recheck": "無視（再確認）のグループはありません。",
+                "excluded": "対象外のグループはありません。"
             }
         },
         "login": {
             "title": "ログイン",
-            "description": "ユーザー名またはメールアドレスとパスワードでログインします。",
+            "description": "ユーザー名またはメールアドレスと、パスワードを入力してください。",
             "loginName": "ユーザー名またはメールアドレス",
-            "remember": "ログインを保持する",
-            "rememberHint": "共有端末では使用しないでください。",
+            "remember": "ログイン状態を保持する",
+            "rememberHint": "共有の端末では使用しないでください。",
             "submit": "ログイン"
         },
         "setup": {
             "title": "初期設定",
-            "description": "最初の管理者アカウントを作成します。言語とテーマはすぐに画面に反映されます。",
-            "hint": "まだ利用者が登録されていません。ここで作成したアカウントは管理者になり、そのままログインします。",
+            "description": "最初の管理者アカウントを作成します。言語とテーマは、選択するとすぐに画面に反映されます。",
+            "hint": "利用者がまだ登録されていません。ここで作成したアカウントは管理者になり、作成後にそのままログインします。",
             "submit": "管理者を作成してログイン"
         },
         "dashboard": {
             "description": "監視中のメールアドレスと、対応が必要なバウンスの状況です。",
             "totals": "合計",
             "mailboxes": "メールアドレス",
-            "mailboxDisabled": "このメールアドレスは無効化されており、自動同期の対象外です。",
+            "mailboxDisabled": "このメールアドレスは無効のため、自動同期の対象外です。",
             "schedule": "スケジュール",
             "nextCheck": "次回同期",
             "noSchedule": "スケジュール未設定",
-            "agent": "エージェント",
+            "agent": "AI エージェント",
             "activeJobs": "実行中のジョブ",
             "noActiveJobs": "実行中のジョブはありません。",
             "recentJobs": "最近のジョブ",
             "allJobs": "すべてのジョブ",
-            "agentDisabledTitle": "エージェント分析は無効です",
-            "agentDisabled": "バウンスの原因分析は行われません。有効にするには一般設定を変更してください。",
-            "agentUnavailableTitle": "エージェント CLI が見つかりません",
-            "agentUnavailable": "プロバイダー「{{provider}}」のコマンドがサーバーで見つかりません。分析は失敗します。"
+            "agentDisabledTitle": "自動分析は無効です",
+            "agentDisabled": "新しいバウンスは自動で分析されません。一般設定で有効にできます。",
+            "agentUnavailableTitle": "AI エージェントの CLI が見つかりません",
+            "agentUnavailable": "プロバイダー「{{provider}}」のコマンドがサーバーに見つからないため、分析は失敗します。"
         },
         "groupDetail": {
             "title": "グループ詳細",
             "overview": "概要",
             "stats": "統計",
-            "messagesTitle": "元メール ({{count}} 件)",
+            "messagesTitle": "メール（{{count}} 件）",
             "noMessages": "このグループにメールはありません。",
             "history": {
                 "title": "対応履歴",
                 "empty": "状態の変更はまだありません。"
             },
             "recheck": {
-                "resolved": "対応済にした後に、新しいパターンの通知、または反映を待つ期間を過ぎてから送ったメールの通知が届きました。もう一度判定してください。",
-                "ignored": "無視にした後に、新しいパターンの通知が届きました。もう一度判定してください。"
+                "resolved": "対応済にした後に、新しいパターンの通知、または反映待ちの期間を過ぎてから送信したメールの通知が届きました。対応状態を見直してください。",
+                "ignored": "無視にした後に、新しいパターンの通知が届きました。対応状態を見直してください。"
             },
             "report": {
-                "title": "解析報告",
-                "runningHint": "エージェントが解析しています。完了すると自動で表示が更新されます。",
-                "latestFailed": "最新の再解析は失敗しました: {{message}}（{{time}}）",
-                "latestFailedUnanalyzable": "解析できませんでした: {{message}}（{{time}}）。新しいパターンの通知が届くまで、このグループは自動では解析しません。",
-                "latestFailedLimit": "エージェントの利用上限のため解析できませんでした（{{time}}）。解析待ちのまま、次回に解析します。",
-                "none": "解析報告はまだありません",
-                "noneHint": "「解析」を押すとエージェントが原因と対応方法を作成します。",
-                "noneHintMember": "管理者が解析を実行すると、原因と対応方法がここに表示されます。",
-                "noBody": "報告本文はありません。",
-                "history": "過去の報告 ({{count}} 件)",
-                "excludedTitle": "このグループは自動では解析しません",
-                "excluded": "宛先側の問題（存在しないアドレス、容量超過など）は送信側で対応できないため、自動の解析の対象外です。",
+                "title": "分析結果",
+                "runningHint": "AI エージェントが分析しています。完了すると表示が自動で更新されます。",
+                "latestFailed": "直近の分析に失敗しました: {{message}}（{{time}}）",
+                "latestFailedUnanalyzable": "分析できませんでした: {{message}}（{{time}}）。新しいパターンの通知が届くまで、このグループは自動では分析しません。",
+                "latestFailedLimit": "AI エージェントの利用上限に達したため、分析できませんでした（{{time}}）。分析待ちのまま、次回に分析します。",
+                "none": "分析結果はまだありません。",
+                "noneHint": "「分析」を押すと、AI エージェントが原因と対応方法をまとめます。",
+                "noneHintMember": "管理者が分析を実行すると、原因と対応方法がここに表示されます。",
+                "noBody": "分析結果の本文はありません。",
+                "history": "過去の分析結果（{{count}} 件）",
+                "excludedTitle": "このグループは自動では分析しません",
+                "excluded": "宛先側の問題（宛先アドレスが存在しない、容量超過など）は送信側で対応できないため、自動分析の対象外です。",
                 "excludedMoveHint": "「対応済にする」または「無視する」を選ぶと、対応対象の一覧に移ります。",
                 "excludedReturnHint": "「未対応に戻す」を選ぶと、対象外の一覧に戻ります。"
             }
@@ -817,7 +813,7 @@
             "generatedAt": "出力日時"
         },
         "mails": {
-            "chooseMailbox": "メールを閲覧するメールアドレスを選択してください。",
+            "chooseMailbox": "メールを表示するメールアドレスを選択してください。",
             "kindTabs": "メールの種類",
             "kind": {
                 "all": "すべて",
@@ -827,7 +823,7 @@
             },
             "searchPlaceholder": "件名、差出人、宛先で検索",
             "groupFilter": "グループ",
-            "empty": "メールはありません"
+            "empty": "メールはありません。"
         },
         "mailDetail": {
             "title": "メール詳細",
@@ -837,63 +833,63 @@
             "tabHeaders": "ヘッダー",
             "tabTextN": "テキスト {{index}}",
             "tabHtmlN": "HTML {{index}}",
-            "noBody": "本文はありません",
-            "noBodyHint": "テキスト本文も HTML 本文も空です。ヘッダーの確認と原文のダウンロードはできます。",
-            "noHeaders": "ヘッダー情報はありません",
-            "htmlSandboxNote": "HTML はサニタイズ済みで、スクリプトや外部画像は無効化された状態で表示しています。",
+            "noBody": "本文はありません。",
+            "noBodyHint": "テキストと HTML のどちらの本文も空です。ヘッダーの確認と原文のダウンロードはできます。",
+            "noHeaders": "ヘッダーはありません。",
+            "htmlSandboxNote": "HTML は、スクリプトと外部画像を無効にして表示しています。",
             "extract": {
                 "title": "抽出結果",
-                "none": "抽出結果はありません",
+                "none": "抽出結果はありません。",
                 "notTarget": "このメールは処理対象ではありません。"
             }
         },
         "tools": {
-            "description": "受信・纏め・解析を個別に、またはまとめて実行します。索引の再構築や判定のやり直し、保持日数によるクリーンアップもここから行います。",
-            "allNote": "「すべて」を選ぶと、メールアドレスごとに 1 件ずつジョブが展開され、ワーカー数の範囲で並列に実行されます。",
-            "analyzeScope": "解析の範囲",
-            "scopeNeeds": "解析待ちのみ",
+            "description": "受信・グループ化・分析を個別に、またはまとめて実行します。索引の再構築、再判定、クリーンアップもここから実行できます。",
+            "allNote": "「すべてのメールアドレス」を選ぶと、メールアドレスごとにジョブを作成し、同時実行数の範囲で並行して実行します。",
+            "analyzeScope": "分析の範囲",
+            "scopeNeeds": "分析待ちのみ",
             "fetchRange": "受信期間",
-            "fetchRangeDefault": "デフォルト",
+            "fetchRangeDefault": "既定",
             "run": "実行",
-            "runFor": "{{tool}}を開始",
+            "runFor": "{{tool}}を実行",
             "confirmTitle": "{{tool}}を実行しますか？",
             "confirmMessage": "対象: {{target}}。{{tool}}をバックグラウンドで実行します。",
             "confirmAllTime": "受信期間: 全期間",
             "tool": {
                 "sync": {
-                    "title": "全アドレス同期（受信 → 纏め → 解析）",
-                    "description": "メールを受信し、新しいバウンスを纏め、対応対象のグループを解析します。スケジュールで実行されるのと同じ処理です。"
+                    "title": "全アドレス同期（受信 → グループ化 → 分析）",
+                    "description": "メールを受信し、新しいバウンスをグループにまとめ、対応対象のグループを分析します。スケジュールによる同期と同じ処理です。"
                 },
                 "fetch": {
                     "title": "受信のみ",
-                    "description": "IMAP サーバーから未取得のメールを保存します。纏めと解析は行いません。"
+                    "description": "IMAP サーバーから未受信のメールを保存します。グループ化と分析は行いません。"
                 },
                 "group": {
-                    "title": "纏めのみ",
-                    "description": "受信済みで纏め待ちのメールを判定してグループに纏め、解析待ちのグループを解析します。"
+                    "title": "グループ化のみ",
+                    "description": "受信済みでグループ化待ちのメールを判定してグループにまとめ、分析待ちのグループを分析します。"
                 },
                 "analyze": {
-                    "title": "解析のみ",
-                    "description": "エージェントによる原因分析を実行します。解析待ちのグループのみ、または対応対象の全グループを対象にできます。"
+                    "title": "分析のみ",
+                    "description": "AI エージェントによる原因分析を実行します。分析待ちのグループだけ、または対応対象のすべてのグループを対象にできます。"
                 },
                 "reindex": {
-                    "title": "再索引",
-                    "description": "索引 DB を作り直し、保存済みの原文からメールの解析・判定・纏めをすべてやり直します。",
-                    "warning": "時間がかかります。グループの状態と分析報告は、同じグループが再び現れた場合のみ引き継がれます。"
+                    "title": "索引の再構築",
+                    "description": "索引を作り直し、保存済みの原文からメールの読み取り・判定・グループ化をすべてやり直します。",
+                    "warning": "時間がかかります。グループの対応状態と分析結果は、同じグループが再び作成された場合だけ引き継がれます。"
                 },
                 "reclassify": {
                     "title": "再判定",
-                    "description": "メールを残したまま、バウンス判定と纏めだけをやり直します。判定ルールの更新後に使います。"
+                    "description": "メールはそのままで、バウンスの判定とグループ化だけをやり直します。判定方法の更新後や、送信元の設定の変更後に実行します。"
                 },
                 "cleanup": {
                     "title": "クリーンアップ",
-                    "description": "メールアドレスごとの保持日数を過ぎたバウンスなどの通知メール（件名や差出人名だけで判定したもの、自動生成メールを除く）と迷惑メールを IMAP サーバーから削除したうえで、メールの保持日数を過ぎたメール（原文・本文セクション・索引の行）、書き込み途中で残った一時ファイル、エージェントの古い作業ディレクトリ、完了から 30 日を過ぎたジョブ履歴を削除します。サーバーでは毎日クリーンアップ時刻に自動で実行されます。",
-                    "warning": "IMAP サーバーから削除したメールは元に戻せません。メールが無くなった纏めグループは分析報告ごと削除されます。"
+                    "description": "IMAP サーバーから、メールアドレスごとの保持日数を過ぎた通知メールと迷惑メールを削除します（件名や差出人名だけで判定した通知メールと、自動生成メールは除く）。あわせて、メールの保持日数を過ぎたメール、書き込み途中で残った一時ファイル、古い作業ディレクトリ、完了から 30 日を過ぎたジョブ履歴を削除します。毎日クリーンアップ時刻にも自動で実行されます。",
+                    "warning": "IMAP サーバーから削除したメールは元に戻せません。メールが無くなったグループは、分析結果とともに削除されます。"
                 }
             }
         },
         "jobs": {
-            "description": "受信・纏め・解析などのバックグラウンド処理です。実行中のジョブは自動で更新されます。「すべて」で投入したジョブは、アドレスごとの子ジョブとして表示されます。",
+            "description": "受信・グループ化・分析などのバックグラウンド処理です。実行中のジョブは自動で更新されます。「すべてのメールアドレス」で実行したジョブは、メールアドレスごとのジョブとして表示されます。",
             "active": "実行中",
             "activeEmpty": "実行中のジョブはありません。",
             "history": "履歴",
@@ -907,96 +903,95 @@
             }
         },
         "settings": {
-            "description": "システムの設定を管理します。自分のプロファイルは右上のユーザー名から開けます。",
+            "description": "システムの設定を管理します。プロフィールは右上のユーザー名から開けます。",
             "adminOnly": "管理者のみ",
             "menu": {
-                "general": "同期時刻、ワーカー数、エージェント、サーバー情報",
+                "general": "同期時刻、同時実行数、AI エージェント、送信元と DNS 検証、サーバー情報",
                 "notifications": "SMTP サーバーと、通知メールの時刻・間隔・通知先",
                 "mailboxes": "監視するメールアドレスの登録・編集・接続テスト",
-                "users": "利用者の追加、役割の変更、パスワードのリセット",
-                "tokens": "将来の API 連携用トークンの発行と削除"
+                "users": "利用者の追加、役割の変更、パスワードの再設定",
+                "tokens": "将来の API 連携に使うトークンの発行と削除"
             }
         },
         "settingsGeneral": {
-            "serverTimeZone": "サーバーのローカル時刻（{{zone}}）で実行されます。",
-            "noCheckTimes": "同期時刻が設定されていません。自動同期は行われません。",
-            "addTimeHint": "HH:MM 形式 (例: 09:00)",
+            "serverTimeZone": "サーバーの時刻（{{zone}}）で実行します。",
+            "noCheckTimes": "同期時刻が未設定のため、自動同期は行われません。",
+            "addTimeHint": "HH:MM の形式（例: 09:00）",
             "cleanup": "クリーンアップ",
-            "cleanupHint": "保持期間を過ぎたデータを削除する処理の設定です。",
-            "recheck": "再判定",
-            "recheckHint": "対応済・無視にしたグループを、もう一度判定が必要なものとして一覧に戻す条件です。",
+            "cleanupHint": "保持期間を過ぎたデータの削除に関する設定です。",
+            "recheck": "再確認",
+            "recheckHint": "対応済・無視にしたグループを、再確認が必要として一覧に戻す条件です。",
             "dnsCheck": "送信元と DNS 検証",
-            "dnsCheckHint": "バウンスが自分たちの送ったメールのものかどうかと、名前解決の失敗（Name service error、Host not found など）を知らせる通知を判定するための設定です。",
-            "ownSendingEmpty": "自分たちの送信元が 1 つもありません（ここにも、メールアドレスの SMTP サーバーにもありません）。どのメールアドレスでも、差出人を詐称されたメールのバウンスを迷惑メールとして見分ける判定は行いません（この判定には、そのアドレスのホスト名が必要です）。名前解決の失敗を知らせる通知は、すべて自分たちのメールサーバーから届いたものとして判定します。",
-            "ownSendingNoHost": "次のアドレスにはホスト名が無いため、自分たちのメールサーバーから送っていないメールについての通知を見分ける判定を行いません。各アドレスの設定で「SMTP サーバー（送信）」を入力するか、ここにホスト名を登録してください（ここに登録したホスト名はすべてのアドレスに使います）。",
-            "ownSendingNoHostAllOwn": "これらのアドレスでは通知を出したメールサーバーをすべて自分たちのものとみなし、ほかのサーバーが報告した名前解決の失敗でも「DNS 名前解決の不調（自分たちのメールサーバー）」のアラートが出ることがあるため、各アドレスの「SMTP サーバー（送信）」を入力するか、ここに自分たちの送信元（IP アドレスかホスト名）を登録してください。",
+            "dnsCheckHint": "送信元から送信したメールのバウンスの判定と、名前解決の失敗の原因の切り分けに使います。",
+            "sendingSourceEmpty": "送信元が未設定のため、送信元以外から送信されたメールのバウンスを見分けられません。",
+            "sendingSourceNoHost": "送信元ホスト名が未設定のメールアドレス（送信元以外から送信されたメールのバウンスを見分けられません）",
+            "sendingSourceNoHostAction": "各メールアドレスの「SMTP サーバー（送信）」か、この画面の「送信元ホスト名」を入力してください。",
+            "sendingSourceNoHostNoAddress": "これらのメールアドレスでは、名前解決の失敗もすべて送信側のメールサーバーの問題として扱います。",
             "jobs": "ジョブの実行",
-            "jobsHint": "バックグラウンドで実行するジョブの設定です。",
-            "agent": "エージェント",
+            "agent": "AI エージェント",
             "agentHint": "バウンスの原因を分析する外部 CLI の設定です。",
             "providerStatus": "利用可否",
             "providerAvailable": "利用可能",
             "providerUnavailable": "利用不可",
             "providerUnknown": "不明",
-            "providerUnavailableHint": "{{provider}}のコマンドがサーバーで見つかりません。インストールするか、別のプロバイダーを選んでください。",
+            "providerUnavailableHint": "{{provider}} のコマンドがサーバーに見つかりません。インストールするか、別のプロバイダーを選択してください。",
             "server": "サーバー情報",
-            "serverHint": "起動パラメータで決まる値です。ここでは変更できません。"
+            "serverHint": "起動オプションで指定する値のため、ここでは変更できません。"
         },
         "mailboxes": {
             "sectionBasic": "基本情報",
             "sectionImap": "IMAP 接続",
-            "sectionImapHint": "受信サーバーへの接続情報です。パスワードは暗号化して保存されます。",
+            "sectionImapHint": "受信サーバーへの接続情報です。パスワードは暗号化して保存します。",
             "sectionSmtp": "送信サーバー",
-            "smtpHostMissing": "このアドレスにはホスト名がありません（ここにも、一般設定にもありません）。自分たちのメールサーバーから送っていないメールについての通知を、このアドレスでは見分けません。",
-            "sectionRange": "取得範囲",
-            "sectionRangeHint": "初回は初回取得日数、2 回目以降は通常取得日数の期間を対象に未取得メールを探します。ツール画面の「全期間」では期間に関係なくすべてのメールを確認します。",
+            "smtpHostMissing": "未設定のため、このメールアドレスでは送信元以外から送信されたメールのバウンスを見分けられません。",
+            "sectionRange": "受信期間",
+            "sectionRangeHint": "初回の同期では初回の受信日数、2 回目以降は通常の受信日数の範囲で、未受信のメールを探します。ツール画面で受信期間に「全期間」を選ぶと、期間に関係なくすべてのメールを確認します。",
             "sectionServerKeep": "サーバー上のメールの削除",
-            "sectionServerKeepHint": "バウンス・自動返信・DMARC レポートなどの通知メールと迷惑メールを、毎日のクリーンアップで IMAP サーバーから完全に削除します。件名や差出人名だけで判定した通知メール、自動生成メール、一般のメールは削除しません。削除したメールは元に戻せません。MailCare の手元のコピーはメールの保持日数まで残ります。"
+            "sectionServerKeepHint": "毎日のクリーンアップで、バウンス・自動返信・DMARC レポートなどの通知メールと迷惑メールを IMAP サーバーから削除します。件名や差出人名だけで判定した通知メール、自動生成メール、一般のメールは削除しません。削除したメールは元に戻せません。MailCare に保存したメールは、メールの保持日数まで残ります。"
         },
         "notifications": {
-            "description": "対応が必要なアラートの要約を、通知先の利用者へメールで送ります。",
+            "description": "対応が必要なアラートの一覧を、通知先の利用者にメールで送信します。",
             "status": {
                 "blockedTitle": "通知メールは送信されません",
                 "readyTitle": "通知は有効です",
-                "disabled": "通知が無効になっています。有効にして保存すると、通知時刻に通知先へメールを送ります。",
-                "smtpIncomplete": "SMTP ホストと送信元アドレスが設定されていません。SMTP 設定を入力して保存してください。",
-                "noRecipients": "メールアドレスが設定された通知先がいません。通知先を選ぶか、利用者にメールアドレスを登録してください。",
-                "ready": "{{time}} に{{interval}}、未対応のグループがあれば通知先へメールを送ります。",
-                "unsaved": "未保存の変更があります。保存すると、この判定も更新されます。"
+                "disabled": "通知が無効です。有効にして保存すると、通知時刻に通知先へメールを送信します。",
+                "smtpIncomplete": "SMTP ホストと差出人アドレスが未設定です。SMTP 設定を入力して保存してください。",
+                "noRecipients": "メールアドレスが登録された通知先がありません。通知先を選択するか、利用者のメールアドレスを登録してください。",
+                "ready": "{{time}} に{{interval}}、対応が必要なグループがある場合に通知先へメールを送信します。",
+                "unsaved": "未保存の変更があります。保存すると、この表示も更新されます。"
             },
             "smtp": "SMTP 設定",
             "smtpHint": "通知メールの送信に使うメールサーバーです。",
-            "testHint": "保存済みの SMTP 設定で、短い確認メールを送ります。",
-            "testNoAddress": "自分のメールアドレスが未登録です。送信先を入力するか、アカウント設定で登録してください。",
-            "testNeedsSmtp": "SMTP ホストと送信元アドレスを入力して保存すると、テスト送信できます。",
-            "testSaveFirst": "SMTP 設定を変更しています。先に保存してからテスト送信してください。",
+            "testHint": "保存済みの SMTP 設定で、テストメールを送信します。",
+            "testNoAddress": "メールアドレスが未登録です。送信先を入力するか、プロフィールでメールアドレスを登録してください。",
+            "testNeedsSmtp": "SMTP ホストと差出人アドレスを入力して保存すると、テスト送信できます。",
+            "testSaveFirst": "SMTP 設定が変更されています。保存してからテスト送信してください。",
             "settings": "通知設定",
-            "settingsHint": "通知メールを送る条件と宛先です。",
             "recipientsSelected": "送信対象: {{count}} 人",
-            "recipientsWithoutEmail": "(メールアドレス未設定: {{count}} 人)",
-            "noEmail": "メールアドレス未設定",
+            "recipientsWithoutEmail": "（メールアドレス未登録: {{count}} 人）",
+            "noEmail": "メールアドレス未登録",
             "noUsers": "利用者がいません。",
-            "publicUrlEffective": "実際に使われる URL:",
-            "sendNowHint": "通知時刻を待たずに、保存済みの設定で通知メールを送ります。",
-            "sendBlocked": "現在の保存済み設定では送信できません。上の案内を確認してください。"
+            "publicUrlEffective": "使用する URL:",
+            "sendNowHint": "通知時刻を待たずに、保存済みの設定で通知メールを送信します。",
+            "sendBlocked": "保存済みの設定では送信できません。上の案内を確認してください。"
         },
         "users": {
-            "you": "自分",
-            "empty": "利用者はいません"
+            "currentUser": "あなた",
+            "empty": "利用者はいません。"
         },
         "tokens": {
-            "description": "トークンは、将来の API 連携のために予約された機能です。Web のログインには使いません。",
-            "futureNote": "トークンが 1 つもないときは、サーバーが「default」トークンを自動で作成します。",
-            "createdOnce": "この値は今回だけ表示されます。安全な場所に保存してください。",
-            "empty": "トークンはありません",
+            "description": "トークンは将来の API 連携のための機能です。Web 画面へのログインには使用しません。",
+            "futureNote": "トークンが 1 件もない場合は、サーバーが「default」トークンを自動で作成します。",
+            "createdOnce": "この値は今回だけ表示されます。安全な場所に保管してください。",
+            "empty": "トークンはありません。",
             "emptyHint": "「トークンを発行」から作成できます。"
         },
         "profile": {
             "profile": "プロフィール",
-            "profileHint": "表示名、通知用メールアドレス、言語、タイムゾーン、テーマを変更できます。",
-            "emailHint": "通知メールの宛先です。管理者が通知先に選ぶと、このアドレスにアラートの要約が届きます。ログインにも使えます。空欄で解除します。",
-            "changePasswordHint": "現在のパスワードを確認したうえで新しいパスワードに変更します。",
-            "sessionNote": "パスワードを変更すると、他の端末のログインは無効になります。"
+            "profileHint": "表示名、メールアドレス、言語、タイムゾーン、テーマを変更できます。",
+            "emailHint": "通知メールの宛先です。管理者が通知先に選択すると、このアドレスにアラートの一覧が届きます。ログインにも使用できます。空欄にすると登録を解除します。",
+            "changePasswordHint": "現在のパスワードと新しいパスワードを入力してください。",
+            "sessionNote": "パスワードを変更すると、他の端末ではログアウトされます。"
         }
     }
 }

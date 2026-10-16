@@ -14,8 +14,8 @@ import (
 	"mailcare/app/modules/mailengine"
 )
 
-// The Checker resolves host names for mailengine to tell our own reporting
-// MTAs.
+// The Checker resolves host names for mailengine to tell which reporting
+// MTAs are sending servers.
 var _ mailengine.HostResolver = (*Checker)(nil)
 
 // recordingResolver passes every lookup to a Go resolver and records the
@@ -260,7 +260,7 @@ func TestResolveReporter(t *testing.T) {
 	}
 }
 
-// TestResolveHostOSFirst checks the order of the lookups of our own host
+// TestResolveHostOSFirst checks the order of the lookups of the source host
 // names with the check on: the OS resolver first (a name of a split-horizon
 // DNS resolves only inside); its addresses are taken whenever it gives any,
 // even half answered, and the configured resolvers are then not asked. Only
@@ -322,10 +322,10 @@ func TestResolveHostOSFirst(t *testing.T) {
 	}
 }
 
-// TestResolveHostConcurrent resolves several own host names at the same
-// time, as the grouping does (up to four at once): every name gets its own
+// TestResolveHostConcurrent resolves several source host names at the same
+// time, as the grouping does (up to four at once): every name gets its
 // addresses, each is asked once, and the shared state of the Checker (the
-// control queries, the names remembered, the budget of the own sources)
+// control queries, the names remembered, the budget of the sending sources)
 // stays consistent (run with -race).
 func TestResolveHostConcurrent(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
@@ -353,7 +353,7 @@ func TestResolveHostConcurrent(t *testing.T) {
 			t.Errorf("mx%d asked %d times: %v", i, len(q), q)
 		}
 	}
-	if c.ownSpent <= 0 {
-		t.Error("the lookups were not counted against the budget of the own sources")
+	if c.sourceSpent <= 0 {
+		t.Error("the lookups were not counted against the budget of the sending sources")
 	}
 }

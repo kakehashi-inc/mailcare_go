@@ -439,8 +439,8 @@ const (
 	codePad        = 2.2
 )
 
-// fields draws the items as a two-column grid (wide items take a row of
-// their own), each a muted label over its value.
+// fields draws the items as a two-column grid (wide items take a whole
+// row), each a muted label over its value.
 func (d *document) fields(items []field) {
 	col := (d.width - fieldGapX) / 2
 	for i := 0; i < len(items); {

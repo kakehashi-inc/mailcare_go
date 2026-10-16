@@ -132,6 +132,7 @@ type EvidenceInput struct {
 type DNSCheckResult struct {
 	Outcome   string    // exists | not_found | broken
 	Detail    string    // the evidence, one line per resolver and authoritative server
+	Direct    bool      // the authoritative servers of the name were asked as well (dns_checks.direct)
 	CheckedAt time.Time // when the name was looked up
 }
 
@@ -143,7 +144,7 @@ type DNSCheckResult struct {
 type DNSCheckFunc func(name, qtype string, noticeTime time.Time) (res DNSCheckResult, ok bool)
 
 // readRawMessage reads the original notice of a message key. A variable so
-// that tests can supply their own notices.
+// that tests can supply the notices.
 var readRawMessage = func(mailsRoot, address, key string) ([]byte, error) {
 	return os.ReadFile(mailengine.MessageFilePath(mailsRoot, address, key, "eml"))
 }
@@ -453,9 +454,14 @@ func dnsFailureEvidence(check DNSCheckFunc, b *models.GroupBounce, fileName stri
 		none := facts + "DNS verification: (not found: this name was not verified by MailCare)\n"
 		return none, none
 	}
+	authoritative := "no (resolvers only)"
+	if res.Direct {
+		authoritative = "yes"
+	}
 	head := facts + "DNS verification by MailCare: outcome " + orNotFound(truncateLine(sanitize(foldLine(res.Outcome)), maxDNSOutcomeRunes)) +
 		"; checked " + orNotFound(formatTime(models.NullTime(res.CheckedAt))) +
-		"; notice received " + orNotFound(formatTime(models.NullTime(noticeTime(b)))) + "\n"
+		"; notice received " + orNotFound(formatTime(models.NullTime(noticeTime(b)))) +
+		"; authoritative servers asked " + authoritative + "\n"
 	lines := dnsDetailLines(res.Detail)
 	if len(lines) == 0 {
 		none := head + "Verification evidence: (not found: no evidence lines were stored)\n"

@@ -200,7 +200,7 @@ interface RadioGroupFieldProps<T extends string> {
 }
 
 /**
- * A group of radio buttons with its label as the legend. Each choice sits on its own row, the button left of its
+ * A group of radio buttons with its label as the legend. Each choice sits on a separate row, the button left of its
  * label (like CheckboxField), and the whole row is the tap target.
  */
 export function RadioGroupField<T extends string>({

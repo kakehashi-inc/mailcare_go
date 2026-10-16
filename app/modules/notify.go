@@ -276,8 +276,15 @@ type NotificationInput struct {
 // changes the host, port, security mode or username must carry the password
 // too (ErrSMTPPasswordRequired otherwise; nothing is saved): the stored
 // password serves the server it was saved for and is never pointed at
-// another one.
+// another one. The saved values are read for that check and the fields
+// written under the settings lock (settingsMu), so that a concurrent change
+// cannot point the stored password at another server either.
 func SaveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) error {
+	return withSettingsLock(func() error { return saveNotificationSettings(db, key, in) })
+}
+
+// saveNotificationSettings is SaveNotificationSettings without the lock.
+func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) error {
 	type write = settingWrite
 	var writes []write
 	if in.SMTPHost != nil {
@@ -399,7 +406,7 @@ func smtpConnectionChanged(saved *NotificationSettings, in *NotificationInput) b
 
 // SetNotifyLastSent records the time of the last notification mail.
 func SetNotifyLastSent(db *sql.DB, t time.Time) error {
-	return models.SetSetting(db, SettingNotifyLastSent, t.UTC().Format(time.RFC3339))
+	return withSettingsLock(func() error { return models.SetSetting(db, SettingNotifyLastSent, t.UTC().Format(time.RFC3339)) })
 }
 
 // EffectiveBaseURL is the public URL used for links: public_base_url when
@@ -821,7 +828,7 @@ func loadCategoryLabels(language string) (map[string]string, error) {
 // ErrSMTPPasswordRequired is returned by SaveNotificationSettings and
 // SMTPConfigForTest when a password is stored, the request changes the
 // connection settings (host, port, security, username) and gives no
-// password of its own.
+// password.
 var ErrSMTPPasswordRequired = wording.New("validation.connection.passwordRequiredOnChange", "smtp_password is required when the connection settings change")
 
 var errSMTPPortInvalid = wording.New("validation.common.numberOutOfRange", "smtp_port must be between 1 and 65535").With("min", 1).With("max", 65535)
@@ -840,7 +847,7 @@ type SMTPTestInput struct {
 // SMTPConfigForTest builds the SMTP configuration of a test mail from the
 // saved settings and the values given in the request. The stored password is
 // used only when the host, port, security mode and username are the saved
-// ones; as soon as one of them differs the request must carry its own
+// ones; as soon as one of them differs the request must carry a
 // password (ErrSMTPPasswordRequired otherwise), so that the stored password
 // can never be sent to a server other than the one it was saved for.
 func SMTPConfigForTest(db *sql.DB, key []byte, in *SMTPTestInput) (SMTPConfig, error) {
@@ -923,7 +930,7 @@ func TestSMTP(ctx context.Context, cfg SMTPConfig, to string, loc MailLocale) er
 		return err
 	}
 	if err := SendMail(ctx, cfg, cfg.From, []string{to}, subject, body); err != nil {
-		// The server's own words are the useful part; the Web UI shows them
+		// The words of the server are the useful part; the Web UI shows them
 		// as the detail of its message.
 		return wording.New("result.notification.testFailed", err.Error()).With("detail", err.Error())
 	}

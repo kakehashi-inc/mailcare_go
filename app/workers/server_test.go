@@ -181,7 +181,7 @@ func TestSetupFlow(t *testing.T) {
 	}
 }
 
-func TestLoginWithPasswordAndRememberMe(t *testing.T) {
+func TestLoginWithPasswordAndStayLoggedIn(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
 	createUser(t, c.db, "alice", "Alice", "correct-horse", modules.RoleUser)
@@ -230,7 +230,7 @@ func TestLoginWithPasswordAndRememberMe(t *testing.T) {
 		t.Errorf("GET /api/v1/me: status %d, body %s", rec.Code, rec.Body.String())
 	}
 
-	// Remember me: a persistent cookie with the configured TTL.
+	// Stay logged in: a persistent cookie with the configured TTL.
 	rec = do(t, h, http.MethodPost, "/web/login", map[string]any{"username": "alice", "password": "correct-horse", "remember": true}, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("remembered login: status %d", rec.Code)
@@ -546,7 +546,7 @@ func TestControlEndpointsAreLoopbackOnly(t *testing.T) {
 			}
 		}
 		// The status names the data directory served, so a CLI of another
-		// data directory can tell this server is not its own.
+		// data directory can tell this server serves another one.
 		var st modules.ServerStatus
 		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
 			t.Fatalf("status body: %v", err)

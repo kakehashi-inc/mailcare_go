@@ -8,11 +8,11 @@ import { useAuth } from './AuthProvider';
 
 /** Renders children only for a signed-in user; otherwise goes to /setup or /login. */
 export function RequireAuth({ children }: { children: ReactNode }) {
-    const { me, loading, needsSetup } = useAuth();
+    const { currentUser, loading, needsSetup } = useAuth();
     const location = useLocation();
     if (loading) return <FullPageSpinner />;
     if (needsSetup) return <Navigate to='/setup' replace />;
-    if (!me) {
+    if (!currentUser) {
         const next = location.pathname + location.search;
         return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
     }
@@ -35,12 +35,12 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
 
 /** For /login and /setup: sends an already signed-in user to the app. */
 export function RedirectIfAuthed({ children }: { children: ReactNode }) {
-    const { me, loading, needsSetup } = useAuth();
+    const { currentUser, loading, needsSetup } = useAuth();
     const location = useLocation();
     if (loading) return <FullPageSpinner />;
     if (needsSetup && location.pathname !== '/setup') return <Navigate to='/setup' replace />;
-    if (!needsSetup && location.pathname === '/setup') return <Navigate to={me ? '/' : '/login'} replace />;
-    if (me) {
+    if (!needsSetup && location.pathname === '/setup') return <Navigate to={currentUser ? '/' : '/login'} replace />;
+    if (currentUser) {
         return <Navigate to={safeNextPath(new URLSearchParams(location.search).get('next'))} replace />;
     }
     return <>{children}</>;

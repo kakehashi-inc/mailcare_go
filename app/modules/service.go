@@ -54,8 +54,9 @@ func StopServer(port int) error {
 
 // ServerStatus is the payload of GET /control/status. DataDir is the
 // absolute path of the data directory the server serves; the CLI compares it
-// with its own before handing jobs to the server or stopping it, since a
-// server on the expected port may belong to another data directory.
+// with the data directory of the CLI before handing jobs to the server or
+// stopping it, since a server on the expected port may belong to another
+// data directory.
 type ServerStatus struct {
 	Status      string `json:"status"`
 	Name        string `json:"name"`

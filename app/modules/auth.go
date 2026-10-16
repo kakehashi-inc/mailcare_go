@@ -57,8 +57,8 @@ func ValidateRole(role string) error {
 	return nil
 }
 
-// ValidatePassword enforces the minimum password length and bcrypt's own
-// maximum (it hashes at most 72 bytes; longer input is refused instead of
+// ValidatePassword enforces the minimum password length and the maximum of
+// bcrypt (it hashes at most 72 bytes; longer input is refused instead of
 // silently ignored).
 func ValidatePassword(password string) error {
 	if utf8.RuneCountInString(password) < PasswordMinLength {

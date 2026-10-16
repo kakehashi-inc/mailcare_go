@@ -136,7 +136,7 @@ func MessageExists(db *sql.DB, uidValidity, uid uint32, folder string) (bool, er
 // with that Message-ID), then the oldest. Rows already indexed under the
 // current identity of the folder are never moved: a message with the same
 // Message-ID under another UID of that folder is another message on the
-// server and is indexed as its own row. The message key, the fetch facts and
+// server and is indexed as a separate row. The message key, the fetch facts and
 // the files stay as they are.
 func ReidentifyMessage(db *sql.DB, messageID, folder string, uidValidity, uid uint32, size int64) (bool, error) {
 	if messageID == "" {

@@ -101,9 +101,9 @@ export function MailboxEditPage() {
     // The server retention may not exceed the mail retention of the general settings.
     const settings = useAsync(getSettings, []);
     const mailKeepDays = settings.data?.mail_keep_days;
-    // No host name saved in the general settings: an address without an SMTP host of its own is left out of the
-    // judgement of notices about mail not sent from our servers (undefined while the settings load).
-    const noGlobalHost = settings.data?.own_sending_hosts?.length === 0;
+    // No host name saved in the general settings: an address without an SMTP host is left out of the judgement
+    // of notices about mail not sent from the sending sources (undefined while the settings load).
+    const noGlobalHost = settings.data?.sending_source_hosts?.length === 0;
     const [form, setForm] = useState<FormState>(EMPTY);
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
@@ -170,7 +170,7 @@ export function MailboxEditPage() {
             : mailKeepDays !== undefined && serverKeep > mailKeepDays && serverKeep !== storedServerKeep
               ? t('validation.mailbox.serverKeepDaysOverMailKeep', { max: mailKeepDays })
               : undefined;
-    // Same rule as the server (normalizeOwnHost); the SMTP host is no connection setting and needs no password.
+    // Same rule as the server (normalizeSourceHost); the SMTP host is no connection setting and needs no password.
     const smtpHost = trimSpace(form.smtp_host);
     const smtpHostError =
         smtpHost !== '' && hostKey(smtpHost) === null

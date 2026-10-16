@@ -503,7 +503,7 @@ func TestMessagesEndpoints(t *testing.T) {
 		}
 	}
 	// With two HTML sections present (and counted by the index) each one is
-	// served on its own, sanitized and with the CSP.
+	// served separately, sanitized and with the CSP.
 	dir := mailengine.MailboxDir(s.mailsRoot, s.mb.Address)
 	for i, html := range []string{`<p onclick="x()">hi</p><script>alert(1)</script><a href="javascript:1">l</a>`, `<p>second</p>`} {
 		if err := os.WriteFile(mailengine.SectionFilePath(dir, s.keys[0], "html", i+1), []byte(html), 0o600); err != nil {
@@ -1134,19 +1134,19 @@ func TestGroupListPaging(t *testing.T) {
 	}
 }
 
-// TestOwnSendingMailboxesWithoutHostAPI checks the read-only
-// own_sending_mailboxes_without_host of GET /api/v1/settings: while
-// own_sending_hosts is empty, the addresses of the mailboxes (enabled or
+// TestSendingSourceMailboxesWithoutHostAPI checks the read-only
+// sending_source_mailboxes_without_host of GET /api/v1/settings: while
+// sending_source_hosts is empty, the addresses of the mailboxes (enabled or
 // not, in the order of the mailbox list) without an SMTP host; [] once a
 // host name is saved there; never shown to a member and never set by a PUT.
-func TestOwnSendingMailboxesWithoutHostAPI(t *testing.T) {
+func TestSendingSourceMailboxesWithoutHostAPI(t *testing.T) {
 	s := newSeededCore(t)
 	without := func(cookie *http.Cookie) ([]string, bool) {
 		t.Helper()
 		rec := do(t, s.h, http.MethodGet, "/api/v1/settings", nil, cookie)
 		var st map[string]json.RawMessage
 		decode(t, rec.Body.Bytes(), &st)
-		raw, ok := st["own_sending_mailboxes_without_host"]
+		raw, ok := st["sending_source_mailboxes_without_host"]
 		if !ok {
 			return nil, false
 		}
@@ -1169,9 +1169,9 @@ func TestOwnSendingMailboxesWithoutHostAPI(t *testing.T) {
 		t.Errorf("a member sees %v", got)
 	}
 	// A PUT cannot set it; a global host name empties it.
-	rec := do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"own_sending_mailboxes_without_host": []string{"x@example.test"},
-		"own_sending_hosts": []string{"relay.example.jp"}}, s.admin)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"own_sending_mailboxes_without_host":[]`) {
+	rec := do(t, s.h, http.MethodPut, "/api/v1/settings", map[string]any{"sending_source_mailboxes_without_host": []string{"x@example.test"},
+		"sending_source_hosts": []string{"relay.example.jp"}}, s.admin)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sending_source_mailboxes_without_host":[]`) {
 		t.Errorf("PUT: %d %s", rec.Code, rec.Body.String())
 	}
 	if got, ok := without(s.admin); !ok || got == nil || len(got) != 0 {
@@ -1195,7 +1195,7 @@ func TestSettingsUpdateAllOrNothing(t *testing.T) {
 	}
 	body := map[string]any{
 		"check_times":                    []string{"07:00"},
-		"own_sending_hosts":              []string{"mail.example.jp"},
+		"sending_source_hosts":           []string{"mail.example.jp"},
 		"dns_check_enabled":              false,
 		"dns_check_resolvers":            []string{"8.8.8.8"},
 		"dns_check_system_resolver_only": true,
@@ -1210,7 +1210,7 @@ func TestSettingsUpdateAllOrNothing(t *testing.T) {
 	}
 	for _, st := range settings {
 		switch st.Key {
-		case modules.SettingCheckTimes, modules.SettingOwnSendingHosts, modules.SettingDNSCheckEnabled,
+		case modules.SettingCheckTimes, modules.SettingSendingSourceHosts, modules.SettingDNSCheckEnabled,
 			modules.SettingDNSCheckResolvers, modules.SettingDNSCheckSystemResolverOnly, modules.SettingWorkers:
 			t.Errorf("%s was saved (%q) although the request failed", st.Key, st.Value)
 		}
@@ -1233,12 +1233,12 @@ func TestSettingsUpdateAllOrNothing(t *testing.T) {
 	}
 }
 
-// TestOwnSendingAndDNSCheckSettings checks the own sending lists and the DNS
+// TestSendingSourceAndDNSCheckSettings checks the sending source lists and the DNS
 // check settings of /api/v1/settings: the GET shape, the validation of every
 // list, the rule that the enabled verification keeps a resolver (checked
 // with the saved values of the fields absent), normalization and
 // persistence, and that a refused request saves nothing.
-func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
+func TestSendingSourceAndDNSCheckSettings(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
 	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
@@ -1246,9 +1246,9 @@ func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
 	admin, user := login(t, h, "admin", "password123"), login(t, h, "bob", "password123")
 
 	type dnsSettings struct {
-		IPv4       []string `json:"own_sending_ipv4"`
-		IPv6       []string `json:"own_sending_ipv6"`
-		Hosts      []string `json:"own_sending_hosts"`
+		IPv4       []string `json:"sending_source_ipv4"`
+		IPv6       []string `json:"sending_source_ipv6"`
+		Hosts      []string `json:"sending_source_hosts"`
 		Enabled    bool     `json:"dns_check_enabled"`
 		Resolvers  []string `json:"dns_check_resolvers"`
 		SystemOnly bool     `json:"dns_check_system_resolver_only"`
@@ -1272,8 +1272,8 @@ func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET: %d %s", rec.Code, rec.Body.String())
 	}
-	for _, part := range []string{`"own_sending_ipv4":[]`, `"own_sending_ipv6":[]`, `"own_sending_hosts":[]`,
-		`"own_sending_mailbox_hosts":[]`, `"own_sending_mailboxes_without_host":[]`,
+	for _, part := range []string{`"sending_source_ipv4":[]`, `"sending_source_ipv6":[]`, `"sending_source_hosts":[]`,
+		`"sending_source_mailbox_hosts":[]`, `"sending_source_mailboxes_without_host":[]`,
 		`"dns_check_enabled":true`, `"dns_check_resolvers":["1.1.1.1","8.8.8.8","9.9.9.9"]`, `"dns_check_system_resolver_only":false`} {
 		if !strings.Contains(rec.Body.String(), part) {
 			t.Errorf("GET lacks %s: %s", part, rec.Body.String())
@@ -1282,11 +1282,11 @@ func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
 	rec = do(t, h, http.MethodGet, "/api/v1/settings", nil, user)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"dns_check_enabled":true`) ||
 		!strings.Contains(rec.Body.String(), `"dns_check_system_resolver_only":false`) ||
-		strings.Contains(rec.Body.String(), `"own_sending_`) || strings.Contains(rec.Body.String(), `"dns_check_resolvers"`) {
+		strings.Contains(rec.Body.String(), `"sending_source_`) || strings.Contains(rec.Body.String(), `"dns_check_resolvers"`) {
 		t.Errorf("GET as a member: %d %s", rec.Code, rec.Body.String())
 	}
 	// Only an administrator changes them.
-	if rec := do(t, h, http.MethodPut, "/api/v1/settings", map[string]any{"own_sending_hosts": []string{"mx1.example"}}, user); rec.Code != http.StatusForbidden {
+	if rec := do(t, h, http.MethodPut, "/api/v1/settings", map[string]any{"sending_source_hosts": []string{"mx1.example"}}, user); rec.Code != http.StatusForbidden {
 		t.Errorf("PUT by a user: %d", rec.Code)
 	}
 
@@ -1302,17 +1302,17 @@ func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
 		key  string
 		line int
 	}{
-		{map[string]any{"own_sending_ipv4": []string{"203.0.113.5", "2001:db8::1"}}, "validation.ownSending.ipv4Invalid", 2},
-		{map[string]any{"own_sending_ipv4": []string{"203.0.113.0/33"}}, "validation.ownSending.ipv4Invalid", 1},
-		{map[string]any{"own_sending_ipv4": []string{"127.0.0.1"}}, "validation.ownSending.ipv4Invalid", 1},
-		{map[string]any{"own_sending_ipv4": []string{"0.0.0.0/0"}}, "validation.ownSending.ipv4Invalid", 1},
-		{map[string]any{"own_sending_ipv6": []string{"203.0.113.5"}}, "validation.ownSending.ipv6Invalid", 1},
-		{map[string]any{"own_sending_ipv6": []string{"::ffff:203.0.113.5"}}, "validation.ownSending.ipv6Invalid", 1},
-		{map[string]any{"own_sending_ipv6": []string{"fe80::1%eth0"}}, "validation.ownSending.ipv6Invalid", 1},
-		{map[string]any{"own_sending_ipv6": []string{"2001:db8::/129"}}, "validation.ownSending.ipv6Invalid", 1},
-		{map[string]any{"own_sending_hosts": []string{"mx1.example\n\n203.0.113.5"}}, "validation.ownSending.hostInvalid", 3},
-		{map[string]any{"own_sending_hosts": []string{"mail_1.example"}}, "validation.ownSending.hostInvalid", 1},
-		{map[string]any{"own_sending_ipv4": many(modules.MaxOwnSendingEntries+1, "10.0.%d.%d")}, "validation.ownSending.tooMany", 0},
+		{map[string]any{"sending_source_ipv4": []string{"203.0.113.5", "2001:db8::1"}}, "validation.sendingSource.ipv4Invalid", 2},
+		{map[string]any{"sending_source_ipv4": []string{"203.0.113.0/33"}}, "validation.sendingSource.ipv4Invalid", 1},
+		{map[string]any{"sending_source_ipv4": []string{"127.0.0.1"}}, "validation.sendingSource.ipv4Invalid", 1},
+		{map[string]any{"sending_source_ipv4": []string{"0.0.0.0/0"}}, "validation.sendingSource.ipv4Invalid", 1},
+		{map[string]any{"sending_source_ipv6": []string{"203.0.113.5"}}, "validation.sendingSource.ipv6Invalid", 1},
+		{map[string]any{"sending_source_ipv6": []string{"::ffff:203.0.113.5"}}, "validation.sendingSource.ipv6Invalid", 1},
+		{map[string]any{"sending_source_ipv6": []string{"fe80::1%eth0"}}, "validation.sendingSource.ipv6Invalid", 1},
+		{map[string]any{"sending_source_ipv6": []string{"2001:db8::/129"}}, "validation.sendingSource.ipv6Invalid", 1},
+		{map[string]any{"sending_source_hosts": []string{"mx1.example\n\n203.0.113.5"}}, "validation.sendingSource.hostInvalid", 3},
+		{map[string]any{"sending_source_hosts": []string{"mail_1.example"}}, "validation.sendingSource.hostInvalid", 1},
+		{map[string]any{"sending_source_ipv4": many(modules.MaxSendingSourceEntries+1, "10.0.%d.%d")}, "validation.sendingSource.tooMany", 0},
 		{map[string]any{"dns_check_resolvers": []string{"1.1.1.1/32"}}, "validation.dnsCheck.resolverInvalid", 1},
 		{map[string]any{"dns_check_resolvers": []string{"8.8.8.8", "1.1.1.1:53"}}, "validation.dnsCheck.resolverInvalid", 2},
 		{map[string]any{"dns_check_resolvers": []string{"::1"}}, "validation.dnsCheck.resolverInvalid", 1},
@@ -1335,14 +1335,14 @@ func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
 
 	// A refused field refuses the whole request: nothing else is saved.
 	for _, body := range []map[string]any{
-		{"workers": 3, "check_times": []string{"07:00"}, "own_sending_ipv4": []string{"203.0.113.5"},
-			"dns_check_enabled": false, "own_sending_hosts": []string{"bad_host"}},
-		{"workers": 3, "own_sending_ipv4": []string{"203.0.113.5"}, "dns_check_resolvers": []string{}},
+		{"workers": 3, "check_times": []string{"07:00"}, "sending_source_ipv4": []string{"203.0.113.5"},
+			"dns_check_enabled": false, "sending_source_hosts": []string{"bad_host"}},
+		{"workers": 3, "sending_source_ipv4": []string{"203.0.113.5"}, "dns_check_resolvers": []string{}},
 	} {
 		if rec := put(body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%v: %d %s", body, rec.Code, rec.Body.String())
 		}
-		if c.jm.Workers() != modules.DefaultWorkers || len(modules.ResolveOwnSendingIPv4(c.db)) != 0 ||
+		if c.jm.Workers() != modules.DefaultWorkers || len(modules.ResolveSendingSourceIPv4(c.db)) != 0 ||
 			!modules.ResolveDNSCheckEnabled(c.db) || strings.Join(modules.ResolveCheckTimes(c.db), ",") != modules.DefaultCheckTimes {
 			t.Errorf("a refused request changed something: %v", body)
 		}
@@ -1350,24 +1350,24 @@ func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
 
 	// Valid lists are stored normalized, one entry per line.
 	rec = put(map[string]any{
-		"own_sending_ipv4":  []string{" 203.0.113.5 ", "198.51.100.7/24", "203.0.113.5/32"},
-		"own_sending_ipv6":  []string{"2001:DB8::1\n2001:db8:0:0:1::/32"},
-		"own_sending_hosts": []string{"MX1.Example.", "mailhost", ""},
+		"sending_source_ipv4":  []string{" 203.0.113.5 ", "198.51.100.7/24", "203.0.113.5/32"},
+		"sending_source_ipv6":  []string{"2001:DB8::1\n2001:db8:0:0:1::/32"},
+		"sending_source_hosts": []string{"MX1.Example.", "mailhost", ""},
 	})
 	var st dnsSettings
 	decode(t, rec.Body.Bytes(), &st)
 	if rec.Code != http.StatusOK || strings.Join(st.IPv4, " ") != "203.0.113.5 198.51.100.0/24" ||
 		strings.Join(st.IPv6, " ") != "2001:db8::1 2001:db8::/32" || strings.Join(st.Hosts, " ") != "mx1.example mailhost" {
-		t.Errorf("own sending: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("sending sources: %d %s", rec.Code, rec.Body.String())
 	}
-	if v, _ := stored(modules.SettingOwnSendingIPv4); v != "203.0.113.5\n198.51.100.0/24" {
-		t.Errorf("stored own_sending_ipv4 %q", v)
+	if v, _ := stored(modules.SettingSendingSourceIPv4); v != "203.0.113.5\n198.51.100.0/24" {
+		t.Errorf("stored sending_source_ipv4 %q", v)
 	}
 	// An empty list clears the setting; the others are left alone.
-	rec = put(map[string]any{"own_sending_ipv6": []string{}})
-	if _, found := stored(modules.SettingOwnSendingIPv6); rec.Code != http.StatusOK || found ||
-		!strings.Contains(rec.Body.String(), `"own_sending_ipv6":[]`) || len(modules.ResolveOwnSendingHosts(c.db)) != 2 {
-		t.Errorf("clearing own_sending_ipv6: %d %s", rec.Code, rec.Body.String())
+	rec = put(map[string]any{"sending_source_ipv6": []string{}})
+	if _, found := stored(modules.SettingSendingSourceIPv6); rec.Code != http.StatusOK || found ||
+		!strings.Contains(rec.Body.String(), `"sending_source_ipv6":[]`) || len(modules.ResolveSendingSourceHosts(c.db)) != 2 {
+		t.Errorf("clearing sending_source_ipv6: %d %s", rec.Code, rec.Body.String())
 	}
 
 	// Verification off: an empty resolver list is accepted and stored as an
@@ -1430,7 +1430,7 @@ func TestOwnSendingAndDNSCheckSettings(t *testing.T) {
 	if err := models.SetSetting(c.db, modules.SettingDNSCheckResolvers, ""); err != nil {
 		t.Fatal(err)
 	}
-	if rec := put(map[string]any{"mail_keep_days": 200, "own_sending_hosts": []string{}}); rec.Code != http.StatusOK {
+	if rec := put(map[string]any{"mail_keep_days": 200, "sending_source_hosts": []string{}}); rec.Code != http.StatusOK {
 		t.Errorf("unrelated update with a broken saved combination: %d %s", rec.Code, rec.Body.String())
 	}
 }

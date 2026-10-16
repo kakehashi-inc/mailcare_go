@@ -21,12 +21,12 @@ import (
 // builtOptions is what groupOptions passed to the constructors of its
 // options (recordGroupOptions).
 type builtOptions struct {
-	own           []mailengine.OwnSources // WithOwnSources
-	checkers      []dnscheck.Config       // dnscheck.New
-	dnsOwn        []mailengine.OwnSources // WithDNS
-	verifierOK    bool                    // WithDNS got the Checker dnscheck.New made
-	hostResolvers []mailengine.OwnHostResolver
-	spfResolvers  []mailengine.OwnSPFResolver
+	sources       []mailengine.SendingSources // WithSendingSources
+	checkers      []dnscheck.Config           // dnscheck.New
+	dnsSources    []mailengine.SendingSources // WithDNS
+	verifierOK    bool                        // WithDNS got the Checker dnscheck.New made
+	hostResolvers []mailengine.SourceHostResolver
+	spfResolvers  []mailengine.SourceSPFResolver
 	spfDomains    [][]string
 	systemLookups int // dnscheck.NewSystemHostResolver
 	checkerUsed   int // the lookups of the Checker given to the cache
@@ -38,32 +38,32 @@ func recordGroupOptions(t *testing.T) *builtOptions {
 	t.Helper()
 	b := &builtOptions{}
 	var made *dnscheck.Checker
-	origChecker, origDNS, origOwn := newDNSChecker, withDNS, withOwnSources
-	origHost, origSPF, origSystem, origLookups := withOwnHostResolver, withOwnSPF, newSystemHostLookup, checkerLookups
+	origChecker, origDNS, origSources := newDNSChecker, withDNS, withSendingSources
+	origHost, origSPF, origSystem, origLookups := withSourceHostResolver, withSourceSPF, newSystemHostLookup, checkerLookups
 	t.Cleanup(func() {
-		newDNSChecker, withDNS, withOwnSources = origChecker, origDNS, origOwn
-		withOwnHostResolver, withOwnSPF, newSystemHostLookup, checkerLookups = origHost, origSPF, origSystem, origLookups
+		newDNSChecker, withDNS, withSendingSources = origChecker, origDNS, origSources
+		withSourceHostResolver, withSourceSPF, newSystemHostLookup, checkerLookups = origHost, origSPF, origSystem, origLookups
 	})
 	newDNSChecker = func(db *sql.DB, cfg dnscheck.Config) *dnscheck.Checker {
 		b.checkers = append(b.checkers, cfg)
 		made = origChecker(db, cfg)
 		return made
 	}
-	withDNS = func(v mailengine.DNSVerifier, own mailengine.OwnSources) mailengine.GroupOption {
-		b.dnsOwn = append(b.dnsOwn, own)
+	withDNS = func(v mailengine.DNSVerifier, sources mailengine.SendingSources) mailengine.GroupOption {
+		b.dnsSources = append(b.dnsSources, sources)
 		c, ok := v.(*dnscheck.Checker)
 		b.verifierOK = ok && c != nil && c == made
-		return origDNS(v, own)
+		return origDNS(v, sources)
 	}
-	withOwnSources = func(own mailengine.OwnSources) mailengine.GroupOption {
-		b.own = append(b.own, own)
-		return origOwn(own)
+	withSendingSources = func(sources mailengine.SendingSources) mailengine.GroupOption {
+		b.sources = append(b.sources, sources)
+		return origSources(sources)
 	}
-	withOwnHostResolver = func(r mailengine.OwnHostResolver) mailengine.GroupOption {
+	withSourceHostResolver = func(r mailengine.SourceHostResolver) mailengine.GroupOption {
 		b.hostResolvers = append(b.hostResolvers, r)
 		return origHost(r)
 	}
-	withOwnSPF = func(r mailengine.OwnSPFResolver, domains []string) mailengine.GroupOption {
+	withSourceSPF = func(r mailengine.SourceSPFResolver, domains []string) mailengine.GroupOption {
 		b.spfResolvers, b.spfDomains = append(b.spfResolvers, r), append(b.spfDomains, domains)
 		return origSPF(r, domains)
 	}
@@ -80,7 +80,7 @@ func recordGroupOptions(t *testing.T) *builtOptions {
 	return b
 }
 
-// fakeLookups stands in for the network of the own source lookups of every
+// fakeLookups stands in for the network of the sending source lookups of every
 // run of the test: the OS resolver of the host names (DNS check off) and
 // the host and SPF lookups of the Checker (DNS check on). A host name
 // missing from hosts is not answered; a domain missing from spf is
@@ -140,10 +140,10 @@ func groupOptionsOf(t *testing.T, jm *JobManager, mb *models.Mailbox) []mailengi
 	return opts
 }
 
-// The own sending servers are always given (the backscatter rule depends on
+// The sending sources are always given (the backscatter rule depends on
 // them alone), with the lookups of their host names; the SPF records and
 // the live verification only while the check is on, with the saved
-// resolvers, the system-only switch and the same own sending servers, all
+// resolvers, the system-only switch and the same sending sources, all
 // through the Checker. With the check off the host names are looked up
 // through the OS resolver alone, and the verification is a StoredOnly
 // Checker (the stored outcomes, no query).
@@ -154,14 +154,14 @@ func TestGroupOptionsFollowTheCheckSetting(t *testing.T) {
 	first := addMailbox(t, db, key, "first@example.net", "", true)
 	b := recordGroupOptions(t)
 	if got := groupOptionsOf(t, jm, first); len(got) != 4 {
-		t.Fatalf("default options = %d, want 4 (own sources, host lookups, SPF and the verification)", len(got))
+		t.Fatalf("default options = %d, want 4 (sending sources, host lookups, SPF and the verification)", len(got))
 	}
-	empty := mailengine.NewOwnSources(nil, nil, nil, nil).WithOtherHosts(nil)
+	empty := mailengine.NewSendingSources(nil, nil, nil, nil).WithOtherHosts(nil)
 	if len(b.checkers) != 1 || !reflect.DeepEqual(b.checkers[0], dnscheck.Config{Enabled: true, Resolvers: []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"}}) {
 		t.Errorf("default checker config %+v", b.checkers)
 	}
-	if len(b.own) != 1 || len(b.dnsOwn) != 1 || !reflect.DeepEqual(b.own[0], empty) || !reflect.DeepEqual(b.dnsOwn[0], empty) || !b.verifierOK {
-		t.Errorf("default: own %+v, verification own %+v, verifier %v", b.own, b.dnsOwn, b.verifierOK)
+	if len(b.sources) != 1 || len(b.dnsSources) != 1 || !reflect.DeepEqual(b.sources[0], empty) || !reflect.DeepEqual(b.dnsSources[0], empty) || !b.verifierOK {
+		t.Errorf("default: sources %+v, verification sources %+v, verifier %v", b.sources, b.dnsSources, b.verifierOK)
 	}
 	if len(b.hostResolvers) != 1 || len(b.spfResolvers) != 1 || any(b.hostResolvers[0]) != any(b.spfResolvers[0]) ||
 		!reflect.DeepEqual(b.spfDomains[0], []string{"example.net"}) || b.checkerUsed != 1 || b.systemLookups != 0 {
@@ -169,21 +169,21 @@ func TestGroupOptionsFollowTheCheckSetting(t *testing.T) {
 			b.checkerUsed, b.systemLookups)
 	}
 
-	// Saved resolvers, the OS resolver only and our own servers: the saved
-	// host names and the SMTP host of the mailbox of the run are its own,
-	// the SMTP hosts of the other mailboxes only match.
+	// Saved resolvers, the OS resolver only and sending sources: the saved
+	// host names and the SMTP host of the mailbox of the run configure the
+	// run, the SMTP hosts of the other mailboxes only match.
 	resolvers := []string{"192.0.2.53", "2001:db8::53"}
 	on := true
 	if err := SaveDNSCheck(db, nil, &resolvers, &on); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveOwnSendingIPv4(db, []string{"192.0.2.0/24"}); err != nil {
+	if err := SaveSendingSourceIPv4(db, []string{"192.0.2.0/24"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveOwnSendingIPv6(db, []string{"2001:db8::/32"}); err != nil {
+	if err := SaveSendingSourceIPv6(db, []string{"2001:db8::/32"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveOwnSendingHosts(db, []string{"relay.example.jp"}); err != nil {
+	if err := SaveSendingSourceHosts(db, []string{"relay.example.jp"}); err != nil {
 		t.Fatal(err)
 	}
 	ops := addMailbox(t, db, key, "ops@example.jp", "mx1.example.jp", true)
@@ -193,21 +193,21 @@ func TestGroupOptionsFollowTheCheckSetting(t *testing.T) {
 		t.Fatalf("configured options = %d, want 4", len(got))
 	}
 	v4, v6 := []string{"192.0.2.0/24"}, []string{"2001:db8::/32"}
-	want := mailengine.NewOwnSources(v4, v6, []string{"relay.example.jp", "mx1.example.jp"}, nil).WithOtherHosts([]string{"mx1.example.jp"})
+	want := mailengine.NewSendingSources(v4, v6, []string{"relay.example.jp", "mx1.example.jp"}, nil).WithOtherHosts([]string{"mx1.example.jp"})
 	if len(b.checkers) != 1 || !reflect.DeepEqual(b.checkers[0], dnscheck.Config{Enabled: true, Resolvers: resolvers, SystemOnly: true}) {
 		t.Errorf("configured checker config %+v", b.checkers)
 	}
-	if len(b.own) != 1 || len(b.dnsOwn) != 1 || !reflect.DeepEqual(b.own[0], want) || !reflect.DeepEqual(b.dnsOwn[0], want) || !b.verifierOK {
-		t.Errorf("configured: own %+v, verification own %+v (want %+v), verifier %v", b.own, b.dnsOwn, want, b.verifierOK)
+	if len(b.sources) != 1 || len(b.dnsSources) != 1 || !reflect.DeepEqual(b.sources[0], want) || !reflect.DeepEqual(b.dnsSources[0], want) || !b.verifierOK {
+		t.Errorf("configured: sources %+v, verification sources %+v (want %+v), verifier %v", b.sources, b.dnsSources, want, b.verifierOK)
 	}
 	if len(b.spfDomains) != 1 || !reflect.DeepEqual(b.spfDomains[0], []string{"example.com", "example.jp", "example.net"}) || b.checkerUsed != 1 {
 		t.Errorf("configured SPF domains %v (checker used %d), want the domains of the mailboxes in mailbox order", b.spfDomains, b.checkerUsed)
 	}
 	b = recordGroupOptions(t)
 	groupOptionsOf(t, jm, info)
-	wantInfo := mailengine.NewOwnSources(v4, v6, []string{"relay.example.jp"}, nil).WithOtherHosts([]string{"mx1.example.jp"})
-	if len(b.own) != 1 || !reflect.DeepEqual(b.own[0], wantInfo) || !reflect.DeepEqual(b.dnsOwn[0], wantInfo) {
-		t.Errorf("another mailbox: own %+v, want %+v", b.own, wantInfo)
+	wantInfo := mailengine.NewSendingSources(v4, v6, []string{"relay.example.jp"}, nil).WithOtherHosts([]string{"mx1.example.jp"})
+	if len(b.sources) != 1 || !reflect.DeepEqual(b.sources[0], wantInfo) || !reflect.DeepEqual(b.dnsSources[0], wantInfo) {
+		t.Errorf("another mailbox: sources %+v, want %+v", b.sources, wantInfo)
 	}
 
 	off := false
@@ -216,18 +216,18 @@ func TestGroupOptionsFollowTheCheckSetting(t *testing.T) {
 	}
 	b = recordGroupOptions(t)
 	if got := groupOptionsOf(t, jm, ops); len(got) != 3 {
-		t.Errorf("options with the check off = %d, want 3 (own sources, the host lookups and the stored outcomes)", len(got))
+		t.Errorf("options with the check off = %d, want 3 (sending sources, the host lookups and the stored outcomes)", len(got))
 	}
 	if len(b.checkers) != 1 || !reflect.DeepEqual(b.checkers[0], dnscheck.Config{StoredOnly: true}) || !b.verifierOK ||
-		len(b.dnsOwn) != 1 || !reflect.DeepEqual(b.dnsOwn[0], want) || len(b.own) != 1 || !reflect.DeepEqual(b.own[0], want) {
-		t.Errorf("check off: checkers %+v (verifier %v), verification own %+v, own %+v", b.checkers, b.verifierOK, b.dnsOwn, b.own)
+		len(b.dnsSources) != 1 || !reflect.DeepEqual(b.dnsSources[0], want) || len(b.sources) != 1 || !reflect.DeepEqual(b.sources[0], want) {
+		t.Errorf("check off: checkers %+v (verifier %v), verification sources %+v, sources %+v", b.checkers, b.verifierOK, b.dnsSources, b.sources)
 	}
 	if len(b.hostResolvers) != 1 || len(b.spfResolvers) != 0 || b.systemLookups != 1 || b.checkerUsed != 0 {
 		t.Errorf("check off: host lookups %v, SPF %v, OS resolver %d, checker %d", b.hostResolvers, b.spfResolvers, b.systemLookups, b.checkerUsed)
 	}
 }
 
-// The options resolve nothing, not even the own host names: the grouping
+// The options resolve nothing, not even the source host names: the grouping
 // resolves them when a message needs them. A resolver that never answers
 // would otherwise hold the call for the control query's timeout.
 func TestGroupOptionsResolveNothing(t *testing.T) {
@@ -237,7 +237,7 @@ func TestGroupOptionsResolveNothing(t *testing.T) {
 	if err := SaveDNSCheck(db, nil, &resolvers, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveOwnSendingHosts(db, []string{"mail.example.jp"}); err != nil {
+	if err := SaveSendingSourceHosts(db, []string{"mail.example.jp"}); err != nil {
 		t.Fatal(err)
 	}
 	mb := addMailbox(t, db, key, "b@example.jp", "mailhost", true)
@@ -249,29 +249,30 @@ func TestGroupOptionsResolveNothing(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("groupOptions took %v: it resolved something", elapsed)
 	}
-	// The own host names reach both options unresolved.
-	want := mailengine.NewOwnSources(nil, nil, []string{"mail.example.jp", "mailhost"}, nil).WithOtherHosts([]string{"mailhost"})
-	if len(b.own) != 1 || len(b.dnsOwn) != 1 || !reflect.DeepEqual(b.own[0], want) || !reflect.DeepEqual(b.dnsOwn[0], want) {
-		t.Errorf("own %+v, verification own %+v; want %+v", b.own, b.dnsOwn, want)
+	// The source host names reach both options unresolved.
+	want := mailengine.NewSendingSources(nil, nil, []string{"mail.example.jp", "mailhost"}, nil).WithOtherHosts([]string{"mailhost"})
+	if len(b.sources) != 1 || len(b.dnsSources) != 1 || !reflect.DeepEqual(b.sources[0], want) || !reflect.DeepEqual(b.dnsSources[0], want) {
+		t.Errorf("sources %+v, verification sources %+v; want %+v", b.sources, b.dnsSources, want)
 	}
 	if len(b.checkers) != 1 || !reflect.DeepEqual(b.checkers[0].Resolvers, resolvers) || b.checkers[0].SystemOnly {
 		t.Errorf("checker config %+v", b.checkers)
 	}
-	if rows, err := models.ListOwnSourceLookups(db); err != nil || len(rows) != 0 {
+	if rows, err := models.ListSendingSourceLookups(db); err != nil || len(rows) != 0 {
 		t.Errorf("stored lookups %+v (err %v): nothing was looked up", rows, err)
 	}
 }
 
-// The host names of our own sending servers are the saved own_sending_hosts
+// The host names of the sending sources are the saved sending_source_hosts
 // first, then the SMTP hosts of every mailbox, enabled or not, in the order
 // of the mailbox list (domain, then address), without repeats; a host that
 // is no valid host name any more is skipped. Every one of them matches in
 // the run of any mailbox, but the sources are configured for a mailbox
-// only by the saved lists and its own SMTP host: a mailbox without one (or
-// with an invalid one) keeps the empty configuration, in which the DNS
-// lookup failure judgement (4.4) takes every reporting MTA for ours, until
-// own_sending_hosts is set.
-func TestOwnSendingHostsUnion(t *testing.T) {
+// only by the saved lists and the SMTP host of the mailbox: a mailbox
+// without one (or with an invalid one) keeps the empty configuration, in
+// which the DNS lookup failure judgement (4.4) takes every reporting MTA
+// for a sending server, until
+// sending_source_hosts is set.
+func TestSendingSourceHostsUnion(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
 	addMailbox(t, db, key, "a@zeta.example", "mail.example.jp", false)
@@ -284,30 +285,30 @@ func TestOwnSendingHostsUnion(t *testing.T) {
 	}
 	check := func(name string, mb *models.Mailbox, wantMailbox, wantAll []string, empty bool) {
 		t.Helper()
-		own, err := ResolveOwnSending(db)
-		if err != nil || !reflect.DeepEqual(own.MailboxHosts, wantMailbox) || !reflect.DeepEqual(own.AllHosts(), wantAll) {
-			t.Errorf("%s: own sending %+v, all hosts %v (err %v); want mailbox hosts %v, all %v", name, own, own.AllHosts(), err, wantMailbox, wantAll)
+		sources, err := ResolveSendingSources(db)
+		if err != nil || !reflect.DeepEqual(sources.MailboxHosts, wantMailbox) || !reflect.DeepEqual(sources.AllHosts(), wantAll) {
+			t.Errorf("%s: sending sources %+v, all hosts %v (err %v); want mailbox hosts %v, all %v", name, sources, sources.AllHosts(), err, wantMailbox, wantAll)
 		}
 		b := recordGroupOptions(t)
 		groupOptionsOf(t, jm, mb)
-		if len(b.own) != 1 || b.own[0].Empty() != empty {
-			t.Fatalf("%s: own sources %+v, want empty %v", name, b.own, empty)
+		if len(b.sources) != 1 || b.sources[0].Empty() != empty {
+			t.Fatalf("%s: sending sources %+v, want empty %v", name, b.sources, empty)
 		}
-		for mta, ours := range map[string]bool{"mx1.example.jp": true, "MAIL.example.jp.": true, "bad_host": empty, "mx.partner.example.net": empty} {
-			if got := b.own[0].Match(mta); got != ours {
-				t.Errorf("%s: Match(%q) = %v, want %v", name, mta, got, ours)
+		for mta, wantMatch := range map[string]bool{"mx1.example.jp": true, "MAIL.example.jp.": true, "bad_host": empty, "mx.partner.example.net": empty} {
+			if got := b.sources[0].Match(mta); got != wantMatch {
+				t.Errorf("%s: Match(%q) = %v, want %v", name, mta, got, wantMatch)
 			}
 		}
 	}
 	mailboxHosts := []string{"mx1.example.jp", "mail.example.jp"}
 	check("mailbox hosts only, a mailbox with one", withHost, mailboxHosts, mailboxHosts, false)
 	check("mailbox hosts only, a mailbox without a valid one", broken, mailboxHosts, mailboxHosts, true)
-	if err := SaveOwnSendingHosts(db, []string{"relay.example.jp", "mail.example.jp"}); err != nil {
+	if err := SaveSendingSourceHosts(db, []string{"relay.example.jp", "mail.example.jp"}); err != nil {
 		t.Fatal(err)
 	}
 	all := []string{"relay.example.jp", "mail.example.jp", "mx1.example.jp"}
-	check("with own_sending_hosts, a mailbox with one", withHost, mailboxHosts, all, false)
-	check("with own_sending_hosts, a mailbox without a valid one", broken, mailboxHosts, all, false)
+	check("with sending_source_hosts, a mailbox with one", withHost, mailboxHosts, all, false)
+	check("with sending_source_hosts, a mailbox without a valid one", broken, mailboxHosts, all, false)
 }
 
 // seedDNSChecks stores a result checked just before and one just after the
@@ -331,13 +332,13 @@ func seedDNSChecks(t *testing.T, db *sql.DB) {
 func checkPrunedDNSChecks(t *testing.T, db *sql.DB) {
 	t.Helper()
 	epoch := time.Unix(0, 0)
-	if _, err := models.FindDNSCheck(db, "old.example.jp", "MX", epoch, time.Now()); err == nil {
+	if _, err := models.FindDNSCheck(db, "old.example.jp", "MX", epoch, time.Now(), false); err == nil {
 		t.Error("the result past the mail retention and the reuse window was kept")
 	}
 	// A notice received at the end of the retention may still use a result
 	// checked up to 24 hours before it.
 	for _, name := range []string{"window.example.jp", "new.example.jp"} {
-		if _, err := models.FindDNSCheck(db, name, "MX", epoch, time.Now()); err != nil {
+		if _, err := models.FindDNSCheck(db, name, "MX", epoch, time.Now(), false); err != nil {
 			t.Errorf("%s was removed: %v", name, err)
 		}
 	}
@@ -414,17 +415,18 @@ func TestCleanupWithoutMailboxGoesOnAfterAFailure(t *testing.T) {
 	}
 }
 
-// The backscatter rule follows the own sending servers whether the DNS check
+// The backscatter rule follows the sending sources whether the DNS check
 // is on or off: with nothing configured the return notice of forged mail
-// stays a bounce as before, and so it does with our network's addresses
-// alone; a reclassify after also setting our MTA as the SMTP host of the
-// mailbox makes it junk (the notice about our own mail stays a bounce), and
+// stays a bounce as before, and so it does with the addresses of the
+// sending network alone; a reclassify after also setting the sending MTA as
+// the SMTP host of the
+// mailbox makes it junk (the notice about mail from the sending sources stays a bounce), and
 // one after clearing the host makes it a bounce again. A host name of
-// own_sending_hosts counts the same way; the SMTP host of another, disabled
+// sending_source_hosts counts the same way; the SMTP host of another, disabled
 // mailbox does not switch the rule on for this one. (The lookups stand in
 // for the network: the host name is answered without addresses, and the
 // domain has no SPF record.)
-func TestOwnSourcesApplyWithoutDNSCheck(t *testing.T) {
+func TestSendingSourcesApplyWithoutDNSCheck(t *testing.T) {
 	for _, dnsCheck := range []bool{false, true} {
 		t.Run(map[bool]string{false: "check off", true: "check on"}[dnsCheck], func(t *testing.T) {
 			db := newTestDB(t)
@@ -438,11 +440,11 @@ func TestOwnSourcesApplyWithoutDNSCheck(t *testing.T) {
 			installFakeLookups(t, map[string][]netip.Addr{"mx1.example.jp": nil}, map[string]dnscheck.SPFResult{"example.jp": {Complete: true}})
 			mb, mailsRoot := seedMailbox(t, db, key, "newsletter@example.jp", []string{"postfix_backscatter.eml", "postfix_dsn.eml"})
 			other := addMailbox(t, db, key, "info@example.jp", "", false)
-			// run sets the own sending IPv4 list and the SMTP hosts of the
+			// run sets the sending source IPv4 list and the SMTP hosts of the
 			// monitored mailbox and of another, disabled one.
 			run := func(kind string, ipv4 []string, host, otherHost string, wantRules map[string]int, wantGroups int) {
 				t.Helper()
-				if err := SaveOwnSendingIPv4(db, ipv4); err != nil {
+				if err := SaveSendingSourceIPv4(db, ipv4); err != nil {
 					t.Fatal(err)
 				}
 				for m, h := range map[*models.Mailbox]string{mb: host, other: otherHost} {
@@ -451,7 +453,7 @@ func TestOwnSourcesApplyWithoutDNSCheck(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				own := append(append([]string{}, ipv4...), host, otherHost)
+				sources := append(append([]string{}, ipv4...), host, otherHost)
 				var lines []string
 				if _, err := jm.RunJob(context.Background(), mailboxJob(kind, mb, ""), func(s string) { lines = append(lines, s) }); err != nil {
 					t.Fatalf("%s: %v\n%s", kind, err, strings.Join(lines, "\n"))
@@ -474,11 +476,11 @@ func TestOwnSourcesApplyWithoutDNSCheck(t *testing.T) {
 					t.Fatal(err)
 				}
 				if len(rules) != len(wantRules) || groups != wantGroups {
-					t.Errorf("%s with %v: rules %v, %d groups; want %v, %d groups", kind, own, rules, groups, wantRules, wantGroups)
+					t.Errorf("%s with %v: rules %v, %d groups; want %v, %d groups", kind, sources, rules, groups, wantRules, wantGroups)
 				}
 				for rule, n := range wantRules {
 					if rules[rule] != n {
-						t.Errorf("%s with %v: rules %v, want %v", kind, own, rules, wantRules)
+						t.Errorf("%s with %v: rules %v, want %v", kind, sources, rules, wantRules)
 					}
 				}
 			}
@@ -492,7 +494,7 @@ func TestOwnSourcesApplyWithoutDNSCheck(t *testing.T) {
 			// setting does, alone.
 			run(JobKindReclassify, nil, "", mta, map[string]int{"dsn_report": 2}, 2)
 			run(JobKindReclassify, nil, "", "", map[string]int{"dsn_report": 2}, 2)
-			if err := SaveOwnSendingHosts(db, []string{mta}); err != nil {
+			if err := SaveSendingSourceHosts(db, []string{mta}); err != nil {
 				t.Fatal(err)
 			}
 			run(JobKindReclassify, nil, "", "", map[string]int{"dsn_report": 1, "backscatter": 1}, 1)
@@ -529,7 +531,7 @@ func regroupRules(t *testing.T, jm *JobManager, mb *models.Mailbox, mailsRoot st
 }
 
 // The looked-up addresses decide the backscatter rule with the DNS check on:
-// the SPF record of the domain of the mailbox lists the hop of our own mail
+// the SPF record of the domain of the mailbox lists the hop of mail from the sending sources
 // (the notice about it stays a bounce) and its host names match as text; a
 // complete lookup is stored, used without asking for an hour and stands in
 // for a failed one for 14 days, an older row or none leaves the record
@@ -548,15 +550,15 @@ func TestSPFDecidesTheBackscatterRule(t *testing.T) {
 	if err := models.UpdateMailbox(db, mb); err != nil {
 		t.Fatal(err)
 	}
-	stored := func() *models.OwnSourceLookup {
+	stored := func() *models.SendingSourceLookup {
 		t.Helper()
-		row, err := models.GetOwnSourceLookup(db, models.OwnSourceKindSPF, "example.jp")
+		row, err := models.GetSendingSourceLookup(db, models.SendingSourceKindSPF, "example.jp")
 		if err != nil {
 			return nil
 		}
 		return row
 	}
-	hop := netip.MustParsePrefix("192.0.2.20/32") // the hop of our own mail in postfix_dsn.eml
+	hop := netip.MustParsePrefix("192.0.2.20/32") // the hop of mail from the sending sources in postfix_dsn.eml
 	for _, step := range []struct {
 		name   string
 		spf    dnscheck.SPFResult
@@ -580,11 +582,11 @@ func TestSPFDecidesTheBackscatterRule(t *testing.T) {
 		spf["example.jp"] = step.spf
 		switch {
 		case step.age < 0:
-			if _, err := db.Exec(`DELETE FROM own_source_lookups`); err != nil {
+			if _, err := db.Exec(`DELETE FROM sending_source_lookups`); err != nil {
 				t.Fatal(err)
 			}
 		case step.age > 0:
-			if _, err := db.Exec(`UPDATE own_source_lookups SET fetched_at = ? WHERE kind = 'spf'`, time.Now().UTC().Add(-step.age)); err != nil {
+			if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ? WHERE kind = 'spf'`, time.Now().UTC().Add(-step.age)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -615,7 +617,7 @@ func TestSPFDecidesTheBackscatterRule(t *testing.T) {
 // With the DNS check off no SPF record is read and no stored one is used;
 // the host names are looked up through the OS resolver, with the stored
 // lookup as the fallback while it does not answer.
-func TestOwnLookupsWithoutDNSCheck(t *testing.T) {
+func TestSourceLookupsWithoutDNSCheck(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
 	if err := SetAgentEnabled(db, false); err != nil {
@@ -633,30 +635,30 @@ func TestOwnLookupsWithoutDNSCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A stored SPF row is not used either.
-	if err := models.ReplaceOwnSourceLookup(db, &models.OwnSourceLookup{Kind: models.OwnSourceKindSPF, Name: "example.jp",
-		Addresses: []string{"198.51.100.0/24"}}); err != nil {
+	if _, err := models.ReplaceSendingSourceLookup(db, &models.SendingSourceLookup{Kind: models.SendingSourceKindSPF, Name: "example.jp",
+		Addresses: []string{"198.51.100.0/24"}}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]int{"dsn_report": 1, "backscatter": 1}
 	if rules, progress := regroupRules(t, jm, mb, mailsRoot); !reflect.DeepEqual(rules, want) {
 		t.Errorf("host answered: rules %v, want %v\n%s", rules, want, progress)
 	}
-	row, err := models.GetOwnSourceLookup(db, models.OwnSourceKindSMTPHost, "smtp.example.jp")
+	row, err := models.GetSendingSourceLookup(db, models.SendingSourceKindSMTPHost, "smtp.example.jp")
 	if err != nil || !reflect.DeepEqual(row.Addresses, []string{"192.0.2.20"}) {
 		t.Errorf("stored host lookup %+v (err %v)", row, err)
 	}
 	// The OS resolver does not answer now: the stored lookup (two hours
 	// old, so asked again) stands in.
 	delete(hosts, "smtp.example.jp")
-	if _, err := db.Exec(`UPDATE own_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-2*time.Hour)); err != nil {
+	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if rules, progress := regroupRules(t, jm, mb, mailsRoot); !reflect.DeepEqual(rules, want) {
 		t.Errorf("host not answered, fresh row: rules %v, want %v\n%s", rules, want, progress)
 	}
-	// Without a row of at most 14 days an address of ours may be missing:
+	// Without a row of at most 14 days an address of a sending source may be missing:
 	// the run takes no return notice for backscatter.
-	if _, err := db.Exec(`UPDATE own_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-15*24*time.Hour)); err != nil {
+	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-15*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if rules, progress := regroupRules(t, jm, mb, mailsRoot); !reflect.DeepEqual(rules, map[string]int{"dsn_report": 2}) ||
@@ -678,12 +680,12 @@ func TestOwnLookupsWithoutDNSCheck(t *testing.T) {
 	}
 }
 
-// An own host name whose lookup is not answered, with no stored row of at
+// A source host name whose lookup is not answered, with no stored row of at
 // most 14 days to stand in, stops the backscatter rule for the run with the
 // DNS check on (the Checker) as with it off (the OS resolver): the return
 // notice of forged mail stays a bounce, and the progress names the host. A
 // host answered without addresses (NXDOMAIN) does not.
-func TestUnansweredOwnHostStopsBackscatter(t *testing.T) {
+func TestUnansweredSourceHostStopsBackscatter(t *testing.T) {
 	for _, dnsCheck := range []bool{false, true} {
 		t.Run(map[bool]string{false: "check off", true: "check on"}[dnsCheck], func(t *testing.T) {
 			db := newTestDB(t)
@@ -706,8 +708,8 @@ func TestUnansweredOwnHostStopsBackscatter(t *testing.T) {
 				!strings.Contains(progress, "backscatter detection was skipped for this run: no answer for the addresses of smtp.example.jp") {
 				t.Errorf("not answered: rules %v\n%s", rules, progress)
 			}
-			for _, row := range ownSourceRows(t, db) {
-				if row.Kind == models.OwnSourceKindSMTPHost {
+			for _, row := range sendingSourceRows(t, db) {
+				if row.Kind == models.SendingSourceKindSMTPHost {
 					t.Errorf("an unanswered lookup was stored: %+v", row)
 				}
 			}
@@ -719,10 +721,10 @@ func TestUnansweredOwnHostStopsBackscatter(t *testing.T) {
 	}
 }
 
-// ownSourceRows returns every stored lookup of the own sending servers.
-func ownSourceRows(t *testing.T, db *sql.DB) []*models.OwnSourceLookup {
+// sendingSourceRows returns every stored lookup of the sending sources.
+func sendingSourceRows(t *testing.T, db *sql.DB) []*models.SendingSourceLookup {
 	t.Helper()
-	rows, err := models.ListOwnSourceLookups(db)
+	rows, err := models.ListSendingSourceLookups(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +735,7 @@ func ownSourceRows(t *testing.T, db *sql.DB) []*models.OwnSourceLookup {
 // (the reuse rule) without any query: none stored, it stays unverified (a
 // delay warning is a delivery delay, and the rule name says that nothing was
 // verified); once an outcome is stored, the reclassify files it as verified
-// (nothing configured: the reporting MTA counts as ours).
+// (nothing configured: the reporting MTA counts as a sending server).
 func TestReindexJobWithoutDNSCheckUsesStoredOutcomes(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
@@ -803,16 +805,17 @@ func addRawMessage(t *testing.T, mailsRoot, address string, n int, raw []byte) {
 // The "nothing configured" rules are judged per mailbox, while every source
 // matches in every run: with mailbox A's SMTP host mx1.example.jp, mailbox C's
 // smtp-c.example.jp and none for mailbox B, the return notice of forged mail
-// is junk for A and C but stays a bounce for B; the notice about our own
-// mail (its hop handed on by mx1.example.jp, A's host) stays a bounce for C
-// too. A verified DNS lookup failure reported by mx1.example.jp is our own
-// resolver failure everywhere (by the text for A and C, by the empty
-// configuration for B); one reported by an address of someone else's is
-// external for A and C and our own for B, which has nothing configured. A
-// host name of own_sending_hosts configures every mailbox: then B is
+// is junk for A and C but stays a bounce for B; the notice about mail from
+// the sending sources (its hop handed on by mx1.example.jp, A's host) stays
+// a bounce for C too. A verified DNS lookup failure reported by
+// mx1.example.jp is a resolver failure of a sending server everywhere (by
+// the text for A and C, by the empty configuration for B); one reported by
+// an outside address is external for A and C and a resolver failure of a
+// sending server for B, which has nothing configured. A
+// host name of sending_source_hosts configures every mailbox: then B is
 // judged like the others. (The DNS check is off: a stored outcome files the
 // notices without any query.)
-func TestOwnSourcesActivatePerMailbox(t *testing.T) {
+func TestSendingSourcesActivatePerMailbox(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
 	if err := SetAgentEnabled(db, false); err != nil {
@@ -874,23 +877,23 @@ func TestOwnSourcesActivatePerMailbox(t *testing.T) {
 		}
 		return rules["backscatter"], dns
 	}
-	ours := map[string]string{"mx1.example.jp": "dns_resolver_failure", "[203.0.113.9]": "dns_resolver_failure"}
+	sourceFailure := map[string]string{"mx1.example.jp": "dns_resolver_failure", "[203.0.113.9]": "dns_resolver_failure"}
 	external := map[string]string{"mx1.example.jp": "dns_resolver_failure", "[203.0.113.9]": "dns_failure_external"}
 	for _, step := range []struct {
 		globalHosts []string
 		backscatter map[string]int
 		dns         map[string]map[string]string
 	}{
-		{nil, map[string]int{"a": 1, "b": 0, "c": 1}, map[string]map[string]string{"a": external, "b": ours, "c": external}},
+		{nil, map[string]int{"a": 1, "b": 0, "c": 1}, map[string]map[string]string{"a": external, "b": sourceFailure, "c": external}},
 		{[]string{"relay.example.jp"}, map[string]int{"a": 1, "b": 1, "c": 1}, map[string]map[string]string{"a": external, "b": external, "c": external}},
 	} {
-		if err := SaveOwnSendingHosts(db, step.globalHosts); err != nil {
+		if err := SaveSendingSourceHosts(db, step.globalHosts); err != nil {
 			t.Fatal(err)
 		}
 		for _, name := range []string{"a", "b", "c"} {
 			backscatter, dns := judge(name)
 			if backscatter != step.backscatter[name] || !reflect.DeepEqual(dns, step.dns[name]) {
-				t.Errorf("own_sending_hosts %v, mailbox %s: %d backscatter, DNS %v; want %d, %v",
+				t.Errorf("sending_source_hosts %v, mailbox %s: %d backscatter, DNS %v; want %d, %v",
 					step.globalHosts, name, backscatter, dns, step.backscatter[name], step.dns[name])
 			}
 		}

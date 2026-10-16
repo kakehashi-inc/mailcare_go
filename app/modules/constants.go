@@ -41,7 +41,7 @@ const (
 	// CookieName is the Web session cookie.
 	CookieName = "mlc_session"
 	// SessionCookieTTLHours is the lifetime of a session that was opened
-	// without "remember me": a browser-session cookie (no Max-Age) whose
+	// without "Stay logged in": a browser-session cookie (no Max-Age) whose
 	// sealed expiry is this many hours away and which is never refreshed.
 	SessionCookieTTLHours = 24
 	// SessionRefreshInterval throttles sliding session-cookie re-issuance.
@@ -201,8 +201,8 @@ const (
 	CategoryAuthFailure        = "auth_failure"         // unit: sending domain (SPF/DKIM/DMARC/PTR), authority: recipient domain
 	CategoryContentRejected    = "content_rejected"     // unit: sender address, authority: recipient domain
 	CategoryMessageTooLarge    = "message_too_large"    // unit: sender address, authority: recipient domain
-	CategoryServerConfig       = "server_config"        // unit: our reporting MTA, authority: recipient domain
-	CategoryDNSResolverFailure = "dns_resolver_failure" // unit: our reporting MTA (its resolver failed on a name that exists)
+	CategoryServerConfig       = "server_config"        // unit: the sending side's reporting MTA, authority: recipient domain
+	CategoryDNSResolverFailure = "dns_resolver_failure" // unit: the sending side's reporting MTA (its resolver failed on a name that exists)
 	CategoryUnknownFailure     = "unknown_failure"      // unit: recipient domain, authority: status code + diagnostic template
 	// Not actionable by the mail administrator (recipient side; excluded from Alerts by default).
 	CategoryUserUnknown        = "user_unknown"         // unit: recipient address
@@ -241,7 +241,7 @@ func IsKnownCategory(s string) bool {
 // --- Responsible parties (who should act on a group) ---
 
 const (
-	ResponsibleSender    = "sender"    // our mail server / sending domain admin
+	ResponsibleSender    = "sender"    // the sending-side mail administrator (sending server / sending domain)
 	ResponsibleRecipient = "recipient" // the owner of the recipient address (list maintainer)
 	ResponsibleDomain    = "domain"    // the recipient domain / its DNS or MX admin
 	ResponsibleUnknown   = "unknown"
@@ -261,7 +261,7 @@ const (
 // --- Settings keys ---
 //
 // Keys of the settings table. A key is stored only when its value differs from
-// the code default, so a later change to a default takes effect on its own.
+// the code default, so a later change to a default takes effect by itself.
 
 const (
 	// SettingSecretKey holds the master key (32 random bytes, hex encoded)
@@ -275,7 +275,7 @@ const (
 	SettingAgentProvider = "agent_provider"
 	SettingAgentModel    = "agent_model" // model passed to the agent CLI ("" / absent = the CLI default)
 	// SettingAgentReasoningEffort is the reasoning level passed to the agent
-	// CLI ("" / absent = the CLI's own setting).
+	// CLI ("" / absent = the setting of the CLI).
 	SettingAgentReasoningEffort = "agent_reasoning_effort"
 	SettingAgentEnabled         = "agent_enabled"   // "1" (default) or "0"
 	SettingAgentKeepDays        = "agent_keep_days" // days an agent run directory is kept (DefaultAgentKeepDays)
@@ -312,13 +312,13 @@ const (
 	// AgentLimitResumeMargin after it the scheduler queues the analysis of
 	// the groups waiting for it (see scheduler.go).
 	SettingAgentLimitedUntil = "agent_limited_until"
-	// Our own sending servers beyond the SMTP hosts of the mailboxes
+	// The sending sources beyond the SMTP hosts of the mailboxes
 	// (newline-separated; absent = none): IPv4 addresses and CIDRs, IPv6
-	// addresses and CIDRs, and host names. ResolveOwnSending adds the SMTP
+	// addresses and CIDRs, and host names. ResolveSendingSources adds the SMTP
 	// hosts of the mailboxes to the host names.
-	SettingOwnSendingIPv4  = "own_sending_ipv4"
-	SettingOwnSendingIPv6  = "own_sending_ipv6"
-	SettingOwnSendingHosts = "own_sending_hosts"
+	SettingSendingSourceIPv4  = "sending_source_ipv4"
+	SettingSendingSourceIPv6  = "sending_source_ipv6"
+	SettingSendingSourceHosts = "sending_source_hosts"
 	// Verification of DNS lookup failures by looking the name up again.
 	SettingDNSCheckEnabled = "dns_check_enabled" // "1" (default) or "0"
 	// SettingDNSCheckResolvers lists the resolver IPs queried
@@ -346,10 +346,10 @@ const (
 // --- DNS lookup failure verification defaults ---
 
 const (
-	// MaxOwnSendingEntries bounds each of the own sending lists
-	// (own_sending_ipv4 / own_sending_ipv6 / own_sending_hosts), counted after
+	// MaxSendingSourceEntries bounds each of the sending source lists
+	// (sending_source_ipv4 / sending_source_ipv6 / sending_source_hosts), counted after
 	// normalization and de-duplication.
-	MaxOwnSendingEntries = 500
+	MaxSendingSourceEntries = 500
 	// MaxDNSCheckResolvers bounds dns_check_resolvers: every resolver gets a
 	// control query and one query per name verified (3 s timeout each), and a
 	// handful of public resolvers already gives independent answers.
@@ -364,22 +364,22 @@ const (
 	// SPF record a run evaluates (the first ones in mailbox order); the
 	// others add nothing.
 	MaxSPFDomains = 20
-	// OwnSourceCacheFreshAge is how long the stored result of a complete
-	// lookup of an own sending source (own_source_lookups) is used without
+	// SourceCacheFreshAge is how long the stored result of a complete
+	// lookup of a sending source (sending_source_lookups) is used without
 	// asking again, by every mailbox and run.
-	OwnSourceCacheFreshAge = time.Hour
-	// OwnSourceCacheMaxAge is how long the stored result of a complete
+	SourceCacheFreshAge = time.Hour
+	// SourceCacheMaxAge is how long the stored result of a complete
 	// lookup stands in for a lookup that fails, and how long a non-empty one
 	// is kept in place of a complete lookup that found nothing; an older one
 	// does neither.
-	OwnSourceCacheMaxAge = 14 * 24 * time.Hour
-	// OwnSourceCacheKeepAge is the age past which the daily cleanup deletes
-	// a stored lookup of an own sending source.
-	OwnSourceCacheKeepAge = 90 * 24 * time.Hour
-	// OwnSourceCacheMaxFuture is how far after now a stored lookup may be
+	SourceCacheMaxAge = 14 * 24 * time.Hour
+	// SourceCacheKeepAge is the age past which the daily cleanup deletes
+	// a stored lookup of a sending source.
+	SourceCacheKeepAge = 90 * 24 * time.Hour
+	// SourceCacheMaxFuture is how far after now a stored lookup may be
 	// dated (the clock was set back since it was written) before the daily
 	// cleanup deletes it. Such a row is never fresh.
-	OwnSourceCacheMaxFuture = 24 * time.Hour
+	SourceCacheMaxFuture = 24 * time.Hour
 )
 
 // DefaultDNSCheckResolvers returns the resolvers queried when
@@ -408,7 +408,7 @@ const (
 	SchedulerTick = 30 * time.Second
 	// AgentLimitResumeMargin is how long after the announced end of the
 	// agent's usage limit the scheduler waits before it queues the analysis
-	// of the waiting groups (the CLI's clock and the limit's own may differ).
+	// of the waiting groups (the clock of the CLI and the end the limit states may differ).
 	AgentLimitResumeMargin = 10 * time.Minute
 	// CLIJobPollInterval is how often the CLI polls a job it submitted to a
 	// running server.

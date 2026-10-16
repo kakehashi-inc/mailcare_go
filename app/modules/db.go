@@ -44,7 +44,7 @@ func OpenDB(dbPath string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := runMigrations(db); err != nil {
+	if err := runMigrations(db, dbPath); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -92,11 +92,12 @@ func DataDirPermissionWarning(dir string) string {
 // sets it; CLI commands stay quiet so that their output stays clean.
 var LogMigrations bool
 
-// runMigrations applies the pending migrations of the master database
-// (embedded/migrations/master) and logs each applied file when LogMigrations is
-// set.
-func runMigrations(db *sql.DB) error {
-	applied, err := dbschema.Apply(context.Background(), db, dbschema.Master())
+// runMigrations applies the pending migrations of the master database at
+// dbPath (embedded/migrations/master), one process at a time (the lock file
+// dbPath + dbschema.LockSuffix), and logs each applied file when
+// LogMigrations is set.
+func runMigrations(db *sql.DB, dbPath string) error {
+	applied, err := dbschema.ApplyLocked(context.Background(), db, dbschema.Master(), dbPath)
 	if err != nil {
 		return fmt.Errorf("migrate the database: %w", err)
 	}

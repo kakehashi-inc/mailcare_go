@@ -114,7 +114,7 @@ function blockerOf(dto: NotificationSettingsDTO): Blocker {
 export function SettingsNotificationsPage() {
     const { t } = useTranslation();
     useDocumentTitle(t('layout.nav.settingsNotifications'));
-    const { me } = useAuth();
+    const { currentUser } = useAuth();
     const toast = useToast();
     const settings = useAsync(getNotificationSettings, []);
     const general = useAsync(getSettings, []);
@@ -166,7 +166,7 @@ export function SettingsNotificationsPage() {
         setTesting(true);
         try {
             await sendTestNotification(to || undefined);
-            toast.success(t('result.notification.testSent', { to: to || me?.user.email || '' }));
+            toast.success(t('result.notification.testSent', { to: to || currentUser?.user.email || '' }));
         } catch (err) {
             toast.error(t((err as ApiError).key, (err as ApiError).params));
         } finally {
@@ -227,7 +227,7 @@ export function SettingsNotificationsPage() {
     const valid = !portError && !fromError && !timeError && !urlError && !passwordError;
     const canSave = dirty && valid && !saving;
     const smtpSaved = dto.smtp_host !== '' && dto.smtp_from !== '';
-    const testAddress = testTo.trim() || me?.user.email || '';
+    const testAddress = testTo.trim() || currentUser?.user.email || '';
     const canTest = smtpSaved && !smtpDirty && testAddress !== '' && !testToError && !testing;
     const blocker = blockerOf(dto);
     const recipients = dto.recipients ?? [];
@@ -357,7 +357,6 @@ export function SettingsNotificationsPage() {
                             value={form.smtp_from}
                             onChange={e => set('smtp_from', e.target.value)}
                             placeholder='mailcare@example.com'
-                            hint={t('field.notification.fromHint')}
                             error={fromError}
                             wrapperClassName='md:col-span-2'
                         />
@@ -373,9 +372,9 @@ export function SettingsNotificationsPage() {
                                 autoComplete='off'
                                 value={testTo}
                                 onChange={e => setTestTo(e.target.value)}
-                                placeholder={me?.user.email || undefined}
+                                placeholder={currentUser?.user.email || undefined}
                                 hint={
-                                    me?.user.email
+                                    currentUser?.user.email
                                         ? t('field.notification.testToHint')
                                         : t('page.notifications.testNoAddress')
                                 }
@@ -398,10 +397,7 @@ export function SettingsNotificationsPage() {
                 </Card>
 
                 <Card>
-                    <CardHeader
-                        title={t('page.notifications.settings')}
-                        description={t('page.notifications.settingsHint')}
-                    />
+                    <CardHeader title={t('page.notifications.settings')} />
                     <div className='flex flex-col gap-5'>
                         <ToggleField
                             label={t('field.notification.enabled')}
@@ -429,7 +425,6 @@ export function SettingsNotificationsPage() {
                                 label={t('field.notification.interval')}
                                 value={String(form.notify_interval_days)}
                                 onChange={e => set('notify_interval_days', Number(e.target.value))}
-                                hint={t('field.notification.intervalHint')}
                             >
                                 {INTERVAL_OPTIONS.map(days => (
                                     <option key={days} value={String(days)}>

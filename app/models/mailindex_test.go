@@ -1,9 +1,13 @@
 package models
 
 import (
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"mailcare/app/modules/dbschema"
 )
 
 // TestLikeContainsEscapesWildcards checks that a search string containing
@@ -58,5 +62,45 @@ func TestLikeContainsEscapesWildcards(t *testing.T) {
 		if len(groups) != want {
 			t.Errorf("group query %q matched %d groups, want %d", q, len(groups), want)
 		}
+	}
+}
+
+// TestOpenMailIndexConcurrent opens an un-migrated index from several
+// openers at once (two jobs, a reindex): every migration is recorded once
+// and the lock file next to the index is gone afterwards.
+func TestOpenMailIndexConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mails", "a@example.jp.sqlite")
+	const openers = 6
+	errs := make([]error, openers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range openers {
+		wg.Go(func() {
+			<-start
+			db, err := OpenMailIndex(path)
+			if err == nil {
+				db.Close()
+			}
+			errs[i] = err
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("opener %d: %v", i, err)
+		}
+	}
+	db, err := OpenMailIndex(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var duplicated int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM (SELECT version_id FROM goose_db_version GROUP BY version_id HAVING COUNT(*) > 1)`).Scan(&duplicated); err != nil || duplicated != 0 {
+		t.Errorf("%d versions recorded more than once (%v)", duplicated, err)
+	}
+	if _, err := os.Stat(path + dbschema.LockSuffix); !os.IsNotExist(err) {
+		t.Errorf("the lock file is left behind: %v", err)
 	}
 }

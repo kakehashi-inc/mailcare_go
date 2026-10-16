@@ -77,7 +77,6 @@ export function SetupPage() {
                     autoComplete='username'
                     value={username}
                     onChange={e => setUsername(e.target.value)}
-                    hint={t('field.user.usernameHint')}
                     autoFocus
                     required
                 />

@@ -53,7 +53,7 @@ type MailboxInput struct {
 	// when shorter) on creation, the stored value on update.
 	ServerKeepDays *int `json:"server_keep_days"`
 	// SmtpHost is the host name of the SMTP server that sends the mail of
-	// the address (normalizeOwnHost; "" = not set). nil = not set on
+	// the address (normalizeSourceHost; "" = not set). nil = not set on
 	// creation, the stored value on update. It is no connection setting:
 	// changing it needs no password.
 	SmtpHost *string `json:"smtp_host"`
@@ -148,7 +148,7 @@ func ValidateMailboxInput(in *MailboxInput) error {
 	if in.SmtpHost != nil {
 		host := strings.TrimSpace(*in.SmtpHost)
 		if host != "" {
-			norm, ok := normalizeOwnHost(host)
+			norm, ok := normalizeSourceHost(host)
 			if !ok {
 				host = clipEntry(host)
 				return wording.New("validation.mailbox.smtpHostInvalid",
@@ -191,7 +191,7 @@ func checkServerKeepDays(db *sql.DB, in *MailboxInput, stored *int) error {
 
 // validIMAPHost accepts a host name or an IP literal (IPv4, or IPv6 such as
 // "::1", as net.ParseIP reads it). A "host:port" value is refused: the port
-// has its own field.
+// has a separate field.
 func validIMAPHost(host string) bool {
 	if len(host) > 253 {
 		return false
@@ -462,7 +462,7 @@ func MailboxPassword(key []byte, mb *models.Mailbox) (string, error) {
 // select the folder. When the password is empty and ID refers to a stored
 // mailbox, the stored password is used, but only for the stored connection
 // (same host, port, security and username): a test against another server
-// or account must carry its own password, so the stored one cannot be
+// or account must carry a password, so the stored one cannot be
 // tried elsewhere.
 func TestMailboxConnection(ctx context.Context, db *sql.DB, key []byte, in *MailboxInput) error {
 	if err := ValidateMailboxInput(in); err != nil {
@@ -497,7 +497,7 @@ func TestMailboxConnection(ctx context.Context, db *sql.DB, key []byte, in *Mail
 	ctx, cancel := context.WithTimeout(ctx, IMAPTimeout)
 	defer cancel()
 	if err := mailengine.TestConnection(ctx, mb, password); err != nil {
-		// The server's own words are the useful part; the Web UI shows them
+		// The words of the server are the useful part; the Web UI shows them
 		// as the detail of its message.
 		return wording.New("result.mailbox.testFailed", err.Error()).With("detail", err.Error())
 	}

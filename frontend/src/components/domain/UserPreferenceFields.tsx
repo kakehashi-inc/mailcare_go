@@ -53,12 +53,7 @@ export function UserPreferenceFields({
                     </option>
                 ))}
             </SelectField>
-            <SelectField
-                label={t('field.user.theme')}
-                value={theme}
-                onChange={e => onTheme(e.target.value as Theme)}
-                hint={t('field.user.themeHint')}
-            >
+            <SelectField label={t('field.user.theme')} value={theme} onChange={e => onTheme(e.target.value as Theme)}>
                 {THEMES.map(v => (
                     <option key={v} value={v}>
                         {t(`value.theme.${v}`)}

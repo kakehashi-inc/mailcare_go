@@ -21,8 +21,9 @@ func SetDataDir(dir string) {
 //
 // By default this is "<dir of executable>/data" so the data lives next to the
 // binary. It can be overridden with the --data-dir flag. The absolute form is
-// what the server reports on /control/status and what the CLI compares its
-// own directory with (SameDataDir) before handing jobs to a running server.
+// what the server reports on /control/status and what the CLI compares the
+// directory of the process with (SameDataDir) before handing jobs to a
+// running server.
 func DataDir() (string, error) {
 	dir := dataDirOverride
 	if dir == "" {
@@ -43,7 +44,7 @@ func DataDir() (string, error) {
 // directory: both are made absolute and cleaned, symbolic links are resolved
 // when the path exists, and on Windows the comparison ignores case. An empty
 // path never matches (a server that does not report its directory is not
-// taken for one serving ours).
+// taken for one serving the same directory).
 func SameDataDir(a, b string) bool {
 	if a == "" || b == "" {
 		return false

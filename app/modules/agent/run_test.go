@@ -93,7 +93,7 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 	templates := fstest.MapFS{
 		"templates/agent/fake/AGENTS.md":       {Data: []byte("# rules\n")},
 		"templates/agent/fake/sub/notes.txt":   {Data: []byte("nested\n")},
-		"templates/agent/other/AGENTS.md":      {Data: []byte("not for us\n")},
+		"templates/agent/other/AGENTS.md":      {Data: []byte("not for this provider\n")},
 		"templates/agent/fake-unrelated/x.txt": {Data: []byte("prefix collision\n")},
 	}
 	var lines []string
@@ -307,7 +307,7 @@ func TestAnalyzeGroupRecipientSideFailureKeepsFlagClear(t *testing.T) {
 	if err := models.RefreshGroupCounters(db, testGroupKey); err != nil {
 		t.Fatal(err)
 	}
-	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "I refuse to answer.\n")})
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "Refused to answer.\n")})
 	rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
 		MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
 	}, nil)
@@ -340,7 +340,7 @@ func TestAnalyzeGroupNoReportBlock(t *testing.T) {
 	if err := models.SetGroupNeedsAnalysis(db, testGroupKey, false); err != nil {
 		t.Fatal(err)
 	}
-	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "I refuse to answer.\n")})
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "Refused to answer.\n")})
 	rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
 		MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
 	}, nil)
@@ -420,7 +420,7 @@ func TestAnalyzeGroupRejectsUnusableReport(t *testing.T) {
 			if g.NeedsAnalysis {
 				t.Error("an unusable report must not touch needs_analysis (the good run cleared it)")
 			}
-			// Each run has its own directory: the good run keeps its REPORT.md,
+			// Each run has a separate directory: the good run keeps its REPORT.md,
 			// the failed run has none.
 			goodWork := RunDir(agentRoot, address, testGroupKey, good.ID)
 			report, _ := os.ReadFile(filepath.Join(goodWork, ReportFileName))
@@ -429,7 +429,7 @@ func TestAnalyzeGroupRejectsUnusableReport(t *testing.T) {
 			}
 			work := RunDir(agentRoot, address, testGroupKey, rep.ID)
 			if work == goodWork {
-				t.Fatal("the failed run must get its own directory")
+				t.Fatal("the failed run must get a separate directory")
 			}
 			if _, err := os.Stat(filepath.Join(work, ReportFileName)); err == nil {
 				t.Error("REPORT.md must not be written by the failed run")
@@ -444,7 +444,7 @@ func TestAnalyzeGroupRejectsUnusableReport(t *testing.T) {
 }
 
 // writeEchoingFakeCLI is writeFakeCLI for a CLI that, like codex exec,
-// prints the prompt it received under a "user" line before its own output.
+// prints the prompt it received under a "user" line before its output.
 func writeEchoingFakeCLI(t *testing.T, dir, canned string) []string {
 	t.Helper()
 	cannedPath := filepath.Join(dir, "canned.txt")
@@ -492,7 +492,7 @@ func analyzeGoodThenFailure(t *testing.T, argv []string) (db *sql.DB, goodWork, 
 
 // assertPreviousReportKept checks that a failed run left the previous good
 // report as the latest completed one, the REPORT.md of the good run
-// untouched (and none in its own directory) and needs_analysis as the good
+// untouched (and none in the directory of the failed run) and needs_analysis as the good
 // run left it (a failure does not touch it).
 func assertPreviousReportKept(t *testing.T, db *sql.DB, goodWork, failedWork string, good, failed *models.AgentReport) {
 	t.Helper()
@@ -732,7 +732,7 @@ func TestAnalyzeGroupFailureSettlesTheGroup(t *testing.T) {
 
 	// Any other failure settles the group: the flag goes and the patterns
 	// are recorded, so the same pattern does not bring it back.
-	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "I refuse to answer.\n")})
+	registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), "Refused to answer.\n")})
 	rep, err := AnalyzeGroup(context.Background(), in, nil)
 	if err != nil || rep.Status != "error" || !strings.Contains(rep.ErrorMessage, "produced no report") {
 		t.Fatalf("failed run: %+v %v", rep, err)

@@ -3,17 +3,18 @@
 //
 //	migrations/master/  the master database (data/mailcare.db): users,
 //	                    tokens, settings, mailboxes, jobs, dns_checks,
-//	                    own_source_lookups
+//	                    sending_source_lookups
 //	migrations/index/   every per-mailbox index (data/mails/<address>.sqlite):
 //	                    messages, bounces, groups, agent reports
 //
 // The SQL files live in embedded/migrations/ and are embedded into the
 // binary by package main (embed.go), which passes them in as FS. Each
-// database records the versions applied to it in its own goose_db_version
+// database records the versions applied to it in a separate goose_db_version
 // table (by number: the directory a file lives in is not recorded), and
-// Apply brings it up to date whenever it is opened. Add a new file per
-// change, numbered sequentially within its directory
-// (0002_<description>.sql, ...); never edit an applied migration.
+// ApplyLocked brings it up to date whenever it is opened, one process at a
+// time (lock.go). Add a new file per change, numbered sequentially within
+// its directory (0002_<description>.sql, ...); never edit an applied
+// migration.
 package dbschema
 
 import (
@@ -56,15 +57,22 @@ func sub(dir string) fs.FS {
 // when fsys is nil, i.e. FS was not set). It uses a goose provider (no
 // global goose state), so the master database and any number of indexes
 // can be migrated independently. The provider is not closed: that would
-// close db.
+// close db. Apply takes no lock: the databases of MailCare are opened
+// through ApplyLocked, which serializes it across processes.
 func Apply(ctx context.Context, db *sql.DB, fsys fs.FS) ([]string, error) {
 	if fsys == nil {
 		return nil, errNoMigrations
 	}
-	p, err := goose.NewProvider(goose.DialectSQLite3, db, fsys, goose.WithDisableGlobalRegistry(true))
+	p, err := newProvider(db, fsys)
 	if err != nil {
 		return nil, err
 	}
+	return up(ctx, p)
+}
+
+// up applies the pending migrations of a provider and returns the names of
+// the files it applied.
+func up(ctx context.Context, p *goose.Provider) ([]string, error) {
 	results, err := p.Up(ctx)
 	if err != nil {
 		return nil, err

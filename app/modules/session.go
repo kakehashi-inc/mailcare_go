@@ -25,7 +25,7 @@ import (
 //     existing session without any server-side session table.
 //   - expiry is authenticated by the GCM tag, so it cannot be extended by the
 //     client; it is enforced server-side on every request.
-//   - flags carries the "remember me" bit: a remembered session is a
+//   - flags carries the "Stay logged in" bit: a remembered session is a
 //     persistent cookie (Max-Age = cookie_ttl_hours) refreshed on use; one
 //     without it is a browser-session cookie with a SessionCookieTTLHours
 //     expiry that is never refreshed. The bit lives inside the sealed value
@@ -55,7 +55,7 @@ func passwordFingerprint(passwordHash string) []byte {
 }
 
 // IssueSessionCookie builds the cookie value for a user, valid until expiry.
-// remember marks a persistent ("remember me") session.
+// remember marks a persistent ("Stay logged in") session.
 func IssueSessionCookie(key []byte, u *models.User, expiry time.Time, remember bool) (string, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
@@ -81,7 +81,7 @@ func IssueSessionCookie(key []byte, u *models.User, expiry time.Time, remember b
 type Session struct {
 	User     *models.User
 	Expiry   time.Time // lets the caller derive when the cookie was issued (to throttle sliding re-issuance)
-	Remember bool      // persistent session ("remember me")
+	Remember bool      // persistent session ("Stay logged in")
 }
 
 // ValidateSessionCookie decodes a cookie value, rejects it when expired and

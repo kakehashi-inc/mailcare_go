@@ -1,14 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import * as apiClient from '../api/client';
-import type { LoginInput, Me, SetupInput } from '../types';
+import type { CurrentUserResponse, LoginInput, SetupInput } from '../types';
 import { applyLanguage } from '../i18n/i18n';
 import { applyTheme } from '../utils/theme';
 import { setDisplayTimeZone } from '../utils/timezone';
 
 export interface AuthState {
     /** The signed-in user and the server version, or null when signed out. */
-    me: Me | null;
+    currentUser: CurrentUserResponse | null;
     /** True until the initial setup/session probe finished. */
     loading: boolean;
     /** True when the server has no users yet and /setup must be completed. */
@@ -23,7 +23,7 @@ export interface AuthState {
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-    const [me, setMe] = useState<Me | null>(null);
+    const [currentUser, setCurrentUser] = useState<CurrentUserResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [needsSetup, setNeedsSetup] = useState(false);
     const navigate = useNavigate();
@@ -34,7 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const s = await apiClient.getSetupStatus();
             if (s.needs_setup) {
                 setNeedsSetup(true);
-                setMe(null);
+                setCurrentUser(null);
                 return;
             }
             setNeedsSetup(false);
@@ -43,9 +43,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setNeedsSetup(false);
         }
         try {
-            setMe(await apiClient.getMe());
+            setCurrentUser(await apiClient.getCurrentUser());
         } catch {
-            setMe(null);
+            setCurrentUser(null);
         }
     }, []);
 
@@ -63,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // go to the login page, remembering where the user wanted to be.
     useEffect(() => {
         apiClient.setUnauthorizedHandler(() => {
-            setMe(null);
+            setCurrentUser(null);
             const here = location.pathname + location.search;
             if (!here.startsWith('/login') && !here.startsWith('/setup')) {
                 navigate(`/login?next=${encodeURIComponent(here)}`, { replace: true });
@@ -73,54 +73,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const login = useCallback(async (input: LoginInput) => {
         await apiClient.login(input);
-        setMe(await apiClient.getMe());
+        setCurrentUser(await apiClient.getCurrentUser());
         setNeedsSetup(false);
     }, []);
 
     const setup = useCallback(async (input: SetupInput) => {
         await apiClient.setup(input);
         setNeedsSetup(false);
-        setMe(await apiClient.getMe());
+        setCurrentUser(await apiClient.getCurrentUser());
     }, []);
 
     // Language, theme and time zone follow the signed-in user; signed out they
     // are the defaults (ja, auto, Asia/Tokyo). The setup page may change the
-    // language and theme before a user exists; me is null then, so this does
-    // not fight it.
+    // language and theme before a user exists; currentUser is null then, so
+    // this does not fight it.
     useEffect(() => {
-        setDisplayTimeZone(me?.user.timezone);
-        applyTheme(me?.user.theme);
-        void applyLanguage(me?.user.language);
-    }, [me]);
+        setDisplayTimeZone(currentUser?.user.timezone);
+        applyTheme(currentUser?.user.theme);
+        void applyLanguage(currentUser?.user.language);
+    }, [currentUser]);
 
     const logout = useCallback(async () => {
         try {
             await apiClient.logout();
         } finally {
-            setMe(null);
+            setCurrentUser(null);
         }
     }, []);
 
     const refresh = useCallback(async () => {
         try {
-            setMe(await apiClient.getMe());
+            setCurrentUser(await apiClient.getCurrentUser());
         } catch {
-            setMe(null);
+            setCurrentUser(null);
         }
     }, []);
 
     const value = useMemo<AuthState>(
         () => ({
-            me,
+            currentUser,
             loading,
             needsSetup,
-            isAdmin: me?.user.role === 'admin',
+            isAdmin: currentUser?.user.role === 'admin',
             login,
             setup,
             logout,
             refresh,
         }),
-        [me, loading, needsSetup, login, setup, logout, refresh]
+        [currentUser, loading, needsSetup, login, setup, logout, refresh]
     );
 
     return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

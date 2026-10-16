@@ -65,6 +65,7 @@ type fakeServer struct {
 	resolver      map[string]fakeAnswer // questions with recursion desired
 	authoritative map[string]fakeAnswer // questions without (nil: REFUSED)
 	queries       []string              // "rd|auth <name> <TYPE> udp|tcp" per question received
+	raw           [][]byte              // the messages of those questions, as received
 	conns         []net.Conn
 	hook          func(query string) // runs for every question received, before the reply
 }
@@ -197,6 +198,13 @@ func (s *fakeServer) received() []string {
 	return append([]string(nil), s.queries...)
 }
 
+// rawReceived returns the messages of the questions received so far.
+func (s *fakeServer) rawReceived() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][]byte(nil), s.raw...)
+}
+
 // receivedFor returns the questions received about a name.
 func (s *fakeServer) receivedFor(name string) []string {
 	var out []string
@@ -283,6 +291,7 @@ func (s *fakeServer) handle(req []byte, tcp bool) [][]byte {
 	query := role + " " + name + " " + typeName(q.Type) + " " + proto
 	s.mu.Lock()
 	s.queries = append(s.queries, query)
+	s.raw = append(s.raw, append([]byte(nil), req...))
 	a := s.answerFor(rd, name, q.Type)
 	hook := s.hook
 	s.mu.Unlock()

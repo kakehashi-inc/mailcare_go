@@ -44,7 +44,7 @@ func (codexProvider) ModelArgs(model string) []string {
 }
 
 // codexModel is one entry of the model cache codex keeps in $CODEX_HOME
-// (default ~/.codex) for its own model picker.
+// (default ~/.codex) for the model picker of codex.
 type codexModel struct {
 	Slug            string `json:"slug"`
 	Visibility      string `json:"visibility"`
@@ -195,8 +195,8 @@ func (codexProvider) ParseUsage(raw, answer string) models.AgentRunUsage {
 var codexTokensRe = regexp.MustCompile(`(?i)^tokens used:?\s*([0-9][0-9,]*)?$`)
 
 // DetectRateLimit (RateLimitDetector): codex exec prints its refusal as
-// "ERROR: You've hit your usage limit. ... or try again at 7:22 PM." on
-// stderr, which the generic markers recognize; the "ERROR:" prefix is not
+// an "ERROR: ..." line about the usage limit ("... or try again at
+// 7:22 PM.") on stderr, which the generic markers recognize; the "ERROR:" prefix is not
 // required because the same text also appears without it in some versions.
 func (codexProvider) DetectRateLimit(out string) RateLimitOutcome {
 	return DetectRateLimitMarkers(out)

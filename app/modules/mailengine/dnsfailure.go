@@ -37,11 +37,11 @@ func (o DNSOutcome) verified() bool {
 
 // DNSVerdict is what the caller learned about the DNS failure of a notice
 // before categorizing it (CategorizeWith): the outcome of the verification
-// and whether the notice came from one of our own sending servers. The zero
+// and whether the notice came from one of the sending sources. The zero
 // value means not verified.
 type DNSVerdict struct {
-	Outcome DNSOutcome
-	OwnMTA  bool // the reporting MTA is one of our own sending servers (the grouping decides it for exists only)
+	Outcome           DNSOutcome
+	FromSendingSource bool // the reporting MTA is one of the sending sources (the grouping decides it for exists only)
 }
 
 var (

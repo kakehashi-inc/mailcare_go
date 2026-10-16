@@ -1385,7 +1385,7 @@ func TestReindexWithoutSourcesAndCancel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(month, "README.eml"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(month, "notes.txt"), []byte("keep me"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(month, "notes.txt"), []byte("stray file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var lines []string
@@ -1805,7 +1805,7 @@ var categoryCases = []categoryCase{
 		name: "dns domain status code does not hide a verified name", kind: bounceKindFailed, status: "5.1.2",
 		diag:      "550 5.1.2 <n2@nowhere.example>... Host unknown (Name server: nowhere.example.: host not found)",
 		recipient: "n2@nowhere.example", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
 		category: categoryDNSResolverFailure, unit: "mx1.example.jp", authority: "", actionable: true, respons: responsibleSender,
 		reason: "dns_resolver_failure",
 	},
@@ -1872,7 +1872,7 @@ var categoryCases = []categoryCase{
 		name: "dns unknown outcome is unverified", kind: bounceKindFailed, status: "4.4.3",
 		diag:      dnsTryAgainDiag,
 		recipient: "u7@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: "pending", OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: "pending", FromSendingSource: true},
 		category: categoryDeliveryDelay, unit: "infoseek.jp", authority: "", actionable: false, respons: responsibleDomain,
 		reason: "dns_unverified_delay",
 	},
@@ -1899,7 +1899,7 @@ var categoryCases = []categoryCase{
 		name: "dns failure with user unknown status", kind: bounceKindFailed, status: "5.1.1",
 		diag:      "550 5.1.1 " + dnsNotFoundDiag,
 		recipient: "s1@nowhere.example", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
 		category: categoryUserUnknown, unit: "s1@nowhere.example", authority: "", actionable: false, respons: responsibleRecipient,
 		reason: "status_user_unknown",
 	},
@@ -1922,7 +1922,7 @@ var categoryCases = []categoryCase{
 		name: "dns verified not found", kind: bounceKindFailed, status: "4.4.3",
 		diag:      dnsTryAgainDiag,
 		recipient: "v1@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeNotFound, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeNotFound, FromSendingSource: true},
 		category: categoryDomainNotFound, unit: "infoseek.jp", authority: "", actionable: false, respons: responsibleDomain,
 		reason: "dns_verified_not_found",
 	},
@@ -1935,10 +1935,10 @@ var categoryCases = []categoryCase{
 		reason: "dns_verified_not_found",
 	},
 	{
-		name: "dns resolver failure of our mta", kind: bounceKindFailed, status: "4.4.3",
+		name: "dns resolver failure of the sending mta", kind: bounceKindFailed, status: "4.4.3",
 		diag:      dnsTryAgainDiag,
 		recipient: "v3@infoseek.jp", from: "newsletter@example.jp", reporting: "MX1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
 		category: categoryDNSResolverFailure, unit: "mx1.example.jp", authority: "", actionable: true, respons: responsibleSender,
 		reason: "dns_resolver_failure",
 	},
@@ -1946,7 +1946,7 @@ var categoryCases = []categoryCase{
 		name: "dns resolver failure in delay warning", kind: bounceKindDelayed, status: "4.4.3",
 		diag:      dnsTryAgainDiag,
 		recipient: "v4@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
 		category: categoryDNSResolverFailure, unit: "mx1.example.jp", authority: "", actionable: true, respons: responsibleSender,
 		reason: "dns_resolver_failure",
 	},
@@ -1955,7 +1955,7 @@ var categoryCases = []categoryCase{
 		name: "dns resolver failure without reporting mta", kind: bounceKindFailed, status: "",
 		diag:      "Deferred: Name server: docomo.ne.jp.: host name lookup failure",
 		recipient: "v5@docomo.ne.jp", from: "Newsletter <newsletter@example.jp>",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
 		category: categoryDNSResolverFailure, unit: "example.jp", authority: "", actionable: true, respons: responsibleSender,
 		reason: "dns_resolver_failure",
 	},
@@ -1969,11 +1969,11 @@ var categoryCases = []categoryCase{
 	},
 	{
 		// broken (some resolvers or name servers fail) is the receiving
-		// side's even when our MTA reported it.
+		// side's even when the sending MTA reported it.
 		name: "dns broken answers", kind: bounceKindDelayed, status: "4.4.3",
 		diag:      dnsTryAgainDiag,
 		recipient: "v7@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeBroken, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeBroken, FromSendingSource: true},
 		category: categoryDNSFailureExternal, unit: "infoseek.jp", authority: "", actionable: false, respons: responsibleDomain,
 		reason: "dns_failure_external",
 	},
@@ -1983,7 +1983,7 @@ var categoryCases = []categoryCase{
 		name: "dns nodata ignores verdict", kind: bounceKindFailed, status: "",
 		diag:      dnsNoDataDiag,
 		recipient: "w1@nodata.example.org", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
 		category: categoryDomainNotFound, unit: "nodata.example.org", authority: "", actionable: false, respons: responsibleDomain,
 		reason: "domain_not_found",
 	},
@@ -1991,7 +1991,7 @@ var categoryCases = []categoryCase{
 		name: "verdict without dns failure is ignored", kind: bounceKindFailed, status: "5.7.1",
 		diag:      "550 5.7.1 Service unavailable; Client host [203.0.113.5] blocked using zen.spamhaus.org; https://www.spamhaus.org/query/ip/203.0.113.5",
 		recipient: "w2@customer.example.com", from: "newsletter@example.jp", remoteIP: "198.51.100.25", reporting: "mx1.example.jp",
-		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true},
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
 		category: categoryIPBlocked, unit: "203.0.113.5", authority: "spamhaus.org", actionable: true, respons: responsibleSender,
 		reason: "ip_blocked",
 	},
@@ -2086,8 +2086,8 @@ func TestCategorize(t *testing.T) {
 // TestCategorizeDNSFailureSample runs a Postfix delay warning that reports
 // a failed MX lookup ("could not be delivered for more than 0 hour(s)")
 // through classification and extraction: not verified it is a delivery
-// delay of the recipient domain; verified to exist and reported by our own
-// MTA it is a resolver failure of that MTA (design document "mail
+// delay of the recipient domain; verified to exist and reported by a
+// sending server it is a resolver failure of that MTA (design document "mail
 // classification" 4.4).
 func TestCategorizeDNSFailureSample(t *testing.T) {
 	pm := ParseMessage(readSample(t, "postfix_delayed_dns.eml"))
@@ -2108,7 +2108,7 @@ func TestCategorizeDNSFailureSample(t *testing.T) {
 		b.CategoryRule != "dns_unverified_delay" {
 		t.Errorf("unverified group = %+v, rule %q", g, b.CategoryRule)
 	}
-	c := CategorizeWith(b, cls.Kind, DNSVerdict{Outcome: DNSOutcomeExists, OwnMTA: true})
+	c := CategorizeWith(b, cls.Kind, DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true})
 	if c.Category != categoryDNSResolverFailure || c.UnitValue != "mx1.example.jp" || c.Authority != "" ||
 		!c.Actionable || c.Responsible != responsibleSender || c.Reason != "dns_resolver_failure" {
 		t.Errorf("verified = %+v", c)
@@ -2116,7 +2116,7 @@ func TestCategorizeDNSFailureSample(t *testing.T) {
 }
 
 // TestUnitFinalFallback checks that a unit_value is never empty: when the
-// category's own candidates are missing, the recipient domain, then the
+// candidates of the category are missing, the recipient domain, then the
 // remote MTA host, then "unknown" fill it.
 func TestUnitFinalFallback(t *testing.T) {
 	// content_rejected without sender, reporting MTA or diagnostic address.
@@ -2408,7 +2408,7 @@ func TestBodySelectionLayouts(t *testing.T) {
 	}
 }
 
-// TestWriteBodySections checks that every section becomes its own numbered
+// TestWriteBodySections checks that every section becomes a separate numbered
 // file (-1, -2, ...), that a message without sections writes nothing, and
 // that a key must be valid before any file is touched.
 func TestWriteBodySections(t *testing.T) {
@@ -2754,7 +2754,7 @@ func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	}
 	// Extraction completes empty fields from the HTML text.
 	pm = &ParsedMessage{FromAddress: "MAILER-DAEMON@x.example", Subject: "Undelivered Mail Returned to Sender",
-		TextSections: []string{"Your message could not be delivered."},
+		TextSections: []string{"The message could not be delivered."},
 		HTMLSections: []string{"<p>&lt;kei@customer.example.com&gt;: host mx.customer.example.com[198.51.100.25] said: 550 5.1.1 User unknown</p>"},
 		Headers:      map[string]string{}}
 	pm.finishBodies()
@@ -2783,7 +2783,7 @@ func TestBothBodiesClassifyAndExtract(t *testing.T) {
 	}{
 		"Notification #4521":                     {true, bodySourceHTML},
 		"Monthly report attached":                {false, bodySourceText},
-		"Thanks for your order":                  {false, bodySourceText},
+		"Thanks for the order":                   {false, bodySourceText},
 		"Delivery Status Notification (Failure)": {true, bodySourceText},
 	}
 	msgs := mustListAllMessages(t, db)
@@ -2993,7 +2993,7 @@ func TestDiagnosticSource(t *testing.T) {
 
 	// No diagnostic at all.
 	pm = &ParsedMessage{FromAddress: "MAILER-DAEMON@x.example", Subject: "Undelivered Mail Returned to Sender",
-		TextSections: []string{"Your message could not be delivered."}, Headers: map[string]string{}}
+		TextSections: []string{"The message could not be delivered."}, Headers: map[string]string{}}
 	pm.finishBodies()
 	if none := ExtractBounce(pm, bounceKindFailed, "newsletter@example.jp"); none.DiagnosticSource != "" {
 		t.Errorf("no diagnostic: diagnostic_source = %q, want empty", none.DiagnosticSource)

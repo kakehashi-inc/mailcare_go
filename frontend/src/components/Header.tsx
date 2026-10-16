@@ -29,7 +29,7 @@ const MENU_ITEM_CLASS =
  */
 export function Header() {
     const { t } = useTranslation();
-    const { me, isAdmin, logout } = useAuth();
+    const { currentUser, isAdmin, logout } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
     const wide = useMediaQuery(`(min-width: ${BREAKPOINT_LG}px)`);
@@ -72,7 +72,7 @@ export function Header() {
     ];
     // Settings is a plain link to the menu page (administrators only; direct URLs show the "admins only" screen).
     const settingsActive = location.pathname.startsWith('/settings') && location.pathname !== '/settings/profile';
-    const userName = me ? me.user.display_name || me.user.username : '';
+    const userName = currentUser ? currentUser.user.display_name || currentUser.user.username : '';
 
     async function handleLogout() {
         setUserOpen(false);
@@ -105,7 +105,11 @@ export function Header() {
                     >
                         <span className='flex items-center gap-2 text-lg font-bold leading-none text-ink'>
                             {t('layout.appName')}
-                            {me && <span className='text-xs font-normal text-muted'>{formatVersion(me.version)}</span>}
+                            {currentUser && (
+                                <span className='text-xs font-normal text-muted'>
+                                    {formatVersion(currentUser.version)}
+                                </span>
+                            )}
                         </span>
                     </Link>
 
@@ -133,7 +137,7 @@ export function Header() {
                     {/* The user menu stays at the right on every width; long names are cut with an ellipsis
                         (about 40% of the bar on phones) and the title carries the full name. */}
                     <div className='ml-auto flex min-w-0 items-center gap-1'>
-                        {me && (
+                        {currentUser && (
                             <div className='relative min-w-0' ref={userRef}>
                                 <button
                                     type='button'

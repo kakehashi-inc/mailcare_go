@@ -16,8 +16,8 @@
 -- (mail server connection settings, with a "protocol" key); the name never
 -- ties the column to one protocol.
 --
--- Per-mailbox indexes (data/mails/<address>.sqlite) have their own migrations
--- in app/migrations/index.
+-- Per-mailbox indexes (data/mails/<address>.sqlite) have separate migrations
+-- in embedded/migrations/index.
 --
 -- users:     people who log in to the Web UI (optional notification address).
 -- tokens:    access tokens (template table, reserved for the future API).

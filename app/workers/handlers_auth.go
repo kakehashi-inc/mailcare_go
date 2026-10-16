@@ -172,14 +172,14 @@ func (c *core) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleMe returns the signed-in user.
-func (c *core) handleMe(w http.ResponseWriter, r *http.Request) {
+// handleCurrentUser returns the signed-in user.
+func (c *core) handleCurrentUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": toUserDTO(userFrom(r)), "version": modules.AppVersion})
 }
 
-// handleChangeMyPassword changes the caller's own password and re-issues the
+// handleChangeCurrentUserPassword changes the password of the caller and re-issues the
 // session cookie (the old sessions become invalid).
-func (c *core) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
+func (c *core) handleChangeCurrentUserPassword(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
 	var body struct {
 		CurrentPassword string `json:"current_password"`
@@ -219,11 +219,11 @@ func (c *core) sessionRemember(r *http.Request) bool {
 	return sess.Remember
 }
 
-// handleChangeMyProfile changes the caller's own profile: display name,
+// handleChangeCurrentUserProfile changes the profile of the caller: display name,
 // notification address, language, timezone and theme. Absent fields are
 // left unchanged; an empty email clears the address; an empty preference
 // restores its default.
-func (c *core) handleChangeMyProfile(w http.ResponseWriter, r *http.Request) {
+func (c *core) handleChangeCurrentUserProfile(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
 	var body struct {
 		DisplayName *string `json:"display_name"`

@@ -22,7 +22,7 @@ import (
 // any code path: a read failure or a corrupt stored value aborts the
 // operation instead of silently rotating the key, which would make every
 // stored password unreadable and every session invalid. Keeping the key in
-// the database means a backup of mailcare.db is complete on its own and no
+// the database means a backup of mailcare.db is complete by itself and no
 // extra file has to be protected next to it.
 
 const (
@@ -44,7 +44,7 @@ func LoadSecretKey(db *sql.DB) ([]byte, error) {
 		if _, err := rand.Read(fresh); err != nil {
 			return nil, err
 		}
-		if err := models.InsertSettingIfAbsent(db, SettingSecretKey, hex.EncodeToString(fresh)); err != nil {
+		if err := withSettingsLock(func() error { return models.InsertSettingIfAbsent(db, SettingSecretKey, hex.EncodeToString(fresh)) }); err != nil {
 			return nil, fmt.Errorf("failed to store the secret key: %w", err)
 		}
 		if stored, found, err = models.GetSettingStrict(db, SettingSecretKey); err != nil || !found {

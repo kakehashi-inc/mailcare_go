@@ -30,7 +30,7 @@ type Panel = { mode: 'create' } | { mode: 'edit'; user: UserDTO } | { mode: 'pas
 export function SettingsUsersPage() {
     const { t } = useTranslation();
     useDocumentTitle(t('layout.nav.settingsUsers'));
-    const { me } = useAuth();
+    const { currentUser } = useAuth();
     const toast = useToast();
     const users = useAsync(listUsers, []);
     const [panel, setPanel] = useState<Panel>(null);
@@ -62,9 +62,9 @@ export function SettingsUsersPage() {
             cell: u => (
                 <span className='inline-flex flex-wrap items-center gap-2 break-all'>
                     <span className='font-medium text-ink'>{u.username}</span>
-                    {me?.user.id === u.id && (
+                    {currentUser?.user.id === u.id && (
                         <Badge tone='info' icon='person_pin'>
-                            {t('page.users.you')}
+                            {t('page.users.currentUser')}
                         </Badge>
                     )}
                 </span>
@@ -103,7 +103,7 @@ export function SettingsUsersPage() {
             hideLabelInCard: true,
             className: 'whitespace-nowrap',
             cell: u => {
-                const isSelf = me?.user.id === u.id;
+                const isSelf = currentUser?.user.id === u.id;
                 const lastAdmin = u.role === 'admin' && adminCount <= 1;
                 return (
                     <span className='flex flex-wrap gap-1'>
@@ -326,7 +326,6 @@ function UserForm({ panel, adminCount, onClose, onSaved }: UserFormProps) {
                         autoComplete='off'
                         value={username}
                         onChange={e => setUsername(e.target.value)}
-                        hint={t('field.user.usernameHint')}
                         autoFocus
                         required
                     />

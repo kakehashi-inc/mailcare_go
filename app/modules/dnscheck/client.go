@@ -25,7 +25,18 @@ const (
 	// maxUDPPayload is the EDNS0 payload size advertised and the read
 	// buffer of a UDP reply. A TCP reply is bounded by its 2-byte length.
 	maxUDPPayload = 4096
+	// optionECS is the EDNS0 option code of EDNS Client Subnet (RFC 7871).
+	optionECS = 8
 )
+
+// ecsOptOut is the EDNS Client Subnet option every recursive query carries:
+// family 1 (IPv4), source and scope prefix lengths 0 and no address bytes,
+// which asks the resolver not to forward any part of this server's address
+// to the authoritative servers (RFC 7871 7.1.2). Without it a resolver that
+// sends ECS by default (Google Public DNS, one of the defaults) passes this
+// server's /24 on to the name servers of every name a notice chose. A query
+// to an authoritative server goes there directly and carries no option.
+var ecsOptOut = dnsmessage.Option{Code: optionECS, Data: []byte{0, 1, 0, 0}}
 
 // queryType is a record type the verification asks for.
 type queryType = dnsmessage.Type
@@ -89,9 +100,9 @@ func typeName(t queryType) string {
 // is verified for. For MX, a name without MX records is asked for its A and
 // then AAAA records: mail goes to the address of the name itself then (the
 // implicit MX, RFC 5321 5.1), so an address counts as data, and a name with
-// neither stays no data. auth asks an authoritative server (no recursion;
-// only an authoritative reply counts).
-func (c *Checker) lookupTarget(ctx context.Context, server netip.AddrPort, name, qtype string, auth bool) (answer, string) {
+// neither stays no data. A non-nil auth asks an authoritative server (no
+// recursion; only an authoritative reply counts) and counts its replies.
+func (c *Checker) lookupTarget(ctx context.Context, server netip.AddrPort, name, qtype string, auth *authTally) (answer, string) {
 	t := typeOf(qtype)
 	a, _, note := c.lookupType(ctx, server, name, t, auth)
 	if t != typeMX {
@@ -121,16 +132,17 @@ func (c *Checker) lookupTarget(ctx context.Context, server netip.AddrPort, name,
 // reply (fail), or none (no reply; from an authoritative server also a
 // reply that is not authoritative, such as a referral to a delegated zone).
 // From an authoritative server, a CNAME of the name counts as data: the
-// name exists, and its target may lie in another zone.
-func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name string, t queryType, auth bool) (answer, []string, string) {
-	r, err := c.exchange(ctx, server, name, t, !auth)
+// name exists, and its target may lie in another zone. A non-nil auth asks
+// an authoritative server (see exchange).
+func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name string, t queryType, auth *authTally) (answer, []string, string) {
+	r, err := c.exchange(ctx, server, name, t, auth)
 	if err != nil {
 		return answerNone, nil, describeError(err)
 	}
 	if r.rcode != dnsmessage.RCodeSuccess && r.rcode != dnsmessage.RCodeNameError {
 		return answerFail, nil, rcodeName(r.rcode)
 	}
-	if auth && !r.authoritative {
+	if auth != nil && !r.authoritative {
 		return answerNone, nil, "not authoritative for the name"
 	}
 	if r.rcode == dnsmessage.RCodeNameError {
@@ -139,7 +151,7 @@ func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name st
 	if values := r.records(t); len(values) > 0 {
 		return answerData, values, "ok (" + quote(values) + ")"
 	}
-	if auth {
+	if auth != nil {
 		if target := r.cname(name); target != "" {
 			return answerData, nil, "CNAME " + target
 		}
@@ -147,12 +159,14 @@ func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name st
 	return answerNoData, nil, "no data"
 }
 
-// exchange sends one question to a server (recursion desired for a
-// resolver, not for an authoritative server) and returns the matching
-// reply: over UDP, and over TCP when the UDP reply is truncated. Each
-// transport is bounded by the per-query timeout and by ctx. Whether an
-// authoritative server answered is recorded (noteAuthReply).
-func (c *Checker) exchange(ctx context.Context, server netip.AddrPort, name string, t queryType, recursive bool) (*reply, error) {
+// exchange sends one question to a server and returns the matching reply:
+// over UDP, and over TCP when the UDP reply is truncated. Each transport is
+// bounded by the per-query timeout and by ctx. auth is nil for a resolver
+// (recursion desired); for an authoritative server (no recursion) whether
+// it replied over UDP is recorded (noteAuthReply) and counted in auth,
+// unless ctx ended first (a query cut off tells nothing about the server).
+func (c *Checker) exchange(ctx context.Context, server netip.AddrPort, name string, t queryType, auth *authTally) (*reply, error) {
+	recursive := auth == nil
 	q, msg, id, err := newQuery(name, t, recursive)
 	if err != nil {
 		return nil, err
@@ -160,6 +174,7 @@ func (c *Checker) exchange(ctx context.Context, server netip.AddrPort, name stri
 	r, truncated, err := c.exchangeUDP(ctx, server, msg, id, q)
 	if !recursive && !ended(ctx) {
 		c.noteAuthReply(server, err == nil)
+		auth.note(err == nil)
 	}
 	if err == nil && truncated {
 		r, err = c.exchangeTCP(ctx, server, msg, id, q)
@@ -247,7 +262,8 @@ func (c *Checker) dial(ctx context.Context, network string, server netip.AddrPor
 }
 
 // newQuery builds the query of one question with a random ID, the
-// recursion-desired flag and an EDNS0 record advertising maxUDPPayload.
+// recursion-desired flag and an EDNS0 record advertising maxUDPPayload; the
+// record of a recursive query also carries ecsOptOut.
 func newQuery(name string, t queryType, recursive bool) (dnsmessage.Question, []byte, uint16, error) {
 	n, err := dnsmessage.NewName(name + ".")
 	if err != nil {
@@ -270,7 +286,11 @@ func newQuery(name string, t queryType, recursive bool) (dnsmessage.Question, []
 	if err := opt.SetEDNS0(maxUDPPayload, dnsmessage.RCodeSuccess, false); err != nil {
 		return q, nil, 0, err
 	}
-	if err := b.OPTResource(opt, dnsmessage.OPTResource{}); err != nil {
+	var options []dnsmessage.Option
+	if recursive {
+		options = []dnsmessage.Option{ecsOptOut}
+	}
+	if err := b.OPTResource(opt, dnsmessage.OPTResource{Options: options}); err != nil {
 		return q, nil, 0, err
 	}
 	msg, err := b.Finish()

@@ -59,31 +59,31 @@ func TestDNSCheckFindEarliest(t *testing.T) {
 		}
 	}
 
-	got, err := FindDNSCheck(db, "example.jp", "MX", base, farFuture)
+	got, err := FindDNSCheck(db, "example.jp", "MX", base, farFuture, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Detail != "at" || got.Outcome != "exists" || !got.CheckedAt.Equal(base) || got.CheckedAt.Location() != time.UTC {
 		t.Errorf("at notBefore: %+v", got)
 	}
-	if got, err := FindDNSCheck(db, "example.jp", "MX", base.Add(time.Second), farFuture); err != nil || got.Detail != "later" {
+	if got, err := FindDNSCheck(db, "example.jp", "MX", base.Add(time.Second), farFuture, false); err != nil || got.Detail != "later" {
 		t.Errorf("after notBefore: %+v, %v", got, err)
 	}
-	if got, err := FindDNSCheck(db, "example.jp", "MX", base.Add(-72*time.Hour), farFuture); err != nil || got.Detail != "old" {
+	if got, err := FindDNSCheck(db, "example.jp", "MX", base.Add(-72*time.Hour), farFuture, false); err != nil || got.Detail != "old" {
 		t.Errorf("earliest: %+v, %v", got, err)
 	}
 	// A time zone other than UTC is the same instant.
 	jst := time.FixedZone("JST", 9*3600)
-	if got, err := FindDNSCheck(db, "example.jp", "MX", base.In(jst), farFuture); err != nil || got.Detail != "at" {
+	if got, err := FindDNSCheck(db, "example.jp", "MX", base.In(jst), farFuture, false); err != nil || got.Detail != "at" {
 		t.Errorf("JST notBefore: %+v, %v", got, err)
 	}
-	if got, err := FindDNSCheck(db, "frac.example.jp", "MX", base.Add(time.Second), farFuture); err != nil || got.Detail != "frac" {
+	if got, err := FindDNSCheck(db, "frac.example.jp", "MX", base.Add(time.Second), farFuture, false); err != nil || got.Detail != "frac" {
 		t.Errorf("fractional second: %+v, %v", got, err)
 	}
-	if _, err := FindDNSCheck(db, "example.jp", "MX", base.Add(6*time.Hour), farFuture); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := FindDNSCheck(db, "example.jp", "MX", base.Add(6*time.Hour), farFuture, false); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("nothing after: %v", err)
 	}
-	if _, err := FindDNSCheck(db, "example.jp", "AAAA", base.Add(-72*time.Hour), farFuture); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := FindDNSCheck(db, "example.jp", "AAAA", base.Add(-72*time.Hour), farFuture, false); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("other type: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestDNSCheckFindEarliest(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("delete older: %d, %v", n, err)
 	}
-	if got, err := FindDNSCheck(db, "example.jp", "MX", base.Add(-72*time.Hour), farFuture); err != nil || got.Detail != "at" {
+	if got, err := FindDNSCheck(db, "example.jp", "MX", base.Add(-72*time.Hour), farFuture, false); err != nil || got.Detail != "at" {
 		t.Errorf("after the cleanup: %+v, %v", got, err)
 	}
 }
@@ -108,7 +108,7 @@ func TestDNSCheckInsertDefaultsTime(t *testing.T) {
 	if c.CheckedAt.Before(before) || c.CheckedAt.Location() != time.UTC {
 		t.Errorf("checked_at %v", c.CheckedAt)
 	}
-	got, err := FindDNSCheck(db, "example.jp", "MX", before, farFuture)
+	got, err := FindDNSCheck(db, "example.jp", "MX", before, farFuture, false)
 	if err != nil || got.ID != c.ID {
 		t.Errorf("find: %+v, %v", got, err)
 	}
@@ -185,7 +185,7 @@ func TestDNSCheckWindowEdges(t *testing.T) {
 	if first.ID >= second.ID {
 		t.Fatalf("ids %d, %d", first.ID, second.ID)
 	}
-	if got, err := FindDNSCheck(db, "tie.example.jp", "MX", window.Add(-time.Hour), farFuture); err != nil || got.ID != first.ID || got.Detail != "first" {
+	if got, err := FindDNSCheck(db, "tie.example.jp", "MX", window.Add(-time.Hour), farFuture, false); err != nil || got.ID != first.ID || got.Detail != "first" {
 		t.Errorf("same checked_at: %+v, %v; want id %d", got, err, first.ID)
 	}
 	// The same row wins for InsertDNSCheckIfAbsent.
@@ -221,7 +221,7 @@ func TestDNSCheckWindowBothEnds(t *testing.T) {
 	}
 	for _, r := range rows {
 		want := r.Name == "start.example.jp" || r.Name == "end.example.jp"
-		got, err := FindDNSCheck(db, r.Name, "MX", from, to)
+		got, err := FindDNSCheck(db, r.Name, "MX", from, to, false)
 		switch {
 		case want && (err != nil || got.ID != r.ID):
 			t.Errorf("find %s: %+v, %v; want id %d", r.Name, got, err, r.ID)
@@ -240,10 +240,10 @@ func TestDNSCheckWindowBothEnds(t *testing.T) {
 		}
 	}
 
-	// A row of its own exactly at the end of the window is found again.
-	atEnd := &DNSCheck{Name: "own-end.example.jp", QType: "MX", Outcome: "exists", Detail: "end", CheckedAt: to}
+	// A separate row exactly at the end of the window is found again.
+	atEnd := &DNSCheck{Name: "end-row.example.jp", QType: "MX", Outcome: "exists", Detail: "end", CheckedAt: to}
 	if got, inserted, err := InsertDNSCheckIfAbsent(db, atEnd, from, to); err != nil || !inserted || got.ID != atEnd.ID {
-		t.Errorf("own row at the end: %+v, inserted %v, %v", got, inserted, err)
+		t.Errorf("separate row at the end: %+v, inserted %v, %v", got, inserted, err)
 	}
 	// Outside the window nothing is stored.
 	for _, at := range []time.Time{from.Add(-time.Second), to.Add(time.Second)} {
@@ -297,8 +297,64 @@ func TestDNSCheckInsertIfAbsentConcurrent(t *testing.T) {
 	}
 }
 
+// TestDNSCheckDirectKinds checks the two kinds of rows (direct: the
+// authoritative servers were asked as well): FindDNSCheck with directOnly
+// skips the rows of the resolvers alone, and InsertDNSCheckIfAbsent counts
+// only a direct row as present for a direct one, and any row for one of the
+// resolvers alone, returning the earliest row of the kind it looked for.
+func TestDNSCheckDirectKinds(t *testing.T) {
+	db := openTestMasterDB(t)
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	from, to := base.Add(-24*time.Hour), base.Add(48*time.Hour)
+	resolvers := &DNSCheck{Name: "example.jp", QType: "MX", Outcome: "not_found", Detail: "resolvers", CheckedAt: base}
+	if err := InsertDNSCheck(db, resolvers); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := FindDNSCheck(db, "example.jp", "MX", from, to, false); err != nil || got.ID != resolvers.ID || got.Direct {
+		t.Errorf("any kind: %+v, %v", got, err)
+	}
+	if _, err := FindDNSCheck(db, "example.jp", "MX", from, to, true); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("direct only, none stored: %v", err)
+	}
+
+	// A direct row is stored next to the row of the resolvers alone.
+	direct := &DNSCheck{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "direct", Direct: true, CheckedAt: base.Add(time.Hour)}
+	got, inserted, err := InsertDNSCheckIfAbsent(db, direct, from, to)
+	if err != nil || !inserted || got.ID != direct.ID || !got.Direct || got.Outcome != "broken" {
+		t.Fatalf("direct next to resolvers: %+v, inserted %v, %v", got, inserted, err)
+	}
+	// Another direct row is not: the first direct one wins.
+	second := &DNSCheck{Name: "example.jp", QType: "MX", Outcome: "exists", Detail: "second", Direct: true, CheckedAt: base.Add(2 * time.Hour)}
+	if got, inserted, err := InsertDNSCheckIfAbsent(db, second, from, to); err != nil || inserted || got.ID != direct.ID {
+		t.Errorf("second direct: %+v, inserted %v, %v; want the first direct row", got, inserted, err)
+	}
+	// Nor another row of the resolvers alone: the earliest row of either
+	// kind wins.
+	again := &DNSCheck{Name: "example.jp", QType: "MX", Outcome: "exists", Detail: "again", CheckedAt: base.Add(3 * time.Hour)}
+	if got, inserted, err := InsertDNSCheckIfAbsent(db, again, from, to); err != nil || inserted || got.ID != resolvers.ID {
+		t.Errorf("resolvers again: %+v, inserted %v, %v; want the earliest row", got, inserted, err)
+	}
+	if got, err := FindDNSCheck(db, "example.jp", "MX", from, to, true); err != nil || got.ID != direct.ID {
+		t.Errorf("direct only: %+v, %v", got, err)
+	}
+	// A row of the resolvers alone is not stored where only a direct one
+	// is: that one counts for every notice.
+	onlyDirect := &DNSCheck{Name: "other.example.jp", QType: "MX", Outcome: "exists", Detail: "direct", Direct: true, CheckedAt: base}
+	if err := InsertDNSCheck(db, onlyDirect); err != nil {
+		t.Fatal(err)
+	}
+	if got, inserted, err := InsertDNSCheckIfAbsent(db, &DNSCheck{Name: "other.example.jp", QType: "MX", Outcome: "not_found", Detail: "resolvers",
+		CheckedAt: base.Add(time.Hour)}, from, to); err != nil || inserted || got.ID != onlyDirect.ID || !got.Direct {
+		t.Errorf("resolvers where a direct row is: %+v, inserted %v, %v", got, inserted, err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM dns_checks`).Scan(&n); err != nil || n != 3 {
+		t.Errorf("%d rows (%v), want 3", n, err)
+	}
+}
+
 // TestDNSChecksMigrationDown checks that the migration can be rolled back
-// (table and index dropped) and applied again.
+// (table and index dropped) and applied again, with every column.
 func TestDNSChecksMigrationDown(t *testing.T) {
 	db := openTestMasterDB(t)
 	ctx := context.Background()
@@ -327,5 +383,32 @@ func TestDNSChecksMigrationDown(t *testing.T) {
 	}
 	if n := count(); n != 2 {
 		t.Fatalf("after up again: %d objects", n)
+	}
+	rows, err := db.Query(`SELECT name, "notnull" FROM pragma_table_info('dns_checks') ORDER BY cid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var name string
+		var notNull bool
+		if err := rows.Scan(&name, &notNull); err != nil {
+			t.Fatal(err)
+		}
+		if !notNull && name != "id" {
+			t.Errorf("column %s may be NULL", name)
+		}
+		columns = append(columns, name)
+	}
+	if got := fmt.Sprint(columns); got != "[id name qtype outcome detail direct checked_at]" {
+		t.Errorf("columns %s", got)
+	}
+	c := &DNSCheck{Name: "example.jp", QType: "MX", Outcome: "exists", Detail: "d", Direct: true}
+	if err := InsertDNSCheck(db, c); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := FindDNSCheck(db, "example.jp", "MX", c.CheckedAt, c.CheckedAt, true); err != nil || !got.Direct {
+		t.Errorf("after up again: %+v, %v", got, err)
 	}
 }

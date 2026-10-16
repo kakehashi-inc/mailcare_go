@@ -3,6 +3,7 @@ import type { ParseKeys } from 'i18next';
 import i18n from '../i18n/i18n';
 import type {
     BounceDTO,
+    CurrentUserResponse,
     DashboardDTO,
     GroupDTO,
     GroupDetailResponse,
@@ -22,7 +23,6 @@ import type {
     MailboxDTO,
     MailboxInput,
     MailboxResponse,
-    Me,
     MessageDetailResponse,
     MessageKind,
     MessageListResponse,
@@ -76,7 +76,7 @@ export class ApiError extends Error {
 /**
  * Called on every 401 unless the request opted out. The AuthProvider installs
  * a handler that clears the session and navigates to /login with the current
- * location as "next"; before it is installed we fall back to a hard redirect.
+ * location as "next"; before it is installed a hard redirect is the fallback.
  */
 let unauthorizedHandler: () => void = () => {
     const here = window.location.pathname + window.location.search;
@@ -98,7 +98,7 @@ function sleep(ms: number): Promise<void> {
     return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
-/** The message of a response without one of its own (e.g. a proxy error page). */
+/** The message of a response that carries none (e.g. a proxy error page). */
 function statusKey(status: number): MessageKey {
     switch (status) {
         case 401:
@@ -205,16 +205,16 @@ export function logout(): Promise<void> {
     return request<void>(`${WEB_BASE}/logout`, json('POST'), { silent401: true });
 }
 
-export function getMe(): Promise<Me> {
-    return request<Me>(api('/me'), {}, { silent401: true });
+export function getCurrentUser(): Promise<CurrentUserResponse> {
+    return request<CurrentUserResponse>(api('/me'), {}, { silent401: true });
 }
 
-export function changeMyPassword(current_password: string, new_password: string): Promise<void> {
+export function changeCurrentUserPassword(current_password: string, new_password: string): Promise<void> {
     return request<void>(api('/me/password'), json('PUT', { current_password, new_password }));
 }
 
-/** Changes the caller's own profile fields (display name, email, language, time zone, theme); returns the updated user. */
-export async function updateMyProfile(input: ProfileInput): Promise<UserDTO> {
+/** Changes the profile fields of the caller (display name, email, language, time zone, theme); returns the updated user. */
+export async function updateCurrentUserProfile(input: ProfileInput): Promise<UserDTO> {
     const r = await request<UserResponse>(api('/me/profile'), json('PUT', input));
     return r.user;
 }
@@ -396,7 +396,7 @@ export function updateNotificationSettings(input: NotificationSettingsInput): Pr
     return request<NotificationSettingsDTO>(api('/settings/notifications'), json('PUT', input));
 }
 
-/** Sends a short SMTP check mail; without "to" the server uses the caller's own address. */
+/** Sends a short SMTP check mail; without "to" the server uses the address of the caller. */
 export function sendTestNotification(to?: string): Promise<{ ok: boolean }> {
     const input: NotificationTestInput = to ? { to } : {};
     return request<{ ok: boolean }>(api('/notifications/test'), json('POST', input));

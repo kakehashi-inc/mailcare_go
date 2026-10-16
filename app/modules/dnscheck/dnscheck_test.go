@@ -53,7 +53,7 @@ func storedChecks(t *testing.T, db *sql.DB) []*models.DNSCheck {
 }
 
 // verify verifies a name for a notice received now that clearly concerns
-// our own mail (direct: the authoritative servers are asked too).
+// mail from the sending sources (direct: the authoritative servers are asked too).
 func verify(t *testing.T, c *Checker, name, qtype, recipientDomain string) (mailengine.DNSOutcome, bool) {
 	t.Helper()
 	return c.Verify(context.Background(), mailengine.DNSFailure{Name: name, QType: qtype}, recipientDomain, time.Now(), true)
@@ -221,7 +221,7 @@ func TestVerifySplitResolvers(t *testing.T) {
 	}
 }
 
-// TestVerifyIndirect: a notice that does not clearly concern our own mail
+// TestVerifyIndirect: a notice that does not clearly concern mail from the sending sources
 // (direct false; a forged one names a domain and servers of its author's
 // choosing) is verified through the resolvers alone: neither the name
 // servers of the domain are looked up nor the authoritative server at the
@@ -248,7 +248,7 @@ func TestVerifyIndirect(t *testing.T) {
 		t.Errorf("the name servers were looked up: %v", q)
 	}
 	if rows := storedChecks(t, db); len(rows) != 1 ||
-		!strings.Contains(rows[0].Detail, "authoritative: not asked (the notice does not show mail of ours)") {
+		!strings.Contains(rows[0].Detail, "authoritative: not asked (the notice does not show mail sent from the sending sources)") {
 		t.Errorf("rows %+v", rows)
 	}
 
@@ -355,7 +355,7 @@ func TestVerifyAddressNoData(t *testing.T) {
 			t.Errorf("%s %s: Verify = %q, %v; want %q", tc.name, tc.qtype, got, ok, tc.want)
 			continue
 		}
-		row, err := models.FindDNSCheck(db, tc.name, tc.qtype, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+		row, err := models.FindDNSCheck(db, tc.name, tc.qtype, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -382,7 +382,7 @@ func TestVerifyOtherRunStoredFirst(t *testing.T) {
 			return
 		}
 		once.Do(func() {
-			if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "other run"}); err != nil {
+			if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "other run", Direct: true}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -571,9 +571,9 @@ func TestVerifyReusesStoredOutcome(t *testing.T) {
 	s.resolve("old.example.jp MX", data("mx1.example.jp"))
 	notice := time.Now().Add(-10 * time.Hour)
 	for _, r := range []*models.DNSCheck{
-		{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "earliest", CheckedAt: notice.Add(-23 * time.Hour)},
-		{Name: "example.jp", QType: "MX", Outcome: "exists", Detail: "later", CheckedAt: notice.Add(time.Hour)},
-		{Name: "old.example.jp", QType: "MX", Outcome: "not_found", Detail: "too old", CheckedAt: notice.Add(-25 * time.Hour)},
+		{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "earliest", Direct: true, CheckedAt: notice.Add(-23 * time.Hour)},
+		{Name: "example.jp", QType: "MX", Outcome: "exists", Detail: "later", Direct: true, CheckedAt: notice.Add(time.Hour)},
+		{Name: "old.example.jp", QType: "MX", Outcome: "not_found", Detail: "too old", Direct: true, CheckedAt: notice.Add(-25 * time.Hour)},
 	} {
 		if err := models.InsertDNSCheck(db, r); err != nil {
 			t.Fatal(err)
@@ -630,7 +630,7 @@ func TestVerifyDisabled(t *testing.T) {
 // TestVerifyStoredOnly checks the Checker of a run with the check off: the
 // outcome stored for a notice (the reuse rule) is used, recent notice or
 // not, and anything else stays not verified, while no question at all
-// reaches a resolver, a name server or the OS resolver; the own host
+// reaches a resolver, a name server or the OS resolver; the source host
 // names, the reporting MTAs and the SPF records are not looked up.
 func TestVerifyStoredOnly(t *testing.T) {
 	db := openTestMasterDB(t)
@@ -755,12 +755,12 @@ func TestVerifyLiveOnlyForRecentNotices(t *testing.T) {
 	}
 }
 
-// TestVerifyOwnRowLater checks a notice verified live late in its window:
-// the row checked 30 hours after the notice is its own and is reused when
+// TestVerifyRowOfItsWindowLater checks a notice verified live late in its window:
+// the row checked 30 hours after the notice belongs to it and is reused when
 // the notice is grouped again days later, without a query, while a new
 // Checker for a notice of today does not take it (it lies before that
 // window) and verifies live.
-func TestVerifyOwnRowLater(t *testing.T) {
+func TestVerifyRowOfItsWindowLater(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
@@ -781,7 +781,7 @@ func TestVerifyOwnRowLater(t *testing.T) {
 
 	again := newTestChecker(db, s.port, "127.0.0.1")
 	if got, status := again.VerifyStatus(ctx, failure, "example.jp", notice, true); got != mailengine.DNSOutcomeExists || status != mailengine.DNSStatusReused {
-		t.Errorf("5 days old, own row: VerifyStatus = %q, %v; want the stored exists", got, status)
+		t.Errorf("5 days old, row of the notice: VerifyStatus = %q, %v; want the stored exists", got, status)
 	}
 	if q := s.received(); len(q) != asked {
 		t.Errorf("queries for a reused outcome: %v", q[asked:])
@@ -818,7 +818,7 @@ func TestVerifyStoreClampedToWindow(t *testing.T) {
 		t.Fatalf("VerifyStatus = %q, %v", got, status)
 	}
 	from, to := ReuseRange(notice, start)
-	row, err := models.FindDNSCheck(db, "example.jp", "MX", from, to)
+	row, err := models.FindDNSCheck(db, "example.jp", "MX", from, to, false)
 	if err != nil || !row.CheckedAt.Equal(to) || row.Outcome != "exists" {
 		t.Errorf("stored row %+v, %v; want one checked at %v", row, err, to)
 	}
@@ -900,7 +900,7 @@ func TestVerifyCanceled(t *testing.T) {
 	}
 }
 
-// TestResolveHost checks the lookup of our own host names: A and AAAA,
+// TestResolveHost checks the lookup of the source host names: A and AAAA,
 // remembered for the run; a name without addresses (NXDOMAIN, or an
 // IPv4-only host) is answered, what is no host name is not.
 func TestResolveHost(t *testing.T) {
@@ -932,7 +932,7 @@ func TestResolveHost(t *testing.T) {
 	}
 }
 
-// TestResolveHostHalfAnswered: a lookup of an own host name is answered
+// TestResolveHostHalfAnswered: a lookup of a source host name is answered
 // only when both the A and the AAAA question are (a SERVFAIL or no reply
 // for one of them leaves it unanswered, with the addresses the other gave);
 // the next resolver is asked then, and one that answers both decides.
@@ -1009,7 +1009,7 @@ func TestSystemResolver(t *testing.T) {
 			t.Errorf("%s: Verify = %q, %v; want %q", tc.name, got, ok, tc.want)
 			continue
 		}
-		row, err := models.FindDNSCheck(db, tc.name, "MX", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+		row, err := models.FindDNSCheck(db, tc.name, "MX", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
 		if err != nil || !strings.Contains(row.Detail, tc.note) {
 			t.Errorf("%s: %v %+v", tc.name, err, row)
 		}
@@ -1018,13 +1018,13 @@ func TestSystemResolver(t *testing.T) {
 	// family shows that the name exists.
 	if got, ok := verify(t, c, "host.example.jp", "AAAA", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
 		t.Errorf("AAAA of an IPv4-only host: Verify = %q, %v", got, ok)
-	} else if row, err := models.FindDNSCheck(db, "host.example.jp", "AAAA", time.Now().Add(-time.Hour), time.Now().Add(time.Hour)); err != nil ||
+	} else if row, err := models.FindDNSCheck(db, "host.example.jp", "AAAA", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false); err != nil ||
 		!strings.Contains(row.Detail, "AAAA not found (NXDOMAIN or no data); address ok (192.0.2.10) (no AAAA record, name exists)") ||
 		!strings.Contains(row.Detail, "authoritative: not asked (only the OS resolver is used)") {
 		t.Errorf("AAAA of an IPv4-only host: %v %+v", err, row)
 	}
 	// Only the OS resolver is contacted: no authoritative server directly,
-	// even for a notice that clearly concerns our own mail.
+	// even for a notice that clearly concerns mail from the sending sources.
 	for _, q := range s.received() {
 		if strings.HasPrefix(q, "auth ") {
 			t.Errorf("an authoritative server was asked in the OS resolver mode: %q", q)
@@ -1110,13 +1110,32 @@ func TestServerAllowed(t *testing.T) {
 		"2001:0:4136::1":   false, // 2001::/32
 		"2001:db8::1":      false, // 2001:db8::/32
 		"100::1":           false, // 100::/64
+		"fec0::1":          false, // fec0::/10
+		"feff:ffff::1":     false,
+		"::102:304":        false, // ::/96
+		"::ffff:ffff":      false,
+		"3fff::1":          false, // 3fff::/20
+		"3fff:fff:ffff::1": false,
+		"5f00::1":          false, // 5f00::/16
+		"5f00:ffff::1":     false,
+		// The new ranges are no wider than listed.
+		"3fff:1000::1": true, // past 3fff::/20
+		"5f01::1":      true, // past 5f00::/16
+		// The last address of a range counts like the first.
+		"2001:0:ffff::1": false, // 2001::/32
+		// An IPv4-mapped IPv6 address is judged as the IPv4 address.
+		"::ffff:192.0.2.1":  false, // 192.0.2.0/24
+		"::ffff:100.64.0.1": false, // 100.64.0.0/10
+		"::ffff:198.18.0.1": false, // 198.18.0.0/15
 	} {
 		if got := c.serverAllowed(netip.MustParseAddr(in)); got != want {
 			t.Errorf("serverAllowed(%s) = %v, want %v", in, got, want)
 		}
 	}
-	if got := c.serverAllowed(netip.MustParseAddr("fe80::1%eth0")); got {
-		t.Error("an address with a zone is allowed")
+	for _, in := range []string{"fe80::1%eth0", "2606:4700:4700::1111%eth0"} {
+		if got := c.serverAllowed(netip.MustParseAddr(in)); got {
+			t.Errorf("an address with a zone is allowed: %s", in)
+		}
 	}
 	if got := c.usableServerAddrs([]netip.Addr{netip.MustParseAddr("2001:4860:4860::8888"), netip.MustParseAddr("10.0.0.1"),
 		netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("8.8.8.8")}); len(got) != 2 ||
@@ -1133,7 +1152,7 @@ func TestServerAllowed(t *testing.T) {
 // TestFindDNSCheckNoRows keeps the contract the Checker relies on.
 func TestFindDNSCheckNoRows(t *testing.T) {
 	db := openTestMasterDB(t)
-	if _, err := models.FindDNSCheck(db, "example.jp", "MX", time.Now(), time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := models.FindDNSCheck(db, "example.jp", "MX", time.Now(), time.Now().Add(time.Hour), false); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("err %v", err)
 	}
 }

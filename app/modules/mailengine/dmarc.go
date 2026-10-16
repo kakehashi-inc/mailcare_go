@@ -26,7 +26,7 @@ import (
 // and identifiers, how many messages the receiver saw and how they fared
 // (DKIM and SPF, the disposition it applied). The parser reads the document
 // from any attachment of the mail; the classifier treats a mail that carries
-// one as a notice of its own kind (bounce kind "report"), and the grouping
+// one as a notice of a separate kind (bounce kind "report"), and the grouping
 // phase files every record that failed DMARC (neither DKIM nor SPF passed
 // with alignment) into an actionable group (dmarc_records, design document
 // "mail classification").

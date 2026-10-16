@@ -11,7 +11,7 @@ import (
 //
 // ModelSelector is an optional Provider extension: a provider whose CLI can
 // be told which model to use implements it, and the configured model
-// (setting agent_model, empty = the CLI's own default) is appended to
+// (setting agent_model, empty = the default of the CLI) is appended to
 // Command() through ModelArgs. A provider without it always runs Command()
 // and the setting is ignored for it.
 

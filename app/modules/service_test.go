@@ -23,7 +23,7 @@ import (
 // fakeControlServer answers the control endpoints on a loopback port the way
 // a MailCare server serving dataDir does, counting the job submissions and
 // shutdown requests it receives. It stands in for a server started for
-// another data directory (or, once dataDir is changed, for our own).
+// another data directory (or, once dataDir is changed, for the data directory of the test).
 type fakeControlServer struct {
 	port int
 	mu   sync.Mutex
@@ -128,7 +128,7 @@ func TestSameDataDir(t *testing.T) {
 	if SameDataDir(dir, filepath.Join(dir, "other")) {
 		t.Errorf("different directories matched")
 	}
-	// A server that does not report its directory is never ours.
+	// A server that does not report its directory never matches.
 	if SameDataDir("", dir) || SameDataDir(dir, "") || SameDataDir("", "") {
 		t.Errorf("empty path matched")
 	}
@@ -143,9 +143,9 @@ func TestSameDataDir(t *testing.T) {
 
 // TestRunJobsSkipsServerOfAnotherDataDir: a MailCare server answering on the
 // configured port but started for another data directory must not receive
-// the CLI's jobs (their mailbox ids belong to our database); the jobs run in
-// this process as when no server runs. Once the server reports our directory
-// the jobs are handed to it.
+// the CLI's jobs (their mailbox ids belong to the database of the CLI); the
+// jobs run in this process as when no server runs. Once the server reports
+// the data directory of the CLI the jobs are handed to it.
 func TestRunJobsSkipsServerOfAnotherDataDir(t *testing.T) {
 	db := newTestDB(t)
 	key, err := LoadSecretKey(db)
@@ -181,7 +181,7 @@ func TestRunJobsSkipsServerOfAnotherDataDir(t *testing.T) {
 		t.Errorf("inline outcome not printed:\n%s", out)
 	}
 
-	// The same server reporting our data directory receives the job.
+	// The same server reporting the data directory of the CLI receives the job.
 	dataDir, err := DataDir()
 	if err != nil {
 		t.Fatal(err)
@@ -189,13 +189,13 @@ func TestRunJobsSkipsServerOfAnotherDataDir(t *testing.T) {
 	fake.setDataDir(dataDir)
 	out = captureStdout(t, func() { runErr = runJobs(db, specs, false) })
 	if runErr != nil {
-		t.Fatalf("runJobs with our server: %v\n%s", runErr, out)
+		t.Fatalf("runJobs with the matching server: %v\n%s", runErr, out)
 	}
 	if !strings.Contains(out, "Server is running on port "+strconv.Itoa(fake.port)+"; submitting to it.") || !strings.Contains(out, "Queued job #1") {
 		t.Errorf("submission not announced:\n%s", out)
 	}
 	if jobs, _ := fake.counts(); jobs != 1 {
-		t.Errorf("jobs submitted to our server = %d, want 1", jobs)
+		t.Errorf("jobs submitted to the matching server = %d, want 1", jobs)
 	}
 	if local, _ := models.ListJobs(db, 10); len(local) != 1 {
 		t.Errorf("a local job was created although the server took the job: %+v", local)
@@ -244,7 +244,7 @@ func TestServiceStopAndStatusCheckDataDir(t *testing.T) {
 	fake.setDataDir(dataDir)
 	out = captureStdout(t, func() { err = (&ServiceStopCmd{WebPort: &fake.port}).Run() })
 	if err != nil || !strings.Contains(out, "Server shutdown initiated") {
-		t.Errorf("stop of our server: %v\n%s", err, out)
+		t.Errorf("stop of the matching server: %v\n%s", err, out)
 	}
 	if _, shutdowns := fake.counts(); shutdowns != 1 {
 		t.Errorf("shutdown requests = %d, want 1", shutdowns)

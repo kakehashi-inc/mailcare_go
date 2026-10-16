@@ -47,7 +47,7 @@ func TestAuthenticateUserByEmail(t *testing.T) {
 	}
 	same := "alice@example.com"
 	if err := UpdateProfile(db, alice, ProfileInput{Email: &same}); err != nil {
-		t.Errorf("keeping one's own address: %v", err)
+		t.Errorf("keeping the same address: %v", err)
 	}
 	empty := ""
 	if err := UpdateProfile(db, bob, ProfileInput{Email: &empty}); err != nil {

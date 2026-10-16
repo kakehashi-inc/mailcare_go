@@ -24,7 +24,7 @@ func TestVerifyStoredBeforeApplicability(t *testing.T) {
 	s.resolve("customer.jp MX", data("mx.provider.net"))
 	s.resolve("mx.provider.net A", answerWith(fakeServFail))
 	if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "mx.provider.net", QType: "AAAA", Outcome: "exists", Detail: "stored",
-		CheckedAt: time.Now().Add(-time.Hour)}); err != nil {
+		Direct: true, CheckedAt: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	c := newTestChecker(db, s.port, "127.0.0.1")
@@ -140,15 +140,15 @@ func TestVerifyBudget(t *testing.T) {
 	}
 }
 
-// TestOwnBudgetApart checks that the own sources (the SPF records and the
-// own host names) have a time budget of their own: a run whose verification
-// budget the notices used up still reads the SPF records and looks the own
-// host names up, and once the budget of the own sources is used up an SPF
-// record is incomplete and an own host name not answered, without a
+// TestSourceBudgetApart checks that the sending sources (the SPF records and the
+// source host names) have a separate time budget: a run whose verification
+// budget the notices used up still reads the SPF records and looks the
+// source host names up, and once the budget of the sending sources is used up an SPF
+// record is incomplete and a source host name not answered, without a
 // question, while the verification goes on.
-func TestOwnBudgetApart(t *testing.T) {
-	if got := New(nil, Config{}).ownBudget; got != 2*time.Minute {
-		t.Errorf("default budget of the own sources %v, want 2m", got)
+func TestSourceBudgetApart(t *testing.T) {
+	if got := New(nil, Config{}).sourceBudget; got != 2*time.Minute {
+		t.Errorf("default budget of the sending sources %v, want 2m", got)
 	}
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("a.example.jp A", data("192.0.2.1"))
@@ -170,24 +170,24 @@ func TestOwnBudgetApart(t *testing.T) {
 		t.Errorf("SPF with the verification budget used up: %+v", got)
 	}
 	if got, answered := c.ResolveHost(context.Background(), "smtp.example.jp"); len(got) != 1 || !answered {
-		t.Errorf("own host with the verification budget used up: %v, %v", got, answered)
+		t.Errorf("source host with the verification budget used up: %v, %v", got, answered)
 	}
 
-	// The budget of the own sources is used up by the first query.
-	c = New(nil, Config{Enabled: true, Resolvers: []string{"127.0.0.1"}, Port: s.port, Timeout: testTimeout, OwnBudget: time.Nanosecond})
+	// The budget of the sending sources is used up by the first query.
+	c = New(nil, Config{Enabled: true, Resolvers: []string{"127.0.0.1"}, Port: s.port, Timeout: testTimeout, SourceBudget: time.Nanosecond})
 	c.allowLocal = true
 	if got := c.LookupSPF(context.Background(), "example.jp"); got.Complete || got.Prefixes != nil {
-		t.Errorf("SPF over the budget of the own sources: %+v, want incomplete", got)
+		t.Errorf("SPF over the budget of the sending sources: %+v, want incomplete", got)
 	}
 	before := len(s.received())
 	if got, answered := c.ResolveHost(context.Background(), "smtp.example.jp"); got != nil || answered {
-		t.Errorf("own host over the budget of the own sources: %v, %v; want not answered", got, answered)
+		t.Errorf("source host over the budget of the sending sources: %v, %v; want not answered", got, answered)
 	}
 	if q := s.received(); len(q) != before {
-		t.Errorf("queries over the budget of the own sources: %v", q[before:])
+		t.Errorf("queries over the budget of the sending sources: %v", q[before:])
 	}
 	if got, ok := verify(t, c, "a.example.jp", "A", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
-		t.Errorf("verification with the budget of the own sources used up: %q, %v", got, ok)
+		t.Errorf("verification with the budget of the sending sources used up: %q, %v", got, ok)
 	}
 }
 
@@ -244,11 +244,11 @@ func TestCheckCutShortIsInconclusive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if outcome, ok, _ := c.check(ctx, "example.jp", "MX", true); ok || outcome != "" {
+	if outcome, ok, _, _ := c.check(ctx, "example.jp", "MX", true); ok || outcome != "" {
 		t.Errorf("check cut short = %q, %v", outcome, ok)
 	}
 	// With time for every resolver the same answers vote broken.
-	if outcome, ok, _ := c.check(context.Background(), "example.jp", "MX", true); !ok || outcome != mailengine.DNSOutcomeBroken {
+	if outcome, ok, _, _ := c.check(context.Background(), "example.jp", "MX", true); !ok || outcome != mailengine.DNSOutcomeBroken {
 		t.Errorf("check = %q, %v", outcome, ok)
 	}
 }
@@ -287,21 +287,26 @@ func TestEnded(t *testing.T) {
 // classification" 4.4 against the values it states: 200 names verified per
 // run, 3 seconds per query, 12 seconds per verification, a budget of 10
 // minutes, 200 recipient domains and 200 reporting MTAs looked up per run,
-// and a budget of 2 minutes for the own sources (2.7).
+// and a budget of 2 minutes for the sending sources (2.7).
 func TestDefaultsOfTheSpecification(t *testing.T) {
 	c := New(nil, Config{})
 	for name, got := range map[string]any{
-		"maxLookups":     c.maxLookups,
-		"timeout":        c.timeout,
-		"verifyDeadline": c.verifyDeadline(),
-		"budget":         c.budget,
-		"ownBudget":      c.ownBudget,
-		"maxMXDomains":   c.maxMXDomains,
-		"maxReporters":   c.maxReporters,
+		"maxLookups":      c.maxLookups,
+		"timeout":         c.timeout,
+		"verifyDeadline":  c.verifyDeadline(),
+		"budget":          c.budget,
+		"sourceBudget":    c.sourceBudget,
+		"maxMXDomains":    c.maxMXDomains,
+		"maxReporters":    c.maxReporters,
+		"spfMaxQueries":   c.spfMaxQueries,
+		"spfMaxDepth":     c.spfMaxDepth,
+		"spfMaxPrefixes":  c.spfMaxPrefixes,
+		"spfMaxMXTargets": c.spfMaxMXTargets,
 	} {
 		want := map[string]any{
 			"maxLookups": 200, "timeout": 3 * time.Second, "verifyDeadline": 12 * time.Second,
-			"budget": 10 * time.Minute, "ownBudget": 2 * time.Minute, "maxMXDomains": 200, "maxReporters": 200,
+			"budget": 10 * time.Minute, "sourceBudget": 2 * time.Minute, "maxMXDomains": 200, "maxReporters": 200,
+			"spfMaxQueries": 30, "spfMaxDepth": 10, "spfMaxPrefixes": 1000, "spfMaxMXTargets": 10,
 		}[name]
 		if got != want {
 			t.Errorf("%s = %v, want %v", name, got, want)
@@ -342,88 +347,120 @@ func TestVerifyAsksFourNameServers(t *testing.T) {
 	}
 }
 
-// silentDomains sets up the fake servers for n names of their own
-// registrable domains (n1.example ...), the resolver at servers[0] and the
-// only authoritative server of name i at servers[i], which drops the
-// question.
-func silentDomains(servers []*fakeServer, n int) {
-	for i := 1; i <= n; i++ {
-		name := fmt.Sprintf("n%d.example", i)
-		servers[0].resolve(name+" MX", data("mx."+name))
-		servers[0].resolve(name+" NS", data("ns."+name))
-		servers[0].resolve("ns."+name+" A", data(servers[i].ip))
-		servers[i].authority(name+" MX", answerWith(fakeDrop))
+// authAsked returns how many authoritative questions about name a fake
+// server received.
+func authAsked(s *fakeServer, name string) int {
+	n := 0
+	for _, q := range s.receivedFor(name) {
+		if strings.HasPrefix(q, "auth ") {
+			n++
+		}
 	}
+	return n
 }
 
-// TestVerifyAuthoritativeBlocked checks the network that blocks DNS to
-// anything but the resolvers: after 8 authoritative queries left unanswered
-// while none was answered in the run, no authoritative server is asked any
-// more and the evidence says so; at 7 the next one is still asked. An
-// answer earlier in the run keeps them asked.
+// TestVerifyAuthoritativeBlocked checks when the authoritative stage goes
+// off for the rest of the run: after the servers of 3 different
+// organization domains left every query unanswered, not after one domain
+// with 8 silent addresses (4 name servers with 2 addresses each, the most a
+// verification asks), and a domain that answered in between resets nothing.
+// The evidence of a skipped stage says so.
 func TestVerifyAuthoritativeBlocked(t *testing.T) {
-	ips := make([]string, 11)
+	// 127.0.0.1 is the resolver and the authoritative server of ok.example,
+	// 127.0.0.2-9 the 8 addresses of the servers of hostile.example, and
+	// 127.0.0.10-13 the only server of s1.example ... s4.example; all of
+	// them except 127.0.0.1 drop every authoritative question.
+	ips := make([]string, 13)
 	for i := range ips {
 		ips[i] = fmt.Sprintf("127.0.0.%d", i+1)
 	}
 	servers := startFakeServers(t, ips...)
-	silentDomains(servers, 10)
-	asked := func(i int) int {
-		return len(servers[i].receivedFor(fmt.Sprintf("n%d.example", i)))
+	resolver := servers[0]
+	resolver.resolve("hostile.example MX", data("mx.hostile.example"))
+	resolver.resolve("hostile.example NS", data("ns1.hostile.example", "ns2.hostile.example", "ns3.hostile.example", "ns4.hostile.example"))
+	for n := 1; n <= 4; n++ {
+		a, b := servers[2*n-1], servers[2*n]
+		resolver.resolve(fmt.Sprintf("ns%d.hostile.example A", n), data(a.ip, b.ip))
+		a.authority("hostile.example MX", answerWith(fakeDrop))
+		b.authority("hostile.example MX", answerWith(fakeDrop))
 	}
-	const skipped = "authoritative: skipped (no authoritative server answered in this run)"
-	const timeout = 100 * time.Millisecond
+	for n := 1; n <= 4; n++ {
+		name, s := fmt.Sprintf("s%d.example", n), servers[8+n]
+		resolver.resolve(name+" MX", data("mx."+name))
+		resolver.resolve(name+" NS", data("ns."+name))
+		resolver.resolve("ns."+name+" A", data(s.ip))
+		s.authority(name+" MX", answerWith(fakeDrop))
+	}
+	resolver.resolve("ok.example NS", data("ns.ok.example"))
+	resolver.resolve("ns.ok.example A", data(resolver.ip))
+	for _, name := range []string{"ok.example", "www.ok.example", "mail.ok.example"} {
+		resolver.resolve(name+" MX", data("mx.ok.example"))
+		resolver.authority(name+" MX", data("mx.ok.example"))
+	}
+	hostile := servers[1:9]
+	silent := map[string]*fakeServer{"s1.example": servers[9], "s2.example": servers[10], "s3.example": servers[11], "s4.example": servers[12]}
+	const skipped = "authoritative: skipped (the authoritative servers of 3 domains did not answer in this run)"
+	const timeout = 150 * time.Millisecond
 
-	t.Run("blocked after 8", func(t *testing.T) {
+	// step verifies a name and checks whether its authoritative servers
+	// were asked and whether the evidence says the stage was skipped.
+	type step struct {
+		name  string
+		asked bool
+	}
+	run := func(t *testing.T, steps []step) {
+		t.Helper()
 		db := openTestMasterDB(t)
-		c := New(db, Config{Enabled: true, Resolvers: []string{"127.0.0.1"}, Port: servers[0].port, Timeout: timeout})
+		c := New(db, Config{Enabled: true, Resolvers: []string{"127.0.0.1"}, Port: resolver.port, Timeout: timeout})
 		c.allowLocal = true
-		for i := 1; i <= 10; i++ {
-			before := asked(i)
-			name := fmt.Sprintf("n%d.example", i)
-			if got, ok := verify(t, c, name, "MX", name); !ok || got != mailengine.DNSOutcomeExists {
-				t.Fatalf("%s: Verify = %q, %v", name, got, ok)
+		for _, st := range steps {
+			count := func() int {
+				if st.name == "hostile.example" {
+					n := 0
+					for _, s := range hostile {
+						n += authAsked(s, st.name)
+					}
+					return n
+				}
+				if s, ok := silent[st.name]; ok {
+					return authAsked(s, st.name)
+				}
+				return authAsked(resolver, st.name)
 			}
-			want := 1 // the 8th silent query is still made (7 before it)
-			if i > 8 {
-				want = 0
+			before := count()
+			if got, ok := verify(t, c, st.name, "MX", st.name); !ok || got != mailengine.DNSOutcomeExists {
+				t.Fatalf("%s: Verify = %q, %v", st.name, got, ok)
 			}
-			if got := asked(i) - before; got != want {
-				t.Errorf("%s: %d authoritative queries, want %d", name, got, want)
+			asked := count() - before
+			want := 0
+			if st.asked {
+				want = 1
+				if st.name == "hostile.example" {
+					want = 8 // every address of the 4 servers once
+				}
 			}
-			row, err := models.FindDNSCheck(db, name, "MX", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+			if asked != want {
+				t.Errorf("%s: %d authoritative queries, want %d", st.name, asked, want)
+			}
+			row, err := models.FindDNSCheck(db, st.name, "MX", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := strings.Contains(row.Detail, skipped); got != (i > 8) {
-				t.Errorf("%s: skipped line %v:\n%s", name, got, row.Detail)
+			if got := strings.Contains(row.Detail, skipped); got != !st.asked {
+				t.Errorf("%s: skipped line %v:\n%s", st.name, got, row.Detail)
 			}
 		}
-	})
+	}
 
-	t.Run("an answer keeps them asked", func(t *testing.T) {
-		db := openTestMasterDB(t)
-		servers[0].resolve("n0.example MX", data("mx.n0.example"))
-		servers[0].resolve("n0.example NS", data("ns.n0.example"))
-		servers[0].resolve("ns.n0.example A", data(servers[0].ip))
-		servers[0].authority("n0.example MX", data("mx.n0.example"))
-		c := New(db, Config{Enabled: true, Resolvers: []string{"127.0.0.1"}, Port: servers[0].port, Timeout: timeout})
-		c.allowLocal = true
-		for i := 0; i <= 10; i++ {
-			before := asked(i)
-			name := fmt.Sprintf("n%d.example", i)
-			if got, ok := verify(t, c, name, "MX", name); !ok || got != mailengine.DNSOutcomeExists {
-				t.Fatalf("%s: Verify = %q, %v", name, got, ok)
-			}
-			if i > 0 && asked(i)-before != 1 {
-				t.Errorf("%s: %d authoritative queries, want 1", name, asked(i)-before)
-			}
-		}
-		for _, r := range storedChecks(t, db) {
-			if strings.Contains(r.Detail, skipped) {
-				t.Errorf("%s skipped the authoritative servers:\n%s", r.Name, r.Detail)
-			}
-		}
+	t.Run("one domain with 8 silent addresses", func(t *testing.T) {
+		run(t, []step{{"hostile.example", true}, {"ok.example", true}, {"s1.example", true}, {"www.ok.example", true}})
+	})
+	t.Run("three silent domains", func(t *testing.T) {
+		run(t, []step{{"s1.example", true}, {"s2.example", true}, {"hostile.example", true}, {"s3.example", false}, {"ok.example", false}})
+	})
+	t.Run("an answer resets nothing", func(t *testing.T) {
+		run(t, []step{{"s1.example", true}, {"ok.example", true}, {"s2.example", true}, {"www.ok.example", true},
+			{"s3.example", true}, {"mail.ok.example", false}, {"s4.example", false}})
 	})
 }
 
@@ -452,10 +489,10 @@ func TestVerifyCanceledAuthoritativeNotSilent(t *testing.T) {
 	}
 	server := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(s.port))
 	c.mu.Lock()
-	silent, count := c.silent[server], c.authSilent
+	silent, domains := c.silent[server], len(c.authDomains)
 	c.mu.Unlock()
-	if silent || count != 0 {
-		t.Errorf("after the cancellation: silent %v, %d silent queries", silent, count)
+	if silent || domains != 0 {
+		t.Errorf("after the cancellation: silent %v, %d domains recorded", silent, domains)
 	}
 	s.onQuery(nil)
 	before := len(s.receivedFor("example.jp"))
@@ -496,7 +533,7 @@ func TestVerifyReuseBoundary(t *testing.T) {
 	s.resolve("outside.example.jp MX", data("mx1.example.jp"))
 	notice := time.Now().Add(-12 * time.Hour)
 	for name, age := range map[string]time.Duration{"inside.example.jp": 23*time.Hour + 30*time.Minute, "outside.example.jp": 24*time.Hour + time.Minute} {
-		if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: name, QType: "MX", Outcome: "broken", Detail: "stored", CheckedAt: notice.Add(-age)}); err != nil {
+		if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: name, QType: "MX", Outcome: "broken", Detail: "stored", Direct: true, CheckedAt: notice.Add(-age)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -512,5 +549,77 @@ func TestVerifyReuseBoundary(t *testing.T) {
 	}
 	if st := c.Stats(); st != (Stats{Verified: 1, Reused: 1}) {
 		t.Errorf("stats %+v", st)
+	}
+}
+
+// TestAuthDomainAnsweredStaysAnswered: an organization domain one of whose
+// authoritative servers replied once stays answered for the rest of the run,
+// so a later verification it leaves unanswered does not count it among the
+// silent domains; the stage goes off only at the third silent domain.
+func TestAuthDomainAnsweredStaysAnswered(t *testing.T) {
+	c := New(nil, Config{})
+	note := func(org string, answered bool) {
+		var tally authTally
+		tally.note(answered)
+		c.noteAuthDomain(org, &tally)
+	}
+	note("answered.example.jp", true)
+	note("answered.example.jp", false)
+	note("silent1.example.jp", false)
+	note("silent2.example.jp", false)
+	if c.authBlocked() {
+		t.Fatalf("blocked with two silent domains and one that answered earlier: %v", c.authDomains)
+	}
+	c.noteAuthDomain("unasked.example.jp", &authTally{})
+	if c.authBlocked() {
+		t.Fatalf("blocked by a domain whose servers were not asked: %v", c.authDomains)
+	}
+	note("silent3.example.jp", false)
+	if !c.authBlocked() {
+		t.Errorf("not blocked with three silent domains: %v", c.authDomains)
+	}
+}
+
+// TestRememberedWindow: what the run found for a name counts for a notice
+// whose window holds the moment it was found, both ends of the window
+// included, and an outcome comes before an inconclusive verification of
+// the window even when the inconclusive one is earlier.
+func TestRememberedWindow(t *testing.T) {
+	key := checkKey{name: "nowhere.example.jp", qtype: "MX"}
+	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(ReuseWindow + mailengine.DNSLiveMaxAge)
+	for _, at := range []time.Time{from, to} {
+		c := New(nil, Config{})
+		c.remember(key, memo{outcome: mailengine.DNSOutcomeNotFound, ok: true, at: at})
+		if m, ok := c.remembered(key, from, to, false); !ok || m.outcome != mailengine.DNSOutcomeNotFound {
+			t.Errorf("memo at %s: %+v, %v; want found within [%s, %s]", at, m, ok, from, to)
+		}
+	}
+	c := New(nil, Config{})
+	c.remember(key, memo{at: from.Add(time.Hour), direct: true})
+	c.remember(key, memo{outcome: mailengine.DNSOutcomeExists, ok: true, at: from.Add(2 * time.Hour)})
+	if m, ok := c.remembered(key, from, to, false); !ok || !m.ok || m.outcome != mailengine.DNSOutcomeExists {
+		t.Errorf("an earlier inconclusive memo and a later outcome: %+v, %v; want the outcome", m, ok)
+	}
+	if m, ok := c.remembered(key, from, to, true); !ok || m.ok {
+		t.Errorf("direct only: %+v, %v; want the inconclusive direct memo", m, ok)
+	}
+}
+
+// TestBudgetLeftBoundary: the budget of the names and the budget of the
+// sending sources are used up once the time spent reaches them.
+func TestBudgetLeftBoundary(t *testing.T) {
+	c := New(nil, Config{Budget: time.Minute})
+	c.spend(time.Minute - time.Nanosecond)
+	if !c.budgetLeft() {
+		t.Error("budget used up before it was reached")
+	}
+	c.spend(time.Nanosecond)
+	if c.budgetLeft() {
+		t.Error("budget left once it was reached")
+	}
+	c.spendSource(c.sourceBudget)
+	if c.sourceBudgetLeft() {
+		t.Error("budget of the sending sources left once it was reached")
 	}
 }

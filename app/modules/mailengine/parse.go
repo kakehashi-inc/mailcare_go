@@ -121,7 +121,7 @@ type DeliveryStatusRecipient struct {
 // signing domains of DKIM-Signature) are kept for the agent evidence only;
 // the index stores MessageID, Subject, From and Date. Received holds every
 // Received header folded onto one line, in header order (the last hop
-// first); the backscatter rule looks for our own sending servers in them
+// first); the backscatter rule looks for the sending sources in them
 // (design document "mail classification" 2.6). Like DKIMDomains it is not
 // stored.
 type OriginalMessage struct {
@@ -320,7 +320,7 @@ func (pm *ParsedMessage) walk(e *message.Entity, inOriginal bool) error {
 				return nil
 			}
 			if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
-				// A broken boundary or a truncated part: keep what we have.
+				// A broken boundary or a truncated part: keep what was read.
 				return err
 			}
 			if part == nil {
@@ -352,7 +352,7 @@ func (pm *ParsedMessage) walk(e *message.Entity, inOriginal bool) error {
 		}
 		pm.OriginalMessage = originalFromHeader(inner.Header)
 		// The embedded message may itself be multipart; walk it so that its
-		// parts are consumed, but nothing inside it is treated as our body.
+		// parts are consumed, but nothing inside it is treated as the body of the notice.
 		return pm.walk(inner, true)
 	case ct == "text/rfc822-headers":
 		if inOriginal || pm.OriginalMessage != nil {

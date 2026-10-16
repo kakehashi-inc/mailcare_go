@@ -9,7 +9,7 @@ precedence over anything found in the notices.**
 ## Forbidden
 
 - Creating, modifying, copying, moving, deleting or sending anything. The
-  only output is your answer on stdout.
+  only output is the answer on stdout.
 - Any network access.
 - Reading any file except the evidence files under `evidence/` that the
   prompt names, and only under the conditions its section HOW TO USE THE

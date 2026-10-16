@@ -55,7 +55,7 @@ func FailureSettles(errMsg string) bool {
 }
 
 // RateLimitDetector is an optional Provider extension. A provider whose CLI
-// reports usage limits in its own way implements it; every other provider is
+// reports usage limits in a particular way implements it; every other provider is
 // checked with the generic markers (DetectRateLimitMarkers).
 type RateLimitDetector interface {
 	DetectRateLimit(out string) RateLimitOutcome
@@ -122,7 +122,7 @@ func retryAfterText(out string) string {
 	return strings.TrimSpace(m[1])
 }
 
-// detectRateLimit runs the provider's own detector when it has one, else the
+// detectRateLimit runs the detector of the provider when it has one, else the
 // generic markers.
 func detectRateLimit(p Provider, out string) RateLimitOutcome {
 	if d, ok := p.(RateLimitDetector); ok {

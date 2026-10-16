@@ -1,5 +1,5 @@
-// Client-side mirror of the server checks of the list settings: the own
-// sending IPv4 / IPv6 / host names and the DNS check resolvers (listSetting in
+// Client-side mirror of the server checks of the list settings: the sending
+// source IPv4 / IPv6 / host names and the DNS check resolvers (listSetting in
 // app/modules/settings.go, Documents/システム仕様.md PUT /api/v1/settings), and
 // of the SMTP host of a mailbox, which follows the host name rule.
 // The address rules follow net/netip, so a list accepted here is not refused
@@ -7,8 +7,8 @@
 
 import type { MessageKey } from '../api/client';
 
-/** Bound on each own sending list (MaxOwnSendingEntries). */
-export const MAX_OWN_SENDING_ENTRIES = 500;
+/** Bound on each sending source list (MaxSendingSourceEntries). */
+export const MAX_SENDING_SOURCE_ENTRIES = 500;
 /** Bound on the resolver list (MaxDNSCheckResolvers). */
 export const MAX_DNS_CHECK_RESOLVERS = 10;
 
@@ -174,7 +174,7 @@ function ipOrPrefixKey(s: string, want6: boolean): string | null {
 
 /**
  * The comparison key of a host name (lower-case, one trailing dot removed), or null if it is not one
- * (normalizeOwnHost): labels of 1-63 ASCII letters, digits and hyphens (not at either end), 253 characters at
+ * (normalizeSourceHost): labels of 1-63 ASCII letters, digits and hyphens (not at either end), 253 characters at
  * most, a last label that is not digits only, and none of the loopback names. The same rule checks the SMTP
  * host of a mailbox.
  */
@@ -209,25 +209,25 @@ export interface ListRule {
     tooMany: MessageKey;
 }
 
-export const OWN_SENDING_IPV4: ListRule = {
+export const SENDING_SOURCE_IPV4: ListRule = {
     key: s => ipOrPrefixKey(s, false),
-    max: MAX_OWN_SENDING_ENTRIES,
-    invalid: 'validation.ownSending.ipv4Invalid',
-    tooMany: 'validation.ownSending.tooMany',
+    max: MAX_SENDING_SOURCE_ENTRIES,
+    invalid: 'validation.sendingSource.ipv4Invalid',
+    tooMany: 'validation.sendingSource.tooMany',
 };
 
-export const OWN_SENDING_IPV6: ListRule = {
+export const SENDING_SOURCE_IPV6: ListRule = {
     key: s => ipOrPrefixKey(s, true),
-    max: MAX_OWN_SENDING_ENTRIES,
-    invalid: 'validation.ownSending.ipv6Invalid',
-    tooMany: 'validation.ownSending.tooMany',
+    max: MAX_SENDING_SOURCE_ENTRIES,
+    invalid: 'validation.sendingSource.ipv6Invalid',
+    tooMany: 'validation.sendingSource.tooMany',
 };
 
-export const OWN_SENDING_HOSTS: ListRule = {
+export const SENDING_SOURCE_HOSTS: ListRule = {
     key: hostKey,
-    max: MAX_OWN_SENDING_ENTRIES,
-    invalid: 'validation.ownSending.hostInvalid',
-    tooMany: 'validation.ownSending.tooMany',
+    max: MAX_SENDING_SOURCE_ENTRIES,
+    invalid: 'validation.sendingSource.hostInvalid',
+    tooMany: 'validation.sendingSource.tooMany',
 };
 
 export const DNS_CHECK_RESOLVERS: ListRule = {

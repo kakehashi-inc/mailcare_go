@@ -238,7 +238,7 @@ func (s *imapSession) expungeOnly(ctx context.Context, uids []imap.UID) error {
 	for _, uid := range uids {
 		want[uid] = true
 	}
-	onlyOurs := func(flagged []imap.UID) bool {
+	onlyWanted := func(flagged []imap.UID) bool {
 		for _, uid := range flagged {
 			if !want[uid] {
 				return false
@@ -250,7 +250,7 @@ func (s *imapSession) expungeOnly(ctx context.Context, uids []imap.UID) error {
 	if err != nil {
 		return err
 	}
-	if !onlyOurs(flagged) {
+	if !onlyWanted(flagged) {
 		return ErrOtherDeletedFlags
 	}
 	set := imap.UIDSetNum(uids...)
@@ -258,7 +258,7 @@ func (s *imapSession) expungeOnly(ctx context.Context, uids []imap.UID) error {
 		return fmt.Errorf("flag messages deleted: %w", ctxErr(ctx, err))
 	}
 	flagged, err = s.searchDeleted(ctx)
-	if err != nil || !onlyOurs(flagged) {
+	if err != nil || !onlyWanted(flagged) {
 		if clearErr := s.client.Store(set, deletedFlag(imap.StoreFlagsDel), nil).Close(); clearErr != nil {
 			err = errors.Join(err, fmt.Errorf("clear the deleted flags again: %w", ctxErr(ctx, clearErr)))
 		}

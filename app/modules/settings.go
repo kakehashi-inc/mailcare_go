@@ -20,7 +20,7 @@ import (
 // Settings resolution: explicit argument > saved setting > code default. A
 // setting is persisted only when it differs from the code default; a value
 // equal to the default deletes the row instead, so a later change to a default
-// takes effect on its own (a baked-in default would otherwise win).
+// takes effect by itself (a baked-in default would otherwise win).
 
 // PersistSetting stores value under key, or deletes the row when isDefault.
 // db may be a transaction (persistSettings).
@@ -42,8 +42,10 @@ type settingWrite struct {
 // database: all of them are saved, or none when one fails (the transaction
 // is rolled back), so a failure halfway never leaves a combination the
 // validation would refuse. The values are computed, and the saved values
-// they depend on read, before: the transaction only writes, so it holds no
-// read snapshot that another writer could make stale.
+// they depend on read, before the transaction, which only writes: what
+// keeps another change from coming in between the reading and the writes is
+// the settings lock (settingsMu), which the caller holds from before the
+// reading until this returns (UpdateSettings, SaveNotificationSettings).
 func persistSettings(db *sql.DB, writes []settingWrite) error {
 	if len(writes) == 0 {
 		return nil
@@ -62,12 +64,12 @@ func persistSettings(db *sql.DB, writes []settingWrite) error {
 }
 
 // SettingsUpdate gathers the changes of several settings made by one
-// request, so that they are saved together (Save: one transaction, all or
-// nothing). Every method validates its input, against the saved values
-// where the result depends on them, and returns the error that refuses it
-// (nothing is added then); nothing is written before Save. The zero value
-// is ready to use. The Save* functions of the single settings go through it
-// as well.
+// request, so that they are saved together (UpdateSettings: under the
+// settings lock, one transaction, all or nothing). Every method validates
+// its input, against the saved values where the result depends on them,
+// and returns the error that refuses it (nothing is added then); nothing is
+// written before UpdateSettings saves it. The Save* functions of the single
+// settings go through it as well.
 type SettingsUpdate struct {
 	writes []settingWrite
 }
@@ -75,12 +77,6 @@ type SettingsUpdate struct {
 // set adds the write of one setting.
 func (u *SettingsUpdate) set(key, value string, isDefault bool) {
 	u.writes = append(u.writes, settingWrite{key: key, value: value, isDefault: isDefault})
-}
-
-// Save writes every change gathered in one transaction (nothing when one
-// write fails).
-func (u *SettingsUpdate) Save(db *sql.DB) error {
-	return persistSettings(db, u.writes)
 }
 
 // Workers sets the worker count (clamped like SaveWorkers).
@@ -177,19 +173,19 @@ func (u *SettingsUpdate) RecheckDays(db *sql.DB, days map[string]int) error {
 	return nil
 }
 
-// OwnSendingIPv4 sets the own sending IPv4 list (see SaveOwnSendingIPv4).
-func (u *SettingsUpdate) OwnSendingIPv4(entries []string) error {
-	return u.list(ownSendingIPv4Setting, entries)
+// SendingSourceIPv4 sets the sending source IPv4 list (see SaveSendingSourceIPv4).
+func (u *SettingsUpdate) SendingSourceIPv4(entries []string) error {
+	return u.list(sendingSourceIPv4Setting, entries)
 }
 
-// OwnSendingIPv6 sets the own sending IPv6 list.
-func (u *SettingsUpdate) OwnSendingIPv6(entries []string) error {
-	return u.list(ownSendingIPv6Setting, entries)
+// SendingSourceIPv6 sets the sending source IPv6 list.
+func (u *SettingsUpdate) SendingSourceIPv6(entries []string) error {
+	return u.list(sendingSourceIPv6Setting, entries)
 }
 
-// OwnSendingHosts sets the own sending host names.
-func (u *SettingsUpdate) OwnSendingHosts(entries []string) error {
-	return u.list(ownSendingHostsSetting, entries)
+// SendingSourceHosts sets the sending source host names.
+func (u *SettingsUpdate) SendingSourceHosts(entries []string) error {
+	return u.list(sendingSourceHostsSetting, entries)
 }
 
 // list validates the entries of a list setting and sets them one per line
@@ -208,9 +204,16 @@ func (u *SettingsUpdate) list(ls listSetting, entries []string) error {
 // verification (nil = unchanged), checked as the combination they give
 // with the saved values (see SaveDNSCheck).
 func (u *SettingsUpdate) DNSCheck(db *sql.DB, enabled *bool, resolvers *[]string, systemOnly *bool) error {
+	_, err := u.dnsCheck(db, enabled, resolvers, systemOnly)
+	return err
+}
+
+// dnsCheck is DNSCheck that also returns the configuration the change
+// gives.
+func (u *SettingsUpdate) dnsCheck(db *sql.DB, enabled *bool, resolvers *[]string, systemOnly *bool) (DNSCheckConfig, error) {
 	cfg, err := CheckDNSCheckSettings(db, enabled, resolvers, systemOnly)
 	if err != nil {
-		return err
+		return DNSCheckConfig{}, err
 	}
 	if enabled != nil {
 		// On is the default: "0" is stored only when off.
@@ -223,12 +226,13 @@ func (u *SettingsUpdate) DNSCheck(db *sql.DB, enabled *bool, resolvers *[]string
 		// Off is the default: "1" is stored only when on.
 		u.set(SettingDNSCheckSystemResolverOnly, "1", !cfg.SystemOnly)
 	}
-	return nil
+	return cfg, nil
 }
 
-// persistOrLog wraps PersistSetting for callers that cannot fail on it.
+// persistOrLog wraps PersistSetting (under the settings lock) for callers
+// that cannot fail on it.
 func persistOrLog(db *sql.DB, key, value string, isDefault bool) {
-	if err := PersistSetting(db, key, value, isDefault); err != nil {
+	if err := persistLocked(db, key, value, isDefault); err != nil {
 		log.Printf("failed to persist setting %s: %v", key, err)
 	}
 }
@@ -270,6 +274,12 @@ func ResolveCookieTTLHours(db *sql.DB) int {
 	return resolveInt(db, SettingCookieTTLHours, 0, DefaultCookieTTLHours)
 }
 
+// persistLocked is PersistSetting under the settings lock, for a setting
+// whose value depends on no other one.
+func persistLocked(db *sql.DB, key, value string, isDefault bool) error {
+	return withSettingsLock(func() error { return PersistSetting(db, key, value, isDefault) })
+}
+
 // SaveServerSettings persists the listen address and port (non-default only).
 func SaveServerSettings(db *sql.DB, webListen string, webPort int) {
 	persistOrLog(db, SettingWebListen, webListen, webListen == DefaultWebListenAddr)
@@ -308,9 +318,10 @@ func ResolveWorkers(db *sql.DB) int {
 
 // SaveWorkers persists the worker count (non-default only).
 func SaveWorkers(db *sql.DB, n int) error {
-	var u SettingsUpdate
-	u.Workers(n)
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error {
+		u.Workers(n)
+		return nil
+	})
 }
 
 // ResolveAgentProvider returns the configured agent provider name.
@@ -328,17 +339,18 @@ func SetAgentProvider(db *sql.DB, name string) error {
 	if name == "" {
 		return errAgentProviderEmpty
 	}
-	var u SettingsUpdate
-	if name != ResolveAgentProvider(db) {
-		u.set(SettingAgentModel, "", true)
-		u.set(SettingAgentReasoningEffort, "", true)
-	}
-	u.set(SettingAgentProvider, name, name == DefaultAgentProvider)
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error {
+		if name != ResolveAgentProvider(db) {
+			u.set(SettingAgentModel, "", true)
+			u.set(SettingAgentReasoningEffort, "", true)
+		}
+		u.set(SettingAgentProvider, name, name == DefaultAgentProvider)
+		return nil
+	})
 }
 
 // ResolveAgentModel returns the model passed to the agent CLI ("" = the
-// CLI's own default). A stored value that is no longer valid is ignored.
+// default of the CLI). A stored value that is no longer valid is ignored.
 func ResolveAgentModel(db *sql.DB) string {
 	model := strings.TrimSpace(models.GetSetting(db, SettingAgentModel))
 	if agent.ValidateModel(model) != nil {
@@ -355,14 +367,16 @@ func SetAgentModel(db *sql.DB, model string) error {
 	if err := agent.ValidateModel(model); err != nil {
 		return err
 	}
-	if err := CheckAgentSettings(ResolveAgentProvider(db), model, ResolveAgentReasoningEffort(db)); err != nil {
-		return err
-	}
-	return PersistSetting(db, SettingAgentModel, model, model == "")
+	return withSettingsLock(func() error {
+		if err := CheckAgentSettings(ResolveAgentProvider(db), model, ResolveAgentReasoningEffort(db)); err != nil {
+			return err
+		}
+		return PersistSetting(db, SettingAgentModel, model, model == "")
+	})
 }
 
 // ResolveAgentReasoningEffort returns the reasoning level passed to the
-// agent CLI ("" = the CLI's own setting). A stored value of the wrong shape
+// agent CLI ("" = the setting of the CLI). A stored value of the wrong shape
 // is ignored.
 func ResolveAgentReasoningEffort(db *sql.DB) string {
 	level := strings.TrimSpace(models.GetSetting(db, SettingAgentReasoningEffort))
@@ -374,13 +388,15 @@ func ResolveAgentReasoningEffort(db *sql.DB) string {
 
 // SetAgentReasoningEffort validates the reasoning level against the
 // configured provider and model (CheckAgentSettings) and persists it (""
-// restores the CLI's own setting by removing the setting).
+// restores the setting of the CLI by removing the setting).
 func SetAgentReasoningEffort(db *sql.DB, level string) error {
 	level = strings.TrimSpace(level)
-	if err := CheckAgentSettings(ResolveAgentProvider(db), ResolveAgentModel(db), level); err != nil {
-		return err
-	}
-	return PersistSetting(db, SettingAgentReasoningEffort, level, level == "")
+	return withSettingsLock(func() error {
+		if err := CheckAgentSettings(ResolveAgentProvider(db), ResolveAgentModel(db), level); err != nil {
+			return err
+		}
+		return PersistSetting(db, SettingAgentReasoningEffort, level, level == "")
+	})
 }
 
 // ResolveAgentLimitedUntil returns when the agent's usage limit is lifted
@@ -400,7 +416,7 @@ func ResolveAgentLimitedUntil(db *sql.DB) (time.Time, bool) {
 // SetAgentLimitedUntil records the end of the agent's usage limit; the zero
 // time removes the record.
 func SetAgentLimitedUntil(db *sql.DB, until time.Time) error {
-	return PersistSetting(db, SettingAgentLimitedUntil, until.UTC().Format(time.RFC3339), until.IsZero())
+	return persistLocked(db, SettingAgentLimitedUntil, until.UTC().Format(time.RFC3339), until.IsZero())
 }
 
 // SaveAgentSettings changes any of the agent provider, model and reasoning
@@ -410,11 +426,9 @@ func SetAgentLimitedUntil(db *sql.DB, until time.Time) error {
 // does. The provider name must be registered (checked by the caller). The
 // three are saved together (SettingsUpdate).
 func SaveAgentSettings(db *sql.DB, provider, model, level *string) error {
-	var u SettingsUpdate
-	if err := u.AgentSettings(db, provider, model, level); err != nil {
-		return err
-	}
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error {
+		return u.AgentSettings(db, provider, model, level)
+	})
 }
 
 var errAgentProviderEmpty = wording.New("validation.agent.providerUnknown", "agent provider must not be empty")
@@ -438,9 +452,10 @@ func ResolveAgentEnabled(db *sql.DB) bool {
 
 // SetAgentEnabled persists the agent switch (non-default only).
 func SetAgentEnabled(db *sql.DB, enabled bool) error {
-	var u SettingsUpdate
-	u.AgentEnabled(enabled)
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error {
+		u.AgentEnabled(enabled)
+		return nil
+	})
 }
 
 // ValidateAgentKeepDays checks the retention of the agent run directories
@@ -483,11 +498,7 @@ func ResolveAgentKeepDays(db *sql.DB) int {
 
 // SaveAgentKeepDays persists the retention (non-default only).
 func SaveAgentKeepDays(db *sql.DB, n int) error {
-	var u SettingsUpdate
-	if err := u.AgentKeepDays(n); err != nil {
-		return err
-	}
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error { return u.AgentKeepDays(n) })
 }
 
 // --- Mail retention ---
@@ -531,11 +542,7 @@ func ResolveMailKeepDays(db *sql.DB) int {
 
 // SaveMailKeepDays persists the retention (non-default only).
 func SaveMailKeepDays(db *sql.DB, n int) error {
-	var u SettingsUpdate
-	if err := u.MailKeepDays(n); err != nil {
-		return err
-	}
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error { return u.MailKeepDays(n) })
 }
 
 // --- Re-check days ---
@@ -622,11 +629,7 @@ func FormatRecheckDays(days map[string]int) string {
 // others keep their current value); only values that differ from the
 // defaults are stored.
 func SaveRecheckDays(db *sql.DB, days map[string]int) error {
-	var u SettingsUpdate
-	if err := u.RecheckDays(db, days); err != nil {
-		return err
-	}
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error { return u.RecheckDays(db, days) })
 }
 
 // --- Cleanup time ---
@@ -664,12 +667,16 @@ func ResolveCleanupTime(db *sql.DB) string {
 // SaveCleanupTime persists the time of the daily cleanup (non-default
 // only) and returns it normalized.
 func SaveCleanupTime(db *sql.DB, s string) (string, error) {
-	var u SettingsUpdate
-	t, err := u.CleanupTime(s)
+	var t string
+	err := UpdateSettings(db, func(u *SettingsUpdate) error {
+		var err error
+		t, err = u.CleanupTime(s)
+		return err
+	})
 	if err != nil {
 		return "", err
 	}
-	return t, u.Save(db)
+	return t, nil
 }
 
 // ParseBoolSetting accepts 1/0, true/false, yes/no, on/off.
@@ -766,9 +773,10 @@ func ResolveCheckTimes(db *sql.DB) []string {
 // SaveCheckTimes persists normalized check times (non-default only). An empty
 // list disables the scheduler and is stored as an empty string.
 func SaveCheckTimes(db *sql.DB, times []string) error {
-	var u SettingsUpdate
-	u.CheckTimes(times)
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error {
+		u.CheckTimes(times)
+		return nil
+	})
 }
 
 // NextCheckAt returns the first occurrence of any of the check times (local
@@ -796,14 +804,15 @@ func NextCheckAt(now time.Time, times []string) (next time.Time, ok bool) {
 	return next, ok
 }
 
-// --- Own sending servers and DNS lookup failure verification ---
+// --- Sending sources and DNS lookup failure verification ---
 
-// OwnSending is our own sending servers: the saved lists (own_sending_ipv4,
-// own_sending_ipv6 and own_sending_hosts: the sources not tied to a mailbox,
+// SendingSourceSettings holds the sending sources: the saved lists (sending_source_ipv4,
+// sending_source_ipv6 and sending_source_hosts: the sources not tied to a mailbox,
 // such as an application that delivers directly or an external delivery
 // service) and the SMTP hosts of the mailboxes (MailboxHosts). They tell
-// whether a return notice is about mail we sent and whether a DNS lookup
-// failure was reported by our own server (mailengine, design document "mail
+// whether a return notice is about mail sent from the sending sources and
+// whether a DNS lookup failure was reported by a sending server
+// (mailengine, design document "mail
 // classification" 2.6 and 4.4). Every list is normalized (canonical IP and
 // CIDR text, host names lower-case without the trailing dot) and never nil.
 //
@@ -811,18 +820,18 @@ func NextCheckAt(now time.Time, times []string) (next time.Time, ok bool) {
 // of the mailboxes (enabled or not, in the order of the list) for which no
 // host name is configured, so that the backscatter rule (2.6), which is
 // switched on per mailbox by a host name, does not apply to them. It is
-// empty while own_sending_hosts holds a host name, which counts for every
+// empty while sending_source_hosts holds a host name, which counts for every
 // mailbox.
-type OwnSending struct {
+type SendingSourceSettings struct {
 	IPv4, IPv6, Hosts    []string
 	MailboxHosts         []string
 	MailboxesWithoutHost []string
 }
 
-// AllHosts returns the host names of our own sending servers: the saved
-// own_sending_hosts first, then the SMTP hosts of the mailboxes, without
+// AllHosts returns the host names of the sending sources: the saved
+// sending_source_hosts first, then the SMTP hosts of the mailboxes, without
 // repeats. Never nil.
-func (o OwnSending) AllHosts() []string {
+func (o SendingSourceSettings) AllHosts() []string {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, list := range [][]string{o.Hosts, o.MailboxHosts} {
@@ -862,32 +871,32 @@ type listSetting struct {
 }
 
 var (
-	ownSendingIPv4Setting = listSetting{
-		key: SettingOwnSendingIPv4, max: MaxOwnSendingEntries,
+	sendingSourceIPv4Setting = listSetting{
+		key: SettingSendingSourceIPv4, max: MaxSendingSourceEntries,
 		normalize: func(s string) (string, bool) { return normalizeIPOrPrefix(s, false) },
 		invalid: func(line int, value string) error {
-			return listEntryInvalid("validation.ownSending.ipv4Invalid", SettingOwnSendingIPv4,
+			return listEntryInvalid("validation.sendingSource.ipv4Invalid", SettingSendingSourceIPv4,
 				"an IPv4 address or CIDR (loopback and 0.0.0.0 are not accepted)", line, value)
 		},
-		tooMany: func() error { return ownSendingTooMany(SettingOwnSendingIPv4) },
+		tooMany: func() error { return sendingSourceTooMany(SettingSendingSourceIPv4) },
 	}
-	ownSendingIPv6Setting = listSetting{
-		key: SettingOwnSendingIPv6, max: MaxOwnSendingEntries,
+	sendingSourceIPv6Setting = listSetting{
+		key: SettingSendingSourceIPv6, max: MaxSendingSourceEntries,
 		normalize: func(s string) (string, bool) { return normalizeIPOrPrefix(s, true) },
 		invalid: func(line int, value string) error {
-			return listEntryInvalid("validation.ownSending.ipv6Invalid", SettingOwnSendingIPv6,
+			return listEntryInvalid("validation.sendingSource.ipv6Invalid", SettingSendingSourceIPv6,
 				"an IPv6 address or CIDR (loopback, ::, zones and IPv4-mapped addresses are not accepted)", line, value)
 		},
-		tooMany: func() error { return ownSendingTooMany(SettingOwnSendingIPv6) },
+		tooMany: func() error { return sendingSourceTooMany(SettingSendingSourceIPv6) },
 	}
-	ownSendingHostsSetting = listSetting{
-		key: SettingOwnSendingHosts, max: MaxOwnSendingEntries,
-		normalize: normalizeOwnHost,
+	sendingSourceHostsSetting = listSetting{
+		key: SettingSendingSourceHosts, max: MaxSendingSourceEntries,
+		normalize: normalizeSourceHost,
 		invalid: func(line int, value string) error {
-			return listEntryInvalid("validation.ownSending.hostInvalid", SettingOwnSendingHosts,
+			return listEntryInvalid("validation.sendingSource.hostInvalid", SettingSendingSourceHosts,
 				"a host name (letters, digits and hyphens; IP addresses and localhost are not accepted)", line, value)
 		},
-		tooMany: func() error { return ownSendingTooMany(SettingOwnSendingHosts) },
+		tooMany: func() error { return sendingSourceTooMany(SettingSendingSourceHosts) },
 	}
 	dnsCheckResolversSetting = listSetting{
 		key: SettingDNSCheckResolvers, max: MaxDNSCheckResolvers,
@@ -902,12 +911,12 @@ var (
 				With("max", MaxDNSCheckResolvers)
 		},
 	}
-	// ownSendingSettings maps the keys of the own sending lists to their
+	// sendingSourceSettings maps the keys of the sending source lists to their
 	// rules.
-	ownSendingSettings = map[string]listSetting{
-		SettingOwnSendingIPv4:  ownSendingIPv4Setting,
-		SettingOwnSendingIPv6:  ownSendingIPv6Setting,
-		SettingOwnSendingHosts: ownSendingHostsSetting,
+	sendingSourceSettings = map[string]listSetting{
+		SettingSendingSourceIPv4:  sendingSourceIPv4Setting,
+		SettingSendingSourceIPv6:  sendingSourceIPv6Setting,
+		SettingSendingSourceHosts: sendingSourceHostsSetting,
 	}
 )
 
@@ -923,9 +932,9 @@ func listEntryInvalid(key, setting, what string, line int, value string) error {
 		With("line", line).With("value", value)
 }
 
-func ownSendingTooMany(setting string) error {
-	return wording.New("validation.ownSending.tooMany",
-		fmt.Sprintf("%s accepts at most %d entries", setting, MaxOwnSendingEntries)).With("max", MaxOwnSendingEntries)
+func sendingSourceTooMany(setting string) error {
+	return wording.New("validation.sendingSource.tooMany",
+		fmt.Sprintf("%s accepts at most %d entries", setting, MaxSendingSourceEntries)).With("max", MaxSendingSourceEntries)
 }
 
 // clipEntry shortens an entry quoted in an error message.
@@ -1009,11 +1018,7 @@ func (ls listSetting) resolveSaved(db *sql.DB) []string {
 // save validates the entries and persists them one per line (an empty list
 // removes the setting).
 func (ls listSetting) save(db *sql.DB, entries []string) error {
-	var u SettingsUpdate
-	if err := u.list(ls, entries); err != nil {
-		return err
-	}
-	return u.Save(db)
+	return UpdateSettings(db, func(u *SettingsUpdate) error { return u.list(ls, entries) })
 }
 
 // usableIP reports whether a can stand for a server: no zone, not loopback,
@@ -1054,16 +1059,16 @@ func normalizeIPOrPrefix(s string, want6 bool) (string, bool) {
 	return a.String(), true
 }
 
-// normalizeOwnHost checks the host name of one of our own sending servers
-// (an entry of own_sending_hosts, or the SMTP host of a mailbox,
+// normalizeSourceHost checks the host name of one of the sending sources
+// (an entry of sending_source_hosts, or the SMTP host of a mailbox,
 // mailboxes.go) and returns it lower-case without one trailing dot. A host name is one or more labels of 1-63 ASCII
 // letters, digits and hyphens (not at either end of a label), 253
 // characters at most. A single label (mailhost) is accepted: internal MTAs
 // often report a name without a domain. A last label of digits only is
 // refused so that an IP address is not taken for a host name, and so are
 // the loopback names (localhost, *.localhost, localhost.localdomain), which
-// name every machine rather than ours.
-func normalizeOwnHost(s string) (string, bool) {
+// name every machine rather than a sending server.
+func normalizeSourceHost(s string) (string, bool) {
 	h := strings.TrimSuffix(s, ".")
 	if h == "" || len(h) > 253 {
 		return "", false
@@ -1109,61 +1114,61 @@ func normalizeResolver(s string) (string, bool) {
 	return a.String(), true
 }
 
-// ParseOwnSendingIPv4 validates and normalizes own sending IPv4 addresses
+// ParseSendingSourceIPv4 validates and normalizes sending source IPv4 addresses
 // and CIDRs. Every entry may hold several lines; blank lines are skipped,
-// duplicates dropped, and at most MaxOwnSendingEntries remain. An empty
+// duplicates dropped, and at most MaxSendingSourceEntries remain. An empty
 // input yields an empty list.
-func ParseOwnSendingIPv4(entries []string) ([]string, error) {
-	return ownSendingIPv4Setting.parse(entries)
+func ParseSendingSourceIPv4(entries []string) ([]string, error) {
+	return sendingSourceIPv4Setting.parse(entries)
 }
 
-// ParseOwnSendingIPv6 is ParseOwnSendingIPv4 for IPv6 addresses and CIDRs.
-func ParseOwnSendingIPv6(entries []string) ([]string, error) {
-	return ownSendingIPv6Setting.parse(entries)
+// ParseSendingSourceIPv6 is ParseSendingSourceIPv4 for IPv6 addresses and CIDRs.
+func ParseSendingSourceIPv6(entries []string) ([]string, error) {
+	return sendingSourceIPv6Setting.parse(entries)
 }
 
-// ParseOwnSendingHosts is ParseOwnSendingIPv4 for host names.
-func ParseOwnSendingHosts(entries []string) ([]string, error) {
-	return ownSendingHostsSetting.parse(entries)
+// ParseSendingSourceHosts is ParseSendingSourceIPv4 for host names.
+func ParseSendingSourceHosts(entries []string) ([]string, error) {
+	return sendingSourceHostsSetting.parse(entries)
 }
 
-// ResolveOwnSendingIPv4 returns the saved own sending IPv4 addresses and
+// ResolveSendingSourceIPv4 returns the saved sending source IPv4 addresses and
 // CIDRs (empty when not set); saved entries that are no longer valid are
 // skipped with a log line.
-func ResolveOwnSendingIPv4(db *sql.DB) []string {
-	return ownSendingIPv4Setting.resolveSaved(db)
+func ResolveSendingSourceIPv4(db *sql.DB) []string {
+	return sendingSourceIPv4Setting.resolveSaved(db)
 }
 
-// ResolveOwnSendingIPv6 is ResolveOwnSendingIPv4 for IPv6.
-func ResolveOwnSendingIPv6(db *sql.DB) []string {
-	return ownSendingIPv6Setting.resolveSaved(db)
+// ResolveSendingSourceIPv6 is ResolveSendingSourceIPv4 for IPv6.
+func ResolveSendingSourceIPv6(db *sql.DB) []string {
+	return sendingSourceIPv6Setting.resolveSaved(db)
 }
 
-// ResolveOwnSendingHosts is ResolveOwnSendingIPv4 for host names.
-func ResolveOwnSendingHosts(db *sql.DB) []string {
-	return ownSendingHostsSetting.resolveSaved(db)
+// ResolveSendingSourceHosts is ResolveSendingSourceIPv4 for host names.
+func ResolveSendingSourceHosts(db *sql.DB) []string {
+	return sendingSourceHostsSetting.resolveSaved(db)
 }
 
-// ResolveOwnSending returns our own sending servers: the three saved lists
-// and the SMTP hosts of every registered mailbox (ownSendingMailboxHosts).
-// Every user of the own sending servers takes them from here: the grouping
-// (groupOptions, per mailbox: ownSourcesFor), the settings API and
+// ResolveSendingSources returns the sending sources: the three saved lists
+// and the SMTP hosts of every registered mailbox (sendingSourceMailboxHosts).
+// Every user of the sending sources takes them from here: the grouping
+// (groupOptions, per mailbox: sendingSourcesFor), the settings API and
 // "settings show". A
 // failure to list the mailboxes is returned rather than leaving their host
-// names out, which would take a notice our own server issued for one about
-// mail we never sent.
-func ResolveOwnSending(db *sql.DB) (OwnSending, error) {
+// names out, which would take a notice a sending server issued for one
+// about mail never sent from the sending sources.
+func ResolveSendingSources(db *sql.DB) (SendingSourceSettings, error) {
 	mailboxes, err := models.ListMailboxes(db)
 	if err != nil {
-		return OwnSending{}, fmt.Errorf("failed to list the mailboxes: %w", err)
+		return SendingSourceSettings{}, fmt.Errorf("failed to list the mailboxes: %w", err)
 	}
-	return ownSendingOf(db, mailboxes), nil
+	return sendingSourcesOf(db, mailboxes), nil
 }
 
-// ownSendingOf is ResolveOwnSending with the mailboxes already listed.
-func ownSendingOf(db *sql.DB, mailboxes []*models.Mailbox) OwnSending {
-	o := OwnSending{IPv4: ResolveOwnSendingIPv4(db), IPv6: ResolveOwnSendingIPv6(db),
-		Hosts: ResolveOwnSendingHosts(db), MailboxHosts: ownSendingMailboxHosts(mailboxes), MailboxesWithoutHost: []string{}}
+// sendingSourcesOf is ResolveSendingSources with the mailboxes already listed.
+func sendingSourcesOf(db *sql.DB, mailboxes []*models.Mailbox) SendingSourceSettings {
+	o := SendingSourceSettings{IPv4: ResolveSendingSourceIPv4(db), IPv6: ResolveSendingSourceIPv6(db),
+		Hosts: ResolveSendingSourceHosts(db), MailboxHosts: sendingSourceMailboxHosts(mailboxes), MailboxesWithoutHost: []string{}}
 	if len(o.Hosts) == 0 {
 		o.MailboxesWithoutHost = mailboxesWithoutHost(mailboxes)
 	}
@@ -1172,24 +1177,24 @@ func ownSendingOf(db *sql.DB, mailboxes []*models.Mailbox) OwnSending {
 
 // mailboxesWithoutHost returns the addresses of the mailboxes, enabled or
 // not and in the order of the list, whose SMTP host is empty or not a valid
-// host name (which counts as none, as for the grouping: ownSourcesFor).
+// host name (which counts as none, as for the grouping: sendingSourcesFor).
 // Never nil.
 func mailboxesWithoutHost(mailboxes []*models.Mailbox) []string {
 	out := []string{}
 	for _, mb := range mailboxes {
-		if _, ok := normalizeOwnHost(strings.TrimSpace(mb.SmtpHost)); !ok {
+		if _, ok := normalizeSourceHost(strings.TrimSpace(mb.SmtpHost)); !ok {
 			out = append(out, mb.Address)
 		}
 	}
 	return out
 }
 
-// ownSendingMailboxHosts returns the SMTP hosts of the mailboxes, enabled or
+// sendingSourceMailboxHosts returns the SMTP hosts of the mailboxes, enabled or
 // not, in the order of the list, without the empty and the repeated ones. A
 // stored host that is not a valid host name (edited in the database by
 // hand) is skipped with a log line, like an invalid saved list entry. The
 // result is never nil, so JSON shows it as [].
-func ownSendingMailboxHosts(mailboxes []*models.Mailbox) []string {
+func sendingSourceMailboxHosts(mailboxes []*models.Mailbox) []string {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, mb := range mailboxes {
@@ -1197,7 +1202,7 @@ func ownSendingMailboxHosts(mailboxes []*models.Mailbox) []string {
 		if raw == "" {
 			continue
 		}
-		host, ok := normalizeOwnHost(raw)
+		host, ok := normalizeSourceHost(raw)
 		if !ok {
 			log.Printf("ignoring invalid smtp_host %q of mailbox %s", mb.SmtpHost, mb.Address)
 			continue
@@ -1210,20 +1215,21 @@ func ownSendingMailboxHosts(mailboxes []*models.Mailbox) []string {
 	return out
 }
 
-// SaveOwnSendingIPv4 validates (ParseOwnSendingIPv4) and persists the own
-// sending IPv4 list, one entry per line; an empty list removes the setting.
-func SaveOwnSendingIPv4(db *sql.DB, entries []string) error {
-	return ownSendingIPv4Setting.save(db, entries)
+// SaveSendingSourceIPv4 validates (ParseSendingSourceIPv4) and persists the
+// sending source IPv4 list, one entry per line; an empty list removes the
+// setting.
+func SaveSendingSourceIPv4(db *sql.DB, entries []string) error {
+	return sendingSourceIPv4Setting.save(db, entries)
 }
 
-// SaveOwnSendingIPv6 is SaveOwnSendingIPv4 for IPv6.
-func SaveOwnSendingIPv6(db *sql.DB, entries []string) error {
-	return ownSendingIPv6Setting.save(db, entries)
+// SaveSendingSourceIPv6 is SaveSendingSourceIPv4 for IPv6.
+func SaveSendingSourceIPv6(db *sql.DB, entries []string) error {
+	return sendingSourceIPv6Setting.save(db, entries)
 }
 
-// SaveOwnSendingHosts is SaveOwnSendingIPv4 for host names.
-func SaveOwnSendingHosts(db *sql.DB, entries []string) error {
-	return ownSendingHostsSetting.save(db, entries)
+// SaveSendingSourceHosts is SaveSendingSourceIPv4 for host names.
+func SaveSendingSourceHosts(db *sql.DB, entries []string) error {
+	return sendingSourceHostsSetting.save(db, entries)
 }
 
 // ParseDNSCheckResolvers validates and normalizes resolver IP addresses
@@ -1329,11 +1335,24 @@ func CheckDNSCheckSettings(db *sql.DB, enabled *bool, resolvers *[]string, syste
 // default list in its order, and any other list, an empty one included, is
 // stored (one address per line). The settings are written in one
 // transaction (SettingsUpdate), so a failure never leaves a combination the
-// check would refuse.
+// check would refuse, and the saved values are read for the check under
+// the settings lock (UpdateSettings), so a concurrent change cannot make the
+// two together one the check refuses either.
 func SaveDNSCheck(db *sql.DB, enabled *bool, resolvers *[]string, systemOnly *bool) error {
-	var u SettingsUpdate
-	if err := u.DNSCheck(db, enabled, resolvers, systemOnly); err != nil {
+	_, err := saveDNSCheck(db, enabled, resolvers, systemOnly)
+	return err
+}
+
+// saveDNSCheck is SaveDNSCheck that also returns the configuration saved.
+func saveDNSCheck(db *sql.DB, enabled *bool, resolvers *[]string, systemOnly *bool) (DNSCheckConfig, error) {
+	var cfg DNSCheckConfig
+	err := UpdateSettings(db, func(u *SettingsUpdate) error {
+		var err error
+		cfg, err = u.dnsCheck(db, enabled, resolvers, systemOnly)
 		return err
+	})
+	if err != nil {
+		return DNSCheckConfig{}, err
 	}
-	return u.Save(db)
+	return cfg, nil
 }

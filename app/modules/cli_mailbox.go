@@ -82,7 +82,7 @@ type MailboxAddCmd struct {
 	RecentDays  int    `help:"Days to look back on later checks (default: ${default_recent_days})" name:"recent-days" default:"0"`
 	// ServerKeepDays: -1 = the default.
 	ServerKeepDays int    `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never (default: ${default_server_keep_days}, or mail_keep_days when shorter)" name:"server-keep-days" default:"-1"`
-	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of your own sending servers; not the server of the notification mails; default: not set)" name:"smtp-host"`
+	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of the sending sources; not the server of the notification mails; default: not set)" name:"smtp-host"`
 	DisplayName    string `help:"Display name" name:"display-name"`
 	Disabled       bool   `help:"Register as disabled (not checked automatically)"`
 }

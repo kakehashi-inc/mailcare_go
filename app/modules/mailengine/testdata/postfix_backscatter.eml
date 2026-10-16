@@ -57,7 +57,7 @@ Received: from spam-sender.example (unknown [198.51.100.7])
 	for <nobody@partner.example.net>; Wed, 10 Sep 2025 03:12:44 +0900 (JST)
 From: "Account Team" <newsletter@example.jp>
 To: nobody@partner.example.net
-Subject: Your invoice is ready
+Subject: Invoice is ready
 Date: Wed, 10 Sep 2025 03:12:40 +0900
 Message-ID: <a1b2c3d4e5@spam-sender.example>
 MIME-Version: 1.0

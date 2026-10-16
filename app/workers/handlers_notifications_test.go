@@ -38,7 +38,7 @@ func TestDuplicateEmailAndUsernameRejected(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), taken) {
 		t.Errorf("admin edit to a taken address: %d %s", rec.Code, rec.Body.String())
 	}
-	// Own profile.
+	// Profile of the caller.
 	rec = do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": "carol@example.test"}, admin)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), taken) {
 		t.Errorf("profile to a taken address: %d %s", rec.Code, rec.Body.String())
@@ -55,25 +55,25 @@ func TestDuplicateEmailAndUsernameRejected(t *testing.T) {
 	}
 }
 
-func TestMeEmailAndUserEmailEndpoints(t *testing.T) {
+func TestCurrentUserEmailAndUserEmailEndpoints(t *testing.T) {
 	c := newTestCore(t)
 	h := c.webHandler()
 	createUser(t, c.db, "admin", "", "password123", modules.RoleAdmin)
 	admin := login(t, h, "admin", "password123")
-	// Own address: set (normalized), reject invalid, clear.
+	// Address of the caller: set (normalized), reject invalid, clear.
 	rec := do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": " Admin@Example.test "}, admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"email":"admin@example.test"`) {
-		t.Errorf("set own email: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("set email: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": "nope"}, admin); rec.Code != http.StatusBadRequest {
-		t.Errorf("invalid own email: %d", rec.Code)
+		t.Errorf("invalid email: %d", rec.Code)
 	}
 	rec = do(t, h, http.MethodGet, "/api/v1/me", nil, admin)
 	if !strings.Contains(rec.Body.String(), `"email":"admin@example.test"`) {
-		t.Errorf("me lacks the email: %s", rec.Body.String())
+		t.Errorf("the current user lacks the email: %s", rec.Body.String())
 	}
 	if rec := do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": ""}, admin); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"email":""`) {
-		t.Errorf("clear own email: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("clear email: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": "x@example.test"}, nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("anonymous: %d", rec.Code)
@@ -105,14 +105,14 @@ func TestMeEmailAndUserEmailEndpoints(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"email":`) {
 		t.Errorf("user list lacks emails: %s", rec.Body.String())
 	}
-	// Timezone: default, own change, invalid, per-user update, settings zone.
+	// Timezone: default, change by the caller, invalid, per-user update, settings zone.
 	rec = do(t, h, http.MethodGet, "/api/v1/me", nil, admin)
 	if !strings.Contains(rec.Body.String(), `"timezone":"`+models.DefaultTimezone+`"`) {
-		t.Errorf("me lacks the default timezone: %s", rec.Body.String())
+		t.Errorf("the current user lacks the default timezone: %s", rec.Body.String())
 	}
 	rec = do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"timezone": " UTC "}, admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"timezone":"UTC"`) {
-		t.Errorf("set own timezone: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("set timezone: %d %s", rec.Code, rec.Body.String())
 	}
 	for _, bad := range []string{"Mars/Olympus", "Local", "JST+9"} {
 		if rec := do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"timezone": bad}, admin); rec.Code != http.StatusBadRequest {
@@ -151,7 +151,7 @@ func TestMeEmailAndUserEmailEndpoints(t *testing.T) {
 	// Language and theme, display name, and several fields at once.
 	rec = do(t, h, http.MethodGet, "/api/v1/me", nil, admin)
 	if !strings.Contains(rec.Body.String(), `"language":"`+models.DefaultLanguage+`"`) || !strings.Contains(rec.Body.String(), `"theme":"`+models.DefaultTheme+`"`) {
-		t.Errorf("me lacks the default language/theme: %s", rec.Body.String())
+		t.Errorf("the current user lacks the default language/theme: %s", rec.Body.String())
 	}
 	rec = do(t, h, http.MethodPut, "/api/v1/me/profile", map[string]string{"language": "EN", "theme": "Dark", "display_name": " Root "}, admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"language":"en"`) || !strings.Contains(rec.Body.String(), `"theme":"dark"`) ||
@@ -203,7 +203,7 @@ func TestSetupAcceptsProfileFields(t *testing.T) {
 	}
 	rec = do(t, h, http.MethodGet, "/api/v1/me", nil, sessionCookie(t, rec))
 	if !strings.Contains(rec.Body.String(), `"timezone":"UTC"`) {
-		t.Errorf("me after setup: %s", rec.Body.String())
+		t.Errorf("the current user after setup: %s", rec.Body.String())
 	}
 }
 
@@ -318,7 +318,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 			t.Errorf("%v: %d, want 400", bad, rec.Code)
 		}
 	}
-	// Test mail: to the given address, else the caller's own; SMTP errors are 400 with the text.
+	// Test mail: to the given address, else the address of the caller; SMTP errors are 400 with the text.
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", map[string]string{"to": "Ops@Example.test"}, s.admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("test mail: %d %s", rec.Code, rec.Body.String())
@@ -328,14 +328,14 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	}
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", nil, s.admin)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"key":"validation.notification.testRecipientRequired"`) {
-		t.Errorf("test without an own address: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("test without an address of the caller: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(t, s.h, http.MethodPut, "/api/v1/me/profile", map[string]string{"email": "admin@example.test"}, s.admin); rec.Code != http.StatusOK {
 		t.Fatal(rec.Body.String())
 	}
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", map[string]any{}, s.admin)
 	if rec.Code != http.StatusOK || len(srv.Messages()) != 2 || srv.Messages()[1].To[0] != "admin@example.test" {
-		t.Errorf("test to own address: %d %s (%d mails)", rec.Code, rec.Body.String(), len(srv.Messages()))
+		t.Errorf("test to the address of the caller: %d %s (%d mails)", rec.Code, rec.Body.String(), len(srv.Messages()))
 	}
 	srv.Username, srv.Password = "u", "other"
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", map[string]string{"to": "ops@example.test"}, s.admin)
@@ -344,7 +344,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	}
 	srv.Username, srv.Password = "u", "p"
 	// The stored password serves the saved server only: a test that changes
-	// the host, port, security mode or username must carry its own password,
+	// the host, port, security mode or username must carry a password,
 	// so the stored one is never relayed elsewhere.
 	sent := len(srv.Messages())
 	for _, change := range []map[string]any{
@@ -363,12 +363,12 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	if len(srv.Messages()) != sent {
 		t.Errorf("a refused test must not send anything")
 	}
-	// With a password of its own the changed settings are tried with that
+	// With a password in the request the changed settings are tried with that
 	// password (here it is wrong for the server, which proves the stored one
 	// was not used).
 	rec = do(t, s.h, http.MethodPost, "/api/v1/notifications/test", map[string]any{"to": "ops@example.test", "smtp_username": "u", "smtp_password": "not-p", "smtp_from": "Other@Example.test"}, s.admin)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "authentication failed") {
-		t.Errorf("test with an own password: %d %s", rec.Code, rec.Body.String())
+		t.Errorf("test with a password in the request: %d %s", rec.Code, rec.Body.String())
 	}
 	// Repeating the saved values is the saved server: the stored password
 	// applies, and a different sender is fine.

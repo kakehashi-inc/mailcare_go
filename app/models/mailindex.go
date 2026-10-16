@@ -27,7 +27,7 @@ import (
 //
 // The schema is managed by goose migrations like the master database's:
 // embedded/migrations/index/*.sql, applied by OpenMailIndex every time an index
-// is opened (the file records the applied versions in its own
+// is opened (the file records the applied versions in a separate
 // goose_db_version table). The design rules of the columns are stated in
 // embedded/migrations/index/0001_init.sql.
 //
@@ -42,9 +42,11 @@ import (
 //   group_state_change_patterns app/models/group_state_change_pattern.go  re-check keys of the members at a state change
 
 // OpenMailIndex opens (creating when absent) the per-mailbox index at path
-// and applies its pending migrations. An index created before the migrations
-// were introduced (same tables, no goose_db_version table) is adopted as it
-// is: the first migration only creates what is missing.
+// and applies its pending migrations, one process (and one opener) at a time
+// (the lock file path + dbschema.LockSuffix): the jobs, a reindex and the
+// CLI may open the same index at once. An index created before the
+// migrations were introduced (same tables, no goose_db_version table) is
+// adopted as it is: the first migration only creates what is missing.
 func OpenMailIndex(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -54,7 +56,7 @@ func OpenMailIndex(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := dbschema.Apply(context.Background(), db, dbschema.Index()); err != nil {
+	if _, err := dbschema.ApplyLocked(context.Background(), db, dbschema.Index(), path); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to migrate the mail index: %w", err)
 	}

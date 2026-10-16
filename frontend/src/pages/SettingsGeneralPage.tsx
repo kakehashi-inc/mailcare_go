@@ -25,10 +25,9 @@ import { BOUNCE_CATEGORIES } from '../types';
 import {
     DNS_CHECK_RESOLVERS,
     MAX_DNS_CHECK_RESOLVERS,
-    MAX_OWN_SENDING_ENTRIES,
-    OWN_SENDING_HOSTS,
-    OWN_SENDING_IPV4,
-    OWN_SENDING_IPV6,
+    SENDING_SOURCE_HOSTS,
+    SENDING_SOURCE_IPV4,
+    SENDING_SOURCE_IPV6,
     checkList,
     listEntries,
     type ListError,
@@ -58,7 +57,7 @@ const LIST_TEXTAREA = {
 
 /**
  * Reasoning levels offered for a model, with the same rule the server checks on save
- * (agent.CheckReasoningEffort): a listed model offers its own levels, no model offers
+ * (agent.CheckReasoningEffort): a listed model offers the levels listed for it, no model offers
  * every known level, and a model the CLI does not list cannot be checked (known = false).
  */
 function reasoningChoices(levels: Record<string, string[]>, model: string): { options: string[]; known: boolean } {
@@ -87,10 +86,10 @@ export function SettingsGeneralPage() {
     const [cleanupTime, setCleanupTime] = useState('');
     // Re-check days per category, as typed.
     const [recheckDays, setRecheckDays] = useState<Record<string, string>>({});
-    // Own sending sources and resolvers as typed, one entry per line.
-    const [ownIpv4, setOwnIpv4] = useState('');
-    const [ownIpv6, setOwnIpv6] = useState('');
-    const [ownHosts, setOwnHosts] = useState('');
+    // Sending sources and resolvers as typed, one entry per line.
+    const [sourceIpv4, setSourceIpv4] = useState('');
+    const [sourceIpv6, setSourceIpv6] = useState('');
+    const [sourceHosts, setSourceHosts] = useState('');
     const [dnsCheckEnabled, setDnsCheckEnabled] = useState(false);
     const [dnsResolvers, setDnsResolvers] = useState('');
     const [dnsSystemOnly, setDnsSystemOnly] = useState(false);
@@ -111,9 +110,9 @@ export function SettingsGeneralPage() {
         setRecheckDays(
             Object.fromEntries(Object.entries(settings.data.recheck_days ?? {}).map(([c, n]) => [c, String(n)]))
         );
-        setOwnIpv4((settings.data.own_sending_ipv4 ?? []).join('\n'));
-        setOwnIpv6((settings.data.own_sending_ipv6 ?? []).join('\n'));
-        setOwnHosts((settings.data.own_sending_hosts ?? []).join('\n'));
+        setSourceIpv4((settings.data.sending_source_ipv4 ?? []).join('\n'));
+        setSourceIpv6((settings.data.sending_source_ipv6 ?? []).join('\n'));
+        setSourceHosts((settings.data.sending_source_hosts ?? []).join('\n'));
         setDnsCheckEnabled(settings.data.dns_check_enabled);
         setDnsResolvers((settings.data.dns_check_resolvers ?? []).join('\n'));
         setDnsSystemOnly(settings.data.dns_check_system_resolver_only);
@@ -146,22 +145,26 @@ export function SettingsGeneralPage() {
     const recheckDaysValid = (value: string) =>
         /^\d+$/.test(value.trim()) && Number(value) >= RECHECK_DAYS_MIN && Number(value) <= RECHECK_DAYS_MAX;
     const allRecheckDaysValid = Object.values(recheckDays).every(recheckDaysValid);
-    const ownIpv4Error = checkList(ownIpv4, OWN_SENDING_IPV4);
-    const ownIpv6Error = checkList(ownIpv6, OWN_SENDING_IPV6);
-    const ownHostsError = checkList(ownHosts, OWN_SENDING_HOSTS);
-    // The SMTP hosts of the mail addresses count as own host names too (read-only here).
-    const mailboxHosts = settings.data?.own_sending_mailbox_hosts ?? [];
-    const ownSendingEmpty =
-        [ownIpv4, ownIpv6, ownHosts].every(text => listEntries(text).length === 0) && mailboxHosts.length === 0;
-    // The addresses without a host name of their own while no host name is saved here (derived by the server): the
-    // judgement of notices about mail not sent from our servers is off for them. A host name typed here counts for
+    const sourceIpv4Error = checkList(sourceIpv4, SENDING_SOURCE_IPV4);
+    const sourceIpv6Error = checkList(sourceIpv6, SENDING_SOURCE_IPV6);
+    const sourceHostsError = checkList(sourceHosts, SENDING_SOURCE_HOSTS);
+    // The SMTP hosts of the mail addresses count as source host names too (read-only here).
+    const mailboxHosts = settings.data?.sending_source_mailbox_hosts ?? [];
+    const sendingSourceEmpty =
+        [sourceIpv4, sourceIpv6, sourceHosts].every(text => listEntries(text).length === 0) &&
+        mailboxHosts.length === 0;
+    // The addresses without an SMTP host while no host name is saved here (derived by the server): the judgement
+    // of notices about mail not sent from the sending sources is off for them. A host name typed here counts for
     // every address, so the warning goes away before it is saved.
-    const withoutHost = settings.data?.own_sending_mailboxes_without_host ?? [];
-    const ownSendingNoHost = withoutHost.length > 0 && listEntries(ownHosts).length === 0;
+    const withoutHost = settings.data?.sending_source_mailboxes_without_host ?? [];
+    const sendingSourceNoHost = withoutHost.length > 0 && listEntries(sourceHosts).length === 0;
     // With no IP address listed here either, nothing at all is configured for these addresses: the DNS judgement
-    // takes every reporting server as ours for them, so any entry typed here hides the sentence as well.
-    const ownSendingNoHostAllOwn =
-        ownSendingNoHost && listEntries(ownIpv4).length === 0 && listEntries(ownIpv6).length === 0;
+    // takes every reporting server as a sending server for them, so any entry typed here hides the sentence as well.
+    const sendingSourceNoHostNoAddress =
+        sendingSourceNoHost && listEntries(sourceIpv4).length === 0 && listEntries(sourceIpv6).length === 0;
+    // The warning about the addresses already says all that the notice about an empty configuration says, so only
+    // one of the two is shown (the notice remains for no address at all, or for a host name cleared here).
+    const showSendingSourceEmpty = sendingSourceEmpty && !sendingSourceNoHost;
     // The resolvers are sent (and checked by the server) even while their field is disabled.
     const dnsResolversError = checkList(dnsResolvers, DNS_CHECK_RESOLVERS);
     // Same rule as modules.ValidateDNSCheck: the check needs a resolver unless it asks the OS resolver only.
@@ -176,9 +179,9 @@ export function SettingsGeneralPage() {
         mailKeepDaysValid &&
         cleanupTimeValid &&
         allRecheckDaysValid &&
-        !ownIpv4Error &&
-        !ownIpv6Error &&
-        !ownHostsError &&
+        !sourceIpv4Error &&
+        !sourceIpv6Error &&
+        !sourceHostsError &&
         !dnsResolversError &&
         !dnsNoResolver &&
         modelValid &&
@@ -210,9 +213,9 @@ export function SettingsGeneralPage() {
                 mail_keep_days: mailKeepDaysValue,
                 cleanup_time: cleanupTime,
                 recheck_days: Object.fromEntries(Object.entries(recheckDays).map(([c, v]) => [c, Number(v)])),
-                own_sending_ipv4: listEntries(ownIpv4),
-                own_sending_ipv6: listEntries(ownIpv6),
-                own_sending_hosts: listEntries(ownHosts),
+                sending_source_ipv4: listEntries(sourceIpv4),
+                sending_source_ipv6: listEntries(sourceIpv6),
+                sending_source_hosts: listEntries(sourceHosts),
                 dns_check_enabled: dnsCheckEnabled,
                 dns_check_resolvers: listEntries(dnsResolvers),
                 dns_check_system_resolver_only: dnsSystemOnly,
@@ -429,51 +432,53 @@ export function SettingsGeneralPage() {
                         title={t('page.settingsGeneral.dnsCheck')}
                         description={t('page.settingsGeneral.dnsCheckHint')}
                     />
-                    <fieldset aria-describedby='own-sending-hint'>
-                        <legend className='text-sm font-medium text-ink'>{t('field.setting.ownSending')}</legend>
-                        <p id='own-sending-hint' className='mb-3 mt-1 text-sm text-muted'>
-                            {t('field.setting.ownSendingHint', { max: MAX_OWN_SENDING_ENTRIES })}
+                    <fieldset aria-describedby='sending-source-hint'>
+                        <legend className='text-sm font-medium text-ink'>{t('field.setting.sendingSource')}</legend>
+                        <p id='sending-source-hint' className='mb-3 mt-1 text-sm text-muted'>
+                            {t('field.setting.sendingSourceHint')}
                         </p>
                         <div className='flex flex-col gap-4'>
                             <TextareaField
                                 {...LIST_TEXTAREA}
-                                label={t('field.setting.ownSendingIpv4')}
-                                hint={t('field.setting.ownSendingIpv4Hint')}
-                                placeholder={t('field.setting.ownSendingIpv4Placeholder')}
-                                value={ownIpv4}
+                                label={t('field.setting.sendingSourceIpv4')}
+                                hint={t('field.setting.sendingSourceIpv4Hint')}
+                                placeholder={t('field.setting.sendingSourceIpv4Placeholder')}
+                                value={sourceIpv4}
                                 onChange={e => {
-                                    setOwnIpv4(e.target.value);
+                                    setSourceIpv4(e.target.value);
                                     setDirty(true);
                                 }}
-                                error={listError(ownIpv4Error)}
+                                error={listError(sourceIpv4Error)}
                             />
                             <TextareaField
                                 {...LIST_TEXTAREA}
-                                label={t('field.setting.ownSendingIpv6')}
-                                hint={t('field.setting.ownSendingIpv6Hint')}
-                                placeholder={t('field.setting.ownSendingIpv6Placeholder')}
-                                value={ownIpv6}
+                                label={t('field.setting.sendingSourceIpv6')}
+                                hint={t('field.setting.sendingSourceIpv6Hint')}
+                                placeholder={t('field.setting.sendingSourceIpv6Placeholder')}
+                                value={sourceIpv6}
                                 onChange={e => {
-                                    setOwnIpv6(e.target.value);
+                                    setSourceIpv6(e.target.value);
                                     setDirty(true);
                                 }}
-                                error={listError(ownIpv6Error)}
+                                error={listError(sourceIpv6Error)}
                             />
                             <TextareaField
                                 {...LIST_TEXTAREA}
-                                label={t('field.setting.ownSendingHosts')}
-                                hint={t('field.setting.ownSendingHostsHint')}
-                                placeholder={t('field.setting.ownSendingHostsPlaceholder')}
-                                value={ownHosts}
+                                label={t('field.setting.sendingSourceHosts')}
+                                hint={t('field.setting.sendingSourceHostsHint')}
+                                placeholder={t('field.setting.sendingSourceHostsPlaceholder')}
+                                value={sourceHosts}
                                 onChange={e => {
-                                    setOwnHosts(e.target.value);
+                                    setSourceHosts(e.target.value);
                                     setDirty(true);
                                 }}
-                                error={listError(ownHostsError)}
+                                error={listError(sourceHostsError)}
                             />
                             {mailboxHosts.length > 0 && (
                                 <div className='text-sm'>
-                                    <p className='font-medium text-ink'>{t('field.setting.ownSendingMailboxHosts')}</p>
+                                    <p className='font-medium text-ink'>
+                                        {t('field.setting.sendingSourceMailboxHosts')}
+                                    </p>
                                     <ul className='mt-1 flex flex-wrap gap-x-3 gap-y-1'>
                                         {mailboxHosts.map(host => (
                                             <li key={host} className='break-all font-mono text-ink'>
@@ -481,23 +486,27 @@ export function SettingsGeneralPage() {
                                             </li>
                                         ))}
                                     </ul>
-                                    <p className='mt-1 text-muted'>{t('field.setting.ownSendingMailboxHostsHint')}</p>
+                                    <p className='mt-1 text-muted'>
+                                        {t('field.setting.sendingSourceMailboxHostsHint')}
+                                    </p>
                                 </div>
                             )}
-                            {ownSendingEmpty && <Alert tone='info'>{t('page.settingsGeneral.ownSendingEmpty')}</Alert>}
-                            {ownSendingNoHost && (
-                                <Alert tone='warning'>
-                                    <p>{t('page.settingsGeneral.ownSendingNoHost')}</p>
-                                    <ul className='mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm'>
+                            {showSendingSourceEmpty && (
+                                <Alert tone='info'>{t('page.settingsGeneral.sendingSourceEmpty')}</Alert>
+                            )}
+                            {sendingSourceNoHost && (
+                                <Alert tone='warning' title={t('page.settingsGeneral.sendingSourceNoHost')}>
+                                    <ul className='flex flex-wrap gap-x-3 gap-y-1'>
                                         {withoutHost.map(address => (
                                             <li key={address} className='break-all font-mono'>
                                                 {address}
                                             </li>
                                         ))}
                                     </ul>
-                                    {/* After the list, which the sentence refers back to ("these addresses"). */}
-                                    {ownSendingNoHostAllOwn && (
-                                        <p className='mt-2'>{t('page.settingsGeneral.ownSendingNoHostAllOwn')}</p>
+                                    {/* After the list, which the sentences refer back to ("these addresses"). */}
+                                    <p className='mt-2'>{t('page.settingsGeneral.sendingSourceNoHostAction')}</p>
+                                    {sendingSourceNoHostNoAddress && (
+                                        <p>{t('page.settingsGeneral.sendingSourceNoHostNoAddress')}</p>
                                     )}
                                 </Alert>
                             )}
@@ -543,10 +552,7 @@ export function SettingsGeneralPage() {
                 </Card>
 
                 <Card>
-                    <CardHeader
-                        title={t('page.settingsGeneral.jobs')}
-                        description={t('page.settingsGeneral.jobsHint')}
-                    />
+                    <CardHeader title={t('page.settingsGeneral.jobs')} />
                     <InputField
                         label={t('field.setting.workers')}
                         type='number'

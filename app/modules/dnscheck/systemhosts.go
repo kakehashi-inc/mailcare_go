@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// SystemHostResolver resolves the host names of our own sending servers
-// (mailengine.OwnHostResolver: the setting own_sending_hosts and the SMTP
+// SystemHostResolver resolves the host names of the sending sources
+// (mailengine.SourceHostResolver: the setting sending_source_hosts and the SMTP
 // hosts of the monitored mail addresses, written by the administrator and
 // trusted) through the OS resolver alone. It serves the runs in which the
 // verification of DNS lookup failures is switched off: the backscatter
@@ -18,13 +18,13 @@ import (
 // search domain is tried), a single-label name (an internal MTA such as
 // "mailhost") as written, so that the search list and the hosts file of the
 // host apply, as Checker.ResolveHost does. The A and the AAAA addresses are
-// asked apart (lookupOwnSystem), each bounded by DefaultTimeout; a lookup
+// asked apart (lookupSourceSystem), each bounded by DefaultTimeout; a lookup
 // is remembered for the run, an unanswered one too unless ctx ended. Like
-// the Checker, it bounds the network time of the run (DefaultOwnBudget, the
-// budget of the own sources): once used up, a name not looked up yet is
+// the Checker, it bounds the network time of the run (DefaultSourceBudget, the
+// budget of the sending sources): once used up, a name not looked up yet is
 // not answered (and not remembered), so a long list of names an OS resolver
 // leaves unanswered cannot hold the run. The grouping asks for several
-// names at once (mailengine ownLookups), and the time of every lookup
+// names at once (mailengine sourceLookups), and the time of every lookup
 // counts, those made at the same time each. Create one per run with
 // NewSystemHostResolver; it is safe for concurrent use.
 type SystemHostResolver struct {
@@ -40,7 +40,7 @@ type SystemHostResolver struct {
 // NewSystemHostResolver returns a SystemHostResolver for one run. It makes
 // no query.
 func NewSystemHostResolver() *SystemHostResolver {
-	return newSystemHostResolver(defaultSystemResolver(), DefaultTimeout, DefaultOwnBudget)
+	return newSystemHostResolver(defaultSystemResolver(), DefaultTimeout, DefaultSourceBudget)
 }
 
 // newSystemHostResolver returns a SystemHostResolver asking sys with the
@@ -49,7 +49,7 @@ func newSystemHostResolver(sys systemResolver, timeout, budget time.Duration) *S
 	return &SystemHostResolver{sys: sys, timeout: timeout, budget: budget, hosts: map[string]hostLookup{}}
 }
 
-// ResolveHost returns the A and AAAA addresses of one of our own host names
+// ResolveHost returns the A and AAAA addresses of one of the source host names
 // (unmapped) and whether the OS resolver answered both the IPv4 and the
 // IPv6 question, with addresses or without any (not found): answered is
 // false when the name is no valid host name, the budget of the run is used
@@ -75,7 +75,7 @@ func (r *SystemHostResolver) ResolveHost(ctx context.Context, host string) (addr
 		query = absolute(name)
 	}
 	start := time.Now()
-	res.addrs, res.answered = lookupOwnSystem(ctx, r.sys, r.timeout, query)
+	res.addrs, res.answered = lookupSourceSystem(ctx, r.sys, r.timeout, query)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.spent += time.Since(start)

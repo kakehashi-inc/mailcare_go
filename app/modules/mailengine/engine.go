@@ -42,16 +42,25 @@
 //	paths.go     address sanitizing, file and section paths, message keys, atomic writes
 //	imap.go      IMAP connection, TestConnection and FetchMailbox
 //	parse.go     ParsedMessage and the MIME parser
+//	headers.go   HeaderText (the header block of a raw message as text)
+//	charset.go   charset handling of bodies, encoded header words and HTML meta charsets
 //	classify.go  the classification rule table (design document "mail classification" 2.2)
+//	junk.go      the junk rules (phishing, spam, fake notices)
+//	dmarc.go     parsing of DMARC aggregate reports and categorizing of their failing records
 //	extract.go   extraction of bounce details (delivery-status and body text)
 //	sections.go  body section references and where the diagnostic was found
 //	category.go  the category rule table and the unit / authority extractors
 //	dnsfailure.go  detection of DNS lookup failures in diagnostics (no network)
-//	dnsverify.go   the verifier interface, our own sending sources and the GroupMailbox / Reindex options
+//	dnsverify.go   the verifier interface, the matching of reporting MTAs and the WithDNS option
+//	sendingsources.go  SendingSources and the WithSendingSources option
+//	sourcelookups.go   the host name and SPF lookups of the sending sources during a run
+//	spfspace.go    the bound of the address space the SPF records may cover
 //	grouping.go  diagnostic template, group key/title and group maintenance
 //	group.go     GroupMailbox (the grouping phase) and the per-message step
 //	store.go     storing one message (section files + index row) shared by fetch/reindex
 //	reindex.go   OpenIndex and Reindex
+//	recheck.go   the re-check of resolved and ignored groups
+//	layout.go    the directory layout of the raw files of a mailbox
 //	carryover.go what Reindex keeps from the previous index (sources, states, reports)
 //	prune.go     PruneMailbox (the mail retention) and RemoveStaleTempFiles
 //	serverdelete.go  DeleteFromServer (the server retention)
@@ -170,7 +179,7 @@ const (
 	categoryDomainNotFound  = "domain_not_found"
 	categoryDeliveryDelay   = "delivery_delay"
 	// DNS lookup failures verified by looking the name up again (design
-	// document "mail classification" 4.4): our own resolver (actionable) or
+	// document "mail classification" 4.4): the resolver of a sending server (actionable) or
 	// the receiving side's / a third party's DNS (recipient-side).
 	categoryDNSResolverFailure = "dns_resolver_failure"
 	categoryDNSFailureExternal = "dns_failure_external"

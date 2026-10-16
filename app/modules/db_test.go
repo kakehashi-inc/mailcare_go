@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+
+	"mailcare/app/modules/dbschema"
 )
 
 func TestOpenDBRestrictsFilePermissions(t *testing.T) {
@@ -81,5 +84,46 @@ func TestDataDirPermissionWarning(t *testing.T) {
 	}
 	if w := DataDirPermissionWarning(filepath.Join(dir, "missing")); w != "" {
 		t.Errorf("a missing directory must not warn: %s", w)
+	}
+}
+
+// TestOpenDBConcurrent opens an un-migrated master database from several
+// openers at once (the server starting while "service status" opens it):
+// every migration is recorded once and the lock file next to the database
+// is gone afterwards.
+func TestOpenDBConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mailcare.db")
+	const openers = 6
+	errs := make([]error, openers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range openers {
+		wg.Go(func() {
+			<-start
+			db, err := OpenDB(path)
+			if err == nil {
+				db.Close()
+			}
+			errs[i] = err
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("opener %d: %v", i, err)
+		}
+	}
+	db, err := OpenDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var duplicated int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM (SELECT version_id FROM goose_db_version GROUP BY version_id HAVING COUNT(*) > 1)`).Scan(&duplicated); err != nil || duplicated != 0 {
+		t.Errorf("%d versions recorded more than once (%v)", duplicated, err)
+	}
+	if _, err := os.Stat(path + dbschema.LockSuffix); !os.IsNotExist(err) {
+		t.Errorf("the lock file is left behind: %v", err)
 	}
 }

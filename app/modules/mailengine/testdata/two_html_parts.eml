@@ -12,7 +12,7 @@ Content-Type: text/html; charset="utf-8"
 
 <html><head><title>Original</title></head><body>
 <p>Dear customer,</p>
-<p>Our service will be under maintenance on Sunday. Contact <a href="mailto:support@example.jp">support@example.jp</a> for details.</p>
+<p>The service will be under maintenance on Sunday. Contact <a href="mailto:support@example.jp">support@example.jp</a> for details.</p>
 </body></html>
 
 --=_mixed_0021

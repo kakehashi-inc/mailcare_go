@@ -22,7 +22,7 @@ import (
 // resolver never tries it under the search domains of the host: a wildcard
 // record of a search domain would turn a name that does not exist into one
 // that does. Only the single-label host names of the settings are asked as
-// written (lookupOwnSystem). The own host names are asked of the OS
+// written (lookupSourceSystem). The source host names are asked of the OS
 // resolver first whatever the mode (Checker.ResolveHost).
 
 // defaultSystemResolver returns the OS resolver of a new Checker or
@@ -173,15 +173,15 @@ func (c *Checker) systemAddresses(ctx context.Context, host string) ([]netip.Add
 	return addrs, a
 }
 
-// lookupOwnSystem looks up the A and AAAA addresses of one of our own host
+// lookupSourceSystem looks up the A and AAAA addresses of one of the source host
 // names through an OS resolver, the name passed as it is (absolute, or a
 // single-label name of the settings as written so that the search list and
 // the hosts file apply), and reports whether both families were answered
-// (addresses, or not found). Each family is asked on its own, within
+// (addresses, or not found). Each family is asked separately, within
 // timeout each: asked for both at once, Go returns the addresses of one
 // family without an error when the lookup of the other failed, and half an
 // answer must not pass for a whole one.
-func lookupOwnSystem(ctx context.Context, sys systemResolver, timeout time.Duration, host string) ([]netip.Addr, bool) {
+func lookupSourceSystem(ctx context.Context, sys systemResolver, timeout time.Duration, host string) ([]netip.Addr, bool) {
 	var addrs []netip.Addr
 	answered := true
 	for _, network := range []string{"ip4", "ip6"} {

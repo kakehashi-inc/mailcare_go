@@ -13,7 +13,7 @@ import (
 //
 // ReasoningSelector is an optional Provider extension: a provider whose CLI
 // can be told how much to reason implements it, and the configured level
-// (setting agent_reasoning_effort, empty = the CLI's own setting) is
+// (setting agent_reasoning_effort, empty = the setting of the CLI) is
 // appended to the launch argv through ReasoningArgs. A provider without it
 // never gets a level and the setting must stay empty for it.
 
@@ -41,7 +41,7 @@ type ReasoningSelector interface {
 }
 
 // ValidateReasoningEffort checks the shape of a reasoning level ("" = the
-// CLI's own setting, always valid).
+// setting of the CLI, always valid).
 func ValidateReasoningEffort(level string) error {
 	if level == "" {
 		return nil
@@ -55,7 +55,7 @@ func ValidateReasoningEffort(level string) error {
 // CheckReasoningEffort validates a reasoning level for a provider and model
 // before it is saved: the shape (ValidateReasoningEffort), that the provider
 // accepts a level at all, and that the level is one the model accepts. The
-// accepted levels come from ReasoningLevels: for a named model its own list,
+// accepted levels come from ReasoningLevels: for a named model the list of that model,
 // for the CLI default model (model "") the levels of every known model.
 // When the levels are unknown (the provider cannot tell, or the model is not
 // listed) only the shape is checked.

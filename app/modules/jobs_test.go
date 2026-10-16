@@ -552,7 +552,7 @@ func TestResourceLocksSerializeJobs(t *testing.T) {
 	}
 	// A cleanup holds the mailbox key and the agent key (like a reindex): it
 	// waits for a running analysis of any address and blocks the jobs that
-	// read or rewrite the mails of its own address. With a server retention
+	// read or rewrite the mails of its address. With a server retention
 	// (the default of a new mailbox) it also holds the IMAP host.
 	if keys := jobResourceKeys(JobKindCleanup, a); strings.Join(keys, ",") != "host:"+strings.ToLower(a.ImapHost)+",mailbox:a@example.test,agent" {
 		t.Errorf("cleanup keys: %v", keys)
@@ -863,7 +863,7 @@ func TestCleanupJobAppliesRetentions(t *testing.T) {
 		}
 	}
 	// The other mailbox was not touched by this child: its mail is still
-	// there until its own cleanup runs.
+	// there until the cleanup of that mailbox runs.
 	if entries, err := os.ReadDir(mailengine.MailboxDir(mailsRoot, other.Address)); err != nil || len(entries) != 1 {
 		t.Errorf("other mailbox directory: %d entries, %v", len(entries), err)
 	}

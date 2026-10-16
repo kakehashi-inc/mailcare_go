@@ -61,7 +61,7 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 // raw file that cannot be indexed is reported and counted in Skipped.
 //
 // WithDNS verifies the DNS lookup failures the notices report and
-// WithOwnSources gives the backscatter rule our own sending servers, as in
+// WithSendingSources gives the backscatter rule the sending sources, as in
 // GroupMailbox.
 func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays, progress Progress, opts ...GroupOption) (*ReindexResult, error) {
 	if err := ctx.Err(); err != nil {

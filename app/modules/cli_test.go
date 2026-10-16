@@ -71,21 +71,21 @@ func TestPromptPasswordPipedInput(t *testing.T) {
 	})
 }
 
-// TestSettingsSetOwnSendingAndDNSCheck checks "settings set" for the own
-// sending lists and the DNS check settings: comma-separated lists, the word
+// TestSettingsSetSendingSourceAndDNSCheck checks "settings set" for the
+// sending source lists and the DNS check settings: comma-separated lists, the word
 // none for an empty resolver list, "" restoring the default and the rule
 // that the enabled verification keeps a resolver, checked against the
 // saved values of the other keys (restoring a default included).
-func TestSettingsSetOwnSendingAndDNSCheck(t *testing.T) {
+func TestSettingsSetSendingSourceAndDNSCheck(t *testing.T) {
 	db := newTestDB(t)
 	isArg := func(err error) bool {
 		var exitErr *ExitError
 		return errors.As(err, &exitErr) && exitErr.Code == ExitArgument
 	}
 	for _, ok := range [][3]string{
-		{SettingOwnSendingIPv4, "203.0.113.5, 198.51.100.7/24,203.0.113.5", "203.0.113.5, 198.51.100.0/24"},
-		{SettingOwnSendingIPv6, "2001:DB8::1", "2001:db8::1"},
-		{SettingOwnSendingHosts, "MX1.Example.", "mx1.example"},
+		{SettingSendingSourceIPv4, "203.0.113.5, 198.51.100.7/24,203.0.113.5", "203.0.113.5, 198.51.100.0/24"},
+		{SettingSendingSourceIPv6, "2001:DB8::1", "2001:db8::1"},
+		{SettingSendingSourceHosts, "MX1.Example.", "mx1.example"},
 		{SettingDNSCheckResolvers, "9.9.9.9, 2606:4700:4700::1111", "9.9.9.9, 2606:4700:4700::1111"},
 		{SettingDNSCheckEnabled, "off", "false"},
 		{SettingDNSCheckSystemResolverOnly, "yes", "true"},
@@ -95,17 +95,17 @@ func TestSettingsSetOwnSendingAndDNSCheck(t *testing.T) {
 			t.Errorf("%s=%s: %q, %v (want %q)", ok[0], ok[1], got, err, ok[2])
 		}
 	}
-	if saved := models.GetSetting(db, SettingOwnSendingIPv4); saved != "203.0.113.5\n198.51.100.0/24" {
-		t.Errorf("stored own_sending_ipv4 %q", saved)
+	if saved := models.GetSetting(db, SettingSendingSourceIPv4); saved != "203.0.113.5\n198.51.100.0/24" {
+		t.Errorf("stored sending_source_ipv4 %q", saved)
 	}
 	if saved := models.GetSetting(db, SettingDNSCheckResolvers); saved != "9.9.9.9\n2606:4700:4700::1111" {
 		t.Errorf("stored dns_check_resolvers %q", saved)
 	}
 	for _, bad := range [][2]string{
-		{SettingOwnSendingIPv4, "203.0.113.5,2001:db8::1"},
-		{SettingOwnSendingIPv6, "203.0.113.5"},
-		{SettingOwnSendingHosts, "203.0.113.5"},
-		{SettingOwnSendingHosts, "mail_1.example"},
+		{SettingSendingSourceIPv4, "203.0.113.5,2001:db8::1"},
+		{SettingSendingSourceIPv6, "203.0.113.5"},
+		{SettingSendingSourceHosts, "203.0.113.5"},
+		{SettingSendingSourceHosts, "mail_1.example"},
 		{SettingDNSCheckResolvers, "1.1.1.1:53"},
 		{SettingDNSCheckResolvers, "127.0.0.1"},
 		{SettingDNSCheckEnabled, "maybe"},
@@ -178,7 +178,7 @@ func TestSettingsSetOwnSendingAndDNSCheck(t *testing.T) {
 	}
 	// With the verification on, a value of commas gets the same message
 	// (not the one about a verification without a resolver), and an invalid
-	// entry among the commas its own.
+	// entry among the commas a separate one.
 	if _, err := ApplySetting(db, SettingDNSCheckResolvers, ", ,", nil); !isArg(err) || err.Error() != commasOnly {
 		t.Errorf("resolvers of commas only with the verification on: %v", err)
 	}
@@ -188,17 +188,17 @@ func TestSettingsSetOwnSendingAndDNSCheck(t *testing.T) {
 	if cfg := ResolveDNSCheck(db); !reflect.DeepEqual(cfg.Resolvers, DefaultDNSCheckResolvers()) {
 		t.Errorf("a refused value was saved: %+v", cfg)
 	}
-	// "" clears an own sending list.
-	if _, err := ApplySetting(db, SettingOwnSendingHosts, "", nil); err != nil {
+	// "" clears a sending source list.
+	if _, err := ApplySetting(db, SettingSendingSourceHosts, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := models.GetSettingStrict(db, SettingOwnSendingHosts); found {
-		t.Error("own_sending_hosts still stored")
+	if _, found, _ := models.GetSettingStrict(db, SettingSendingSourceHosts); found {
+		t.Error("sending_source_hosts still stored")
 	}
 	// The SMTP hosts of the mailboxes are shown by "settings show" but set
 	// on the mailboxes (mailbox update --smtp-host).
-	if _, err := ApplySetting(db, "own_sending_mailbox_hosts", "mx1.example", nil); !isArg(err) || !strings.Contains(err.Error(), `unknown setting "own_sending_mailbox_hosts"`) {
-		t.Errorf("own_sending_mailbox_hosts: %v, want the unknown setting error", err)
+	if _, err := ApplySetting(db, "sending_source_mailbox_hosts", "mx1.example", nil); !isArg(err) || !strings.Contains(err.Error(), `unknown setting "sending_source_mailbox_hosts"`) {
+		t.Errorf("sending_source_mailbox_hosts: %v, want the unknown setting error", err)
 	}
 	// The command itself answers a refused change with the argument exit
 	// code.
@@ -210,10 +210,10 @@ func TestSettingsSetOwnSendingAndDNSCheck(t *testing.T) {
 	}
 }
 
-// TestSettingsShowOwnSendingAndDNSCheck checks how "settings show" prints
-// the own sending lists, the SMTP hosts of the mailboxes (shown, not set
+// TestSettingsShowSendingSourceAndDNSCheck checks how "settings show" prints
+// the sending source lists, the SMTP hosts of the mailboxes (shown, not set
 // there) and the DNS check settings.
-func TestSettingsShowOwnSendingAndDNSCheck(t *testing.T) {
+func TestSettingsShowSendingSourceAndDNSCheck(t *testing.T) {
 	db := newTestDB(t)
 	key, err := LoadSecretKey(db)
 	if err != nil {
@@ -232,9 +232,9 @@ func TestSettingsShowOwnSendingAndDNSCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		SettingOwnSendingIPv4: []any{}, SettingOwnSendingIPv6: []any{}, SettingOwnSendingHosts: []any{}, "own_sending_mailbox_hosts": []any{},
-		"own_sending_mailboxes_without_host": []any{},
-		SettingDNSCheckEnabled:               true, SettingDNSCheckResolvers: []any{"1.1.1.1", "8.8.8.8", "9.9.9.9"},
+		SettingSendingSourceIPv4: []any{}, SettingSendingSourceIPv6: []any{}, SettingSendingSourceHosts: []any{}, "sending_source_mailbox_hosts": []any{},
+		"sending_source_mailboxes_without_host": []any{},
+		SettingDNSCheckEnabled:                  true, SettingDNSCheckResolvers: []any{"1.1.1.1", "8.8.8.8", "9.9.9.9"},
 		SettingDNSCheckSystemResolverOnly: false,
 	}
 	for key, v := range want {
@@ -243,7 +243,7 @@ func TestSettingsShowOwnSendingAndDNSCheck(t *testing.T) {
 		}
 	}
 	text := show(false)
-	for _, line := range []string{"own_sending_ipv4:", "(not set)", "own_sending_mailbox_hosts:", "(none: set with mailbox update --smtp-host)",
+	for _, line := range []string{"sending_source_ipv4:", "(not set)", "sending_source_mailbox_hosts:", "(none: set with mailbox update --smtp-host)",
 		"dns_check_resolvers:", "1.1.1.1, 8.8.8.8, 9.9.9.9"} {
 		if !strings.Contains(text, line) {
 			t.Errorf("text output lacks %q:\n%s", line, text)
@@ -261,14 +261,14 @@ func TestSettingsShowOwnSendingAndDNSCheck(t *testing.T) {
 	if err := json.Unmarshal([]byte(show(true)), &values); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(values["own_sending_mailboxes_without_host"], []any{"user1@example.test"}) {
-		t.Errorf("JSON own_sending_mailboxes_without_host = %v, want the address without a host", values["own_sending_mailboxes_without_host"])
+	if !reflect.DeepEqual(values["sending_source_mailboxes_without_host"], []any{"user1@example.test"}) {
+		t.Errorf("JSON sending_source_mailboxes_without_host = %v, want the address without a host", values["sending_source_mailboxes_without_host"])
 	}
 	if text := show(false); !strings.Contains(text, "mailboxes without a host name:  user1@example.test (backscatter is not judged") {
 		t.Errorf("text output lacks the address without a host:\n%s", text)
 	}
 	for _, kv := range [][2]string{
-		{SettingOwnSendingHosts, "relay.example"}, {SettingDNSCheckSystemResolverOnly, "on"},
+		{SettingSendingSourceHosts, "relay.example"}, {SettingDNSCheckSystemResolverOnly, "on"},
 		{SettingDNSCheckResolvers, DNSCheckResolversNone},
 	} {
 		if _, err := ApplySetting(db, kv[0], kv[1], nil); err != nil {
@@ -278,16 +278,16 @@ func TestSettingsShowOwnSendingAndDNSCheck(t *testing.T) {
 	if err := json.Unmarshal([]byte(show(true)), &values); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(values[SettingOwnSendingHosts], []any{"relay.example"}) ||
-		!reflect.DeepEqual(values["own_sending_mailbox_hosts"], []any{"mx1.example"}) ||
-		!reflect.DeepEqual(values["own_sending_mailboxes_without_host"], []any{}) ||
+	if !reflect.DeepEqual(values[SettingSendingSourceHosts], []any{"relay.example"}) ||
+		!reflect.DeepEqual(values["sending_source_mailbox_hosts"], []any{"mx1.example"}) ||
+		!reflect.DeepEqual(values["sending_source_mailboxes_without_host"], []any{}) ||
 		!reflect.DeepEqual(values[SettingDNSCheckResolvers], []any{}) || values[SettingDNSCheckSystemResolverOnly] != true {
-		t.Errorf("JSON after the changes: %v %v %v %v", values[SettingOwnSendingHosts], values["own_sending_mailbox_hosts"],
+		t.Errorf("JSON after the changes: %v %v %v %v", values[SettingSendingSourceHosts], values["sending_source_mailbox_hosts"],
 			values[SettingDNSCheckResolvers], values[SettingDNSCheckSystemResolverOnly])
 	}
 	text = show(false)
 	if !strings.Contains(text, "none (not used: only the OS resolver is queried)") || !strings.Contains(text, "relay.example") ||
-		!strings.Contains(text, "own_sending_mailbox_hosts:      mx1.example") {
+		!strings.Contains(text, "sending_source_mailbox_hosts:   mx1.example") {
 		t.Errorf("text output after the changes:\n%s", text)
 	}
 }

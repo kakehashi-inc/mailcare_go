@@ -14,7 +14,7 @@ const sampleFirstParagraph = "宛先アドレスが宛先サーバーに存在�
 
 // echoedTemplate is what an agent produces when it copies the OUTPUT section
 // of the prompt instead of answering.
-const echoedTemplate = "## 原因の分析\n<what failed and why, citing the evidence in the notices>\n## 影響範囲\n<which recipients, domains or sending paths are affected and since when>\n## 推奨する対応\n1. <concrete action the mail administrator takes for the action unit>\n2. <next action>\n## 対応すべき担当\n<who should act: our sending server admin / the recipient address owner / the recipient domain admin, and why>"
+const echoedTemplate = "## 原因の分析\n<what failed and why, citing the evidence in the notices>\n## 影響範囲\n<which recipients, domains or sending paths are affected and since when>\n## 推奨する対応\n1. <concrete action the mail administrator takes for the action unit>\n2. <next action>\n## 対応すべき担当\n<who should act: the sending-side mail administrator / the recipient address owner / the recipient domain admin, and why>"
 
 func TestParseOutputBothBlocks(t *testing.T) {
 	raw := "codex header\n" + ReportBegin + "\n" + sampleReport + "\n" + ReportEnd + "\n" +
@@ -122,7 +122,7 @@ func TestValidateOutput(t *testing.T) {
 		t.Fatalf("a real report must validate: %v", err)
 	}
 	// A quoted address in angle brackets or a template token like <addr> on
-	// its own line is not a placeholder (no space inside the brackets).
+	// a separate line is not a placeholder (no space inside the brackets).
 	quoted := ParseOutput(ReportBegin + "\n## 原因の分析\n<alice@example.net>\n<addr>\n宛先アドレスが宛先サーバーに存在せず、550 5.1.1 で拒否されています。\n## 推奨する対応\n1. 削除する\n" + ReportEnd)
 	if err := ValidateOutput(quoted); err != nil {
 		t.Fatalf("angle-bracket tokens without spaces must pass: %v", err)

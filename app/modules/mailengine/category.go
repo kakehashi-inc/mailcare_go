@@ -24,10 +24,10 @@ type Category struct {
 type unitKind int
 
 const (
-	unitSendingIP        unitKind = iota // our sending IP quoted in the diagnostic, else the reporting MTA
+	unitSendingIP        unitKind = iota // the sending IP quoted in the diagnostic, else the reporting MTA
 	unitSendingDomain                    // domain of the original sender, else the reporting MTA
 	unitSenderAddress                    // original sender address, else a non-recipient address in the diagnostic, else the reporting MTA
-	unitReportingMTA                     // our MTA that produced the notice, else the sending domain
+	unitReportingMTA                     // the sending side's MTA that produced the notice, else the sending domain
 	unitRecipientAddress                 // the failed recipient address, else its domain
 	unitRecipientDomain                  // the failed recipient's domain
 	unitNone                             // set by the categorizer itself (the DMARC categories)
@@ -67,7 +67,7 @@ var categoryDefs = map[string]categoryDef{
 	categoryMailboxDisabled: {false, responsibleRecipient, unitRecipientAddress, authorityNone},
 	categoryDomainNotFound:  {false, responsibleDomain, unitRecipientDomain, authorityNone},
 	categoryDeliveryDelay:   {false, responsibleDomain, unitRecipientDomain, authorityNone},
-	// DNS lookup failures (4.4): our own resolver failed (the server that
+	// DNS lookup failures (4.4): the resolver of a sending server failed (the server that
 	// reported it is the unit), or the receiving side's DNS did.
 	categoryDNSResolverFailure: {true, responsibleSender, unitReportingMTA, authorityNone},
 	categoryDNSFailureExternal: {false, responsibleDomain, unitRecipientDomain, authorityNone},
@@ -88,7 +88,7 @@ type categoryFacts struct {
 
 	senderAddress string // address of the original sender ("" when unknown)
 	senderDomain  string // its domain
-	sendingIP     string // our sending IP quoted in the diagnostic
+	sendingIP     string // the sending IP quoted in the diagnostic
 	blacklist     string // known blacklist provider named in the diagnostic
 
 	dns      DNSFailure // DNS lookup failure reported by the diagnostic (4.4)
@@ -136,10 +136,10 @@ var categoryRules = []categoryRule{
 		return f.dnsFound && f.verdict.Outcome == DNSOutcomeNotFound
 	}},
 	{"dns_resolver_failure", categoryDNSResolverFailure, func(f *categoryFacts) bool {
-		return f.dnsFound && f.verdict.Outcome == DNSOutcomeExists && f.verdict.OwnMTA
+		return f.dnsFound && f.verdict.Outcome == DNSOutcomeExists && f.verdict.FromSendingSource
 	}},
 	{"dns_failure_external", categoryDNSFailureExternal, func(f *categoryFacts) bool {
-		return f.dnsFound && ((f.verdict.Outcome == DNSOutcomeExists && !f.verdict.OwnMTA) || f.verdict.Outcome == DNSOutcomeBroken)
+		return f.dnsFound && ((f.verdict.Outcome == DNSOutcomeExists && !f.verdict.FromSendingSource) || f.verdict.Outcome == DNSOutcomeBroken)
 	}},
 	// Not verified (checking disabled, outside the conditions, or no resolver
 	// answered): a delay warning or a temporary failure is a delivery delay,
@@ -167,7 +167,7 @@ var categoryRules = []categoryRule{
 		if f.blacklist != "" || ipBlockedRe.MatchString(f.text) {
 			return true
 		}
-		// A policy status (x.7.0 / x.7.1) that quotes our IP and speaks of
+		// A policy status (x.7.0 / x.7.1) that quotes the sending IP and speaks of
 		// blocking, without rate-limit or content wording.
 		return policyStatusRe.MatchString(f.status) && f.sendingIP != "" && blockWordRe.MatchString(f.text) &&
 			!rateLimitedRe.MatchString(f.text) && !contentRejectedRe.MatchString(f.text)
@@ -233,7 +233,7 @@ var categoryRules = []categoryRule{
 // obvious place to go.
 var (
 	// ip_blocked: blacklist listings, reputation blocks and the Gmail / Outlook
-	// "your IP" notices. Provider names are matched by blacklistProviders.
+	// notices about the sending IP. Provider names are matched by blacklistProviders.
 	ipBlockedRe = regexp.MustCompile(strings.Join([]string{
 		`blacklist`, `black[ -]list`, `block[ -]?list`, `\bdnsbl\b`, `\brbls?\b`,
 		`(?:is|are|currently|been) listed`, `listed (?:at|in|on|by)`,
@@ -291,7 +291,7 @@ var (
 		`quarantine`, `filtered`, `message (?:looks|appears)`,
 	}, "|"))
 
-	// server_config: relaying, TLS and protocol trouble on our side.
+	// server_config: relaying, TLS and protocol trouble on the sending side.
 	serverConfigRe = regexp.MustCompile(strings.Join([]string{
 		`relay`, `\btls\b`, `starttls`, `encryption required`, `(?:helo|ehlo) command rejected`, `need fully-qualified`,
 		`command (?:rejected|not recognized|unrecognized|not implemented)`, `syntax error`, `protocol error`, `bad sequence`,
@@ -525,7 +525,7 @@ const (
 var (
 	// "[203.0.113.5]", "(203.0.113.5)" and Gmail's "[203.0.113.5      19]".
 	bracketedSendingIPRe = regexp.MustCompile(`[\[(]\s*(` + ipPattern + `)(?:\s+[0-9]+)?\s*[\])]`)
-	// "from 203.0.113.5", "your IP 203.0.113.5", "IP address: 203.0.113.5".
+	// "from 203.0.113.5", "IP address: 203.0.113.5" and the like.
 	keywordSendingIPRe = regexp.MustCompile(`(?:\bip\b(?: address)?|address|host|from|your|originating|client|connection|server|source|sender)\W{0,3}(?:is\s+|of\s+|at\s+)?\[?(` + ipPattern + `)`)
 	anySendingIPRe     = regexp.MustCompile(ipPattern)
 	// Hostnames (and the hosts of URLs) in the text; the leading group keeps
@@ -537,9 +537,9 @@ var (
 	textAddrRe = regexp.MustCompile(`[a-z0-9._%+\-=/!#$&'*?^{}|~]+@[a-z0-9.\-]+\.[a-z0-9\-]+`)
 )
 
-// extractSendingIP finds our sending IP in a diagnostic: a bracketed IP
-// first, then an IP next to words such as "from" or "your IP", then any IP
-// literal. The remote MTA's own IP is never taken. "" when none.
+// extractSendingIP finds the sending IP in a diagnostic: a bracketed IP
+// first, then an IP next to words such as "from" or "IP address", then any
+// IP literal. The IP of the remote MTA itself is never taken. "" when none.
 func extractSendingIP(text, remoteIP string) string {
 	var candidates []string
 	for _, m := range bracketedSendingIPRe.FindAllStringSubmatch(text, -1) {

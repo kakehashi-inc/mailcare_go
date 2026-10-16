@@ -149,7 +149,7 @@ func TestConnection(ctx context.Context, mb *models.Mailbox, password string) er
 // the first run, recent_days afterwards, but never before opts.NotBefore
 // when it is set; the whole folder with opts.AllTime), stores their raw and
 // derived files and adds their index rows with classified = 0 (design 5.1).
-// Every UID of the folder is a message of its own: messages that share a
+// Every UID of the folder is a separate message: messages that share a
 // Message-ID (the same mail delivered more than once) are each indexed. A
 // message already indexed under a stale identity (the folder's UIDVALIDITY
 // changed, or it was indexed from a raw file) is not stored again; its row

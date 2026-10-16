@@ -97,7 +97,7 @@ func UpsertGroup(db Execer, g *BounceGroup) error {
 
 // RefreshGroupCounters recomputes the message/recipient/IP counts and the
 // first/last seen dates of a group from its members: its bounces and its
-// DMARC records (each table filtered by the group key on its own; a report
+// DMARC records (each table filtered by the group key separately; a report
 // mail with several records of the group counts once). It never sets the
 // analysis flag itself (the grouping phase flags an actionable group that
 // received a bounce or DMARC record of a pattern its latest completed
@@ -194,7 +194,7 @@ func GetGroup(db Execer, groupKey string) (*BounceGroup, error) {
 // "excluded" only while it is open: once someone marks it resolved or
 // ignored (it was handled after all) it is listed with the actionable groups,
 // and reopening it sends it back to the excluded list. Excluded groups have
-// no state of their own for the user and are not counted.
+// no separate state for the user and are not counted.
 const (
 	GroupScopeAll        = ""
 	GroupScopeActionable = "actionable"

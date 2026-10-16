@@ -277,7 +277,7 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 		s.Time != "07:05" || s.IntervalDays != 2 || len(s.UserIDs) != 1 || s.UserIDs[0] != admin.ID {
 		t.Errorf("resolved after CLI: %+v", s)
 	}
-	// With a password stored, a connection key cannot change on its own
+	// With a password stored, a connection key cannot change by itself
 	// (the CLI sets one key per command, so the operator removes the
 	// password first); other keys and the unchanged value still work.
 	for _, change := range [][2]string{{SettingSMTPHost, "other.example.test"}, {SettingSMTPPort, "25"}, {SettingSMTPSecurity, "none"}, {SettingSMTPUsername, "other"}} {
@@ -441,12 +441,12 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 		byTo[m.To[0]] = m.Data
 	}
 	for _, c := range []struct {
-		to, language, subjectPart, reviewMark, periodPart string
+		to, language, subjectPart, reviewMark, periodPart, dateOpen, dateClose string
 	}{
-		// admin: Japanese, dates in Asia/Tokyo.
-		{"admin@example.test", "ja", " " + strconv.Itoa(len(groups)) + " ", "\u3010\u8981\u78ba\u8a8d\u3011", "\u671f\u9593: "},
+		// admin: Japanese, dates in Asia/Tokyo; the date in full-width parentheses.
+		{"admin@example.test", "ja", " " + strconv.Itoa(len(groups)) + " ", "\u3010\u8981\u78ba\u8a8d\u3011", "\u671f\u9593: ", "\uff08", "\uff09"},
 		// carol: English, dates in America/New_York.
-		{"carol@example.test", "en", " " + strconv.Itoa(len(groups)) + " alert(s) need attention ", "[Needs review] ", "Period: "},
+		{"carol@example.test", "en", " " + strconv.Itoa(len(groups)) + " alert(s) need attention ", "[Needs review] ", "Period: ", "(", ")"},
 	} {
 		data, ok := byTo[c.to]
 		if !ok {
@@ -456,7 +456,7 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 		// The date is the recipient's: 9:00 in the server zone may still be
 		// the day before in New York.
 		subject := decodeSubject(t, data)
-		if date := "(" + now.In(loc.Location).Format("2006-01-02") + ")"; !strings.HasPrefix(subject, NotifyMailSubjectPrefix) ||
+		if date := c.dateOpen + now.In(loc.Location).Format("2006-01-02") + c.dateClose; !strings.HasPrefix(subject, NotifyMailSubjectPrefix) ||
 			!strings.Contains(subject, c.subjectPart) || !strings.Contains(subject, date) {
 			t.Errorf("%s: subject = %q, want the date %s", c.to, subject, date)
 		}
@@ -529,7 +529,7 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 	}
 	idx.Close()
 	expectSkip(SkipNoActionableGroups)
-	// A resolved group sent back for a re-check comes back in its own section
+	// A resolved group sent back for a re-check comes back in a separate section
 	// with what was done, whatever its report.
 	idx, err = mailengine.OpenIndex(ctx, mailsRoot, mb.Address, nil)
 	if err != nil {
@@ -542,8 +542,8 @@ func TestSendNotificationEndToEnd(t *testing.T) {
 	for _, c := range []struct {
 		language, heading, reason string
 	}{
-		{"ja", "[対応済(再)]", "対応内容: 送信ドメインの DNS 設定（SPF・DKIM・DMARC）を修正した"},
-		{"en", "[Resolved (re)]", "Action taken: Corrected the DNS records of the sending domain (SPF, DKIM, DMARC)"},
+		{"ja", "[対応済（再確認）]", "対応内容: 送信ドメインの DNS 設定（SPF・DKIM・DMARC）を修正した"},
+		{"en", "[Resolved (re-check)]", "Action taken: Corrected the DNS records of the sending domain (SPF, DKIM, DMARC)"},
 	} {
 		n, err := BuildNotification(ctx, db, mailsRoot, "http://localhost:9790", now, MailLocale{Language: c.language, Location: time.UTC})
 		if err != nil {
@@ -756,11 +756,11 @@ func TestSMTPConfigForTestGuardsTheStoredPassword(t *testing.T) {
 			t.Errorf("%+v: %v, want ErrSMTPPasswordRequired", in, err)
 		}
 	}
-	// With a password of its own the change is allowed and that password is
+	// With a password in the request the change is allowed and that password is
 	// used, never the stored one.
 	cfg, err = SMTPConfigForTest(db, key, &SMTPTestInput{Host: str("other.example.test"), Password: str("theirs")})
 	if err != nil || cfg.Host != "other.example.test" || cfg.Password != "theirs" || cfg.Port != 2525 || cfg.Username != "user" {
-		t.Errorf("own password: %+v %v", cfg, err)
+		t.Errorf("password of the request: %+v %v", cfg, err)
 	}
 	// Invalid overrides are rejected like the settings update.
 	for _, in := range []*SMTPTestInput{{Port: num(0), Password: str("x")}, {Security: str("tls"), Password: str("x")}, {From: str("nope"), Password: str("x")}} {

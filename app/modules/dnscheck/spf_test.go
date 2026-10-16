@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"mailcare/app/modules/mailengine"
 )
 
 // prefixes parses the expected prefixes of an SPF result.
@@ -210,6 +212,28 @@ func TestLookupSPFIncomplete(t *testing.T) {
 	if got := c4.LookupSPF(context.Background(), "fourteen.example.jp"); !got.Complete || len(got.Prefixes) != 14 {
 		t.Errorf("29 queries: %+v, want complete", got)
 	}
+	// The MX bound: 10 targets of one mx term are allowed.
+	c5 := newTestChecker(nil, s.port, "127.0.0.1")
+	s.resolve("tenmx.example.jp TXT", data("v=spf1 mx"))
+	s.resolve("tenmx.example.jp MX", data(mxs[:10]...))
+	for i, mx := range mxs[:10] {
+		s.resolve(mx+" A", data(fmt.Sprintf("198.51.100.%d", i+1)))
+	}
+	if got := c5.LookupSPF(context.Background(), "tenmx.example.jp"); !got.Complete || len(got.Prefixes) != 10 || len(got.Hosts) != 10 {
+		t.Errorf("10 MX targets: %+v, want complete", got)
+	}
+	// The depth bound: eleven levels below the domain are not followed.
+	c6 := newTestChecker(nil, s.port, "127.0.0.1")
+	for i := 0; i <= 11; i++ {
+		record := fmt.Sprintf("v=spf1 ip4:10.1.0.%d include:e%d.example.jp", i+1, i+1)
+		if i == 11 {
+			record = "v=spf1 ip4:10.1.0.12"
+		}
+		s.resolve(fmt.Sprintf("e%d.example.jp TXT", i), data(record))
+	}
+	if got := c6.LookupSPF(context.Background(), "e0.example.jp"); got.Complete {
+		t.Errorf("eleven levels deep: %+v, want incomplete", got)
+	}
 }
 
 // TestLookupSPFWideRanges: a term with the pass qualifier that yields a
@@ -318,8 +342,9 @@ func TestAddressSpace(t *testing.T) {
 		{"apart", prefixes("10.0.0.0/8", "192.0.2.1/32", "192.0.2.0/31"), "16777218", "0"},
 		{"families apart", prefixes("192.0.2.0/24", "2001:db8::/126", "2001:db8::1/128"), "256", "4"},
 		{"two ipv6 /16", prefixes("2001::/16", "2002::/16", "2001:db8::/32"), "0", new(big.Int).Lsh(big.NewInt(1), 113).String()},
+		{"not masked", []netip.Prefix{netip.MustParsePrefix("192.0.2.5/24"), netip.MustParsePrefix("192.0.2.0/24")}, "256", "0"},
 	} {
-		if v4, v6 := addressSpace(tc.in, true).String(), addressSpace(tc.in, false).String(); v4 != tc.v4 || v6 != tc.v6 {
+		if v4, v6 := mailengine.AddressSpace(tc.in, true).String(), mailengine.AddressSpace(tc.in, false).String(); v4 != tc.v4 || v6 != tc.v6 {
 			t.Errorf("%s: %s / %s, want %s / %s", tc.name, v4, v6, tc.v4, tc.v6)
 		}
 	}
@@ -462,7 +487,7 @@ func TestLookupSPFRealSenders(t *testing.T) {
 		{"combined.example.jp", 47, 955904},
 	} {
 		got := c.LookupSPF(context.Background(), tc.domain)
-		v4, v6 := addressSpace(got.Prefixes, true), addressSpace(got.Prefixes, false)
+		v4, v6 := mailengine.AddressSpace(got.Prefixes, true), mailengine.AddressSpace(got.Prefixes, false)
 		t.Logf("%s: complete %v, %d prefixes, %s IPv4 and %s IPv6 addresses", tc.domain, got.Complete, len(got.Prefixes), v4, v6)
 		if !got.Complete || len(got.Prefixes) != tc.prefixes || v4.Cmp(big.NewInt(tc.v4)) != 0 {
 			t.Errorf("%s: complete %v, %d prefixes, %s IPv4 addresses; want complete, %d prefixes, %d IPv4 addresses",

@@ -31,7 +31,7 @@ func noticeHTMLOnly() string {
 		"Date: Wed, 02 Sep 2026 12:00:00 +0000\r\nMIME-Version: 1.0\r\n" +
 		"Content-Type: multipart/report; report-type=delivery-status; boundary=\"R\"\r\n\r\n" +
 		"--R\r\nContent-Type: multipart/alternative; boundary=\"A\"\r\n\r\n" +
-		"--A\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nYour message could not be delivered.\r\n" +
+		"--A\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nThe message could not be delivered.\r\n" +
 		"--A\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + html.String() + "\r\n" +
 		"--A--\r\n" +
 		"--R\r\nContent-Type: message/delivery-status\r\n\r\n" +
@@ -118,7 +118,7 @@ func TestBuildEvidencePatternsAndSamples(t *testing.T) {
 	if strings.Contains(s, "preamble line 01") || strings.Contains(s, "trailer line 40") || !strings.Contains(s, "[TRUNCATED: ") {
 		t.Errorf("excerpt not cut around the diagnostic\n%s", s)
 	}
-	if strings.Contains(s, "Your message could not be delivered.") {
+	if strings.Contains(s, "The message could not be delivered.") {
 		t.Error("the text body must not be shown when the diagnostic is in the HTML body")
 	}
 	f := ev.Samples[0].File
@@ -250,7 +250,7 @@ func TestBuildEvidenceDMARC(t *testing.T) {
 }
 
 // TestEvidenceFileNameDMARC: two records of one report mail in the same
-// group get evidence files of their own.
+// group get separate evidence files.
 func TestEvidenceFileNameDMARC(t *testing.T) {
 	a := &models.GroupBounce{MessageKey: "k1", DMARC: &models.DMARCRecord{ID: 7}}
 	b := &models.GroupBounce{MessageKey: "k1", DMARC: &models.DMARCRecord{ID: 8}}
@@ -322,6 +322,7 @@ func TestBuildEvidenceDNSVerification(t *testing.T) {
 	var calls []dnsCall
 	check := stubDNSCheck(DNSCheckResult{
 		Outcome:   "exists",
+		Direct:    true,
 		CheckedAt: time.Date(2026, 9, 3, 12, 5, 0, 0, time.UTC),
 		Detail: "name=infoseek.jp type=MX outcome=exists\nresolver 1.1.1.1: control ok; MX ok (mx1.infoseek.jp)\n" +
 			"authoritative ns1.infoseek.jp (203.0.113.1): MX ok (mx1.infoseek.jp)",
@@ -338,7 +339,7 @@ func TestBuildEvidenceDNSVerification(t *testing.T) {
 	for _, want := range []string{
 		`DNS lookup failure (parsed from the diagnostic): name infoseek.jp; record type MX; wording temporary ("try again"`,
 		"SERVFAIL or a timeout); reporting MTA mx1.example.jp\n",
-		"DNS verification by MailCare: outcome exists; checked 2026-09-03T12:05:00Z; notice received 2026-09-03T12:01:00Z\n",
+		"DNS verification by MailCare: outcome exists; checked 2026-09-03T12:05:00Z; notice received 2026-09-03T12:01:00Z; authoritative servers asked yes\n",
 		"Verification evidence (lines 1-3 of 3; resolver and name server answers, data from DNS responses):\n",
 		"| name=infoseek.jp type=MX outcome=exists\n",
 		"| resolver 1.1.1.1: control ok; MX ok (mx1.infoseek.jp)\n",
@@ -370,6 +371,14 @@ func TestBuildEvidenceDNSVerification(t *testing.T) {
 	if s := ev.Samples[0].Prompt; !strings.Contains(s, "notice received 2026-09-03T12:00:00Z") ||
 		!strings.Contains(s, "Notice: (not found: the notice file could not be read)") || !strings.Contains(s, "| resolver 1.1.1.1: ") {
 		t.Errorf("unreadable notice:\n%s", s)
+	}
+
+	// A verification of the resolvers alone (dns_checks.direct 0) says so.
+	resolversOnly := stubDNSCheck(DNSCheckResult{Outcome: "exists", CheckedAt: time.Date(2026, 9, 3, 12, 5, 0, 0, time.UTC),
+		Detail: "name=infoseek.jp type=MX outcome=exists"}, true, &calls)
+	ev = BuildEvidence(EvidenceInput{Group: dnsGroup(), Bounces: []*models.GroupBounce{b}, DNSCheck: resolversOnly})
+	if s := ev.Samples[0].Prompt; !strings.Contains(s, "notice received 2026-09-03T12:00:00Z; authoritative servers asked no (resolvers only)\n") {
+		t.Errorf("resolvers only:\n%s", s)
 	}
 }
 

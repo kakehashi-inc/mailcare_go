@@ -72,6 +72,10 @@ func TestParseDNSFailure(t *testing.T) {
 			DNSFailure{}, false},
 		{"name too long", "Name service error for name=" + strings.Repeat("abcdefghi.", 26) + "example type=MX: Host not found",
 			DNSFailure{}, false},
+		{"name of 253 characters", "Name service error for name=" + longName(61) + " type=MX: Host not found",
+			DNSFailure{Name: longName(61), QType: "MX"}, true},
+		{"name of 254 characters", "Name service error for name=" + longName(62) + " type=MX: Host not found",
+			DNSFailure{}, false},
 		{"sendmail garbage name", "Host unknown (Name server: <script>: host not found)",
 			DNSFailure{}, false},
 	}
@@ -96,4 +100,10 @@ func TestDNSOutcomeVerified(t *testing.T) {
 			t.Errorf("%q must count as not verified", o)
 		}
 	}
+}
+
+// longName returns a name of five labels ending in .jp whose first label
+// has first characters: first + 192 characters long (61 gives 253).
+func longName(first int) string {
+	return strings.Repeat("a", first) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 60) + ".jp"
 }

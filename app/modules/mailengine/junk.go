@@ -15,28 +15,29 @@ import (
 // address. Junk is neither a notice nor ordinary mail: it is not grouped
 // (nothing to act on) but deleted from the IMAP server after the server
 // retention like the notices (design document "mail classification").
-// Every signal below is enough on its own; the rules run after the rules
+// Every signal below is enough by itself; the rules run after the rules
 // with certain evidence of a notice, so a notice recognized with certainty
 // never reaches them (a notice that only the weaker rules would recognize
 // can). The fake notices (F1, F2) run right after the structured reports
 // instead: they present themselves as a daemon's mail, which the daemon
 // sender rule would take for a bounce, and they are told apart by the
-// structure a genuine report carries. The return notice of a message we did
-// not send (backscatter, classify.go) runs before everything: the notice is
+// structure a genuine report carries. The return notice of a message never
+// sent from the sending sources (backscatter, classify.go) runs before
+// everything: the notice is
 // genuine and carries that structure, so it would be taken for a bounce
 // first. A misjudged mail only leaves the server after the retention and
 // stays in the index until the mail retention.
 
 // mailboxIdentity is what the junk rules know about the monitored address:
 // the address, its organizational domain, the name part of that domain (the
-// label before the public suffix: "example" of "example.co.jp") and our own
-// sending servers (the backscatter rule; the zero value is the empty
+// label before the public suffix: "example" of "example.co.jp") and the
+// sending sources (the backscatter rule; the zero value is the empty
 // configuration, under which that rule does not apply).
 type mailboxIdentity struct {
 	address string
 	domain  string
 	name    string
-	own     OwnSources
+	sources SendingSources
 }
 
 // minMailboxNameLen is the shortest domain name part the display-name rule
@@ -81,14 +82,14 @@ var (
 	// bodyURLRe finds http(s) URLs in a body section (text or raw HTML).
 	bodyURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>()]+`)
 	// htmlLinkRe finds the href of an <a> or <area> tag: the attribute on
-	// its own (not "data-href"), its value in double or single quotes or
+	// alone (not "data-href"), its value in double or single quotes or
 	// unquoted (the groups 1, 2 and 3).
 	htmlLinkRe = regexp.MustCompile(`(?i)<(?:a|area)\s(?:[^>]*?\s)?href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))`)
 	// smtpResponseLineRe matches a line of a text report that quotes the
 	// response of a remote server ("Remote host said: 554 5.7.1 ...",
 	// "SMTP error from remote mail server ...", "<<< 550-5.7.1 ..."): the
 	// words that introduce a response, an SMTP reply code with an enhanced
-	// status code, an enhanced status code on its own, or a reply code at
+	// status code, an enhanced status code alone, or a reply code at
 	// the start of the line (after the "<<<" of a Sendmail transcript).
 	smtpResponseLineRe = regexp.MustCompile(`(?i)` + strings.Join([]string{
 		`said:`,
@@ -275,8 +276,8 @@ func hasNoticeStructure(pm *ParsedMessage) bool {
 // text body or the HTML text, or a mail delivery system display name (rule
 // 5) together with a bounce subject (rule 4). The display name alone or the
 // subject alone does not count: an announcement of a provider's "Mail
-// Administrator" or a carrier's "Your parcel delivery has failed" carries a
-// link to its own site and would be junk. A phishing mail that only borrows
+// Administrator" or a carrier's "parcel delivery has failed" carries a
+// link to the site of the sender and would be junk. A phishing mail that only borrows
 // the display name (no daemon address, no bounce subject, no report wording)
 // is therefore left to the later rules (P1-P3, then rule 5 keeps it as a
 // notice on the server); that is accepted.
@@ -310,9 +311,9 @@ func beforeInlineCopy(section string) string {
 // fakeNoticeLink is F1, the fake notice with a link: a candidate (see
 // fakeNoticeCandidate) with a link (noticeLinks) to an organization other
 // than the From address's, the Return-Path's and the monitored domain (the
-// fake "release your messages" page). Only the text above an inline copy of
+// fake "release held messages" page). Only the text above an inline copy of
 // the returned message counts: a genuine text report (qmail) quotes the
-// original below a marker, and the original's links are the sender's own.
+// original below a marker, and the links of the original are the sender's.
 // A forger who writes such a marker above the link, or who puts the link on
 // a line that looks like a quoted SMTP response (see noticeLinks), evades
 // F1; that is accepted (F2 still applies when the mail failed DMARC).
@@ -338,7 +339,7 @@ func fakeNoticeLink(pm *ParsedMessage, mb mailboxIdentity) bool {
 //     report quotes the rejection of the receiving server word for word, and
 //     a blocklist names its lookup page there ("blocked using
 //     zen.spamhaus.org; https://www.spamhaus.org/query/ip/..."). The line is
-//     judged with its URLs blanked out, so a URL never makes its own line
+//     judged with its URLs blanked out, so a URL never makes the line it is on
 //     look like a response ("https://evil.example/5.1.1"). A forger who
 //     writes the link on a line with such words or codes evades F1; that is
 //     accepted.
@@ -408,7 +409,7 @@ func hrefLink(href string) (bodyLink, bool) {
 
 // fakeNoticeAuth is F2, the fake notice that failed DMARC: a candidate whose
 // topmost Authentication-Results says dmarc=fail, whose From is not of the
-// monitored domain (the monitored server's own reports often fail DMARC)
+// monitored domain (the reports of the monitored server often fail DMARC)
 // and whose body lacks the wording of a genuine report (genuineNoticeBodyRe:
 // genuine reports of small servers without DKIM, qmail and Japanese MTAs
 // among them, can fail DMARC too).
@@ -455,7 +456,7 @@ func phishingDisplayName(pm *ParsedMessage, mb mailboxIdentity) bool {
 	return false
 }
 
-// containsWord reports whether word appears in s on its own: not preceded
+// containsWord reports whether word appears in s as a whole word: not preceded
 // or followed by a letter or a digit ("example" matches "example-support"
 // and "example.jp mail", not "examples" or "counterexample"). Both are
 // lower case.

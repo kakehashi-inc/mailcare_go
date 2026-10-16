@@ -2,23 +2,24 @@ package dnscheck
 
 import (
 	"context"
-	"math/big"
 	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"mailcare/app/modules/mailengine"
 )
 
 // The SPF records of the domains of the monitored mail addresses (RFC 7208)
-// add to our own sending servers: every address a term with the pass
-// qualifier (none, or "+") lists counts as one of ours, and the host names
-// its a and mx terms point to are compared as text like the own host names
+// add to the sending sources: every address a term with the pass qualifier
+// (none, or "+") lists counts as a sending source, and the host names its a
+// and mx terms point to are compared as text like the source host names
 // (design document "mail classification" 2.6 and 4.4). A term with another
-// qualifier ("-", "~", "?") names no server of ours and is skipped, an
-// include with one together with everything it includes. Only the
-// organization's own domains are evaluated (trusted; never a name a notice
-// chose), through the same resolvers as the own host names: the first
+// qualifier ("-", "~", "?") names no sending server and is skipped, an
+// include with one together with everything it includes. Only the monitored
+// domains are evaluated (trusted; never a name a notice chose), through the
+// same resolvers as the source host names: the first
 // reachable resolver that answers decides, with no vote. The evaluation
 // follows ip4, ip6, a, mx, include and redirect; all, ptr, exists, exp and
 // unknown modifiers are ignored, and so is any term whose domain-spec holds
@@ -41,10 +42,11 @@ const (
 
 // spfMinBits4 and spfMinBits6 are the shortest prefixes an SPF term may
 // yield (an IPv4 /8, an IPv6 /16); a shorter one makes the evaluation
-// incomplete (fail-safe). Counting such a range as ours, "ip4:0.0.0.0/0"
-// reached through the include of a third party for one, would take almost
-// every received address for one of our own servers and silently defeat the
-// backscatter rule and the judgement of our own reporting MTAs.
+// incomplete (fail-safe). Counting such a range as a sending source,
+// "ip4:0.0.0.0/0" reached through the include of a third party for one,
+// would take almost every received address for a sending server and
+// silently defeat the backscatter rule and the judgement of the reporting
+// MTAs.
 const (
 	spfMinBits4 = 8
 	spfMinBits6 = 16
@@ -53,16 +55,17 @@ const (
 // spfMaxSpaceBits4 and spfMaxSpaceBits6 bound the address space that all
 // the prefixes of one evaluation cover together, every address counted once
 // (overlapping and adjacent prefixes merged): 2^24 IPv4 addresses (one /8)
-// and 2^112 IPv6 addresses (one /16). An evaluation that covers more is
-// incomplete (fail-safe), like a single range wider than spfMinBits4 /
-// spfMinBits6: many narrower terms ("ip4:N.0.0.0/8" for every N) would
-// otherwise take every address for ours just the same. The records of the
-// large mail services stay far below them (testdata/spf_real_senders.txt:
-// Google Workspace, Microsoft 365, Amazon SES and SendGrid together cover
-// fewer than 2^20 IPv4 addresses).
+// and 2^112 IPv6 addresses (one /16), the bounds of mailengine, which the
+// grouping also applies to the prefixes of all the domains of a run
+// together. An evaluation that covers more is incomplete (fail-safe), like a
+// single range wider than spfMinBits4 / spfMinBits6: many narrower terms
+// ("ip4:N.0.0.0/8" for every N) would otherwise take every address for a sending source
+// just the same. The records of the large mail services stay far below them
+// (testdata/spf_real_senders.txt: Google Workspace, Microsoft 365, Amazon
+// SES and SendGrid together cover fewer than 2^20 IPv4 addresses).
 const (
-	spfMaxSpaceBits4 = 24
-	spfMaxSpaceBits6 = 112
+	spfMaxSpaceBits4 = mailengine.SPFMaxSpaceBits4
+	spfMaxSpaceBits6 = mailengine.SPFMaxSpaceBits6
 )
 
 // SPFResult is the evaluation of the SPF record of one domain: the prefixes
@@ -73,7 +76,7 @@ const (
 // no resolver answered), a bound was reached, a term yielded a range wider
 // than spfMinBits4 / spfMinBits6, the prefixes together cover more than
 // spfMaxSpaceBits4 / spfMaxSpaceBits6 allow, a record was malformed or
-// there were two, the time budget of the own sources was used up or ctx
+// there were two, the time budget of the sending sources was used up or ctx
 // ended. What was found before is kept.
 type SPFResult struct {
 	Prefixes []netip.Prefix
@@ -81,15 +84,15 @@ type SPFResult struct {
 	Complete bool
 }
 
-// ResolveSPF is LookupSPF in the form of mailengine.OwnSPFResolver.
+// ResolveSPF is LookupSPF in the form of mailengine.SourceSPFResolver.
 func (c *Checker) ResolveSPF(ctx context.Context, domain string) (prefixes []netip.Prefix, hosts []string, complete bool) {
 	r := c.LookupSPF(ctx, domain)
 	return r.Prefixes, r.Hosts, r.Complete
 }
 
-// LookupSPF evaluates the SPF record of one of the organization's domains,
+// LookupSPF evaluates the SPF record of one of the monitored domains,
 // once per run (remembered unless ctx ended). Every query counts against
-// the time budget of the own sources (Config.OwnBudget, apart from the
+// the time budget of the sending sources (Config.SourceBudget, apart from the
 // budget of the verification, so that the names hostile notices make the
 // run look up cannot use it up first) and is bounded by the per-query
 // timeout. A Checker whose
@@ -111,7 +114,7 @@ func (c *Checker) LookupSPF(ctx context.Context, domain string) SPFResult {
 	}
 	e := &spfEval{c: c, seenPrefix: map[netip.Prefix]bool{}, seenHost: map[string]bool{}}
 	e.domain(ctx, name, 0, nil)
-	if !e.failed && tooMuchSpace(e.prefixes) {
+	if !e.failed && mailengine.SPFTooMuchSpace(e.prefixes) {
 		e.failed = true
 	}
 	res = SPFResult{Prefixes: e.prefixes, Hosts: e.hosts, Complete: !e.failed}
@@ -138,7 +141,7 @@ type spfEval struct {
 
 // domain evaluates the SPF record of a domain reached at the given depth
 // (0 for the domain asked for, 1 for an include or redirect of it, ...).
-// chain is the domains evaluated above it: a domain met again in its own
+// chain is the domains evaluated above it: a domain met again in that
 // chain is a loop and is skipped.
 func (e *spfEval) domain(ctx context.Context, domain string, depth int, chain []string) {
 	if e.failed {
@@ -199,8 +202,8 @@ func (e *spfEval) domain(ctx context.Context, domain string, depth int, chain []
 			return
 		}
 		if qualifier != '+' {
-			// A fail, softfail or neutral term names servers that are not
-			// ours, or not vouched for: it is not evaluated, an include is
+			// A fail, softfail or neutral term names servers that are no
+			// sending sources, or not vouched for: it is not evaluated, an include is
 			// not followed.
 			continue
 		}
@@ -356,9 +359,9 @@ func (e *spfEval) hostTerm(ctx context.Context, mech, rest, current string) {
 }
 
 // query asks one question of the evaluation through the first reachable
-// resolver that answers (no vote: the organization's own domains are
-// trusted). ok is false, and the evaluation incomplete, when the bound of
-// queries or the time budget of the own sources was reached first or no
+// resolver that answers (no vote: the monitored domains are trusted). ok
+// is false, and the evaluation incomplete, when the bound of queries or the
+// time budget of the sending sources was reached first or no
 // resolver answered (an error reply or none at all); otherwise the answer
 // is data, no data or NXDOMAIN.
 func (e *spfEval) query(ctx context.Context, name string, t queryType) ([]string, answer, bool) {
@@ -366,14 +369,14 @@ func (e *spfEval) query(ctx context.Context, name string, t queryType) ([]string
 		e.failed = true
 		return nil, answerNone, false
 	}
-	if e.queries >= e.c.spfMaxQueries || !e.c.ownBudgetLeft() {
+	if e.queries >= e.c.spfMaxQueries || !e.c.sourceBudgetLeft() {
 		e.failed = true
 		return nil, answerNone, false
 	}
 	e.queries++
 	start := time.Now()
 	values, a := e.c.firstRecords(ctx, name, t)
-	e.c.spendOwn(time.Since(start))
+	e.c.spendSource(time.Since(start))
 	if a == answerFail || a == answerNone {
 		e.failed = true
 		return nil, a, false
@@ -414,10 +417,10 @@ func (e *spfEval) addHost(h string) {
 }
 
 // SPFTooWide reports whether prefixes (an SPF evaluation, or a stored one
-// of an earlier run) take in more than an evaluation may count as ours: a
+// of an earlier run) take in more than an evaluation may count as sending sources: a
 // range wider than spfMinBits4 / spfMinBits6, or more address space
 // together than spfMaxSpaceBits4 / spfMaxSpaceBits6 allow. LookupSPF never
-// completes with such prefixes; the cache of the own sources (app/modules)
+// completes with such prefixes; the cache of the sending sources (app/modules)
 // does not use a stored result that does (one written before these limits).
 func SPFTooWide(prefixes []netip.Prefix) bool {
 	for _, p := range prefixes {
@@ -429,55 +432,7 @@ func SPFTooWide(prefixes []netip.Prefix) bool {
 			return true
 		}
 	}
-	return tooMuchSpace(prefixes)
-}
-
-// tooMuchSpace reports whether the prefixes of one evaluation cover more
-// IPv4 addresses than spfMaxSpaceBits4 or more IPv6 addresses than
-// spfMaxSpaceBits6 allow, every address counted once.
-func tooMuchSpace(prefixes []netip.Prefix) bool {
-	one := big.NewInt(1)
-	return addressSpace(prefixes, true).Cmp(new(big.Int).Lsh(one, spfMaxSpaceBits4)) > 0 ||
-		addressSpace(prefixes, false).Cmp(new(big.Int).Lsh(one, spfMaxSpaceBits6)) > 0
-}
-
-// addressSpace returns how many addresses of one family (IPv4 when is4)
-// the prefixes cover together: the prefixes are taken as ranges, sorted,
-// and overlapping or adjacent ranges merged before their sizes are added,
-// so a range listed twice, or inside another, counts once.
-func addressSpace(prefixes []netip.Prefix, is4 bool) *big.Int {
-	type span struct{ first, last *big.Int }
-	one := big.NewInt(1)
-	var spans []span
-	for _, p := range prefixes {
-		if !p.IsValid() || p.Addr().Is4() != is4 {
-			continue
-		}
-		p = p.Masked()
-		first := new(big.Int).SetBytes(p.Addr().AsSlice())
-		size := new(big.Int).Lsh(one, uint(p.Addr().BitLen()-p.Bits()))
-		spans = append(spans, span{first: first, last: new(big.Int).Sub(new(big.Int).Add(first, size), one)})
-	}
-	slices.SortFunc(spans, func(a, b span) int { return a.first.Cmp(b.first) })
-	total := new(big.Int)
-	var cur *span
-	for i := range spans {
-		s := &spans[i]
-		if cur != nil && s.first.Cmp(new(big.Int).Add(cur.last, one)) <= 0 {
-			if s.last.Cmp(cur.last) > 0 {
-				cur.last = s.last
-			}
-			continue
-		}
-		if cur != nil {
-			total.Add(total, new(big.Int).Sub(cur.last, cur.first)).Add(total, one)
-		}
-		cur = s
-	}
-	if cur != nil {
-		total.Add(total, new(big.Int).Sub(cur.last, cur.first)).Add(total, one)
-	}
-	return total
+	return mailengine.SPFTooMuchSpace(prefixes)
 }
 
 // firstRecords returns the records of one type of a name through the first
@@ -489,7 +444,7 @@ func (c *Checker) firstRecords(ctx context.Context, name string, t queryType) ([
 		var values []string
 		var a answer
 		if p.addr.IsValid() {
-			a, values, _ = c.lookupType(ctx, p.addr, name, t, false)
+			a, values, _ = c.lookupType(ctx, p.addr, name, t, nil)
 		} else {
 			values, a = c.systemRecords(ctx, name, t)
 		}

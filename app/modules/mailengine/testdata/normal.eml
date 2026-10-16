@@ -17,7 +17,7 @@ Content-Type: text/plain; charset="UTF-8"
 
 Hello,
 
-Could you tell me whether the campaign price includes delivery?
+Please tell me whether the campaign price includes delivery.
 The mail server at mx.customer.example.com said 550 nothing, I am just quoting.
 
 Regards,
@@ -26,6 +26,6 @@ Hachiro
 --b1
 Content-Type: text/html; charset="UTF-8"
 
-<html><body><p>Hello,</p><p>Could you tell me whether the campaign price includes delivery?</p></body></html>
+<html><body><p>Hello,</p><p>Please tell me whether the campaign price includes delivery.</p></body></html>
 
 --b1--

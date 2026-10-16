@@ -10,7 +10,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { safeNextPath } from '../utils/next';
 import { AuthShell } from './AuthShell';
 
-/** Username (or email address) + password login. "Keep me signed in" asks the server for a long-lived session. */
+/** Username (or email address) + password login. "Stay signed in" asks the server for a long-lived session. */
 export function LoginPage() {
     const { t } = useTranslation();
     useDocumentTitle(t('page.login.title'));

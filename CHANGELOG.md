@@ -9,26 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Delivery-failure notices that report a failed name lookup ("Host not found, try again" and the like) are now checked: MailCare looks the name up itself. A recipient domain that really does not exist stays "Recipient domain not found"; a DNS failure on the receiving side becomes the new excluded type "DNS failure (receiving side or external)"; a failure of your own mail server's name resolution becomes the new alert type "DNS resolver failure (own server)". The AI cause analysis is given what the check found. Notices older than two days are not looked up again, and results kept from earlier checks keep the classification stable.
-- The DNS check is on by default. In the general settings it can be switched off, pointed at other resolvers or limited to the operating system's resolver. Its queries leave the server as plain DNS to the resolvers you set (Cloudflare, Google and Quad9 by default) and, for notices about your own mail, to the name servers of the domain concerned; the README section "Outbound connections" explains what they reveal.
-- Fake "mail delivery failed" notices are recognized as junk: those that carry links to other sites, those that fail the sender check, and notices about mail that was never sent from your own servers (someone used your address as the sender). Like other junk, they are deleted from the IMAP server after the retention of the address.
-- Your own sending servers can be registered: each mail address has an "SMTP server (sending)" field, and the general settings take other sending servers (host names and IPv4 / IPv6 addresses). Their addresses are looked up automatically, and while the DNS check is on, the SPF records of your domains are read too. Like the IMAP connection settings, these are shown to administrators only.
-- Notices about mail you did not send are recognized for an address only when a host name is known for it: its own SMTP server, or a host name in the general settings, which counts for every address. Register every route you send through: a bounce of mail sent through a route that is not registered is taken for junk unless the mail is signed (DKIM) with your domain. The general settings list the addresses that have no host name.
+- Bounces that report a failed name lookup ("Host not found, try again" and the like) are checked by looking the name up again. A recipient domain that does not exist stays "Recipient domain not found"; a failure on the receiving side becomes the new excluded type "DNS failure (receiving side or external)"; a failure of the sending side's mail server becomes the new alert type "DNS resolver failure (sending side's mail server)". The AI analysis receives the check results.
+- "Sending sources and DNS check" in General settings. The DNS check is on by default and can be turned off, pointed at other resolvers or limited to the OS resolver. The README section "Outbound connections" describes what is sent and where.
+- Sending sources: "SMTP server (sending)" for each mailbox, and "Sending source IPv4", "Sending source IPv6" and "Sending source host names" in General settings (administrators only). Register every server used for sending.
+- Fake delivery failure notices are classified as junk: notices with links to other sites, notices that fail the sender check, and bounces of mail not sent from the sending sources. The last check needs a host name for the mailbox; General settings list the mailboxes without one.
 
 ### Changed
 
-- After upgrading, and after changing your sending servers or the DNS check settings, run "Reclassify" once (Tools screen, or `mailcare reclassify`) to apply them to the mail already fetched. Reclassify can turn older notices into junk, which the next cleanup deletes from the IMAP server once it is past the retention of its address: review the Junk tab first, or set the retention to 0 until you have. Alerts left without any mail are removed together with their state and history.
+- After upgrading, or after changing the sending sources or the DNS check, run "Reclassify" on the Tools page. Older bounces can become junk, which cleanup deletes from the IMAP server after the server retention: review the Junk tab first, or set the server retention to 0 until then. Alerts left without messages are removed.
+- Simpler, consistent wording on the screens and in notification emails. Alerts that come back for review are labelled "Resolved (re-check)" and "Ignored (re-check)"; renamed labels include "Mails" to "Messages", "Workers" to "Concurrent jobs", "Reindex" to "Rebuild index" and the mailbox retention to "Server retention (days)".
+
+### Fixed
+
+- Administrators saving settings at the same time can no longer leave an invalid combination of settings.
+- Starting the server and running command-line tools at the same time right after an upgrade is now safe.
 
 ## [0.2.3] - 2026-09-30
 
 ### Added
 
-- Marking an alert resolved asks what was done, and ignoring it asks why, each as a required choice. What was done can have optional details; for the reason, "Other" lets you write it. Cancel saves nothing. This works from the alert list, the alert detail and the command line (`groups set-state --reason --note`).
+- Marking an alert resolved asks what was done, and ignoring it asks why, each as a required choice. What was done can have optional details; a reason can have details only when it is "Other". Cancel saves nothing. This works from the alert list, the alert detail and the command line (`groups set-state --reason --note`).
 - Each alert keeps a history of its state changes (when, who, the choice and the details), shown on the alert detail, in the PDF report and in the ZIP download. Reopening an alert clears its current choice and details; the history keeps them.
-- New "Resolved (re)" and "Ignored (re)" tabs list resolved and ignored alerts that need a new decision. Their state stays as you set it until you decide again.
+- New "Resolved (re)" and "Ignored (re)" tabs list resolved and ignored alerts that need a new decision. Their state stays as set until a new decision is made.
   - A resolved alert comes back when mail sent after the time the fix needs to take effect is still rejected. The days per category can be changed in the general settings (14 days for blacklists by default).
   - Resolved and ignored alerts of authentication, server configuration and DMARC problems also come back when a new kind of rejection arrives.
-- Alerts that come back are analyzed again automatically. The AI judges whether the fix worked or the reason for ignoring still holds, from the analysis the decision was based on, what you recorded and the notices received after the decision.
+- Alerts that come back are analyzed again automatically. The AI judges whether the fix worked or the reason for ignoring still holds, from the analysis the decision was based on, what the user recorded and the notices received after the decision.
 - The notification mail also lists the alerts that came back, with what was done or why they were ignored.
 
 ### Changed
@@ -40,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- The overview card of an alert has a "Show report" button. It downloads a PDF report of the overview and the statistics, written in your language and time zone.
+- The overview card of an alert has a "Show report" button. It downloads a PDF report of the overview and the statistics, written in the language and time zone of the user who downloads it.
 - The overview card of an alert has a "Download" button. It downloads a ZIP with the report contents as JSON, the index records of every source mail, the source mails themselves (original message, headers, text and HTML bodies), and a README describing the files and the JSON format, handy for AI agents and other tools.
 
 ### Fixed
@@ -110,7 +115,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - An email address can no longer be set on more than one user.
-- Error messages in the web interface are now always shown in your language. Some of them used to appear in English.
+- Error messages in the web interface are now always shown in the user's language. Some of them used to appear in English.
 
 ### Fixed
 

@@ -35,7 +35,7 @@ func TestClassifyJunk(t *testing.T) {
 		{
 			"display name claims the monitored domain (P1)",
 			plainMessage("From: service-memory.jp Mail Administrator <mediacom@donation.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
-				"Subject: Notice: 7 unread messages\r\n", "Your mailbox has 7 messages waiting."),
+				"Subject: Notice: 7 unread messages\r\n", "The mailbox has 7 messages waiting."),
 			rulePhishingDisplayName,
 		},
 		{
@@ -47,7 +47,7 @@ func TestClassifyJunk(t *testing.T) {
 		{
 			"display name carries another organization's address (P1)",
 			plainMessage("From: \"support@bank.example.com\" <x@attacker.example.net>\r\nTo: noreply@service-memory.jp\r\n"+
-				"Subject: Verify your account\r\n", "Please verify."),
+				"Subject: Verify the account\r\n", "Please verify."),
 			rulePhishingDisplayName,
 		},
 		{
@@ -74,11 +74,11 @@ func TestClassifyJunk(t *testing.T) {
 		{
 			"a genuine reply from another organization is not junk",
 			plainMessage("From: Camille <camille@partner.example.fr>\r\nTo: noreply@service-memory.jp\r\n"+
-				"Subject: Re: registration guide for service-memory.jp\r\n", "Thank you, see https://partner.example.fr/profile"),
+				"Subject: Re: registration guide for service-memory.jp\r\n", "Thanks, see https://partner.example.fr/profile"),
 			"",
 		},
 		{
-			"a service linking to its own subdomain with the address is not junk",
+			"a service linking to a subdomain of itself with the address is not junk",
 			plainMessage("From: News <news@mailer.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
 				"Subject: Newsletter\r\n", "Unsubscribe: https://click.example.com/u?email=noreply@service-memory.jp"),
 			"",
@@ -104,18 +104,18 @@ func TestClassifyJunk(t *testing.T) {
 			}
 		})
 	}
-	// The monitored server's own DSN (From of the monitored domain, no DKIM,
+	// A DSN of the monitored server (From of the monitored domain, no DKIM,
 	// DMARC failed at the receiving server) stays a bounce: the DSN rule is
 	// evaluated before the junk rules.
-	ownDSN := bytes.Replace(dsnMessage("Undelivered Mail Returned to Sender", "Action: failed\r\nStatus: 5.1.1\r\n"),
+	sourceDSN := bytes.Replace(dsnMessage("Undelivered Mail Returned to Sender", "Action: failed\r\nStatus: 5.1.1\r\n"),
 		[]byte("From: MAILER-DAEMON@mx1.example.jp (Mail Delivery System)\r\n"),
 		[]byte("Authentication-Results: mx.service-memory.jp; dkim=none; spf=none; dmarc=fail (p=reject) header.from=service-memory.jp\r\n"+
 			"From: MAILER-DAEMON@mail.service-memory.jp (Mail Delivery System)\r\n"), 1)
-	if cls := Classify(ParseMessage(ownDSN), mailbox); cls.Rule != ruleDSNReport || cls.Kind != bounceKindFailed {
-		t.Errorf("own DSN = %+v, want a failed dsn_report", cls)
+	if cls := Classify(ParseMessage(sourceDSN), mailbox); cls.Rule != ruleDSNReport || cls.Kind != bounceKindFailed {
+		t.Errorf("DSN of the monitored server = %+v, want a failed dsn_report", cls)
 	}
-	if !phishingForgedFrom(ParseMessage(ownDSN), newMailboxIdentity(mailbox)) {
-		t.Error("the own DSN test mail does not exercise the forged-From rule")
+	if !phishingForgedFrom(ParseMessage(sourceDSN), newMailboxIdentity(mailbox)) {
+		t.Error("the DSN test mail of the monitored server does not exercise the forged-From rule")
 	}
 	// A spam flag never overrides a notice: a DMARC report flagged as spam
 	// by the receiving server stays a report.
@@ -126,8 +126,8 @@ func TestClassifyJunk(t *testing.T) {
 }
 
 // TestJunkIsDeletedAndCountedApart: junk is no notice (is_bounce = 0, not
-// grouped), is counted apart from the target messages, shows under its own
-// kind and is a server deletion candidate like the targets.
+// grouped), is counted apart from the target messages, shows under a
+// separate kind and is a server deletion candidate like the targets.
 func TestJunkIsDeletedAndCountedApart(t *testing.T) {
 	root := t.TempDir()
 	address := "noreply@service-memory.jp"
@@ -170,7 +170,7 @@ func TestJunkIsDeletedAndCountedApart(t *testing.T) {
 }
 
 // multipartMessage builds a multipart message of the given subtype
-// ("alternative", "mixed") from parts that each start with their own
+// ("alternative", "mixed") from parts that each start with their
 // headers.
 func multipartMessage(headers, subtype string, parts ...string) []byte {
 	const b = "=_part"
@@ -207,7 +207,7 @@ const (
 // classification" 2.5): a mail that looks like a non-delivery report but
 // has neither a delivery-status part nor the returned message is junk when
 // it links to another organization (F1) or failed DMARC (F2), and the
-// genuine reports, automatic replies and the monitored server's own reports
+// genuine reports, automatic replies and the reports of the monitored server
 // keep their classification.
 func TestClassifyFakeNotices(t *testing.T) {
 	const (
@@ -217,15 +217,15 @@ func TestClassifyFakeNotices(t *testing.T) {
 		dmarcFail = "Authentication-Results: mx.service-memory.jp; spf=pass smtp.mailfrom=evil.example; dmarc=fail (p=none) header.from=evil.example\r\n"
 		onHold    = "3 incoming messages for noreply@service-memory.jp are on hold."
 		release   = " Release them: https://release.mailportal.example.net/inbox?id=4711"
-		rejected  = "Your message to taro@customer.example.com was rejected: 550 5.1.1 User unknown."
+		rejected  = "The message to taro@customer.example.com was rejected: 550 5.1.1 User unknown."
 		// wording is the report wording of rule 6, which makes a mail look
 		// like a notice whoever sends it.
 		wording = "Delivery has failed to these recipients or groups: taro@customer.example.com"
-		// releaseLine is release on a line of its own: a link on the line
+		// releaseLine is release alone on a line: a link on the line
 		// of rejected, which quotes an SMTP response, is not counted by F1.
 		releaseLine = "\r\nRelease them: https://release.mailportal.example.net/inbox?id=4711"
 	)
-	ownDSN := append([]byte("Authentication-Results: mx.example.jp; dkim=none; spf=none; dmarc=fail (p=reject) header.from=mx1.example.jp\r\n"),
+	sourceDSN := append([]byte("Authentication-Results: mx.example.jp; dkim=none; spf=none; dmarc=fail (p=reject) header.from=mx1.example.jp\r\n"),
 		readSample(t, "postfix_dsn.eml")...)
 	qmailDMARCFail := append([]byte("Authentication-Results: mx.example.jp; dkim=none; spf=pass; dmarc=fail (p=quarantine) header.from=qmail.example.net\r\n"),
 		readSample(t, "qmail_bounce.eml")...)
@@ -260,7 +260,7 @@ func TestClassifyFakeNotices(t *testing.T) {
 		},
 		{
 			name: "failed DMARC without a link (F2)",
-			raw:  plainMessage(dmarcFail+fake, onHold+" Sign in to your mailbox to release them."),
+			raw:  plainMessage(dmarcFail+fake, onHold+" Sign in to the mailbox to release them."),
 			kind: bounceKindJunk, rule: ruleFakeNoticeAuth,
 		},
 		{
@@ -324,15 +324,42 @@ func TestClassifyFakeNotices(t *testing.T) {
 				"\u30e1\u30fc\u30eb\u306e\u914d\u4fe1\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002"),
 			kind: bounceKindJunk, rule: ruleFakeNoticeAuth,
 		},
+		{
+			// A forward prefix does not spare a mail whose Return-Path is a
+			// daemon address.
+			name: "forward prefix with a daemon Return-Path (F1)",
+			raw: plainMessage("Return-Path: <MAILER-DAEMON@evil.example>\r\nFrom: Mail Notice <notice@evil.example>\r\n"+
+				"To: noreply@service-memory.jp\r\nSubject: Fwd: Message quarantine report\r\n", onHold+release),
+			kind: bounceKindJunk, rule: ruleFakeNoticeLink,
+		},
 		// Genuine reports and other mail keep their classification.
+		{
+			// Only the topmost Authentication-Results (the receiving server's)
+			// counts: a dmarc=fail the sender wrote below it does not.
+			name: "failed DMARC only below the topmost Authentication-Results",
+			raw: plainMessage("Authentication-Results: mx.service-memory.jp; spf=pass smtp.mailfrom=evil.example; dmarc=pass header.from=evil.example\r\n"+
+				dmarcFail+fake, onHold+" Sign in to the mailbox to release them."),
+			kind: bounceKindFailed, rule: ruleDaemonSender,
+		},
+		{
+			// A DMARC aggregate report sent from a daemon address with a link
+			// to another organization stays a report (1' before F1).
+			name: "DMARC aggregate report from a daemon address with a link",
+			raw: []byte(strings.NewReplacer("From: noreply-dmarc@receiver.example.net\r\n", "From: postmaster@receiver.example.net\r\n",
+				"This is an aggregate report.\r\n", "This is an aggregate report. About DMARC: https://dmarc.example.org/overview\r\n").
+				Replace(string(dmarcMail("application/gzip", "r.xml.gz", gzipped(t, dmarcXML(recSPFMissing)))))),
+			kind: bounceKindReport, rule: ruleDMARCReport,
+			control: plainMessage("From: postmaster@receiver.example.net\r\nTo: noreply@service-memory.jp\r\nSubject: Report domain\r\n",
+				"This is an aggregate report. About DMARC: https://dmarc.example.org/overview"),
+		},
 		{
 			name: "DSN with a help link to another organization",
 			raw:  helpDSN,
 			kind: bounceKindFailed, rule: ruleDSNReport,
 		},
 		{
-			name:    "the monitored server's own DSN that failed DMARC",
-			mailbox: "newsletter@example.jp", raw: ownDSN,
+			name:    "a DSN of the monitored server that failed DMARC",
+			mailbox: "newsletter@example.jp", raw: sourceDSN,
 			kind: bounceKindFailed, rule: ruleDSNReport,
 		},
 		{
@@ -388,7 +415,7 @@ func TestClassifyFakeNotices(t *testing.T) {
 			name: "report wording only in the HTML part, failed DMARC",
 			raw: multipartMessage(dmarcFail+"From: postmaster@corp.example.co.jp\r\nTo: noreply@service-memory.jp\r\n"+
 				"Subject: Undeliverable: September campaign\r\n", "alternative",
-				textPart("Your message to shiro@corp.example.co.jp could not be delivered."),
+				textPart("The message to shiro@corp.example.co.jp could not be delivered."),
 				htmlPart("<p>Delivery has failed to these recipients or groups:</p><p>shiro@corp.example.co.jp</p>")),
 			kind: bounceKindFailed, rule: ruleDaemonSender,
 		},
@@ -422,11 +449,11 @@ func TestClassifyFakeNotices(t *testing.T) {
 			name: "automatic reply quoting an undeliverable subject, with a link",
 			raw: plainMessage("From: Hanako <hanako@partner.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
 				"Subject: Automatic reply: Undeliverable: September campaign\r\nAuto-Submitted: auto-replied\r\n",
-				"I am out of the office.\r\n> "+wording+"\r\nSchedule: https://calendar.other.example.org/hanako"),
+				"Out of the office.\r\n> "+wording+"\r\nSchedule: https://calendar.other.example.org/hanako"),
 			kind: bounceKindAutoReply, rule: ruleAutoReply,
 			control: plainMessage("From: Hanako <hanako@partner.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
 				"Subject: Undeliverable: September campaign\r\n",
-				"I am out of the office.\r\n> "+wording+"\r\nSchedule: https://calendar.other.example.org/hanako"),
+				"Out of the office.\r\n> "+wording+"\r\nSchedule: https://calendar.other.example.org/hanako"),
 		},
 		{
 			// A person forwarding a report: the support link of the quoted
@@ -455,19 +482,19 @@ func TestClassifyFakeNotices(t *testing.T) {
 			name: "automatic reply without Auto-Submitted quoting an undeliverable subject, with a link",
 			raw: plainMessage("From: Hanako <hanako@partner.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
 				"Subject: Automatic reply: Undeliverable: order 123\r\n",
-				"I am out of the office until Monday.\r\n> "+wording+"\r\n--\r\nPartner Group https://www.partner-group.example.org/"),
+				"Out of the office until Monday.\r\n> "+wording+"\r\n--\r\nPartner Group https://www.partner-group.example.org/"),
 			kind: bounceKindAutoReply, rule: ruleAutoReplySubject,
 			control: plainMessage("From: Hanako <hanako@partner.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
 				"Subject: Undeliverable: order 123\r\n",
-				"I am out of the office until Monday.\r\n> "+wording+"\r\n--\r\nPartner Group https://www.partner-group.example.org/"),
+				"Out of the office until Monday.\r\n> "+wording+"\r\n--\r\nPartner Group https://www.partner-group.example.org/"),
 		},
 		{
 			name: "reply with a full-width colon, failed DMARC",
 			raw: plainMessage(dmarcFail+"From: Jiro <jiro@customer.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
-				"Subject: RE\uff1aRe: Undelivered Mail Returned to Sender\r\n", "Is this ours?\r\n"+wording+"\r\n"+rejected+releaseLine),
+				"Subject: RE\uff1aRe: Undelivered Mail Returned to Sender\r\n", "Is this genuine?\r\n"+wording+"\r\n"+rejected+releaseLine),
 			kind: bounceKindFailed, rule: ruleSubjectPattern,
 			control: plainMessage(dmarcFail+"From: Jiro <jiro@customer.example.com>\r\nTo: noreply@service-memory.jp\r\n"+
-				"Subject: Undelivered Mail Returned to Sender\r\n", "Is this ours?\r\n"+wording+"\r\n"+rejected+releaseLine),
+				"Subject: Undelivered Mail Returned to Sender\r\n", "Is this genuine?\r\n"+wording+"\r\n"+rejected+releaseLine),
 		},
 		{
 			// tensou: (forward:) haishin funou (undeliverable)
@@ -504,7 +531,7 @@ func TestClassifyFakeNotices(t *testing.T) {
 		{
 			name: "reply wording later in the subject (F1)",
 			raw: plainMessage("From: Mail Delivery System <mailer-daemon@evil.example>\r\nTo: noreply@service-memory.jp\r\n"+
-				"Subject: Undeliverable: Re: Fwd: your invoice\r\n", onHold+release),
+				"Subject: Undeliverable: Re: Fwd: invoice\r\n", onHold+release),
 			kind: bounceKindJunk, rule: ruleFakeNoticeLink,
 		},
 		{
@@ -523,7 +550,7 @@ func TestClassifyFakeNotices(t *testing.T) {
 		},
 		{
 			name: "ordinary mail that failed DMARC, with a link",
-			raw: plainMessage(dmarcFail+"From: Camille <camille@partner.example.fr>\r\nTo: noreply@service-memory.jp\r\nSubject: Our new catalogue\r\n",
+			raw: plainMessage(dmarcFail+"From: Camille <camille@partner.example.fr>\r\nTo: noreply@service-memory.jp\r\nSubject: New catalogue\r\n",
 				"See https://catalogue.other.example.org/2025"),
 		},
 	}
@@ -564,9 +591,9 @@ func TestGenuineNoticeWording(t *testing.T) {
 		"\u914d\u4fe1\u4e0d\u80fd\u306e\u30e1\u30c3\u30bb\u30fc\u30b8\u304c3\u901a\u3042\u308a\u307e\u3059": false,
 		// meeru no haishin ni shippai shimashita (the mail could not be delivered)
 		"\u30e1\u30fc\u30eb\u306e\u914d\u4fe1\u306b\u5931\u6557\u3057\u307e\u3057\u305f": false,
-		// futatsu meeru wo kakunin shite kudasai (check your undelivered mail)
+		// futatsu meeru wo kakunin shite kudasai (check the undelivered mail)
 		"\u4e0d\u9054\u30e1\u30fc\u30eb\u3092\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044": false,
-		"Your messages could not be delivered. Release them now.":                              false,
+		"Messages could not be delivered. Release them now.":                                   false,
 	} {
 		if got := genuineNoticeBodyRe.MatchString(s); got != want {
 			t.Errorf("genuineNoticeBodyRe(%q) = %v, want %v", s, got, want)
@@ -582,7 +609,7 @@ func TestGenuineNoticeWording(t *testing.T) {
 // MTA's marker; a link above the marker still counts.
 func TestFakeNoticeLinkStopsAtInlineCopy(t *testing.T) {
 	const headers = "From: MAILER-DAEMON@mx.hosting.example.net\r\nTo: noreply@service-memory.jp\r\nSubject: Mail delivery failed\r\n"
-	const rejected = "Your message to taro@customer.example.com was rejected: 550 5.1.1 User unknown."
+	const rejected = "The message to taro@customer.example.com was rejected: 550 5.1.1 User unknown."
 	const original = "From: noreply@service-memory.jp\r\nSubject: Invoice\r\n\r\nPay online: https://partner.example.org/invoice"
 	for _, marker := range []string{
 		"--- Below this line is a copy of the message.",
@@ -622,15 +649,15 @@ func htmlMessage(headers, body string) []byte {
 // TestFakeNoticeLinkSkipsQuotedResponses: F1 does not count a URL on a line
 // of a text report that quotes the response of a remote server (a blocklist
 // names its lookup page there), in the forms of qmail, Exim, Sendmail and
-// Postfix; a link on any other line still counts, and a URL never makes its
-// own line look like a response.
+// Postfix; a link on any other line still counts, and a URL never makes the
+// line it is on look like a response.
 func TestFakeNoticeLinkSkipsQuotedResponses(t *testing.T) {
 	const (
 		mailbox = "noreply@service-memory.jp"
 		daemon  = "From: Mail Delivery System <MAILER-DAEMON@mx.hosting.example.net>\r\nTo: noreply@service-memory.jp\r\nSubject: Mail delivery failed\r\n"
 		fake    = "From: Mail Delivery System <mailer-daemon@evil.example>\r\nTo: noreply@service-memory.jp\r\n" +
 			"Subject: Undelivered Mail Returned to Sender\r\n"
-		failed = "Your message to taro@customer.example.com could not be delivered.\r\n"
+		failed = "The message to taro@customer.example.com could not be delivered.\r\n"
 	)
 	qmail := plainMessage("Return-Path: <>\r\nFrom: MAILER-DAEMON@qmail.example.net\r\nTo: noreply@service-memory.jp\r\nSubject: failure notice\r\n",
 		"Hi. This is the qmail-send program at qmail.example.net.\r\n"+
@@ -681,11 +708,11 @@ func TestFakeNoticeLinkSkipsQuotedResponses(t *testing.T) {
 		{"enhanced status code alone", plainMessage(daemon, failed+"Status: 5.7.1 see https://www.spamhaus.org/query/ip/203.0.113.5"), ruleDaemonSender},
 		{"reply code at the start of the line", plainMessage(daemon, failed+"  554 Rejected https://help.customer.example.com/"), ruleDaemonSender},
 		// The accepted evasion: a link on a line that looks like a response.
-		{"link on a line with a reply code", plainMessage(fake, "Your mail was rejected: 550 5.1.1. Release it: https://release.mailportal.example.net/inbox"), ruleDaemonSender},
+		{"link on a line with a reply code", plainMessage(fake, "The mail was rejected: 550 5.1.1. Release it: https://release.mailportal.example.net/inbox"), ruleDaemonSender},
 		// A link on any other line counts.
 		{"phishing line", plainMessage(fake, "3 messages are on hold.\r\nClick here to retry: https://login.mailportal.example.net/x"), ruleFakeNoticeLink},
 		{"link below a response line", plainMessage(fake, "Remote host said: 550 5.1.1 User unknown\r\nRelease: https://login.mailportal.example.net/x"), ruleFakeNoticeLink},
-		{"the URL does not make its own line a response", plainMessage(fake, "Release them: https://release.mailportal.example.net/5.1.1/554-5.7.1/said:"), ruleFakeNoticeLink},
+		{"the URL does not make the line it is on a response", plainMessage(fake, "Release them: https://release.mailportal.example.net/5.1.1/554-5.7.1/said:"), ruleFakeNoticeLink},
 		{"reply code later in the line is no reply code", plainMessage(fake, "Order 550 is waiting: https://release.mailportal.example.net/inbox"), ruleFakeNoticeLink},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -714,7 +741,7 @@ func TestFakeNoticeLinkHTML(t *testing.T) {
 	const (
 		mailbox = "noreply@service-memory.jp"
 		headers = "From: Mail Delivery System <MAILER-DAEMON@mx.hosting.example.net>\r\nTo: noreply@service-memory.jp\r\nSubject: Mail delivery failed\r\n"
-		failed  = "<p>Your message to taro@customer.example.com could not be delivered.</p>"
+		failed  = "<p>The message to taro@customer.example.com could not be delivered.</p>"
 		page    = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\r\n" +
 			"<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Mail delivery failed</title></head><body>" + failed
 	)
@@ -790,7 +817,7 @@ func TestLooksLikeNotice(t *testing.T) {
 		{"report wording in the HTML", "From: IT Desk <desk@example.net>\r\nSubject: Hello\r\n", "<p>Delivery has failed to these recipients or groups:</p>", true, true},
 		{"display name and bounce subject", "From: Mail Delivery System <noreply@example.net>\r\nSubject: Undelivered Mail Returned to Sender\r\n", "Hello.", false, true},
 		{"display name only", "From: Mail Delivery System <noreply@example.net>\r\nSubject: Hello\r\n", "Hello.", false, false},
-		{"bounce subject only", "From: Parcel Service <info@example.net>\r\nSubject: Your parcel delivery has failed\r\n", "Hello.", false, false},
+		{"bounce subject only", "From: Parcel Service <info@example.net>\r\nSubject: Parcel delivery has failed\r\n", "Hello.", false, false},
 		{"nothing", "From: Camille <camille@example.net>\r\nSubject: Hello\r\n", "Hello.", false, false},
 	} {
 		raw := plainMessage(c.headers, c.body)
@@ -804,7 +831,7 @@ func TestLooksLikeNotice(t *testing.T) {
 }
 
 // TestFakeNoticeLookAlike: the announcements and the carrier mails that
-// carry a link to their own site keep their former rule; a mail that only
+// carry a link to the site of the sender keep their former rule; a mail that only
 // borrows the display name of a mail delivery system is not junk (an
 // accepted gap), while one that adds a bounce subject is a fake notice.
 func TestFakeNoticeLookAlike(t *testing.T) {
@@ -820,8 +847,8 @@ func TestFakeNoticeLookAlike(t *testing.T) {
 				"The mail servers will be maintained on Sunday.\r\nDetails: https://www.hosting-co.example/news/2025/maintenance"),
 			bounceKindOther, ruleDaemonDisplayName},
 		{"carrier mail with a tracking link",
-			plainMessage("From: Parcel Service <notify@parcel-carrier.example>\r\nTo: noreply@service-memory.jp\r\nSubject: Your parcel delivery has failed\r\n",
-				"We could not hand over your parcel today.\r\nTrack it: https://track.parcel-tracking.example/p/123"),
+			plainMessage("From: Parcel Service <notify@parcel-carrier.example>\r\nTo: noreply@service-memory.jp\r\nSubject: Parcel delivery has failed\r\n",
+				"The parcel could not be handed over today.\r\nTrack it: https://track.parcel-tracking.example/p/123"),
 			bounceKindFailed, ruleSubjectPattern},
 		{"display name and bounce subject, text link",
 			plainMessage("From: Mail Delivery System <noreply@evil.example>\r\nTo: noreply@service-memory.jp\r\nSubject: Undelivered Mail Returned to Sender\r\n",
@@ -832,8 +859,8 @@ func TestFakeNoticeLookAlike(t *testing.T) {
 				`<p>3 messages are on hold.</p><p><a href="https://release.mailportal.example.net/inbox">Release them</a></p>`),
 			bounceKindJunk, ruleFakeNoticeLink},
 		{"display name only, link without the address",
-			plainMessage("From: Mail Delivery System <noreply@evil.example>\r\nTo: noreply@service-memory.jp\r\nSubject: Your mailbox storage\r\n",
-				"Your mailbox is almost at its limit.\r\nUpgrade now: https://upgrade.evil.example/storage"),
+			plainMessage("From: Mail Delivery System <noreply@evil.example>\r\nTo: noreply@service-memory.jp\r\nSubject: Mailbox storage\r\n",
+				"The mailbox is almost at its limit.\r\nUpgrade now: https://upgrade.evil.example/storage"),
 			bounceKindOther, ruleDaemonDisplayName},
 	} {
 		t.Run(c.name, func(t *testing.T) {

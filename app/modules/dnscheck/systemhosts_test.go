@@ -68,10 +68,10 @@ func (s *stubSystem) LookupTXT(context.Context, string) ([]string, error) {
 	return nil, errors.New("not used")
 }
 
-// TestSystemHostResolver checks the resolver of the own host names while
+// TestSystemHostResolver checks the resolver of the source host names while
 // the DNS check is off: a name of two labels or more is asked of the OS
 // resolver as an absolute name, a single-label one as written, each family
-// on its own with the per-query timeout, once per run (a failure too);
+// separately with the per-query timeout, once per run (a failure too);
 // IPv4-mapped addresses come back unmapped, an invalid name is never asked,
 // and answered tells a failure from a name without addresses.
 func TestSystemHostResolver(t *testing.T) {
@@ -125,13 +125,13 @@ func TestSystemHostResolver(t *testing.T) {
 	}
 }
 
-// TestOwnHostsHalfAnsweredBySystem: through the OS resolver (the DNS check
-// off, or on with the OS resolver only), a lookup of an own host name is
+// TestSourceHostsHalfAnsweredBySystem: through the OS resolver (the DNS check
+// off, or on with the OS resolver only), a lookup of a source host name is
 // answered only when both families are; when one of them fails, the
 // addresses of the other come back unanswered. A name of the hosts file
 // with addresses of one family only is answered (Go reports the other
 // family as an address error, not as not found).
-func TestOwnHostsHalfAnsweredBySystem(t *testing.T) {
+func TestSourceHostsHalfAnsweredBySystem(t *testing.T) {
 	both := []netip.Addr{netip.MustParseAddr("192.0.2.25"), netip.MustParseAddr("2001:db8::25")}
 	stub := &stubSystem{
 		addrs: map[string][]netip.Addr{"v4fail.example.jp.": both, "v6fail.example.jp.": both, "ok.example.jp.": both},
@@ -186,7 +186,7 @@ func (b *blackholeSystem) LookupNetIP(ctx context.Context, network, host string)
 	return nil, &net.DNSError{Err: "i/o timeout", Name: host, IsTimeout: true}
 }
 
-// TestSystemHostResolverBudget: the lookups of the own host names through
+// TestSystemHostResolverBudget: the lookups of the source host names through
 // the OS resolver count against the budget of the run, those made at the
 // same time each; once it is used up a name not looked up yet is not
 // answered without asking (and not remembered), while the names looked up
@@ -228,8 +228,8 @@ func TestSystemHostResolverBudget(t *testing.T) {
 	if got, answered := r.ResolveHost(ctx, "late.example.jp"); got != nil || answered || len(sys.asked) != 8 {
 		t.Errorf("after four names at once: %v, %v, %d questions; want refused after 8", got, answered, len(sys.asked))
 	}
-	if NewSystemHostResolver().budget != DefaultOwnBudget {
-		t.Error("the budget of a run is not the budget of the own sources")
+	if NewSystemHostResolver().budget != DefaultSourceBudget {
+		t.Error("the budget of a run is not the budget of the sending sources")
 	}
 }
 

@@ -27,15 +27,19 @@ func (m *JobManager) dnsCheckLookup() agent.DNSCheckFunc {
 // when grouping: the same name and record type (none named = MX), the
 // earliest checked within the window of the notice (dnscheck.ReuseRange:
 // from 24 hours before it was received to 48 hours after, a notice time
-// that is zero or after now counting as now). Only the outcomes exists /
-// not_found / broken count; a database error is logged and leaves the name
-// unverified, never failing the analysis.
+// that is zero or after now counting as now), whether the authoritative
+// servers were asked or not. A notice that showed mail from the sending sources may have used
+// a later row of a verification with them (the grouping prefers those for
+// it), which the analysis cannot tell without the sending sources of
+// the run; the result says which kind it shows (Direct). Only the outcomes
+// exists / not_found / broken count; a database error is logged and leaves
+// the name unverified, never failing the analysis.
 func storedDNSCheck(db *sql.DB, name, qtype string, noticeTime, now time.Time) (agent.DNSCheckResult, bool) {
 	if qtype == "" {
 		qtype = "MX"
 	}
 	from, to := dnscheck.ReuseRange(noticeTime, now)
-	row, err := models.FindDNSCheck(db, name, qtype, from, to)
+	row, err := models.FindDNSCheck(db, name, qtype, from, to, false)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			log.Printf("analyze: failed to read the dns check of %s %s: %v", name, qtype, err)
@@ -44,7 +48,7 @@ func storedDNSCheck(db *sql.DB, name, qtype string, noticeTime, now time.Time) (
 	}
 	switch mailengine.DNSOutcome(row.Outcome) {
 	case mailengine.DNSOutcomeExists, mailengine.DNSOutcomeNotFound, mailengine.DNSOutcomeBroken:
-		return agent.DNSCheckResult{Outcome: row.Outcome, Detail: row.Detail, CheckedAt: row.CheckedAt}, true
+		return agent.DNSCheckResult{Outcome: row.Outcome, Detail: row.Detail, Direct: row.Direct, CheckedAt: row.CheckedAt}, true
 	}
 	return agent.DNSCheckResult{}, false
 }

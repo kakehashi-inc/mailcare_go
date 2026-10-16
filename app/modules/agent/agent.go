@@ -4,14 +4,14 @@
 // per-mailbox index.
 //
 // Provider architecture (mirrors ai_agent_bridge): every CLI is one Provider
-// implementation living in its own provider_<name>.go file and registered at
+// implementation living in a separate provider_<name>.go file and registered at
 // init time. Nothing else branches on a provider name. Adding a provider means
 // adding provider_<name>.go and, when it needs a workspace skeleton,
 // templates/agent/<name>/ (embedded from package main). See
 // the provider guide in the Documents directory for the step-by-step recipe.
 //
 // Workspace layout inside agentRoot (data/agent): every analysis run gets
-// its own directory named after its agent_reports row, so the prompt and the
+// a separate directory named after its agent_reports row, so the prompt and the
 // transcript of each run stay together and a failed run never touches the
 // files of an earlier successful one. The CLI runs with that directory as
 // its working directory and reads nothing but the evidence files in it; the
@@ -147,7 +147,7 @@ type AnalyzeInput struct {
 	Provider    string // provider name; "" = DefaultProvider
 	Model       string // model passed to a provider that supports one (ModelSelector); "" = the CLI default
 	// ReasoningEffort is the reasoning level passed to a provider that
-	// supports one (ReasoningSelector); "" = the CLI's own setting.
+	// supports one (ReasoningSelector); "" = the setting of the CLI.
 	ReasoningEffort string
 	Language        string // language for the report ("ja" default)
 	// RecheckDays are the re-check days of the categories (the settings):

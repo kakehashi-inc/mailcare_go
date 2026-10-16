@@ -191,23 +191,23 @@ func wordingKey(err error) string {
 	return ""
 }
 
-func TestParseOwnSending(t *testing.T) {
+func TestParseSendingSource(t *testing.T) {
 	// Entries are trimmed, blank lines skipped, IPs written canonically,
 	// CIDRs masked, one-address CIDRs written as the address and duplicates
 	// dropped (the first kept); an input may hold several lines.
-	got, err := ParseOwnSendingIPv4([]string{" 203.0.113.5 ", "", "198.51.100.7/24\r\n198.51.100.0/24", "203.0.113.5/32", "192.0.2.1"})
+	got, err := ParseSendingSourceIPv4([]string{" 203.0.113.5 ", "", "198.51.100.7/24\r\n198.51.100.0/24", "203.0.113.5/32", "192.0.2.1"})
 	if err != nil || !reflect.DeepEqual(got, []string{"203.0.113.5", "198.51.100.0/24", "192.0.2.1"}) {
 		t.Errorf("IPv4: %v, %v", got, err)
 	}
-	got, err = ParseOwnSendingIPv6([]string{"2001:DB8:0:0::1", "2001:db8::1/128", "2001:db8:0:0:1::/32", "2001:db8::/32"})
+	got, err = ParseSendingSourceIPv6([]string{"2001:DB8:0:0::1", "2001:db8::1/128", "2001:db8:0:0:1::/32", "2001:db8::/32"})
 	if err != nil || !reflect.DeepEqual(got, []string{"2001:db8::1", "2001:db8::/32"}) {
 		t.Errorf("IPv6: %v, %v", got, err)
 	}
-	got, err = ParseOwnSendingHosts([]string{"Mail.Example.COM.", "mail.example.com", "mailhost", "xn--bcher-kva.example", "a-b.example", "mx1.example"})
+	got, err = ParseSendingSourceHosts([]string{"Mail.Example.COM.", "mail.example.com", "mailhost", "xn--bcher-kva.example", "a-b.example", "mx1.example"})
 	if err != nil || !reflect.DeepEqual(got, []string{"mail.example.com", "mailhost", "xn--bcher-kva.example", "a-b.example", "mx1.example"}) {
 		t.Errorf("hosts: %v, %v", got, err)
 	}
-	for _, parse := range []func([]string) ([]string, error){ParseOwnSendingIPv4, ParseOwnSendingIPv6, ParseOwnSendingHosts, ParseDNSCheckResolvers} {
+	for _, parse := range []func([]string) ([]string, error){ParseSendingSourceIPv4, ParseSendingSourceIPv6, ParseSendingSourceHosts, ParseDNSCheckResolvers} {
 		if got, err := parse(nil); err != nil || got == nil || len(got) != 0 {
 			t.Errorf("empty input: %#v, %v", got, err)
 		}
@@ -224,17 +224,17 @@ func TestParseOwnSending(t *testing.T) {
 		key         string
 		bad         []string
 	}{
-		{"ipv4", "192.0.2.1", ParseOwnSendingIPv4, "validation.ownSending.ipv4Invalid", []string{
+		{"ipv4", "192.0.2.1", ParseSendingSourceIPv4, "validation.sendingSource.ipv4Invalid", []string{
 			"2001:db8::1", "2001:db8::/32", "mail.example.com", "mailhost", "::ffff:203.0.113.5", "::ffff:0:0/96",
 			"203.0.113.0/33", "203.0.113.0/-1", "203.0.113.0/", "203.0.113", "203.0.113.256", "010.0.0.1",
 			"203.0.113.5:25", "127.0.0.1", "127.0.0.0/8", "0.0.0.0", "0.0.0.0/0", "203.0.113.5/0", "203.0.113.5%eth0",
 		}},
-		{"ipv6", "2001:db8::1", ParseOwnSendingIPv6, "validation.ownSending.ipv6Invalid", []string{
+		{"ipv6", "2001:db8::1", ParseSendingSourceIPv6, "validation.sendingSource.ipv6Invalid", []string{
 			"203.0.113.5", "203.0.113.0/24", "mail.example.com", "::ffff:203.0.113.5", "::ffff:0:0/96", "::ffff:203.0.113.0/120",
 			"fe80::1%eth0", "fe80::/10%eth0", "::1", "::1/128", "::", "::/0", "2001:db8::1/0", "2001:db8::/129", "[2001:db8::1]",
 			"[2001:db8::1]:25", "2001:db8::g",
 		}},
-		{"hosts", "mail.example.com", ParseOwnSendingHosts, "validation.ownSending.hostInvalid", []string{
+		{"hosts", "mail.example.com", ParseSendingSourceHosts, "validation.sendingSource.hostInvalid", []string{
 			"203.0.113.5", "2001:db8::1", "mail.123", "123", "-mail.example.com", "mail-.example.com", "mail_1.example.com",
 			"mail..example.com", ".example.com", ".", "example.com..", longLabel + ".example", longName, "localhost",
 			"LocalHost.", "mx.localhost", "localhost.localdomain", "mail example.com", "メール.example.jp",
@@ -253,17 +253,17 @@ func TestParseOwnSending(t *testing.T) {
 	}
 	// The boundaries of a host name: a 63-character label and 253
 	// characters in all.
-	if _, err := ParseOwnSendingHosts([]string{strings.Repeat("a", 63) + ".example", longName[:253]}); err != nil {
+	if _, err := ParseSendingSourceHosts([]string{strings.Repeat("a", 63) + ".example", longName[:253]}); err != nil {
 		t.Errorf("host name at the limits: %v", err)
 	}
 	// A long entry is clipped in the message.
-	_, err = ParseOwnSendingIPv4([]string{strings.Repeat("x", 100)})
+	_, err = ParseSendingSourceIPv4([]string{strings.Repeat("x", 100)})
 	if m, ok := wording.As(err); !ok || m.Params["value"] != strings.Repeat("x", 64)+"..." {
 		t.Errorf("clipped value: %v", err)
 	}
 }
 
-func TestOwnSendingLimit(t *testing.T) {
+func TestSendingSourceLimit(t *testing.T) {
 	entries := func(n int) []string {
 		out := make([]string, n)
 		for i := range out {
@@ -271,69 +271,69 @@ func TestOwnSendingLimit(t *testing.T) {
 		}
 		return out
 	}
-	if got, err := ParseOwnSendingIPv4(entries(MaxOwnSendingEntries)); err != nil || len(got) != MaxOwnSendingEntries {
-		t.Errorf("%d entries: %d, %v", MaxOwnSendingEntries, len(got), err)
+	if got, err := ParseSendingSourceIPv4(entries(MaxSendingSourceEntries)); err != nil || len(got) != MaxSendingSourceEntries {
+		t.Errorf("%d entries: %d, %v", MaxSendingSourceEntries, len(got), err)
 	}
-	_, err := ParseOwnSendingIPv4(entries(MaxOwnSendingEntries + 1))
-	if m, ok := wording.As(err); !ok || m.Key != "validation.ownSending.tooMany" || m.Params["max"] != MaxOwnSendingEntries {
-		t.Errorf("%d entries: %v", MaxOwnSendingEntries+1, err)
+	_, err := ParseSendingSourceIPv4(entries(MaxSendingSourceEntries + 1))
+	if m, ok := wording.As(err); !ok || m.Key != "validation.sendingSource.tooMany" || m.Params["max"] != MaxSendingSourceEntries {
+		t.Errorf("%d entries: %v", MaxSendingSourceEntries+1, err)
 	}
 	// The bound counts the entries left after de-duplication.
-	if _, err := ParseOwnSendingIPv4(append(entries(MaxOwnSendingEntries), "10.0.0.1")); err != nil {
+	if _, err := ParseSendingSourceIPv4(append(entries(MaxSendingSourceEntries), "10.0.0.1")); err != nil {
 		t.Errorf("a duplicate over the bound: %v", err)
 	}
-	hosts := make([]string, MaxOwnSendingEntries+1)
+	hosts := make([]string, MaxSendingSourceEntries+1)
 	for i := range hosts {
 		hosts[i] = fmt.Sprintf("mx%d.example", i)
 	}
-	if _, err := ParseOwnSendingHosts(hosts); wordingKey(err) != "validation.ownSending.tooMany" {
+	if _, err := ParseSendingSourceHosts(hosts); wordingKey(err) != "validation.sendingSource.tooMany" {
 		t.Errorf("hosts over the bound: %v", err)
 	}
 }
 
-func TestOwnSendingPersistence(t *testing.T) {
+func TestSendingSourcePersistence(t *testing.T) {
 	db := newTestDB(t)
-	if own, err := ResolveOwnSending(db); err != nil || own.IPv4 == nil || own.IPv6 == nil || own.Hosts == nil ||
-		own.MailboxHosts == nil || own.MailboxesWithoutHost == nil ||
-		len(own.IPv4)+len(own.IPv6)+len(own.Hosts)+len(own.MailboxHosts)+len(own.MailboxesWithoutHost) != 0 {
-		t.Errorf("defaults: %#v (err %v)", own, err)
+	if sources, err := ResolveSendingSources(db); err != nil || sources.IPv4 == nil || sources.IPv6 == nil || sources.Hosts == nil ||
+		sources.MailboxHosts == nil || sources.MailboxesWithoutHost == nil ||
+		len(sources.IPv4)+len(sources.IPv6)+len(sources.Hosts)+len(sources.MailboxHosts)+len(sources.MailboxesWithoutHost) != 0 {
+		t.Errorf("defaults: %#v (err %v)", sources, err)
 	}
-	if err := SaveOwnSendingIPv4(db, []string{"203.0.113.5", "198.51.100.0/24"}); err != nil {
+	if err := SaveSendingSourceIPv4(db, []string{"203.0.113.5", "198.51.100.0/24"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveOwnSendingIPv6(db, []string{"2001:db8::/32"}); err != nil {
+	if err := SaveSendingSourceIPv6(db, []string{"2001:db8::/32"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveOwnSendingHosts(db, []string{"MX1.example.", "mailhost"}); err != nil {
+	if err := SaveSendingSourceHosts(db, []string{"MX1.example.", "mailhost"}); err != nil {
 		t.Fatal(err)
 	}
-	if saved := models.GetSetting(db, SettingOwnSendingIPv4); saved != "203.0.113.5\n198.51.100.0/24" {
+	if saved := models.GetSetting(db, SettingSendingSourceIPv4); saved != "203.0.113.5\n198.51.100.0/24" {
 		t.Errorf("stored IPv4 %q", saved)
 	}
-	want := OwnSending{IPv4: []string{"203.0.113.5", "198.51.100.0/24"}, IPv6: []string{"2001:db8::/32"},
+	want := SendingSourceSettings{IPv4: []string{"203.0.113.5", "198.51.100.0/24"}, IPv6: []string{"2001:db8::/32"},
 		Hosts: []string{"mx1.example", "mailhost"}, MailboxHosts: []string{}, MailboxesWithoutHost: []string{}}
-	if own, err := ResolveOwnSending(db); err != nil || !reflect.DeepEqual(own, want) {
-		t.Errorf("resolved %#v (err %v)", own, err)
+	if sources, err := ResolveSendingSources(db); err != nil || !reflect.DeepEqual(sources, want) {
+		t.Errorf("resolved %#v (err %v)", sources, err)
 	}
 	// A refused list saves nothing.
-	if err := SaveOwnSendingIPv4(db, []string{"203.0.113.9", "2001:db8::1"}); err == nil {
+	if err := SaveSendingSourceIPv4(db, []string{"203.0.113.9", "2001:db8::1"}); err == nil {
 		t.Error("an IPv6 address was saved in the IPv4 list")
 	}
-	if got := ResolveOwnSendingIPv4(db); !reflect.DeepEqual(got, want.IPv4) {
+	if got := ResolveSendingSourceIPv4(db); !reflect.DeepEqual(got, want.IPv4) {
 		t.Errorf("after a refused save: %v", got)
 	}
 	// An empty list removes the setting.
-	if err := SaveOwnSendingHosts(db, []string{"", " "}); err != nil {
+	if err := SaveSendingSourceHosts(db, []string{"", " "}); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := models.GetSettingStrict(db, SettingOwnSendingHosts); found {
+	if _, found, _ := models.GetSettingStrict(db, SettingSendingSourceHosts); found {
 		t.Error("an empty host list is still stored")
 	}
 	// A saved entry that is not valid is skipped, the others are kept.
-	if err := models.SetSetting(db, SettingOwnSendingIPv6, "2001:db8::1\nbogus\n::1\n2001:DB8::1"); err != nil {
+	if err := models.SetSetting(db, SettingSendingSourceIPv6, "2001:db8::1\nbogus\n::1\n2001:DB8::1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := ResolveOwnSendingIPv6(db); !reflect.DeepEqual(got, []string{"2001:db8::1"}) {
+	if got := ResolveSendingSourceIPv6(db); !reflect.DeepEqual(got, []string{"2001:db8::1"}) {
 		t.Errorf("lenient resolve: %v", got)
 	}
 }
@@ -372,7 +372,7 @@ func TestDNSCheckResolvers(t *testing.T) {
 	}
 }
 
-// TestListSettingSaveBounds: each own sending list saves exactly 500
+// TestListSettingSaveBounds: each sending source list saves exactly 500
 // entries and refuses 501, the resolvers save exactly 10 and refuse 11; a
 // refused list leaves the saved one unchanged.
 func TestListSettingSaveBounds(t *testing.T) {
@@ -390,9 +390,9 @@ func TestListSettingSaveBounds(t *testing.T) {
 		resolve func(*sql.DB) []string
 		entry   func(i int) string
 	}{
-		{SettingOwnSendingIPv4, SaveOwnSendingIPv4, ResolveOwnSendingIPv4, func(i int) string { return fmt.Sprintf("10.0.%d.%d", i/250, i%250+1) }},
-		{SettingOwnSendingIPv6, SaveOwnSendingIPv6, ResolveOwnSendingIPv6, func(i int) string { return fmt.Sprintf("2001:db8::%x", i+1) }},
-		{SettingOwnSendingHosts, SaveOwnSendingHosts, ResolveOwnSendingHosts, func(i int) string { return fmt.Sprintf("mx%d.example.jp", i) }},
+		{SettingSendingSourceIPv4, SaveSendingSourceIPv4, ResolveSendingSourceIPv4, func(i int) string { return fmt.Sprintf("10.0.%d.%d", i/250, i%250+1) }},
+		{SettingSendingSourceIPv6, SaveSendingSourceIPv6, ResolveSendingSourceIPv6, func(i int) string { return fmt.Sprintf("2001:db8::%x", i+1) }},
+		{SettingSendingSourceHosts, SaveSendingSourceHosts, ResolveSendingSourceHosts, func(i int) string { return fmt.Sprintf("mx%d.example.jp", i) }},
 	} {
 		if err := c.save(db, numbered(500, c.entry)); err != nil {
 			t.Errorf("%s: 500 entries: %v", c.key, err)
@@ -400,7 +400,7 @@ func TestListSettingSaveBounds(t *testing.T) {
 		if got := c.resolve(db); len(got) != 500 {
 			t.Errorf("%s: %d entries saved, want 500", c.key, len(got))
 		}
-		if err := c.save(db, numbered(501, c.entry)); wordingKey(err) != "validation.ownSending.tooMany" {
+		if err := c.save(db, numbered(501, c.entry)); wordingKey(err) != "validation.sendingSource.tooMany" {
 			t.Errorf("%s: 501 entries: %v", c.key, err)
 		}
 		if got := c.resolve(db); len(got) != 500 {
@@ -425,14 +425,14 @@ func TestListSettingSaveBounds(t *testing.T) {
 
 // TestListSettingSavedValueIsLenient: a saved value (edited in the database
 // by hand) keeps the valid entries around an invalid one and, after
-// de-duplication, only the first 500 entries of an own sending list and the
+// de-duplication, only the first 500 entries of a sending source list and the
 // first 10 resolvers, so the verification never fans out to more.
 func TestListSettingSavedValueIsLenient(t *testing.T) {
 	db := newTestDB(t)
-	if err := models.SetSetting(db, SettingOwnSendingIPv4, "203.0.113.5\nbogus\n198.51.100.7"); err != nil {
+	if err := models.SetSetting(db, SettingSendingSourceIPv4, "203.0.113.5\nbogus\n198.51.100.7"); err != nil {
 		t.Fatal(err)
 	}
-	if got := ResolveOwnSendingIPv4(db); !reflect.DeepEqual(got, []string{"203.0.113.5", "198.51.100.7"}) {
+	if got := ResolveSendingSourceIPv4(db); !reflect.DeepEqual(got, []string{"203.0.113.5", "198.51.100.7"}) {
 		t.Errorf("valid, invalid, valid: %v", got)
 	}
 	// A duplicate first, then 600 distinct hosts: the first 500 distinct
@@ -441,10 +441,10 @@ func TestListSettingSavedValueIsLenient(t *testing.T) {
 	for i := range 600 {
 		hosts = append(hosts, fmt.Sprintf("mx%d.example.jp", i))
 	}
-	if err := models.SetSetting(db, SettingOwnSendingHosts, strings.Join(hosts, "\n")); err != nil {
+	if err := models.SetSetting(db, SettingSendingSourceHosts, strings.Join(hosts, "\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := ResolveOwnSendingHosts(db); len(got) != 500 || got[0] != "mx0.example.jp" || got[1] != "mx1.example.jp" || got[499] != "mx499.example.jp" {
+	if got := ResolveSendingSourceHosts(db); len(got) != 500 || got[0] != "mx0.example.jp" || got[1] != "mx1.example.jp" || got[499] != "mx499.example.jp" {
 		t.Errorf("hosts over the maximum: %d entries, first %q, last %q", len(got), got[0], got[len(got)-1])
 	}
 	resolvers := []string{"192.0.2.1", "192.0.2.1"}
@@ -654,26 +654,28 @@ func TestSettingsSavedInOneTransaction(t *testing.T) {
 	restore()
 
 	// A SettingsUpdate of several settings, the worker count written last.
-	var u SettingsUpdate
-	u.CheckTimes([]string{"07:00"})
-	if err := u.OwnSendingHosts([]string{"mail.example.jp"}); err != nil {
-		t.Fatal(err)
+	fill := func(u *SettingsUpdate) error {
+		u.CheckTimes([]string{"07:00"})
+		if err := u.SendingSourceHosts([]string{"mail.example.jp"}); err != nil {
+			return err
+		}
+		if err := u.DNSCheck(db, boolp(false), nil, nil); err != nil {
+			return err
+		}
+		u.Workers(5)
+		return nil
 	}
-	if err := u.DNSCheck(db, boolp(false), nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	u.Workers(5)
 	restore = failSettingWrites(t, db, SettingWorkers)
-	if err := u.Save(db); err == nil {
-		t.Fatal("Save succeeded despite the failure")
+	if err := UpdateSettings(db, fill); err == nil {
+		t.Fatal("UpdateSettings succeeded despite the failure")
 	}
-	untouched("SettingsUpdate", SettingCheckTimes, SettingOwnSendingHosts, SettingDNSCheckEnabled, SettingWorkers)
+	untouched("SettingsUpdate", SettingCheckTimes, SettingSendingSourceHosts, SettingDNSCheckEnabled, SettingWorkers)
 	restore()
-	if err := u.Save(db); err != nil {
+	if err := UpdateSettings(db, fill); err != nil {
 		t.Fatal(err)
 	}
-	if ResolveWorkers(db) != 5 || ResolveDNSCheckEnabled(db) || !reflect.DeepEqual(ResolveOwnSendingHosts(db), []string{"mail.example.jp"}) {
-		t.Errorf("after the save: workers %d, dns check %v, hosts %v", ResolveWorkers(db), ResolveDNSCheckEnabled(db), ResolveOwnSendingHosts(db))
+	if ResolveWorkers(db) != 5 || ResolveDNSCheckEnabled(db) || !reflect.DeepEqual(ResolveSendingSourceHosts(db), []string{"mail.example.jp"}) {
+		t.Errorf("after the save: workers %d, dns check %v, hosts %v", ResolveWorkers(db), ResolveDNSCheckEnabled(db), ResolveSendingSourceHosts(db))
 	}
 
 	// The notification settings: the sender address is written last.
@@ -686,12 +688,12 @@ func TestSettingsSavedInOneTransaction(t *testing.T) {
 	restore()
 }
 
-// TestOwnSendingMailboxesWithoutHost checks the derived list of the
-// addresses for which no host name is configured: while own_sending_hosts
+// TestSendingSourceMailboxesWithoutHost checks the derived list of the
+// addresses for which no host name is configured: while sending_source_hosts
 // is empty, every mailbox (enabled or not, in the order of the list) whose
-// SMTP host is empty or not a valid host name; none once own_sending_hosts
+// SMTP host is empty or not a valid host name; none once sending_source_hosts
 // holds a host name, which counts for every mailbox.
-func TestOwnSendingMailboxesWithoutHost(t *testing.T) {
+func TestSendingSourceMailboxesWithoutHost(t *testing.T) {
 	db := newTestDB(t)
 	for _, mb := range []*models.Mailbox{
 		{Address: "with-host@b.example.jp", Enabled: true, SmtpHost: "smtp.b.example.jp"},
@@ -703,24 +705,24 @@ func TestOwnSendingMailboxesWithoutHost(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	own, err := ResolveOwnSending(db)
+	sources, err := ResolveSendingSources(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"user1@a.example.jp", "broken@b.example.jp", "user2@c.example.jp"}; !reflect.DeepEqual(own.MailboxesWithoutHost, want) {
-		t.Errorf("without own_sending_hosts: %v, want %v", own.MailboxesWithoutHost, want)
+	if want := []string{"user1@a.example.jp", "broken@b.example.jp", "user2@c.example.jp"}; !reflect.DeepEqual(sources.MailboxesWithoutHost, want) {
+		t.Errorf("without sending_source_hosts: %v, want %v", sources.MailboxesWithoutHost, want)
 	}
 	// Addresses alone switch nothing on: the list stays.
-	if err := SaveOwnSendingIPv4(db, []string{"203.0.113.0/24"}); err != nil {
+	if err := SaveSendingSourceIPv4(db, []string{"203.0.113.0/24"}); err != nil {
 		t.Fatal(err)
 	}
-	if own, err := ResolveOwnSending(db); err != nil || len(own.MailboxesWithoutHost) != 3 {
-		t.Errorf("with addresses only: %v (err %v)", own.MailboxesWithoutHost, err)
+	if sources, err := ResolveSendingSources(db); err != nil || len(sources.MailboxesWithoutHost) != 3 {
+		t.Errorf("with addresses only: %v (err %v)", sources.MailboxesWithoutHost, err)
 	}
-	if err := SaveOwnSendingHosts(db, []string{"relay.example.jp"}); err != nil {
+	if err := SaveSendingSourceHosts(db, []string{"relay.example.jp"}); err != nil {
 		t.Fatal(err)
 	}
-	if own, err := ResolveOwnSending(db); err != nil || own.MailboxesWithoutHost == nil || len(own.MailboxesWithoutHost) != 0 {
-		t.Errorf("with own_sending_hosts: %#v (err %v), want []", own.MailboxesWithoutHost, err)
+	if sources, err := ResolveSendingSources(db); err != nil || sources.MailboxesWithoutHost == nil || len(sources.MailboxesWithoutHost) != 0 {
+		t.Errorf("with sending_source_hosts: %#v (err %v), want []", sources.MailboxesWithoutHost, err)
 	}
 }

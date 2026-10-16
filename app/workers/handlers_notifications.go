@@ -118,7 +118,7 @@ func (c *core) handleUpdateNotificationSettings(w http.ResponseWriter, r *http.R
 }
 
 // notificationTestInput is the body of POST /api/v1/notifications/test: the
-// recipient (default: the caller's own address) and, optionally, connection
+// recipient (default: the address of the caller) and, optionally, connection
 // values to try instead of the saved ones.
 type notificationTestInput struct {
 	To           string  `json:"to"`
@@ -131,7 +131,7 @@ type notificationTestInput struct {
 }
 
 // handleTestNotification sends the SMTP test mail to the given address
-// (default: the caller's own address) in the language of the user owning
+// (default: the address of the caller) in the language of the user owning
 // that address (else the caller's) and reports the SMTP error text. The
 // stored password is used only when the host, port, security mode and
 // username are the saved ones; a request that changes one of them must

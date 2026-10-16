@@ -25,8 +25,8 @@ func init() {
 
 // webHandler builds the server's handler: the cookie-authenticated internal
 // API, the login endpoints, the loopback-only control endpoints and the SPA.
-// The user role reads everything it may see and writes only the caller's own
-// password and profile and the state of alert groups; every other write
+// The user role reads everything it may see and writes only the password and
+// profile of the caller and the state of alert groups; every other write
 // needs an administrator.
 func (c *core) webHandler() http.Handler {
 	mux := http.NewServeMux()
@@ -39,9 +39,9 @@ func (c *core) webHandler() http.Handler {
 	mux.HandleFunc("POST /web/logout", c.handleLogout)
 
 	// Account.
-	mux.HandleFunc("GET /api/v1/me", c.handleMe)
-	mux.HandleFunc("PUT /api/v1/me/password", c.handleChangeMyPassword)
-	mux.HandleFunc("PUT /api/v1/me/profile", c.handleChangeMyProfile)
+	mux.HandleFunc("GET /api/v1/me", c.handleCurrentUser)
+	mux.HandleFunc("PUT /api/v1/me/password", c.handleChangeCurrentUserPassword)
+	mux.HandleFunc("PUT /api/v1/me/profile", c.handleChangeCurrentUserProfile)
 
 	// Dashboard.
 	mux.HandleFunc("GET /api/v1/dashboard", c.handleDashboard)
@@ -223,7 +223,7 @@ func checkStateChangingRequest(w http.ResponseWriter, r *http.Request) bool {
 
 // setSecurityHeaders adds the response headers every reply carries: no MIME
 // sniffing, no framing (the message HTML endpoint, which the SPA shows in a
-// sandboxed iframe of its own origin, allows same-origin framing instead)
+// sandboxed iframe of the same origin, allows same-origin framing instead)
 // and no Referer leakage.
 func setSecurityHeaders(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()

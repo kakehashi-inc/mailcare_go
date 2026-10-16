@@ -179,7 +179,7 @@ func TestTestSMTPSendsTheTestTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs = srv.Messages()
-	if got := decodeSubject(t, msgs[len(msgs)-2].Data); !strings.HasPrefix(got, NotifyMailSubjectPrefix+"Test mail (") {
+	if got := decodeSubject(t, msgs[len(msgs)-2].Data); !strings.HasPrefix(got, NotifyMailSubjectPrefix+"Test email (") {
 		t.Errorf("english subject = %q", got)
 	}
 	if ja := decodeSubject(t, msgs[0].Data); decodeSubject(t, msgs[len(msgs)-1].Data)[:20] != ja[:20] {

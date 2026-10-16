@@ -23,13 +23,13 @@
       .ReasonLabel .Note (what the user chose and wrote with the state)
 */ -}}
 {{define "subject" -}}
-[MailCare] 対応が必要なアラート {{.Total}} 件 ({{.Date}})
+[MailCare] 対応が必要なアラート {{.Total}} 件（{{.Date}}）
 {{- end}}
 
 {{define "body" -}}
-MailCare からのお知らせです。
-メール管理者の対応または再判定が必要なグループが {{.Total}} 件あります（{{.Date}} 時点）。
-各グループの詳細と推奨する対応は、各グループの URL から確認できます。
+MailCare からの通知です。
+対応または再確認が必要なグループが {{.Total}} 件あります（{{.Date}} 時点）。
+詳細と推奨する対応は、各グループの URL から確認できます。
 {{range .Mailboxes}}
 ==================================================
 メールアドレス: {{.Address}}{{if and .DisplayName (ne .DisplayName .Address)}}（{{.DisplayName}}）{{end}}
@@ -38,35 +38,35 @@ MailCare からのお知らせです。
 
 [未対応]
 {{range .Groups}}
-■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
-   対象メール: {{.MessageCount}} 件{{if .RecipientCount}} / 宛先: {{.RecipientCount}} 件{{end}}
+■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判定元: {{.Authority}}）{{end}}
+   メール数: {{.MessageCount}} 件{{if .RecipientCount}} / 宛先数: {{.RecipientCount}} 件{{end}}
    期間: {{.FirstSeen}} 〜 {{.LastSeen}}
-   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
+   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（分析結果の要約はありません）{{end}}
    URL: {{.URL}}
 {{end}}{{end}}
 {{- if .ResolvedRecheck}}
 
-[対応済(再)]
+[対応済（再確認）]
 {{range .ResolvedRecheck}}
-■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
+■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判定元: {{.Authority}}）{{end}}
    対応内容: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}（記録なし）{{end}}{{if .Note}}
    詳細: {{.Note}}{{end}}
-   対象メール: {{.MessageCount}} 件 / 最終: {{.LastSeen}}
-   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
+   メール数: {{.MessageCount}} 件 / 最終日時: {{.LastSeen}}
+   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（分析結果の要約はありません）{{end}}
    URL: {{.URL}}
 {{end}}{{end}}
 {{- if .IgnoredRecheck}}
 
-[無視(再)]
+[無視（再確認）]
 {{range .IgnoredRecheck}}
-■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判断: {{.Authority}}）{{end}}
+■ {{.CategoryLabel}}: {{.UnitValue}}{{if .Authority}}（判定元: {{.Authority}}）{{end}}
    判断理由: {{if .ReasonLabel}}{{.ReasonLabel}}{{else}}（記録なし）{{end}}{{if .Note}}
    詳細: {{.Note}}{{end}}
-   対象メール: {{.MessageCount}} 件 / 最終: {{.LastSeen}}
-   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（解析報告の要約はありません）{{end}}
+   メール数: {{.MessageCount}} 件 / 最終日時: {{.LastSeen}}
+   要約: {{if .NeedsReview}}【要確認】{{end}}{{if .Summary}}{{.Summary}}{{else}}（分析結果の要約はありません）{{end}}
    URL: {{.URL}}
 {{end}}{{end}}{{end}}
 --------------------------------------------------
-このメールは MailCare が自動送信しています。
+このメールは MailCare が自動で送信しています。
 通知の設定は {{.BaseURL}}/settings/notifications から変更できます。
 {{- end}}

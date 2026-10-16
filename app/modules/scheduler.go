@@ -148,7 +148,7 @@ func (s *Scheduler) queueCleanupIfDue(now time.Time) {
 		return
 	}
 	s.cleanupFired = date
-	if err := models.SetSetting(s.db, SettingCleanupLastRunDate, date); err != nil {
+	if err := withSettingsLock(func() error { return models.SetSetting(s.db, SettingCleanupLastRunDate, date) }); err != nil {
 		log.Printf("scheduler: failed to record the cleanup date: %v", err)
 	}
 }

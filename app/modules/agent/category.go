@@ -19,7 +19,7 @@ const (
 	CategoryDomainNotFound  = "domain_not_found"
 	CategoryDeliveryDelay   = "delivery_delay"
 	// DNS lookup failures whose name MailCare looked up again and found to
-	// exist: our own resolver, or the receiving side's / a third party's DNS.
+	// exist: the resolver of the sending side's mail server, or the receiving side's / a third party's DNS.
 	CategoryDNSResolverFailure = "dns_resolver_failure"
 	CategoryDNSFailureExternal = "dns_failure_external"
 	// DMARC categories: records of DMARC aggregate reports that failed DMARC.
@@ -58,7 +58,7 @@ type CategoryInfo struct {
 
 // CategoryGlossary maps a category name to its glossary entry. The prompt
 // uses it to lead the group summary with the category and to steer the
-// requested actions; the Web UI has its own translations.
+// requested actions; the Web UI has separate translations.
 var CategoryGlossary = map[string]CategoryInfo{
 	CategoryIPBlocked: {
 		Description: "The sending IP is listed on a DNS blacklist or blocked by the recipient's MTA because of its reputation.",
@@ -103,7 +103,7 @@ var CategoryGlossary = map[string]CategoryInfo{
 		Actionable:  true,
 	},
 	CategoryServerConfig: {
-		Description: "The sending MTA cannot deliver because of its own configuration (relay denied, TLS or STARTTLS problems, HELO rejected, protocol or command errors).",
+		Description: "The sending MTA cannot deliver because of its configuration (relay denied, TLS or STARTTLS problems, HELO rejected, protocol or command errors).",
 		Unit:        "the sending MTA (the reporting MTA) whose configuration is at fault",
 		Authority:   "the recipient domain that rejects the session",
 		Guidance:    "give the MTA configuration changes to make on the sending server (relay, TLS certificates and protocols, HELO name, DNS) and how to verify delivery works again",
@@ -117,7 +117,7 @@ var CategoryGlossary = map[string]CategoryInfo{
 		Actionable:  true,
 	},
 	CategoryDNSResolverFailure: {
-		Description: "A notice reports a failed DNS lookup (e.g. \"Host not found, try again\") for a name that MailCare looked up again and found to exist, and the notice came from the sending side's own mail server: that server's name resolution is failing.",
+		Description: "A notice reports a failed DNS lookup (e.g. \"Host not found, try again\") for a name that MailCare looked up again and found to exist, and the notice came from the sending side's mail server: that server's name resolution is failing.",
 		Unit:        "the sending-side mail server (the reporting MTA) whose DNS resolution failed",
 		Guidance:    "the name was verified to exist, so give the checks of that mail server's name resolution: its resolver configuration (resolv.conf), the local caching resolver (e.g. unbound or systemd-resolved) and the upstream resolver it forwards to, reachability of UDP and TCP port 53, DNSSEC validation failures, and EDNS / large responses being dropped; say that a one-off failure for a single domain is weak evidence of a resolver problem while many domains failing at the same time is strong evidence, and how to verify name resolution works again",
 		Actionable:  true,

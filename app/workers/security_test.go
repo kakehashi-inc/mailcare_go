@@ -178,7 +178,7 @@ func TestSecurityHeaders(t *testing.T) {
 			t.Errorf("%s %s (%d): headers %v", tc.method, tc.path, rec.Code, h)
 		}
 	}
-	// The message HTML keeps its own policy headers next to the common ones.
+	// The message HTML keeps its policy headers next to the common ones.
 	rec := do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[0]+"/html/1"), nil, s.user)
 	if rec.Code == http.StatusOK && rec.Header().Get("Content-Security-Policy") != htmlCSP {
 		t.Errorf("message HTML lost its CSP: %v", rec.Header())
@@ -250,14 +250,14 @@ func TestMembersDoNotSeeServerInternals(t *testing.T) {
 	if err := models.UpdateMailbox(s.db, s.mb); err != nil {
 		t.Fatal(err)
 	}
-	if err := modules.SaveOwnSendingIPv4(s.db, []string{"203.0.113.5"}); err != nil {
+	if err := modules.SaveSendingSourceIPv4(s.db, []string{"203.0.113.5"}); err != nil {
 		t.Fatal(err)
 	}
-	// Settings: server internals and the mail infrastructure (own sending
+	// Settings: server internals and the mail infrastructure (sending sources
 	// servers, SMTP hosts, the addresses without one, DNS resolvers) for
 	// administrators only; the switches of the DNS check for everyone.
-	adminOnly := []string{`"data_dir"`, `"web_listen"`, `"web_port"`, `"workers"`, `"own_sending_ipv4"`, `"own_sending_ipv6"`,
-		`"own_sending_hosts"`, `"own_sending_mailbox_hosts"`, `"own_sending_mailboxes_without_host"`, `"dns_check_resolvers"`}
+	adminOnly := []string{`"data_dir"`, `"web_listen"`, `"web_port"`, `"workers"`, `"sending_source_ipv4"`, `"sending_source_ipv6"`,
+		`"sending_source_hosts"`, `"sending_source_mailbox_hosts"`, `"sending_source_mailboxes_without_host"`, `"dns_check_resolvers"`}
 	rec := do(t, s.h, http.MethodGet, "/api/v1/settings", nil, s.user)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings as user: %d", rec.Code)
@@ -274,8 +274,8 @@ func TestMembersDoNotSeeServerInternals(t *testing.T) {
 		}
 	}
 	rec = do(t, s.h, http.MethodGet, "/api/v1/settings", nil, s.admin)
-	for _, want := range append(adminOnly, `"data_dir":"`, `"web_listen":"127.0.0.1"`, `"own_sending_ipv4":["203.0.113.5"]`,
-		`"own_sending_mailbox_hosts":["smtp.example.jp"]`, `"own_sending_mailboxes_without_host":[]`,
+	for _, want := range append(adminOnly, `"data_dir":"`, `"web_listen":"127.0.0.1"`, `"sending_source_ipv4":["203.0.113.5"]`,
+		`"sending_source_mailbox_hosts":["smtp.example.jp"]`, `"sending_source_mailboxes_without_host":[]`,
 		`"dns_check_resolvers":["1.1.1.1","8.8.8.8","9.9.9.9"]`, `"dns_check_enabled":true`) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("settings for an admin lack %s: %s", want, rec.Body.String())
