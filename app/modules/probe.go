@@ -41,9 +41,11 @@ import (
 //   - A probe mail whose arrival is recorded is deleted from the probe
 //     server at once (the probe mailbox would fill up otherwise); one left
 //     there (the deletion failed, it arrived after its record was removed)
-//     is deleted by the first arrival check after it is ProbeLeftoverAge
-//     old (no separate run reads the server for it). Other mail of the
-//     probe mailbox is never touched (mailengine.CheckProbeServer).
+//     is deleted once it is ProbeLeftoverAge old, only by the first arrival
+//     check after a send (the check that covers all addresses of that send
+//     at once; the re-checks while mails are missing leave it, and no
+//     separate run reads the server for it). Other mail of the probe
+//     mailbox is never touched (mailengine.CheckProbeServer).
 //
 // The probe settings live in the settings table (SettingProbe*), the SMTP
 // connection of a mailbox in its detail_info (smtp_host and the rest), the
@@ -780,6 +782,7 @@ type ProbeCheckResult struct {
 func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, progress func(string)) (res *ProbeCheckResult, err error) {
 	res = &ProbeCheckResult{}
 	now := time.Now()
+	lastCheck := settingTime(db, SettingProbeLastCheckAt)
 	defer func() {
 		if err != nil {
 			res.NextAt = now.Add(ProbeCheckRetryInterval)
@@ -816,6 +819,9 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 	}
 	progress(fmt.Sprintf("looking for %d probe mails on %s", len(waiting), settings.Conn.ImapHost))
 	res.Checked = len(waiting)
+	// The probe mails left on the server are deleted only by the first
+	// check after a send, not by the re-checks while mails are missing.
+	firstAfterSend := settings.LastSendAt.Valid && (!lastCheck.Valid || lastCheck.Time.Before(settings.LastSendAt.Time))
 	// The arrivals are recorded before anything is deleted from the server:
 	// a message is removed only once its arrival is in the database.
 	record := func(found []mailengine.ProbeMessage) (map[uint32]bool, error) {
@@ -828,7 +834,7 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 		if err != nil {
 			return nil, err
 		}
-		arrivals, remove := sortProbeMessages(found, recorded, now)
+		arrivals, remove := sortProbeMessages(found, recorded, now, firstAfterSend)
 		if err := recordProbeArrivals(db, waiting, arrivals, now, settings, res, progress); err != nil {
 			return nil, err
 		}
@@ -897,10 +903,11 @@ func recordProbeArrivals(db *sql.DB, waiting []*models.ProbeMail, arrivals map[s
 // token; recorded: token -> sending address of the recorded probe mails).
 // A message is one of our probe mails when its token is recorded and its
 // sender is the recorded address: it is an arrival (the earliest one per
-// token) and it is deleted at once. Any other probe mail is deleted once it
-// is ProbeLeftoverAge old (a deletion that failed, an arrival after the
-// record was removed); a recent one is left alone.
-func sortProbeMessages(found []mailengine.ProbeMessage, recorded map[string]string, now time.Time) (map[string]time.Time, map[uint32]bool) {
+// token) and it is deleted at once. Any other probe mail (a deletion that
+// failed, an arrival after the record was removed) is deleted only when
+// leftovers is set (the first check after a send) and it is
+// ProbeLeftoverAge old; otherwise it is left alone.
+func sortProbeMessages(found []mailengine.ProbeMessage, recorded map[string]string, now time.Time, leftovers bool) (map[string]time.Time, map[uint32]bool) {
 	arrivals := map[string]time.Time{}
 	remove := map[uint32]bool{}
 	for _, m := range found {
@@ -912,7 +919,7 @@ func sortProbeMessages(found []mailengine.ProbeMessage, recorded map[string]stri
 			remove[m.UID] = true
 			continue
 		}
-		if !m.ReceivedAt.IsZero() && now.Sub(m.ReceivedAt) >= ProbeLeftoverAge {
+		if leftovers && !m.ReceivedAt.IsZero() && now.Sub(m.ReceivedAt) >= ProbeLeftoverAge {
 			remove[m.UID] = true
 		}
 	}

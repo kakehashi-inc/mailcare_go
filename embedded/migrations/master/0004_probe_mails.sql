@@ -12,8 +12,8 @@
 -- that it was delayed or failed. The daily cleanup removes the rows sent
 -- before the mail retention (mail_keep_days), whatever their status; the
 -- rows of a deleted mailbox go with it. The probe mails themselves are
--- deleted from the probe server when their arrival is recorded (by the
--- first arrival check a day later when that failed).
+-- deleted from the probe server when their arrival is recorded (when that
+-- failed, by the first arrival check after a send a day later or more).
 --
 -- probe_mails.mailbox_id       the mailbox that sent the mail
 -- probe_mails.address          its address at the time of sending

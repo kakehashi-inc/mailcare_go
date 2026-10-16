@@ -381,7 +381,7 @@ const (
 	// ProbeLeftoverAge is how long a probe mail may stay on the probe
 	// server when it was not deleted at its arrival (the deletion failed, it
 	// arrived after it was resolved, its record is gone): the first arrival
-	// check after that deletes it.
+	// check after a send that comes after that deletes it.
 	ProbeLeftoverAge = 24 * time.Hour
 	// MaxProbeNoteLength bounds the details written when a probe mail is
 	// resolved by hand (characters).

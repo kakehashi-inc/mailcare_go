@@ -42,7 +42,7 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
   the date and time of the send and the address, so a missing mail can be traced. A mail that arrives late is
   shown as "Recovered" and keeps that it was delayed or failed; a missing mail can be marked resolved with a
   reason (by any user, like an alert). Probe mails whose arrival is confirmed are deleted from the probe server
-  to free space (those that could not be deleted then go at the first arrival check a day later; other mail is not touched).
+  to free space (those that could not be deleted then go at the first arrival check after a send a day or more later; other mail is not touched).
 - **Junk detection** - typical phishing (a sender name that impersonates the monitored domain or another
   organization, a link to an outside site that carries the monitored address, a forged From of the monitored
   domain, a fake "delivery failed" notice that carries links to other sites or fails the sender check) and mail

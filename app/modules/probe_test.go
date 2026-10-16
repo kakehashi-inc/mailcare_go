@@ -546,7 +546,8 @@ func TestSchedulerQueuesProbeJobs(t *testing.T) {
 }
 
 // Our probe mails (recorded token, recorded sender) are arrivals and are
-// deleted at once; other probe mails only once they are a day old.
+// deleted at once; other probe mails only once they are a day old, and only
+// by the first check after a send.
 func TestSortProbeMessages(t *testing.T) {
 	now := time.Now()
 	tok := func(s string) string { return ProbeSubjectMarker + s }
@@ -558,12 +559,16 @@ func TestSortProbeMessages(t *testing.T) {
 		{UID: 4, Token: tok("bb"), From: "b@example.test", ReceivedAt: now.Add(-time.Hour)},
 		{UID: 5, Token: tok("cc"), From: "c@example.test", ReceivedAt: now.Add(-ProbeLeftoverAge - time.Minute)},
 	}
-	arrivals, remove := sortProbeMessages(found, recorded, now)
+	arrivals, remove := sortProbeMessages(found, recorded, now, true)
 	if len(arrivals) != 1 || !arrivals[tok("aa")].Equal(now.Add(-2*time.Minute)) {
 		t.Errorf("arrivals: %v", arrivals)
 	}
 	if len(remove) != 3 || !remove[1] || !remove[2] || !remove[5] {
 		t.Errorf("remove: %v", remove)
+	}
+	// A re-check while mails are missing leaves the old leftover.
+	if _, remove = sortProbeMessages(found, recorded, now, false); len(remove) != 2 || remove[5] {
+		t.Errorf("re-check remove: %v", remove)
 	}
 }
 
