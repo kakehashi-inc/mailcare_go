@@ -567,49 +567,9 @@ func TestSortProbeMessages(t *testing.T) {
 	}
 }
 
-// Without a pending check the probe server is read once a day, so the probe
-// mails left on it are deleted.
-func TestSchedulerQueuesProbeSweep(t *testing.T) {
-	db := newTestDB(t)
-	jm, key := newTestJobManager(t, db)
-	str := func(v string) *string { return &v }
-	on := true
-	if err := SaveProbeSettings(db, key, &ProbeInput{Address: str("probe@example.test"), IMAPHost: str("imap.example.test"),
-		IMAPUsername: str("probe"), IMAPPassword: str("x"), SendTimes: &[]string{}, Enabled: &on}); err != nil {
-		t.Fatal(err)
-	}
-	checks := func() int {
-		active, _ := models.ListActiveJobs(db)
-		n := 0
-		for _, j := range active {
-			if j.Kind == JobKindProbeCheck {
-				n++
-			}
-		}
-		return n
-	}
-	s := NewScheduler(db, jm)
-	clock := localDate(2026, 10, 16, 10, 0, 0)
-	s.now = func() time.Time { return clock }
-	if err := setSettingTime(db, SettingProbeLastSweepAt, clock.Add(-time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	s.lastTick = clock.Add(-30 * time.Second)
-	s.Tick()
-	if checks() != 0 {
-		t.Fatal("read again within a day")
-	}
-	if err := setSettingTime(db, SettingProbeLastSweepAt, clock.Add(-ProbeLeftoverAge)); err != nil {
-		t.Fatal(err)
-	}
-	s.Tick()
-	if checks() != 1 {
-		t.Errorf("not read after a day: %d", checks())
-	}
-}
-
-// The records of the closed probe mails of a mailbox older than the mail
-// retention are removed; the open ones and the other mailboxes' stay.
+// The records of the probe mails of a mailbox older than the mail retention
+// are removed whatever their status; the newer ones and the other
+// mailboxes' stay.
 func TestDeleteOldProbeMails(t *testing.T) {
 	db := newTestDB(t)
 	key, err := LoadSecretKey(db)
@@ -638,10 +598,10 @@ func TestDeleteOldProbeMails(t *testing.T) {
 	insert(ids[0], "04", models.ProbeStatusArrived, now)
 	insert(ids[1], "05", models.ProbeStatusArrived, old)
 	n, err := models.DeleteOldProbeMails(db, ids[0], now.AddDate(0, 0, -DefaultMailKeepDays))
-	if err != nil || n != 2 {
+	if err != nil || n != 3 {
 		t.Fatalf("removed %d: %v", n, err)
 	}
-	if _, total, _ := models.ListProbeMails(db, models.ProbeFilterAll, 0, 0, 10); total != 3 {
+	if _, total, _ := models.ListProbeMails(db, models.ProbeFilterAll, 0, 0, 10); total != 2 {
 		t.Errorf("left %d records", total)
 	}
 }

@@ -972,7 +972,7 @@ func (m *JobManager) runCleanup(ctx context.Context, mb *models.Mailbox, progres
 		progress(fmt.Sprintf("error: agent workspaces: %v", err))
 		errs = append(errs, fmt.Errorf("agent workspaces: %w", err))
 	}
-	// The records of the closed probe mails of the mailbox follow the mail
+	// The records of the probe mails of the mailbox follow the mail
 	// retention (the probe mails themselves are deleted from the probe
 	// server when their arrival is recorded).
 	if n, err := models.DeleteOldProbeMails(m.db, mb.ID, time.Now().Add(-mailKeep)); err != nil {

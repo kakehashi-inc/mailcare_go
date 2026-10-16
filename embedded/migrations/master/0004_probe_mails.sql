@@ -9,11 +9,11 @@
 -- hand (resolved, with a reason); send_failed records a mail the SMTP server
 -- did not accept and is closed by hand as well. level keeps the worst level
 -- reached (delayed / failure), so a recovered or resolved mail still shows
--- that it was delayed or failed. The daily cleanup removes the closed rows
--- (arrived / recovered / resolved) sent before the mail retention
--- (mail_keep_days); the rows of a deleted mailbox go with it. The probe
--- mails themselves are deleted from the probe server when their arrival is
--- recorded (a day later when that failed).
+-- that it was delayed or failed. The daily cleanup removes the rows sent
+-- before the mail retention (mail_keep_days), whatever their status; the
+-- rows of a deleted mailbox go with it. The probe mails themselves are
+-- deleted from the probe server when their arrival is recorded (by the
+-- first arrival check a day later when that failed).
 --
 -- probe_mails.mailbox_id       the mailbox that sent the mail
 -- probe_mails.address          its address at the time of sending

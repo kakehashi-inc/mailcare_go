@@ -348,11 +348,6 @@ const (
 	// SettingProbeNextCheckAt is when the scheduler queues the next arrival
 	// check (RFC 3339, internal; absent = no check pending).
 	SettingProbeNextCheckAt = "probe_next_check_at"
-	// SettingProbeLastSweepAt is when the probe server was last read (RFC
-	// 3339, internal): without a pending check the scheduler reads it again
-	// once ProbeLeftoverAge has passed, so the probe mails left on it are
-	// deleted.
-	SettingProbeLastSweepAt = "probe_last_sweep_at"
 	// SettingProbeLastCheckAt and SettingProbeLastCheckError record the
 	// outcome of the latest arrival check (internal).
 	SettingProbeLastCheckAt    = "probe_last_check_at"
@@ -385,8 +380,8 @@ const (
 	ProbeHeader = "X-MailCare-Probe"
 	// ProbeLeftoverAge is how long a probe mail may stay on the probe
 	// server when it was not deleted at its arrival (the deletion failed, it
-	// arrived after it was resolved, its record is gone): the next reading
-	// of the server after that deletes it.
+	// arrived after it was resolved, its record is gone): the first arrival
+	// check after that deletes it.
 	ProbeLeftoverAge = 24 * time.Hour
 	// MaxProbeNoteLength bounds the details written when a probe mail is
 	// resolved by hand (characters).

@@ -314,11 +314,12 @@ func ProbeAddressesByToken(db *sql.DB, tokens []string) (map[string]string, erro
 	return out, nil
 }
 
-// DeleteOldProbeMails removes the records of the closed probe mails
-// (arrived, recovered, resolved) of a mailbox sent before the given time.
-// The open ones (not arrived, not resolved) are kept until they are closed.
+// DeleteOldProbeMails removes the records of the probe mails of a mailbox
+// sent before the given time, whatever their status (an open one that old
+// can no longer arrive: a probe mail is deleted from the probe server a day
+// after it got there).
 func DeleteOldProbeMails(db *sql.DB, mailboxID int64, before time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM probe_mails WHERE mailbox_id = ? AND status IN ('arrived', 'recovered', 'resolved') AND sent_at < ?`,
+	res, err := db.Exec(`DELETE FROM probe_mails WHERE mailbox_id = ? AND sent_at < ?`,
 		mailboxID, before.UTC())
 	if err != nil {
 		return 0, err

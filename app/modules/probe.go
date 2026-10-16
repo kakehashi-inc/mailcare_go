@@ -41,8 +41,9 @@ import (
 //   - A probe mail whose arrival is recorded is deleted from the probe
 //     server at once (the probe mailbox would fill up otherwise); one left
 //     there (the deletion failed, it arrived after its record was removed)
-//     is deleted once it is ProbeLeftoverAge old. Other mail of the probe
-//     mailbox is never touched (mailengine.CheckProbeServer).
+//     is deleted by the first arrival check after it is ProbeLeftoverAge
+//     old (no separate run reads the server for it). Other mail of the
+//     probe mailbox is never touched (mailengine.CheckProbeServer).
 //
 // The probe settings live in the settings table (SettingProbe*), the SMTP
 // connection of a mailbox in its detail_info (smtp_host and the rest), the
@@ -810,16 +811,10 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 		return res, err
 	}
 	if len(waiting) == 0 {
-		// Nothing to look for; the server is still read once a day so the
-		// probe mails left on it are deleted (ProbeLeftoverAge).
-		if last := settingTime(db, SettingProbeLastSweepAt); last.Valid && now.Sub(last.Time) < ProbeLeftoverAge {
-			res.Skipped = SkipProbeNothingToSee
-			return res, nil
-		}
-		progress(fmt.Sprintf("deleting the probe mails left on %s", settings.Conn.ImapHost))
-	} else {
-		progress(fmt.Sprintf("looking for %d probe mails on %s", len(waiting), settings.Conn.ImapHost))
+		res.Skipped = SkipProbeNothingToSee
+		return res, nil
 	}
+	progress(fmt.Sprintf("looking for %d probe mails on %s", len(waiting), settings.Conn.ImapHost))
 	res.Checked = len(waiting)
 	// The arrivals are recorded before anything is deleted from the server:
 	// a message is removed only once its arrival is in the database.
@@ -843,11 +838,6 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 	deleted, err := mailengine.CheckProbeServer(ictx, &settings.Conn, settings.Password, ProbeSubjectMarker, ProbeHeader, record)
 	cancel()
 	res.Deleted = deleted
-	if err == nil || errors.Is(err, mailengine.ErrProbeDelete) {
-		if serr := setSettingTime(db, SettingProbeLastSweepAt, now); serr != nil {
-			log.Printf("probe: failed to record the reading of the probe server: %v", serr)
-		}
-	}
 	switch {
 	case errors.Is(err, mailengine.ErrProbeDelete):
 		// The check itself succeeded; the next one deletes them.

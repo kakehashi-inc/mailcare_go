@@ -143,9 +143,7 @@ func (s *Scheduler) queueAnalysisAfterLimit(now time.Time) {
 // queueProbe queues the probe send when a probe send time arrived (target:
 // its "YYYY-MM-DD HH:MM") and otherwise the arrival check once the recorded
 // next check time has come (the send schedules its own check, which covers
-// the mails of the earlier sends too), or, with no check pending, once the
-// probe server was not read for ProbeLeftoverAge (the check then deletes
-// the probe mails left on it). Nothing is queued while the probe is
+// the mails of the earlier sends too). Nothing is queued while the probe is
 // switched off or not set up. Send times that passed while the server was
 // down are not sent afterwards. The caller holds s.mu.
 func (s *Scheduler) queueProbe(last, now time.Time) {
@@ -164,14 +162,6 @@ func (s *Scheduler) queueProbe(last, now time.Time) {
 	}
 	if ps.NextCheckAt.Valid && !now.Before(ps.NextCheckAt.Time) {
 		s.enqueue(JobKindProbeCheck)
-		return
-	}
-	// Without a pending check the probe server is still read once a day, so
-	// the probe mails left on it are deleted (ProbeLeftoverAge).
-	if !ps.NextCheckAt.Valid {
-		if last := settingTime(s.db, SettingProbeLastSweepAt); !last.Valid || now.Sub(last.Time) >= ProbeLeftoverAge {
-			s.enqueue(JobKindProbeCheck)
-		}
 	}
 }
 
