@@ -34,15 +34,15 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
 - **Mail notifications** - sends the list of alerts that need attention to the selected users, each in their
   own language (Japanese / English) and time zone. The time and the interval (daily to every 7 days) are
   configurable.
-- **Delivery probe** - at set times (07:00 / 11:00 / 15:00 / 19:00 by default) every mail address actually
-  sends a probe mail, and MailCare checks that it reached the probe server (IMAP). The arrival of all probe mails
+- **Delivery probe** - at set times (07:00 / 11:00 / 15:00 / 19:00 by default) every mail address with "Send check" on
+  actually sends a probe mail, and MailCare checks that it reached the probe server (IMAP). The arrival of all probe mails
   is checked at once a delay threshold (30 minutes by default) after the latest send: a mail not arrived is
   "Delayed", one not arrived within the failure threshold (120 minutes by default) is a "Failure". Both show on
   the dashboard and the Alerts screen, and failures are mailed to the notification recipients. The subject names
   the date and time of the send and the address, so a missing mail can be traced. A mail that arrives late is
   shown as "Recovered" and keeps that it was delayed or failed; a missing mail can be marked resolved with a
   reason (by any user, like an alert). Probe mails whose arrival is confirmed are deleted from the probe server
-  to free space.
+  to free space (those that could not be deleted then go a day later; other mail is not touched).
 - **Junk detection** - typical phishing (a sender name that impersonates the monitored domain or another
   organization, a link to an outside site that carries the monitored address, a forged From of the monitored
   domain, a fake "delivery failed" notice that carries links to other sites or fails the sender check) and mail
@@ -120,10 +120,12 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
      names; a host name here counts for every address) and the DNS check
    - "Settings -> Notifications": SMTP server, recipient users, notification time and interval
    - "Settings -> Delivery probe": the probe address and the probe server (IMAP) that receives it, the send times,
-     the delay and failure thresholds. For each mail address that sends probe mails, set its SMTP server (the
-     host name, connection security, port, username and password) under "Sending server" in "Settings -> Mail
-     addresses" ("Send a test mail" checks it reaches the probe address). Use an address reserved for the probe
-     (the account must be allowed to delete mail: confirmed probe mails are deleted)
+     the delay and failure thresholds. For each mail address that sends probe mails, switch on "Send check"
+     under "Sending server" in "Settings -> Mail addresses" and set the host name and port of its SMTP server
+     (required), the connection security and, when needed, the username and password ("Send a test mail" checks
+     it reaches the probe address). An address reserved for the probe is recommended, not required: the probe mails
+     are told apart by their subject and probe header, and other mail is not touched. The account must be allowed
+     to delete mail: confirmed probe mails are deleted
    - "Settings -> Users": users and their roles
 
 `mailcare service start` runs in the foreground. To keep it running, register it as an OS service. Linux

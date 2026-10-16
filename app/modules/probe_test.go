@@ -14,6 +14,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/mailengine"
 	"mailcare/app/modules/wording"
 )
 
@@ -168,17 +169,41 @@ func TestMailboxSMTPPasswordGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	host := "smtp.example.test"
-	mb, err := CreateMailbox(db, key, &MailboxInput{Address: "ops@example.test", ImapHost: "imap.example.test",
-		ImapUsername: "ops", ImapPassword: "p", SmtpHost: &host, SmtpUsername: "ops", SmtpPassword: "smtp-secret"})
+	on := true
+	base := func(addr string) *MailboxInput {
+		return &MailboxInput{Address: addr, ImapHost: "imap.example.test", ImapUsername: "ops", ImapPassword: "p"}
+	}
+	// The send check needs a host and a port; the authentication is optional.
+	in := base("a@example.test")
+	in.ProbeEnabled, in.SmtpPort = &on, 587
+	if _, err := CreateMailbox(db, key, in); err != errSMTPHostRequiredForProbe {
+		t.Errorf("send check without host: %v", err)
+	}
+	in = base("a@example.test")
+	in.SmtpHost, in.ProbeEnabled = &host, &on
+	if _, err := CreateMailbox(db, key, in); err != errSMTPPortRequired {
+		t.Errorf("send check without port: %v", err)
+	}
+	// Off (the default), only the host is kept: it serves the judgement.
+	in = base("b@example.test")
+	in.SmtpHost, in.SmtpPort, in.SmtpUsername, in.SmtpPassword = &host, 2525, "ops", "x"
+	hostOnly, err := CreateMailbox(db, key, in)
+	if err != nil || hostOnly.SmtpHost != host || hostOnly.ProbeEnabled || hostOnly.SmtpPort != 0 || hostOnly.SmtpUsername != "" ||
+		hostOnly.SmtpPasswordEnc != "" || ProbeParticipates(hostOnly) {
+		t.Fatalf("host only: %+v %v", hostOnly, err)
+	}
+	in = base("ops@example.test")
+	in.SmtpHost, in.ProbeEnabled, in.SmtpPort, in.SmtpUsername, in.SmtpPassword = &host, &on, 587, "ops", "smtp-secret"
+	mb, err := CreateMailbox(db, key, in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mb.SmtpPort != DefaultSMTPPort || mb.SmtpSecurity != DefaultSMTPSecurity || mb.SmtpPasswordEnc == "" || !ProbeParticipates(mb) {
-		t.Fatalf("defaults: %+v", mb)
+	if mb.SmtpPort != 587 || mb.SmtpSecurity != DefaultSMTPSecurity || mb.SmtpPasswordEnc == "" || !ProbeParticipates(mb) {
+		t.Fatalf("send check: %+v", mb)
 	}
 	stored, _ := models.GetMailboxByID(db, mb.ID)
 	// Unchanged connection: the stored password is kept.
-	in := MailboxInputFrom(stored)
+	in = MailboxInputFrom(stored)
 	if err := UpdateMailbox(db, key, t.TempDir(), t.TempDir(), stored, in); err != nil {
 		t.Fatal(err)
 	}
@@ -193,17 +218,25 @@ func TestMailboxSMTPPasswordGuard(t *testing.T) {
 	if err := UpdateMailbox(db, key, t.TempDir(), t.TempDir(), stored, in); err != ErrSMTPConnectionPasswordRequired {
 		t.Errorf("changed host: %v", err)
 	}
-	// No host removes the connection.
+	// A partial update without the send check keeps it.
 	stored, _ = models.GetMailboxByID(db, mb.ID)
+	partial := &MailboxInput{Address: stored.Address, ImapHost: stored.ImapHost, ImapUsername: stored.ImapUsername}
+	if err := UpdateMailbox(db, key, t.TempDir(), t.TempDir(), stored, partial); err != nil {
+		t.Fatal(err)
+	}
+	if stored, _ = models.GetMailboxByID(db, mb.ID); !stored.ProbeEnabled || stored.SmtpPort != 587 || stored.SmtpPasswordEnc == "" {
+		t.Errorf("partial update dropped the send check: %+v", stored)
+	}
+	// Switching it off keeps the host and drops the rest of the connection.
 	in = MailboxInputFrom(stored)
-	none := ""
-	in.SmtpHost = &none
+	off := false
+	in.ProbeEnabled = &off
 	if err := UpdateMailbox(db, key, t.TempDir(), t.TempDir(), stored, in); err != nil {
 		t.Fatal(err)
 	}
 	stored, _ = models.GetMailboxByID(db, mb.ID)
-	if stored.SmtpHost != "" || stored.SmtpPasswordEnc != "" || stored.SmtpPort != 0 || ProbeParticipates(stored) {
-		t.Errorf("not removed: %+v", stored)
+	if stored.SmtpHost != host || stored.SmtpPasswordEnc != "" || stored.SmtpPort != 0 || stored.ProbeEnabled || ProbeParticipates(stored) {
+		t.Errorf("not switched off: %+v", stored)
 	}
 }
 
@@ -307,7 +340,7 @@ func TestProbeEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mb.SmtpHost, mb.SmtpPort, mb.SmtpSecurity = smtpSrv.Host(), smtpSrv.Port(), IMAPSecurityNone
+		mb.SmtpHost, mb.ProbeEnabled, mb.SmtpPort, mb.SmtpSecurity = smtpSrv.Host(), true, smtpSrv.Port(), IMAPSecurityNone
 		if err := models.UpdateMailbox(db, mb); err != nil {
 			t.Fatal(err)
 		}
@@ -358,6 +391,16 @@ func TestProbeEndToEnd(t *testing.T) {
 			probeSrv.deliver(t, m.Data, pa.SentAt.Add(time.Minute))
 		}
 	}
+	// Other mail of the probe mailbox is never touched: a reply that quotes
+	// the subject of a probe mail (no probe header) stays.
+	for _, m := range sent {
+		if m.From == "a@example.test" {
+			subject := m.Data[strings.Index(m.Data, "Subject: ")+len("Subject: "):]
+			subject = subject[:strings.Index(subject, "\r\n")]
+			probeSrv.deliver(t, "From: someone@example.test\r\nTo: probe@example.test\r\nSubject: Re: "+subject+
+				"\r\nMessage-ID: <reply@example.test>\r\n\r\nthanks\r\n", time.Now().Add(-48*time.Hour))
+		}
+	}
 	if _, err := db.Exec(`UPDATE probe_mails SET sent_at = ? WHERE id = ?`, time.Now().Add(-3*time.Hour).UTC(), pb.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -377,8 +420,9 @@ func TestProbeEndToEnd(t *testing.T) {
 	if pb.Status != models.ProbeStatusFailure || pb.Level != models.ProbeLevelFailure || !pb.NotifiedAt.Valid {
 		t.Errorf("b: %+v", pb)
 	}
-	// The confirmed mail of a is deleted from the probe server.
-	if check.Deleted != 1 || probeSrv.count(t) != 0 {
+	// The confirmed mail of a is deleted from the probe server; the reply
+	// stays.
+	if check.Deleted != 1 || probeSrv.count(t) != 1 {
 		t.Errorf("deleted %d, %d left on the probe server", check.Deleted, probeSrv.count(t))
 	}
 	all := smtpSrv.Messages()
@@ -403,7 +447,7 @@ func TestProbeEndToEnd(t *testing.T) {
 	check, _ = CheckProbes(ctx, db, key, "", progress)
 	pb, _ = models.GetProbeMail(db, pb.ID)
 	if check.Recovered != 1 || pb.Status != models.ProbeStatusRecovered || pb.Level != models.ProbeLevelFailure || !check.NextAt.IsZero() ||
-		check.Deleted != 1 || probeSrv.count(t) != 0 {
+		check.Deleted != 1 || probeSrv.count(t) != 1 {
 		t.Errorf("recovered: %+v %+v", check, pb)
 	}
 	if s, _ = ResolveProbeSettings(db, nil); s.NextCheckAt.Valid {
@@ -501,34 +545,65 @@ func TestSchedulerQueuesProbeJobs(t *testing.T) {
 	}
 }
 
-// The probe server keeps a message whose token is unknown and recent (it may
-// not be ours); a recorded token, whatever its status, and an unknown one
-// past the retention are deleted.
-func TestProbeTokensToDelete(t *testing.T) {
-	db := newTestDB(t)
-	key, err := LoadSecretKey(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mb, err := CreateMailbox(db, key, &MailboxInput{Address: "a@example.test", ImapHost: "imap.example.test", ImapUsername: "a", ImapPassword: "p"})
-	if err != nil {
-		t.Fatal(err)
-	}
+// Our probe mails (recorded token, recorded sender) are arrivals and are
+// deleted at once; other probe mails only once they are a day old.
+func TestSortProbeMessages(t *testing.T) {
 	now := time.Now()
-	resolved := &models.ProbeMail{MailboxID: mb.ID, Address: mb.Address, Token: ProbeSubjectMarker + "aa", Slot: "2026-10-15 07:00",
-		Subject: "s", SentAt: now.Add(-time.Hour), Status: models.ProbeStatusResolved}
-	if err := models.InsertProbeMail(db, resolved); err != nil {
+	tok := func(s string) string { return ProbeSubjectMarker + s }
+	recorded := map[string]string{tok("aa"): "a@example.test"}
+	found := []mailengine.ProbeMessage{
+		{UID: 1, Token: tok("aa"), From: "A@example.test", ReceivedAt: now.Add(-2 * time.Minute)},
+		{UID: 2, Token: tok("aa"), From: "a@example.test", ReceivedAt: now.Add(-time.Minute)}, // the same mail twice
+		{UID: 3, Token: tok("aa"), From: "other@example.test", ReceivedAt: now.Add(-time.Hour)},
+		{UID: 4, Token: tok("bb"), From: "b@example.test", ReceivedAt: now.Add(-time.Hour)},
+		{UID: 5, Token: tok("cc"), From: "c@example.test", ReceivedAt: now.Add(-ProbeLeftoverAge - time.Minute)},
+	}
+	arrivals, remove := sortProbeMessages(found, recorded, now)
+	if len(arrivals) != 1 || !arrivals[tok("aa")].Equal(now.Add(-2*time.Minute)) {
+		t.Errorf("arrivals: %v", arrivals)
+	}
+	if len(remove) != 3 || !remove[1] || !remove[2] || !remove[5] {
+		t.Errorf("remove: %v", remove)
+	}
+}
+
+// Without a pending check the probe server is read once a day, so the probe
+// mails left on it are deleted.
+func TestSchedulerQueuesProbeSweep(t *testing.T) {
+	db := newTestDB(t)
+	jm, key := newTestJobManager(t, db)
+	str := func(v string) *string { return &v }
+	on := true
+	if err := SaveProbeSettings(db, key, &ProbeInput{Address: str("probe@example.test"), IMAPHost: str("imap.example.test"),
+		IMAPUsername: str("probe"), IMAPPassword: str("x"), SendTimes: &[]string{}, Enabled: &on}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := probeTokensToDelete(db, map[string]time.Time{
-		ProbeSubjectMarker + "aa": now,
-		ProbeSubjectMarker + "bb": now.Add(-time.Hour),
-		ProbeSubjectMarker + "cc": now.AddDate(0, 0, -ProbeKeepDays-1),
-	}, now)
-	if err != nil {
+	checks := func() int {
+		active, _ := models.ListActiveJobs(db)
+		n := 0
+		for _, j := range active {
+			if j.Kind == JobKindProbeCheck {
+				n++
+			}
+		}
+		return n
+	}
+	s := NewScheduler(db, jm)
+	clock := localDate(2026, 10, 16, 10, 0, 0)
+	s.now = func() time.Time { return clock }
+	if err := setSettingTime(db, SettingProbeLastSweepAt, clock.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || !got[ProbeSubjectMarker+"aa"] || !got[ProbeSubjectMarker+"cc"] {
-		t.Errorf("to delete: %v", got)
+	s.lastTick = clock.Add(-30 * time.Second)
+	s.Tick()
+	if checks() != 0 {
+		t.Fatal("read again within a day")
+	}
+	if err := setSettingTime(db, SettingProbeLastSweepAt, clock.Add(-ProbeLeftoverAge)); err != nil {
+		t.Fatal(err)
+	}
+	s.Tick()
+	if checks() != 1 {
+		t.Errorf("not read after a day: %d", checks())
 	}
 }

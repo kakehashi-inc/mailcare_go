@@ -60,7 +60,8 @@ func TestProbeEndpoints(t *testing.T) {
 	// only; the password never.
 	host := "smtp.example.test"
 	in := modules.MailboxInputFrom(s.mb)
-	in.SmtpHost, in.SmtpUsername, in.SmtpPassword = &host, "ops", "smtp-pass"
+	on := true
+	in.SmtpHost, in.ProbeEnabled, in.SmtpPort, in.SmtpUsername, in.SmtpPassword = &host, &on, 587, "ops", "smtp-pass"
 	rec = do(t, s.h, http.MethodPut, "/api/v1/mailboxes/1", in, s.admin)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"smtp_host":"smtp.example.test"`) ||
 		!strings.Contains(rec.Body.String(), `"smtp_password_set":true`) || strings.Contains(rec.Body.String(), "smtp-pass") {
@@ -117,29 +118,38 @@ func TestProbeEndpoints(t *testing.T) {
 	}
 }
 
-// A mailbox is saved without any SMTP setting, and clearing the host clears
-// the rest of the SMTP connection.
+// A mailbox is saved without any SMTP setting, and with a host name alone
+// (send check off); the send check needs the port, not the authentication.
 func TestMailboxSavesWithoutSMTP(t *testing.T) {
 	s := newSeededCore(t)
 	rec := do(t, s.h, http.MethodPost, "/api/v1/mailboxes", map[string]any{
 		"address": "nosmtp@example.test", "imap_host": "imap.example.test", "imap_username": "u", "imap_password": "p",
 	}, s.admin)
-	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"smtp_host":""`) {
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"smtp_host":""`) ||
+		!strings.Contains(rec.Body.String(), `"probe_enabled":false`) {
 		t.Fatalf("create without SMTP: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = do(t, s.h, http.MethodPost, "/api/v1/mailboxes", map[string]any{
+		"address": "hostonly@example.test", "imap_host": "imap.example.test", "imap_username": "u", "imap_password": "p",
+		"smtp_host": "mail.example.test",
+	}, s.admin)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"smtp_host":"mail.example.test"`) ||
+		!strings.Contains(rec.Body.String(), `"probe_enabled":false`) {
+		t.Fatalf("create with a host only: %d %s", rec.Code, rec.Body.String())
 	}
 	in := modules.MailboxInputFrom(s.mb)
 	host := "smtp.example.test"
-	in.SmtpHost, in.SmtpUsername, in.SmtpPassword = &host, "ops", "pw"
-	if rec := do(t, s.h, http.MethodPut, "/api/v1/mailboxes/1", in, s.admin); rec.Code != http.StatusOK {
-		t.Fatalf("set SMTP: %d %s", rec.Code, rec.Body.String())
+	on := true
+	in.SmtpHost, in.ProbeEnabled = &host, &on
+	if rec := do(t, s.h, http.MethodPut, "/api/v1/mailboxes/1", in, s.admin); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "validation.mailbox.smtpPortRequired") {
+		t.Fatalf("send check without port: %d %s", rec.Code, rec.Body.String())
 	}
-	// Clearing the host needs no password and drops the rest, whatever
-	// the other SMTP fields carry.
-	empty := ""
-	in.SmtpHost, in.SmtpPort, in.SmtpUsername, in.SmtpPassword = &empty, 2525, "ops", ""
+	// No authentication is needed.
+	in.SmtpPort = 25
 	rec = do(t, s.h, http.MethodPut, "/api/v1/mailboxes/1", in, s.admin)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"smtp_host":""`) ||
-		!strings.Contains(rec.Body.String(), `"smtp_username":""`) || !strings.Contains(rec.Body.String(), `"smtp_password_set":false`) {
-		t.Fatalf("clear SMTP: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"probe_enabled":true`) ||
+		!strings.Contains(rec.Body.String(), `"smtp_port":25`) {
+		t.Fatalf("send check without authentication: %d %s", rec.Code, rec.Body.String())
 	}
 }

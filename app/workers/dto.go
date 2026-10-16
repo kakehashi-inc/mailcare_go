@@ -142,9 +142,11 @@ type MailboxDTO struct {
 	RecentDays     int    `json:"recent_days"`
 	ServerKeepDays int    `json:"server_keep_days"` // 0 = the mails stay on the server
 	SmtpHost       string `json:"smtp_host"`        // "" = not set
-	// The rest of the SMTP connection of smtp_host (the probe mails are
-	// sent through it); the password is never returned, only whether one
-	// is stored. A port or security saved as 0 / "" is shown as the default.
+	// The send check and, while it is on, the rest of the SMTP connection
+	// of smtp_host the probe mails are sent through (0 / "" while off; the
+	// security shows its default then). The password is never returned,
+	// only whether one is stored.
+	ProbeEnabled    bool             `json:"probe_enabled"` // the send check
 	SmtpPort        int              `json:"smtp_port"`
 	SmtpSecurity    string           `json:"smtp_security"`
 	SmtpUsername    string           `json:"smtp_username"`
@@ -161,8 +163,8 @@ func toMailboxDTO(mb *models.Mailbox) MailboxDTO {
 		ID: mb.ID, Address: mb.Address, DisplayName: mb.DisplayName, ImapHost: mb.ImapHost, ImapPort: mb.ImapPort,
 		ImapSecurity: mb.ImapSecurity, ImapUsername: mb.ImapUsername, Folder: mb.Folder, Enabled: mb.Enabled,
 		InitialDays: mb.InitialDays, RecentDays: mb.RecentDays, ServerKeepDays: mb.ServerKeepDays,
-		SmtpHost: mb.SmtpHost,
-		SmtpPort: orDefault(mb.SmtpPort, modules.DefaultSMTPPort), SmtpSecurity: orDefaultStr(mb.SmtpSecurity, modules.DefaultSMTPSecurity),
+		SmtpHost:     mb.SmtpHost,
+		ProbeEnabled: mb.ProbeEnabled, SmtpPort: mb.SmtpPort, SmtpSecurity: orDefaultStr(mb.SmtpSecurity, modules.DefaultSMTPSecurity),
 		SmtpUsername: mb.SmtpUsername, SmtpPasswordSet: mb.SmtpPasswordEnc != "",
 		LastFetchedAt:  nullTimeString(mb.LastFetchedAt),
 		LastFetchError: mb.LastFetchError,
@@ -186,7 +188,7 @@ func redactMailboxDTO(dto *MailboxDTO) {
 	dto.ImapHost, dto.ImapPort, dto.ImapSecurity, dto.ImapUsername, dto.Folder = "", 0, "", "", ""
 	dto.InitialDays, dto.RecentDays, dto.ServerKeepDays = 0, 0, 0
 	dto.SmtpHost = ""
-	dto.SmtpPort, dto.SmtpSecurity, dto.SmtpUsername, dto.SmtpPasswordSet = 0, "", "", false
+	dto.ProbeEnabled, dto.SmtpPort, dto.SmtpSecurity, dto.SmtpUsername, dto.SmtpPasswordSet = false, 0, "", "", false
 }
 
 // GroupDTO is a bounce group with the headline of its latest report.
@@ -571,16 +573,7 @@ func toDMARCRecordDTO(r *models.DMARCRecord) DMARCRecordDTO {
 	}
 }
 
-// orDefault returns v, or def when v is 0 (a value saved before the setting
-// existed).
-func orDefault(v, def int) int {
-	if v == 0 {
-		return def
-	}
-	return v
-}
-
-// orDefaultStr is orDefault for text.
+// orDefaultStr returns v, or def when v is "" (no value saved).
 func orDefaultStr(v, def string) string {
 	if v == "" {
 		return def

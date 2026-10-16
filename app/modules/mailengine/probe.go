@@ -14,39 +14,50 @@ import (
 )
 
 // Delivery probe (app/modules/probe.go): the probe mails sent from the
-// monitored mailboxes are looked for on the probe server. Each one carries a
-// token (marker followed by hex digits) in its subject and in a header; the
-// arrival check asks the server for the subjects that carry the marker,
-// reads the token and the arrival time (INTERNALDATE) of every match without
-// changing its flags (BODY.PEEK), lets the caller record the arrivals and
-// then deletes from the server the messages whose token the caller names
-// (the probe mailbox is reserved for the probe, so the confirmed mails are
-// removed to keep it from filling up). Nothing is fetched into an index.
+// monitored mailboxes are looked for on the probe server. The probe mailbox
+// may hold other mail too (a dedicated one is recommended, not required),
+// so every step is limited to the probe mails and leaves the rest alone:
+//
+//   - The server is asked only for the messages whose subject carries the
+//     marker (SEARCH HEADER Subject); only their envelope and the probe
+//     header are read, with BODY.PEEK, so no flag (\Seen) changes.
+//   - A message counts as a probe mail only when its subject and its probe
+//     header carry the same token (marker followed by hex digits): a reply
+//     or a forward that quotes the subject has no such header.
+//   - The caller decides which probe mails are deleted; exactly those UIDs
+//     are deleted (UID EXPUNGE; on a server without UIDPLUS a plain EXPUNGE
+//     only when no other message is flagged \Deleted, see expungeOnly).
+//
+// Nothing is fetched into an index.
 
 // probeFetchBatch bounds how many messages one FETCH or deletion names.
 const probeFetchBatch = 200
 
-// ProbeRecorder records the arrivals found on the probe server (token ->
-// earliest INTERNALDATE) and returns the tokens whose messages may be
-// deleted from the server. An error leaves every message on the server.
-type ProbeRecorder func(found map[string]time.Time) (remove map[string]bool, err error)
+// ProbeMessage is one probe mail found on the probe server.
+type ProbeMessage struct {
+	UID        uint32
+	Token      string
+	From       string    // the sender address (lower case; "" when the envelope names none)
+	ReceivedAt time.Time // INTERNALDATE
+}
 
-// CheckProbeServer searches the folder of the probe server for the
-// messages whose subject carries marker, reads their tokens (from the
-// subject and from header) and arrival times, hands them to record and
-// deletes the messages of the tokens record returns (\Deleted and UID
-// EXPUNGE; on a server without UIDPLUS a plain EXPUNGE, used only when no
-// other message is flagged \Deleted, see expungeOnly). It returns the
-// number of messages deleted. A failed deletion is returned with
-// ErrProbeDelete wrapped, after the arrivals were recorded.
+// ProbeRecorder records what was found on the probe server and returns the
+// UIDs of the probe mails to delete there. An error leaves every message on
+// the server.
+type ProbeRecorder func(found []ProbeMessage) (remove map[uint32]bool, err error)
+
+// CheckProbeServer searches the folder of the probe server for the probe
+// mails (see above), hands them to record and deletes the UIDs record
+// returns. It returns the number of messages deleted. A failed deletion is
+// returned with ErrProbeDelete wrapped, after record ran.
 func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, marker, header string, record ProbeRecorder) (int, error) {
 	if conn == nil {
 		return 0, errors.New("mailengine: probe server is nil")
 	}
-	if marker == "" {
-		return 0, errors.New("mailengine: probe marker is empty")
+	if marker == "" || header == "" {
+		return 0, errors.New("mailengine: probe marker or header is empty")
 	}
-	tokenRE, err := regexp.Compile(regexp.QuoteMeta(marker) + `[0-9A-Fa-f]+`)
+	tokenRE, err := regexp.Compile(regexp.QuoteMeta(marker) + `[0-9A-Fa-f]{16}\b`)
 	if err != nil {
 		return 0, err
 	}
@@ -66,12 +77,14 @@ func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, marke
 		return 0, fmt.Errorf("search: %w", ctxErr(ctx, err))
 	}
 	uids := search.AllUIDs()
-	found := map[string]time.Time{}
-	tokensOf := map[imap.UID][]string{}
+	var found []ProbeMessage
 	section := &imap.FetchItemBodySection{
 		Specifier:    imap.PartSpecifierHeader,
 		HeaderFields: []string{header},
 		Peek:         true,
+	}
+	normalize := func(token string) string {
+		return marker + strings.ToLower(strings.TrimPrefix(token, marker))
 	}
 	for start := 0; start < len(uids); start += probeFetchBatch {
 		if err := ctx.Err(); err != nil {
@@ -85,20 +98,23 @@ func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, marke
 			return 0, fmt.Errorf("fetch: %w", ctxErr(ctx, err))
 		}
 		for _, m := range msgs {
-			text := string(m.FindBodySection(section))
-			if m.Envelope != nil {
-				text = m.Envelope.Subject + "\n" + text
+			if m.UID == 0 || m.Envelope == nil {
+				continue
 			}
-			arrived := m.InternalDate.UTC()
-			for _, token := range tokenRE.FindAllString(text, -1) {
-				token = marker + strings.ToLower(strings.TrimPrefix(token, marker))
-				if m.UID != 0 {
-					tokensOf[m.UID] = append(tokensOf[m.UID], token)
-				}
-				if prev, ok := found[token]; !ok || (!arrived.IsZero() && arrived.Before(prev)) {
-					found[token] = arrived
-				}
+			inSubject := map[string]bool{}
+			for _, token := range tokenRE.FindAllString(m.Envelope.Subject, -1) {
+				inSubject[normalize(token)] = true
 			}
+			headerTokens := tokenRE.FindAllString(string(m.FindBodySection(section)), -1)
+			if len(headerTokens) != 1 || !inSubject[normalize(headerTokens[0])] {
+				continue // not a probe mail of ours (or not one we can tell for sure)
+			}
+			from := ""
+			if len(m.Envelope.From) > 0 {
+				from = strings.ToLower(m.Envelope.From[0].Addr())
+			}
+			found = append(found, ProbeMessage{UID: uint32(m.UID), Token: normalize(headerTokens[0]), From: from,
+				ReceivedAt: m.InternalDate.UTC()})
 		}
 	}
 	remove, err := record(found)
@@ -106,12 +122,9 @@ func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, marke
 		return 0, err
 	}
 	var toDelete []imap.UID
-	for _, uid := range uids {
-		for _, token := range tokensOf[uid] {
-			if remove[token] {
-				toDelete = append(toDelete, uid)
-				break
-			}
+	for _, m := range found {
+		if remove[m.UID] {
+			toDelete = append(toDelete, imap.UID(m.UID))
 		}
 	}
 	if len(toDelete) == 0 {
@@ -136,6 +149,6 @@ func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, marke
 	return deleted, nil
 }
 
-// ErrProbeDelete marks a failure to delete the confirmed probe mails from
-// the probe server (the arrivals were recorded; the next check tries again).
-var ErrProbeDelete = errors.New("the confirmed probe mails could not be deleted from the probe server")
+// ErrProbeDelete marks a failure to delete probe mails from the probe server
+// (what was found was recorded; the next check tries again).
+var ErrProbeDelete = errors.New("the probe mails could not be deleted from the probe server")

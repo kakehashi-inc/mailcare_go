@@ -42,11 +42,14 @@ type Mailbox struct {
 	// the value of a row saved before the setting existed). The host names
 	// of every mailbox are sending servers (app/modules ResolveOwnSending).
 	SmtpHost string `json:"smtp_host"`
-	// The rest of the SMTP connection of SmtpHost, through which the probe
-	// mails of this address are sent (app/modules/probe.go): port,
+	// ProbeEnabled ("send check") makes the address send probe mails
+	// through SmtpHost (app/modules/probe.go); off (the default, also rows
+	// saved before the setting existed), SmtpHost only serves the judgement
+	// of the sending servers and the fields below are empty.
+	ProbeEnabled bool `json:"probe_enabled"`
+	// The rest of the SMTP connection of SmtpHost while ProbeEnabled: port,
 	// security (ssl | starttls | none), username ("" = no authentication)
-	// and the password, encrypted like the IMAP one. Rows saved before the
-	// settings existed read as 0 / "" (the defaults apply when sending).
+	// and the password, encrypted like the IMAP one.
 	SmtpPort        int    `json:"smtp_port"`
 	SmtpSecurity    string `json:"smtp_security"`
 	SmtpUsername    string `json:"smtp_username"`
@@ -73,8 +76,9 @@ type mailboxDetails struct {
 	// SmtpHost: absent in rows saved before the setting existed, which
 	// reads as "" (not set).
 	SmtpHost string `json:"smtp_host"`
-	// The rest of the SMTP connection: absent in rows saved before the
-	// settings existed, which reads as 0 / "".
+	// ProbeEnabled and the rest of the SMTP connection: absent in rows
+	// saved before the settings existed, which reads as false / 0 / "".
+	ProbeEnabled    bool   `json:"probe_enabled"`
 	SmtpPort        int    `json:"smtp_port"`
 	SmtpSecurity    string `json:"smtp_security"`
 	SmtpUsername    string `json:"smtp_username"`
@@ -86,7 +90,7 @@ func (m *Mailbox) detailsJSON() string {
 		Protocol: ProtocolIMAP, Host: m.ImapHost, Port: m.ImapPort, Security: m.ImapSecurity,
 		Username: m.ImapUsername, PasswordEnc: m.ImapPasswordEnc,
 		Folder: m.Folder, InitialDays: m.InitialDays, RecentDays: m.RecentDays, ServerKeepDays: m.ServerKeepDays,
-		SmtpHost: m.SmtpHost, SmtpPort: m.SmtpPort, SmtpSecurity: m.SmtpSecurity, SmtpUsername: m.SmtpUsername,
+		SmtpHost: m.SmtpHost, ProbeEnabled: m.ProbeEnabled, SmtpPort: m.SmtpPort, SmtpSecurity: m.SmtpSecurity, SmtpUsername: m.SmtpUsername,
 		SmtpPasswordEnc: m.SmtpPasswordEnc,
 	})
 }
@@ -97,6 +101,7 @@ func (m *Mailbox) applyDetails(raw string) {
 	m.ImapHost, m.ImapPort, m.ImapSecurity, m.ImapUsername = j.Host, j.Port, j.Security, j.Username
 	m.ImapPasswordEnc, m.Folder, m.InitialDays, m.RecentDays = j.PasswordEnc, j.Folder, j.InitialDays, j.RecentDays
 	m.ServerKeepDays, m.SmtpHost = j.ServerKeepDays, j.SmtpHost
+	m.ProbeEnabled = j.ProbeEnabled
 	m.SmtpPort, m.SmtpSecurity, m.SmtpUsername, m.SmtpPasswordEnc = j.SmtpPort, j.SmtpSecurity, j.SmtpUsername, j.SmtpPasswordEnc
 }
 
@@ -120,11 +125,11 @@ func InsertMailbox(db *sql.DB, m *Mailbox) error {
 
 // UpdateMailbox updates every editable field of a mailbox. When
 // ImapPasswordEnc is empty the stored password is kept, and so is the stored
-// SMTP password when SmtpPasswordEnc is empty while an SMTP host and
-// username are set (with no host or no username the SMTP password is
+// SMTP password when SmtpPasswordEnc is empty while the send check is on
+// and an SMTP host and username are set (otherwise the SMTP password is
 // removed).
 func UpdateMailbox(db *sql.DB, m *Mailbox) error {
-	keepSMTP := m.SmtpPasswordEnc == "" && m.SmtpHost != "" && m.SmtpUsername != ""
+	keepSMTP := m.SmtpPasswordEnc == "" && m.ProbeEnabled && m.SmtpHost != "" && m.SmtpUsername != ""
 	if m.ImapPasswordEnc == "" || keepSMTP {
 		cur, err := GetMailboxByID(db, m.ID)
 		if err != nil {

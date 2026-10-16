@@ -177,7 +177,9 @@ export interface MailboxDTO {
     server_keep_days: number;
     /** Host name of the SMTP server that sends the mail of this address (one of the own sending servers); "" = not set. Blanked ("") for non-administrators, like the IMAP connection. */
     smtp_host: string;
-    /** The rest of the SMTP connection of smtp_host, through which the probe mails are sent. Blanked for non-administrators. */
+    /** The send check: on, the probe mails are sent through smtp_host with the fields below; off, smtp_host only serves the judgement of the sending servers. Blanked for non-administrators. */
+    probe_enabled: boolean;
+    /** The rest of the SMTP connection while the send check is on (0 / "" while off). Blanked for non-administrators. */
     smtp_port: number;
     smtp_security: SmtpSecurity | '';
     smtp_username: string;
@@ -208,7 +210,9 @@ export interface MailboxInput {
     server_keep_days?: number;
     /** SMTP server (sending) host name; "" clears it. Omitted: not set for a new mailbox, unchanged on update. Needs no password. */
     smtp_host?: string;
-    /** The rest of the SMTP connection; used only with smtp_host ("" clears them all). */
+    /** The send check. Omitted: off for a new mailbox, unchanged (with the stored port, security and username) on update. */
+    probe_enabled?: boolean;
+    /** The rest of the SMTP connection; required (the port) or used only while the send check is on, cleared while off. */
     smtp_port?: number;
     smtp_security?: SmtpSecurity;
     /** Empty = no authentication. */

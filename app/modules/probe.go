@@ -39,8 +39,10 @@ import (
 //   - A mail that becomes a failure (or that the SMTP server refused) is
 //     mailed once to the notification recipients.
 //   - A probe mail whose arrival is recorded is deleted from the probe
-//     server (the probe mailbox is reserved for the probe and would fill
-//     up otherwise).
+//     server at once (the probe mailbox would fill up otherwise); one left
+//     there (the deletion failed, it arrived after its record was removed)
+//     is deleted once it is ProbeLeftoverAge old. Other mail of the probe
+//     mailbox is never touched (mailengine.CheckProbeServer).
 //
 // The probe settings live in the settings table (SettingProbe*), the SMTP
 // connection of a mailbox in its detail_info (smtp_host and the rest), the
@@ -512,9 +514,9 @@ func ApplyProbeCheck(p *models.ProbeMail, arrivedAt, now time.Time, delay, failu
 // --- Probe mails ---
 
 // ProbeParticipates reports whether a mailbox sends probe mails: it is
-// enabled and has an SMTP host (smtp_host).
+// enabled, its send check is on and it has an SMTP host (smtp_host).
 func ProbeParticipates(mb *models.Mailbox) bool {
-	return mb.Enabled && strings.TrimSpace(mb.SmtpHost) != ""
+	return mb.Enabled && mb.ProbeEnabled && strings.TrimSpace(mb.SmtpHost) != ""
 }
 
 // probeSMTPConfig builds the SMTP configuration of the probe mails of a
@@ -593,11 +595,12 @@ func probeSlotLabel(slot string, now time.Time) string {
 // subject carries no token). An empty password uses the stored one when the
 // input names a stored mailbox and the same connection.
 func TestProbeSMTP(ctx context.Context, db *sql.DB, key []byte, in *MailboxInput) error {
+	// The test tries the connection of the send check, so it is validated
+	// as switched on (host and port required) whatever the input says.
+	on := true
+	in.ProbeEnabled = &on
 	if err := ValidateMailboxInput(in); err != nil {
 		return err
-	}
-	if in.SmtpHost == nil || *in.SmtpHost == "" {
-		return wording.New("validation.connection.hostRequired", "smtp_host is required")
 	}
 	settings, err := ResolveProbeSettings(db, nil)
 	if err != nil {
@@ -812,24 +815,44 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 		return res, err
 	}
 	if len(waiting) == 0 {
-		res.Skipped = SkipProbeNothingToSee
-		return res, nil
+		// Nothing to look for; the server is still read once a day so the
+		// probe mails left on it are deleted (ProbeLeftoverAge).
+		if last := settingTime(db, SettingProbeLastSweepAt); last.Valid && now.Sub(last.Time) < ProbeLeftoverAge {
+			res.Skipped = SkipProbeNothingToSee
+			return res, nil
+		}
+		progress(fmt.Sprintf("deleting the probe mails left on %s", settings.Conn.ImapHost))
+	} else {
+		progress(fmt.Sprintf("looking for %d probe mails on %s", len(waiting), settings.Conn.ImapHost))
 	}
 	res.Checked = len(waiting)
-	progress(fmt.Sprintf("looking for %d probe mails on %s", len(waiting), settings.Conn.ImapHost))
 	// The arrivals are recorded before anything is deleted from the server:
 	// a message is removed only once its arrival is in the database.
-	record := func(arrivals map[string]time.Time) (map[string]bool, error) {
+	record := func(found []mailengine.ProbeMessage) (map[uint32]bool, error) {
 		now = time.Now()
+		tokens := make([]string, 0, len(found))
+		for _, m := range found {
+			tokens = append(tokens, m.Token)
+		}
+		recorded, err := models.ProbeAddressesByToken(db, tokens)
+		if err != nil {
+			return nil, err
+		}
+		arrivals, remove := sortProbeMessages(found, recorded, now)
 		if err := recordProbeArrivals(db, waiting, arrivals, now, settings, res, progress); err != nil {
 			return nil, err
 		}
-		return probeTokensToDelete(db, arrivals, now)
+		return remove, nil
 	}
 	ictx, cancel := context.WithTimeout(ctx, IMAPTimeout)
 	deleted, err := mailengine.CheckProbeServer(ictx, &settings.Conn, settings.Password, ProbeSubjectMarker, ProbeHeader, record)
 	cancel()
 	res.Deleted = deleted
+	if err == nil || errors.Is(err, mailengine.ErrProbeDelete) {
+		if serr := setSettingTime(db, SettingProbeLastSweepAt, now); serr != nil {
+			log.Printf("probe: failed to record the reading of the probe server: %v", serr)
+		}
+	}
 	switch {
 	case errors.Is(err, mailengine.ErrProbeDelete):
 		// The check itself succeeded; the next one deletes them.
@@ -884,29 +907,31 @@ func recordProbeArrivals(db *sql.DB, waiting []*models.ProbeMail, arrivals map[s
 	return tx.Commit()
 }
 
-// probeTokensToDelete returns the tokens found on the probe server whose
-// messages are deleted there: those of a recorded probe mail (whatever its
-// status: an arrival is recorded above, and a mail resolved by hand that
-// arrives later needs no further look), and the unknown ones that arrived
-// more than ProbeKeepDays ago (their record was removed by the retention).
-// An unknown recent token is left alone.
-func probeTokensToDelete(db *sql.DB, arrivals map[string]time.Time, now time.Time) (map[string]bool, error) {
-	tokens := make([]string, 0, len(arrivals))
-	for token := range arrivals {
-		tokens = append(tokens, token)
-	}
-	known, err := models.KnownProbeTokens(db, tokens)
-	if err != nil {
-		return nil, err
-	}
-	expired := now.AddDate(0, 0, -ProbeKeepDays)
-	remove := map[string]bool{}
-	for token, at := range arrivals {
-		if known[token] || (!at.IsZero() && at.Before(expired)) {
-			remove[token] = true
+// sortProbeMessages decides what the probe mails found on the probe server
+// mean (found: the messages whose subject and probe header carry the same
+// token; recorded: token -> sending address of the recorded probe mails).
+// A message is one of our probe mails when its token is recorded and its
+// sender is the recorded address: it is an arrival (the earliest one per
+// token) and it is deleted at once. Any other probe mail is deleted once it
+// is ProbeLeftoverAge old (a deletion that failed, an arrival after the
+// record was removed); a recent one is left alone.
+func sortProbeMessages(found []mailengine.ProbeMessage, recorded map[string]string, now time.Time) (map[string]time.Time, map[uint32]bool) {
+	arrivals := map[string]time.Time{}
+	remove := map[uint32]bool{}
+	for _, m := range found {
+		address, ok := recorded[m.Token]
+		if ok && strings.EqualFold(address, m.From) {
+			if prev, seen := arrivals[m.Token]; !seen || (!m.ReceivedAt.IsZero() && m.ReceivedAt.Before(prev)) {
+				arrivals[m.Token] = m.ReceivedAt
+			}
+			remove[m.UID] = true
+			continue
+		}
+		if !m.ReceivedAt.IsZero() && now.Sub(m.ReceivedAt) >= ProbeLeftoverAge {
+			remove[m.UID] = true
 		}
 	}
-	return remove, nil
+	return arrivals, remove
 }
 
 // formatProbeDelay renders seconds as "1h05m" / "12m" (job progress and

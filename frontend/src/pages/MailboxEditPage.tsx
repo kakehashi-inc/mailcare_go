@@ -52,6 +52,8 @@ interface FormState {
     recent_days: string;
     server_keep_days: string;
     smtp_host: string;
+    /** The send check: the probe mails of the address are sent through smtp_host with the fields below. */
+    probe_enabled: boolean;
     smtp_port: string;
     smtp_security: SmtpSecurity;
     smtp_username: string;
@@ -76,7 +78,9 @@ const EMPTY: FormState = {
     recent_days: String(DEFAULT_RECENT_DAYS),
     server_keep_days: String(DEFAULT_SERVER_KEEP_DAYS),
     smtp_host: '',
-    smtp_port: String(DEFAULT_SMTP_PORT),
+    probe_enabled: false,
+    // Required while the send check is on: no default is filled in.
+    smtp_port: '',
     smtp_security: 'starttls',
     smtp_username: '',
     smtp_password: '',
@@ -100,6 +104,7 @@ function fromDto(mb: MailboxDTO): FormState {
         // 0 is a real value (never delete on the server), not "unset".
         server_keep_days: String(mb.server_keep_days ?? 0),
         smtp_host: mb.smtp_host ?? '',
+        probe_enabled: mb.probe_enabled ?? false,
         smtp_port: mb.smtp_port ? String(mb.smtp_port) : EMPTY.smtp_port,
         smtp_security: mb.smtp_security || EMPTY.smtp_security,
         smtp_username: mb.smtp_username ?? '',
@@ -156,7 +161,7 @@ export function MailboxEditPage() {
 
     function set<K extends keyof FormState>(key: K, value: FormState[K]) {
         setForm(prev => ({ ...prev, [key]: value }));
-        if (key.startsWith('smtp_')) setProbeTestResult(null);
+        if (key.startsWith('smtp_') || key === 'probe_enabled') setProbeTestResult(null);
         else setTestResult(null);
     }
 
@@ -212,9 +217,15 @@ export function MailboxEditPage() {
         smtpHost !== '' && hostKey(smtpHost) === null
             ? t('validation.mailbox.smtpHostInvalid', { value: smtpHost })
             : undefined;
+    // The send check needs the host and the port; the authentication is optional.
+    const smtpHostRequiredError =
+        form.probe_enabled && smtpHost === '' ? t('validation.mailbox.smtpHostRequiredForProbe') : undefined;
     const smtpPort = Number(form.smtp_port);
-    const smtpPortError =
-        smtpHost !== '' && (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535)
+    const smtpPortError = !form.probe_enabled
+        ? undefined
+        : form.smtp_port.trim() === ''
+          ? t('validation.mailbox.smtpPortRequired')
+          : !Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535
             ? t('validation.common.numberOutOfRange', { min: 1, max: 65535 })
             : undefined;
     const smtpPasswordSet = existing.data?.smtp_password_set ?? false;
@@ -224,7 +235,7 @@ export function MailboxEditPage() {
         SMTP_CONNECTION_KEYS.some(key => form[key].trim() !== fromDto(existing.data as MailboxDTO)[key]);
     // Same rule as the IMAP password: a stored SMTP password serves only the server it was saved for.
     const smtpPasswordError =
-        smtpHost !== '' &&
+        form.probe_enabled &&
         form.smtp_username.trim() !== '' &&
         smtpPasswordSet &&
         smtpConnectionChanged &&
@@ -256,6 +267,7 @@ export function MailboxEditPage() {
         !daysError(form.recent_days) &&
         !serverKeepError &&
         !smtpHostError &&
+        !smtpHostRequiredError &&
         !smtpPortError &&
         !smtpPasswordError &&
         !passwordRequired &&
@@ -277,10 +289,11 @@ export function MailboxEditPage() {
             recent_days: form.recent_days === '' ? undefined : Number(form.recent_days),
             server_keep_days: Number(form.server_keep_days),
             smtp_host: smtpHost,
-            smtp_port: smtpHost === '' ? undefined : smtpPort,
-            smtp_security: smtpHost === '' ? undefined : form.smtp_security,
-            smtp_username: smtpHost === '' ? undefined : form.smtp_username.trim(),
-            smtp_password: smtpHost === '' || form.smtp_password === '' ? undefined : form.smtp_password,
+            probe_enabled: form.probe_enabled,
+            smtp_port: form.probe_enabled ? smtpPort : undefined,
+            smtp_security: form.probe_enabled ? form.smtp_security : undefined,
+            smtp_username: form.probe_enabled ? form.smtp_username.trim() : undefined,
+            smtp_password: form.probe_enabled && form.smtp_password !== '' ? form.smtp_password : undefined,
         };
     }
 
@@ -302,7 +315,7 @@ export function MailboxEditPage() {
         setTestResult(null);
         try {
             // The connection test concerns the IMAP settings only.
-            await testMailbox({ ...toInput(), smtp_host: undefined });
+            await testMailbox({ ...toInput(), smtp_host: undefined, probe_enabled: undefined });
             setTestResult({ ok: true });
         } catch (err) {
             setTestResult({ ok: false, message: t((err as ApiError).key, (err as ApiError).params) });
@@ -509,7 +522,7 @@ export function MailboxEditPage() {
                         onChange={e => set('smtp_host', e.target.value)}
                         placeholder='mail.example.jp'
                         hint={t('field.mailbox.smtpHostHint')}
-                        error={smtpHostError}
+                        error={smtpHostError ?? smtpHostRequiredError}
                         width='medium'
                         className='font-mono'
                     />
@@ -518,103 +531,113 @@ export function MailboxEditPage() {
                             {t('page.mailboxes.smtpHostMissing')}
                         </Alert>
                     )}
-                    <div className='mt-4 grid grid-cols-1 gap-4 md:grid-cols-2'>
-                        <div className='grid grid-cols-2 gap-4'>
-                            <SelectField
-                                label={t('field.connection.security')}
-                                value={form.smtp_security}
-                                onChange={e => setSmtpSecurity(e.target.value as SmtpSecurity)}
-                                disabled={smtpHost === ''}
-                            >
-                                <option value='ssl'>{t('value.connectionSecurity.ssl')}</option>
-                                <option value='starttls'>{t('value.connectionSecurity.starttls')}</option>
-                                <option value='none'>{t('value.connectionSecurity.none')}</option>
-                            </SelectField>
-                            <InputField
-                                label={t('field.connection.port')}
-                                type='number'
-                                inputMode='numeric'
-                                min={1}
-                                max={65535}
-                                value={form.smtp_port}
-                                onChange={e => set('smtp_port', e.target.value)}
-                                error={smtpPortError}
-                                disabled={smtpHost === ''}
-                            />
-                        </div>
-                        {smtpHost !== '' && form.smtp_security === 'none' && (
-                            <div className='md:col-span-2'>
-                                <Alert tone='warning'>{t('field.connection.securityNoneWarning')}</Alert>
+                    <CheckboxField
+                        className='mt-4'
+                        label={t('field.mailbox.probeEnabled')}
+                        hint={t('field.mailbox.probeEnabledHint')}
+                        checked={form.probe_enabled}
+                        onChange={e => set('probe_enabled', e.target.checked)}
+                    />
+                    {form.probe_enabled && (
+                        <>
+                            <div className='mt-4 grid grid-cols-1 gap-4 md:grid-cols-2'>
+                                <div className='grid grid-cols-2 gap-4'>
+                                    <SelectField
+                                        label={t('field.connection.security')}
+                                        value={form.smtp_security}
+                                        onChange={e => setSmtpSecurity(e.target.value as SmtpSecurity)}
+                                    >
+                                        <option value='ssl'>{t('value.connectionSecurity.ssl')}</option>
+                                        <option value='starttls'>{t('value.connectionSecurity.starttls')}</option>
+                                        <option value='none'>{t('value.connectionSecurity.none')}</option>
+                                    </SelectField>
+                                    <InputField
+                                        label={t('field.connection.port')}
+                                        type='number'
+                                        inputMode='numeric'
+                                        min={1}
+                                        max={65535}
+                                        value={form.smtp_port}
+                                        placeholder={String(DEFAULT_SMTP_PORT)}
+                                        required
+                                        onChange={e => set('smtp_port', e.target.value)}
+                                        error={smtpPortError}
+                                    />
+                                </div>
+                                {form.smtp_security === 'none' && (
+                                    <div className='md:col-span-2'>
+                                        <Alert tone='warning'>{t('field.connection.securityNoneWarning')}</Alert>
+                                    </div>
+                                )}
+                                <InputField
+                                    label={t('field.connection.username')}
+                                    autoComplete='off'
+                                    value={form.smtp_username}
+                                    onChange={e => set('smtp_username', e.target.value)}
+                                    hint={t('field.probe.smtpAuthHint')}
+                                />
+                                <div>
+                                    <InputField
+                                        label={
+                                            <span className='inline-flex flex-wrap items-center gap-2'>
+                                                {t('field.connection.password')}
+                                                {smtpPasswordSet && (
+                                                    <Badge tone='success' icon='check_circle'>
+                                                        {t('field.connection.passwordSet')}
+                                                    </Badge>
+                                                )}
+                                            </span>
+                                        }
+                                        type={showSmtpPassword ? 'text' : 'password'}
+                                        autoComplete='new-password'
+                                        value={form.smtp_password}
+                                        onChange={e => set('smtp_password', e.target.value)}
+                                        hint={smtpPasswordSet ? t('field.connection.passwordKeepHint') : undefined}
+                                        error={smtpPasswordError}
+                                        disabled={form.smtp_username.trim() === ''}
+                                    />
+                                    <CheckboxField
+                                        className='mt-1'
+                                        label={t('common.showPassword')}
+                                        checked={showSmtpPassword}
+                                        onChange={e => setShowSmtpPassword(e.target.checked)}
+                                    />
+                                </div>
                             </div>
-                        )}
-                        <InputField
-                            label={t('field.connection.username')}
-                            autoComplete='off'
-                            value={form.smtp_username}
-                            onChange={e => set('smtp_username', e.target.value)}
-                            hint={t('field.probe.smtpAuthHint')}
-                            disabled={smtpHost === ''}
-                        />
-                        <div>
-                            <InputField
-                                label={
-                                    <span className='inline-flex flex-wrap items-center gap-2'>
-                                        {t('field.connection.password')}
-                                        {smtpPasswordSet && (
-                                            <Badge tone='success' icon='check_circle'>
-                                                {t('field.connection.passwordSet')}
-                                            </Badge>
-                                        )}
-                                    </span>
-                                }
-                                type={showSmtpPassword ? 'text' : 'password'}
-                                autoComplete='new-password'
-                                value={form.smtp_password}
-                                onChange={e => set('smtp_password', e.target.value)}
-                                hint={smtpPasswordSet ? t('field.connection.passwordKeepHint') : undefined}
-                                error={smtpPasswordError}
-                                disabled={smtpHost === '' || form.smtp_username.trim() === ''}
-                            />
-                            <CheckboxField
-                                className='mt-1'
-                                label={t('common.showPassword')}
-                                checked={showSmtpPassword}
-                                onChange={e => setShowSmtpPassword(e.target.checked)}
-                            />
-                        </div>
-                    </div>
-                    {smtpHost !== '' && !form.enabled && (
-                        <p className='mt-3 text-sm text-muted'>{t('page.mailboxes.probeDisabledNote')}</p>
+                            {!form.enabled && (
+                                <p className='mt-3 text-sm text-muted'>{t('page.mailboxes.probeDisabledNote')}</p>
+                            )}
+                            <div className='mt-4 flex flex-col gap-3'>
+                                <div>
+                                    <Button
+                                        icon='send'
+                                        loading={probeTesting}
+                                        disabled={
+                                            smtpHost === '' ||
+                                            !!smtpPortError ||
+                                            !!smtpPasswordError ||
+                                            probeAddress === '' ||
+                                            form.address.trim() === '' ||
+                                            !!emailError
+                                        }
+                                        onClick={() => void testProbe()}
+                                    >
+                                        {t('action.probe.smtpTest')}
+                                    </Button>
+                                </div>
+                                {probe.data && probeAddress === '' && (
+                                    <Alert tone='info'>{t('page.mailboxes.probeNoAddress')}</Alert>
+                                )}
+                                {probeTestResult && (
+                                    <Alert tone={probeTestResult.ok ? 'success' : 'danger'}>
+                                        {probeTestResult.ok
+                                            ? t('result.probe.smtpTestSent', { to: probeAddress })
+                                            : probeTestResult.message}
+                                    </Alert>
+                                )}
+                            </div>
+                        </>
                     )}
-                    <div className='mt-4 flex flex-col gap-3'>
-                        <div>
-                            <Button
-                                icon='send'
-                                loading={probeTesting}
-                                disabled={
-                                    smtpHost === '' ||
-                                    !!smtpPortError ||
-                                    !!smtpPasswordError ||
-                                    probeAddress === '' ||
-                                    form.address.trim() === '' ||
-                                    !!emailError
-                                }
-                                onClick={() => void testProbe()}
-                            >
-                                {t('action.probe.smtpTest')}
-                            </Button>
-                        </div>
-                        {smtpHost !== '' && probe.data && probeAddress === '' && (
-                            <Alert tone='info'>{t('page.mailboxes.probeNoAddress')}</Alert>
-                        )}
-                        {probeTestResult && (
-                            <Alert tone={probeTestResult.ok ? 'success' : 'danger'}>
-                                {probeTestResult.ok
-                                    ? t('result.probe.smtpTestSent', { to: probeAddress })
-                                    : probeTestResult.message}
-                            </Alert>
-                        )}
-                    </div>
                 </Card>
 
                 <Card>

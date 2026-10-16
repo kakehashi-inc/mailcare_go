@@ -285,33 +285,33 @@ func LatestProbeMails(db *sql.DB) (map[int64]*ProbeMail, error) {
 	return out, nil
 }
 
-// KnownProbeTokens returns which of the tokens belong to a recorded probe
-// mail (any status).
-func KnownProbeTokens(db *sql.DB, tokens []string) (map[string]bool, error) {
-	known := map[string]bool{}
+// ProbeAddressesByToken returns the sending address of the recorded probe
+// mails (any status) among the tokens, keyed by token.
+func ProbeAddressesByToken(db *sql.DB, tokens []string) (map[string]string, error) {
+	out := map[string]string{}
 	for start := 0; start < len(tokens); start += 500 {
 		batch := tokens[start:min(start+500, len(tokens))]
 		args := make([]any, 0, len(batch))
 		for _, t := range batch {
 			args = append(args, t)
 		}
-		rows, err := db.Query(`SELECT token FROM probe_mails WHERE token IN (`+placeholders(len(batch))+`)`, args...)
+		rows, err := db.Query(`SELECT token, address FROM probe_mails WHERE token IN (`+placeholders(len(batch))+`)`, args...)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var t string
-			if err := rows.Scan(&t); err != nil {
+			var t, a string
+			if err := rows.Scan(&t, &a); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			known[t] = true
+			out[t] = a
 		}
 		if err := rows.Close(); err != nil {
 			return nil, err
 		}
 	}
-	return known, nil
+	return out, nil
 }
 
 // DeleteOldProbeMails removes the closed probe mails (arrived, recovered,

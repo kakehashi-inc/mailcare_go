@@ -63,19 +63,14 @@ func printMailbox(mb *models.Mailbox) {
 		smtpHost = "(not set)"
 	}
 	fmt.Printf("smtp host:     %s\n", smtpHost)
-	if mb.SmtpHost != "" {
-		port, sec := mb.SmtpPort, mb.SmtpSecurity
-		if port == 0 {
-			port = DefaultSMTPPort
-		}
-		if sec == "" {
-			sec = DefaultSMTPSecurity
-		}
-		conn := fmt.Sprintf("port %d (%s)", port, sec)
+	if mb.ProbeEnabled {
+		conn := fmt.Sprintf("on: port %d (%s)", mb.SmtpPort, mb.SmtpSecurity)
 		if mb.SmtpUsername != "" {
 			conn += " as " + mb.SmtpUsername
 		}
-		fmt.Printf("smtp send:     %s\n", conn)
+		fmt.Printf("send check:    %s\n", conn)
+	} else {
+		fmt.Printf("send check:    off\n")
 	}
 	fmt.Printf("last fetch:    %s (%s)\n", formatNullTime(mb.LastFetchedAt), fetchStatus(mb))
 	if mb.LastFetchError != "" {
@@ -96,17 +91,19 @@ type MailboxAddCmd struct {
 	RecentDays  int    `help:"Days to look back on later checks (default: ${default_recent_days})" name:"recent-days" default:"0"`
 	// ServerKeepDays: -1 = the default.
 	ServerKeepDays int    `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never (default: ${default_server_keep_days}, or mail_keep_days when shorter)" name:"server-keep-days" default:"-1"`
-	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of the sending servers; the probe mails are sent through it with --smtp-port and the other --smtp-* options; not the server of the notification mails; optional, default: not set)" name:"smtp-host"`
+	SmtpHost       string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (one of the sending servers; with --probe on the probe mails are sent through it; not the server of the notification mails; optional, default: not set)" name:"smtp-host"`
 	DisplayName    string `help:"Display name" name:"display-name"`
 	Disabled       bool   `help:"Register as disabled (not checked automatically)"`
 	smtpConnectionFlags
 }
 
-// smtpConnectionFlags are the flags of the rest of the SMTP connection of
-// a mailbox (with --smtp-host, the server the probe mails of the address
-// are sent through). They apply only together with a host.
+// smtpConnectionFlags are the flags of the send check of a mailbox: on, the
+// probe mails of the address are sent through --smtp-host with the other
+// flags (the port is required, the authentication optional); off, the host
+// only serves the judgement of the sending servers.
 type smtpConnectionFlags struct {
-	SMTPPort     int     `help:"Port of the SMTP server (default: ${default_smtp_port})" name:"smtp-port" default:"0"`
+	Probe        string  `help:"Send check: on sends probe mails through the SMTP server (needs --smtp-host and --smtp-port), off does not (default on add: off; on update: unchanged)" name:"probe" enum:",on,off" default:""`
+	SMTPPort     int     `help:"Port of the SMTP server for the send check (required with --probe on, e.g. ${default_smtp_port})" name:"smtp-port" default:"0"`
 	SMTPSecurity string  `help:"Connection security of the SMTP server (default: starttls)" name:"smtp-security" enum:",ssl,starttls,none" default:""`
 	SMTPUsername *string `help:"Username of the SMTP server (\"\" = no authentication)" name:"smtp-username"`
 	SMTPPassword string  `help:"Password of the SMTP server" name:"smtp-password"`
@@ -114,6 +111,10 @@ type smtpConnectionFlags struct {
 
 // apply copies the given flags onto an input.
 func (f *smtpConnectionFlags) apply(in *MailboxInput) {
+	if f.Probe != "" {
+		on := f.Probe == "on"
+		in.ProbeEnabled = &on
+	}
 	if f.SMTPPort != 0 {
 		in.SmtpPort = f.SMTPPort
 	}
@@ -260,7 +261,7 @@ type MailboxUpdateCmd struct {
 	// ServerKeepDays: -1 = unchanged.
 	ServerKeepDays int `help:"Days (from the mail's date) a classified notice (recognized with certainty: not by subject or display name alone, not an auto-generated message) or junk mail stays on the IMAP server before the daily cleanup deletes it there, at most mail_keep_days; 0 = never" name:"server-keep-days" default:"-1"`
 	// SmtpHost: nil = unchanged, "" clears it.
-	SmtpHost    *string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (not the server of the notification mails; \"\" clears it and the rest of the SMTP connection)" name:"smtp-host"`
+	SmtpHost    *string `help:"Host name of the SMTP server that sends the mail of this address, as it names itself in the Received headers it adds (not the server of the notification mails; \"\" clears it, which needs --probe off)" name:"smtp-host"`
 	DisplayName string  `help:"Display name" name:"display-name"`
 	Enabled     bool    `help:"Enable the mailbox"`
 	Disabled    bool    `help:"Disable the mailbox"`
