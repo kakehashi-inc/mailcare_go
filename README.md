@@ -4,8 +4,9 @@ Japanese version: [README-ja.md](README-ja.md)
 
 ## 1. Overview
 
-MailCare groups the bounces ("could not be delivered" and "delivery delayed" notices) that arrive at the mailboxes it
-monitors by cause, and shows the problems the sending side has to act on. It also sends probe mails and checks that
+MailCare groups the bounces (delivery failure notices) that arrive at the mailboxes it monitors by cause, and shows the
+problems the sending side has to act on, such as a blocked sending IP, failed sender authentication (SPF, DKIM or DMARC)
+or a mail server that cannot resolve names. It also sends probe mails and checks that
 they arrive, so that delays and failures in sending and receiving mail are noticed.
 It is a single executable for Windows, macOS and Linux, operated from a web browser.
 
@@ -128,7 +129,7 @@ Besides the configured mail servers (IMAP and SMTP), MailCare connects to:
 
 ### 1.7 Command line
 
-When the server is running, command-line operations are handed to it. Main commands:
+Commands that run jobs, such as sync and Reclassify, are handed to the server when it is running. Main commands:
 
 | Command | Meaning |
 | --- | --- |
@@ -142,7 +143,8 @@ When the server is running, command-line operations are handed to it. Main comma
 | `mailcare probe send` / `mailcare probe check` | Send the probe mails now / check their arrival now |
 | `mailcare jobs list` | Show the job history |
 
-All commands are listed by `mailcare --help`.
+All commands are listed by `mailcare --help`; the [command-line reference](Documents/command-line-reference.md)
+describes every command and option.
 
 ### 1.8 Bundled fonts
 

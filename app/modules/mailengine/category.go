@@ -9,7 +9,7 @@ import (
 )
 
 // Category is the outcome of the category rule table for one bounce (design
-// 5.4): the kind of problem, the unit an administrator acts on, the party
+// document "mail classification" 4.1): the kind of problem, the unit an administrator acts on, the party
 // that decides the outcome and whether the mail administrator can act at all.
 type Category struct {
 	Category    string
