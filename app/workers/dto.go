@@ -124,9 +124,10 @@ type MailboxStatsDTO struct {
 
 // MailboxDTO is a mailbox without its password. The connection settings
 // (host, port, security, username, folder), the fetch ranges, the server
-// retention and the SMTP host (one of our own sending servers, which the
-// settings show to administrators only as well) are shown to
-// administrators only; redactMailboxDTO blanks them for other users.
+// retention and the SMTP connection (host, port, security, username; the
+// host is one of the sending servers, which the settings show to
+// administrators only as well) are shown to administrators only;
+// redactMailboxDTO blanks them for other users.
 type MailboxDTO struct {
 	ID             int64  `json:"id"`
 	Address        string `json:"address"`

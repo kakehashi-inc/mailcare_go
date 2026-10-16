@@ -514,7 +514,7 @@ export function MailboxEditPage() {
                         className='font-mono'
                     />
                     {smtpHost === '' && noGlobalHost && (
-                        <Alert tone='warning' className='mt-3'>
+                        <Alert tone='info' className='mt-3'>
                             {t('page.mailboxes.smtpHostMissing')}
                         </Alert>
                     )}

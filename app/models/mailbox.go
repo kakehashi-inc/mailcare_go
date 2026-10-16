@@ -40,8 +40,7 @@ type Mailbox struct {
 	// SmtpHost is the host name of the SMTP server that sends the mail of
 	// this address (lower-case, without the trailing dot; "" = not set, also
 	// the value of a row saved before the setting existed). The host names
-	// of every mailbox are our own sending servers (app/modules
-	// ResolveOwnSending).
+	// of every mailbox are sending servers (app/modules ResolveOwnSending).
 	SmtpHost string `json:"smtp_host"`
 	// The rest of the SMTP connection of SmtpHost, through which the probe
 	// mails of this address are sent (app/modules/probe.go): port,

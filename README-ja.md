@@ -69,7 +69,7 @@ Windows / macOS / Linux で動く単一の実行ファイルで、ブラウザ�
 3. ブラウザで `http://<サーバー>:9790/` を開き、初期設定画面で最初の管理者を作成します。
 4. 「設定 → メールアドレス」で監視するメールアドレスを登録し、「接続テスト」で IMAP に接続できることを確認します。
 5. 必要に応じて設定します。
-   - 「設定 → メールアドレス」: アドレスごとに、そのアドレスのメールを送信する「SMTP サーバー（送信）」を、そのサーバーが自分で名乗る名前（例: `mail.example.jp`）で入れます。アドレスにホスト名が無い（ここにも一般設定にも無い）と、そのアドレスでは自分たちのメールサーバーから送っていないメールの配信失敗通知を見分けられません。
+   - 「設定 → メールアドレス」: アドレスごとに、そのアドレスのメールを送信する「SMTP サーバー（送信）」を、そのサーバーが自分で名乗る名前（例: `mail.example.jp`）で入れます（任意）。確認メールを使う場合は、同じ「送信サーバー」欄で接続方式・ポート・ユーザー名・パスワードも設定します。設定しなくても動作しますが、アドレスにホスト名が無い（ここにも一般設定にも無い）と、そのアドレスでは送信元から送っていないメールの配信失敗通知を見分けないため判定が正しくないことがあり、確認メールも送りません。
    - 「設定 → 一般設定」: チェック時刻、クリーンアップ時刻、メールの保持日数、AI エージェント（モデル、推論レベル、自動分析の有効 / 無効）、メールアドレスに紐づかない自分たちの送信元（IPv4 / IPv6 とホスト名。ここのホスト名はすべてのアドレスに効きます）、DNS 検証
    - 「設定 → 通知」: SMTP サーバーと通知先の利用者、通知の時刻と間隔
    - 「設定 → 確認メール」: 確認メールの宛先と、それを受信する確認メールサーバー（IMAP）、送信時刻、遅延判断時間・障害判断時間。確認メールを送るメールアドレスごとに、「設定 → メールアドレス」の「送信サーバー」で SMTP サーバー（ホスト名に加えて接続方式・ポート・ユーザー名・パスワード）を設定します（「テスト送信」で宛先に届くか確かめられます）。確認メール専用のアドレスを用意してください（到着を確認したメールを削除するので、削除できる権限が必要です）
@@ -139,7 +139,7 @@ MailCare は、監視するメールアドレスの IMAP サーバーと、通�
 | `mailcare mailbox add --address a@example.com --host imap.example.com --username a@example.com` | 監視するメールアドレスを登録する（パスワードは入力を求められる） |
 | `mailcare sync --wait` | 今すぐ全メールアドレスを同期する（取り込み → まとめ → 分析）。`--all-time` を付けると期間に関係なくすべてのメールを確認する |
 | `mailcare schedule set 06:00 12:00 18:00` | 自動チェックの時刻を変更する |
-| `mailcare mailbox update a@example.com --smtp-host mail.example.jp` | メールアドレスの SMTP サーバー（送信）を設定する（`mailbox add` でも `--smtp-host` を指定できる。`--smtp-host ""` で消す。パスワードは不要） |
+| `mailcare mailbox update a@example.com --smtp-host mail.example.jp` | メールアドレスの SMTP サーバー（送信）を設定する（`mailbox add` でも `--smtp-host` を指定できる。確認メールの送信に使う接続は `--smtp-port`、`--smtp-security`、`--smtp-username`、`--smtp-password`。`--smtp-host ""` で接続ごと消す。パスワードが保存されている間に接続を変えるときは `--smtp-password` も必要） |
 | `mailcare settings show` / `mailcare settings set <キー> <値>` | 設定を表示する / 変更する |
 | `mailcare settings set own_sending_hosts mail1.example.jp,mail2.example.jp` | メールアドレスに紐づかない自分たちの送信元を設定する（`own_sending_ipv4`、`own_sending_ipv6`、`own_sending_hosts`。カンマ区切り。`""` で一覧を消す） |
 | `mailcare settings set dns_check_enabled 0` | DNS 検証を無効にする（`dns_check_resolvers` でリゾルバーを、`dns_check_system_resolver_only 1` で OS のリゾルバーだけを使う設定にする） |

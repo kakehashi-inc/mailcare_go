@@ -116,3 +116,30 @@ func TestProbeEndpoints(t *testing.T) {
 		t.Errorf("check: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A mailbox is saved without any SMTP setting, and clearing the host clears
+// the rest of the SMTP connection.
+func TestMailboxSavesWithoutSMTP(t *testing.T) {
+	s := newSeededCore(t)
+	rec := do(t, s.h, http.MethodPost, "/api/v1/mailboxes", map[string]any{
+		"address": "nosmtp@example.test", "imap_host": "imap.example.test", "imap_username": "u", "imap_password": "p",
+	}, s.admin)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"smtp_host":""`) {
+		t.Fatalf("create without SMTP: %d %s", rec.Code, rec.Body.String())
+	}
+	in := modules.MailboxInputFrom(s.mb)
+	host := "smtp.example.test"
+	in.SmtpHost, in.SmtpUsername, in.SmtpPassword = &host, "ops", "pw"
+	if rec := do(t, s.h, http.MethodPut, "/api/v1/mailboxes/1", in, s.admin); rec.Code != http.StatusOK {
+		t.Fatalf("set SMTP: %d %s", rec.Code, rec.Body.String())
+	}
+	// Clearing the host needs no password and drops the rest, whatever
+	// the other SMTP fields carry.
+	empty := ""
+	in.SmtpHost, in.SmtpPort, in.SmtpUsername, in.SmtpPassword = &empty, 2525, "ops", ""
+	rec = do(t, s.h, http.MethodPut, "/api/v1/mailboxes/1", in, s.admin)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"smtp_host":""`) ||
+		!strings.Contains(rec.Body.String(), `"smtp_username":""`) || !strings.Contains(rec.Body.String(), `"smtp_password_set":false`) {
+		t.Fatalf("clear SMTP: %d %s", rec.Code, rec.Body.String())
+	}
+}

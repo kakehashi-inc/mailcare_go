@@ -110,8 +110,11 @@ It is a single executable for Windows, macOS and Linux, operated from a web brow
    "Test connection".
 5. Configure the rest as needed:
    - "Settings -> Mailboxes": for each address, the "SMTP server (sending)" that sends its mail, written as that
-     server names itself in the mail it handles (for example `mail.example.jp`). Without a host name for an address
-     (here or in the general settings), MailCare cannot tell the bounces of mail you did not send for that address.
+     server names itself in the mail it handles (for example `mail.example.jp`; optional). For the delivery probe,
+     set the connection security, port, username and password in the same "Sending server" section. MailCare works
+     without it, but without a host name for an address (here or in the general settings) the bounces of mail that
+     was not sent from the sending servers are not told apart for that address, so some may be judged wrongly, and
+     the address sends no probe mail.
    - "Settings -> General": check times, cleanup time, mail retention, AI agent (model, reasoning level, automatic
      analysis on / off), your own sending servers that belong to no mail address (IPv4 / IPv6 addresses and host
      names; a host name here counts for every address) and the DNS check
@@ -217,7 +220,7 @@ While the server is running, command line operations are handed to it. Main comm
 | `mailcare mailbox add --address a@example.com --host imap.example.com --username a@example.com` | Register a mail address to watch (the password is prompted for) |
 | `mailcare sync --wait` | Sync every mail address now (fetch -> group -> analyze). Add `--all-time` to check every mail regardless of the period |
 | `mailcare schedule set 06:00 12:00 18:00` | Change the automatic check times |
-| `mailcare mailbox update a@example.com --smtp-host mail.example.jp` | Set the SMTP server (sending) of an address (`mailbox add` takes `--smtp-host` too; `--smtp-host ""` clears it; no password needed) |
+| `mailcare mailbox update a@example.com --smtp-host mail.example.jp` | Set the SMTP server (sending) of an address (`mailbox add` takes `--smtp-host` too; the connection the probe mails are sent through takes `--smtp-port`, `--smtp-security`, `--smtp-username` and `--smtp-password`; `--smtp-host ""` clears the whole connection; changing the connection while a password is stored needs `--smtp-password` too) |
 | `mailcare settings show` / `mailcare settings set <key> <value>` | Show / change the settings |
 | `mailcare settings set own_sending_hosts mail1.example.jp,mail2.example.jp` | Set your own sending servers that belong to no address (`own_sending_ipv4`, `own_sending_ipv6`, `own_sending_hosts`; comma-separated, `""` clears the list) |
 | `mailcare settings set dns_check_enabled 0` | Switch the DNS check off (`dns_check_resolvers` sets the resolvers, `dns_check_system_resolver_only 1` uses only the operating system's resolver) |
