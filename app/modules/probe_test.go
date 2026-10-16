@@ -294,6 +294,12 @@ type probeIMAP struct {
 
 type probeLiteral struct{ *bytes.Reader }
 
+// quietIMAPLog drops the error log of the fake IMAP servers (a client that
+// closes right after LOGOUT makes the reply fail to write).
+type quietIMAPLog struct{}
+
+func (quietIMAPLog) Printf(string, ...any) {}
+
 func (l probeLiteral) Size() int64 { return int64(l.Reader.Len()) }
 
 func startProbeIMAP(t *testing.T) *probeIMAP {
@@ -310,6 +316,7 @@ func startProbeIMAP(t *testing.T) *probeIMAP {
 		},
 		InsecureAuth: true,
 		Caps:         imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}},
+		Logger:       quietIMAPLog{},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -637,8 +644,8 @@ func TestSchedulerQueuesProbeJobs(t *testing.T) {
 
 // Verified probe mails (recorded token, recorded sender) are arrivals and
 // are deleted. Any other probe mail is deleted only when it carries the
-// current identifier, is a day old and its token is no open record; a
-// recorded token found only with another sender is reported.
+// current identifier, is ProbeLeftoverMinAge old and its token is no open
+// record; a recorded token found only with another sender is reported.
 func TestSortProbeMessages(t *testing.T) {
 	now := time.Now()
 	tok := func(s string) string { return "00000000000000" + s }
@@ -649,17 +656,18 @@ func TestSortProbeMessages(t *testing.T) {
 		tok("99"): {Token: tok("99"), Address: "g@example.test", Status: models.ProbeStatusArrived},
 	}
 	day := 24 * time.Hour
+	old := now.Add(-ProbeLeftoverMinAge - day)
 	found := []mailengine.ProbeMessage{
 		{UID: 1, Token: tok("aa"), Identifier: "MC", From: "A@example.test", ReceivedAt: now.Add(-2 * time.Minute)},
 		{UID: 2, Token: tok("aa"), Identifier: "MC", From: "a@example.test", ReceivedAt: now.Add(-time.Minute)}, // the same mail twice
-		{UID: 3, Token: tok("aa"), Identifier: "MC", From: "other@example.test", ReceivedAt: now.Add(-2 * day)}, // open row: kept
+		{UID: 3, Token: tok("aa"), Identifier: "MC", From: "other@example.test", ReceivedAt: old},               // open row: kept
 		{UID: 4, Token: tok("bb"), Identifier: "MC", From: "b@example.test", ReceivedAt: now.Add(-time.Hour)},   // too young
 		{UID: 5, Token: tok("cc"), Identifier: "MC", From: "c@example.test", ReceivedAt: now.Add(-400 * day)},   // unrecorded, old
 		{UID: 6, Token: tok("dd"), Identifier: "MC", From: "d@example.test"},                                    // no arrival time
 		{UID: 7, Token: tok("ee"), Identifier: "MC", From: "bounce@relay.example.test", ReceivedAt: now.Add(-time.Minute)},
-		{UID: 8, Token: tok("ff"), Identifier: "OTHER", From: "f@example.test", ReceivedAt: now.Add(-2 * day)}, // another identifier
-		{UID: 9, Token: tok("99"), Identifier: "MC", From: "x@example.test", ReceivedAt: now.Add(-2 * day)},    // closed row, old
-		{UID: 10, Token: tok("cc"), Identifier: "MC", From: "c@example.test"},                                  // no time: kept
+		{UID: 8, Token: tok("ff"), Identifier: "OTHER", From: "f@example.test", ReceivedAt: old}, // another identifier
+		{UID: 9, Token: tok("99"), Identifier: "MC", From: "x@example.test", ReceivedAt: old},    // closed row, old
+		{UID: 10, Token: tok("cc"), Identifier: "MC", From: "c@example.test"},                    // no time: kept
 	}
 	got := sortProbeMessages(found, recorded, "MC", now)
 	if len(got.arrivals) != 2 || !got.arrivals[tok("aa")].Equal(now.Add(-2*time.Minute)) || !got.arrivals[tok("dd")].Equal(now) {
@@ -682,18 +690,17 @@ func TestSortProbeMessages(t *testing.T) {
 	if got.mismatched[tok("ee")] != "bounce@relay.example.test" || got.mismatched[tok("aa")] != "" {
 		t.Errorf("mismatched: %v", got.mismatched)
 	}
-	// At most ProbeCleanupMax unrecorded ones per check, the oldest (lowest
-	// UID) first; verified ones are not limited.
+	// Every unrecorded one old enough goes, however many.
 	var many []mailengine.ProbeMessage
-	for i := range ProbeCleanupMax + 5 {
+	const count = 1200
+	for i := range count {
 		many = append(many, mailengine.ProbeMessage{UID: uint32(i + 1), Token: fmt.Sprintf("1%015x", i), Identifier: "MC",
-			From: "x@example.test", ReceivedAt: now.Add(-2 * day)})
+			From: "x@example.test", ReceivedAt: old})
 	}
 	many = append(many, mailengine.ProbeMessage{UID: 9999, Token: tok("aa"), Identifier: "MC", From: "a@example.test", ReceivedAt: now})
 	got = sortProbeMessages(many, recorded, "MC", now)
-	if len(got.unrecorded) != ProbeCleanupMax || !got.unrecorded[1] || got.unrecorded[ProbeCleanupMax+1] ||
-		!got.remove[9999] || len(got.remove) != ProbeCleanupMax+1 {
-		t.Errorf("limit: %d unrecorded, %d to remove", len(got.unrecorded), len(got.remove))
+	if len(got.unrecorded) != count || !got.remove[9999] || len(got.remove) != count+1 {
+		t.Errorf("many: %d unrecorded, %d to remove", len(got.unrecorded), len(got.remove))
 	}
 }
 

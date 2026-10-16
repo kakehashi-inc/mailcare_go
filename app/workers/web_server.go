@@ -5,11 +5,13 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"math"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -382,4 +384,27 @@ func (c *core) serveSPA(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ctype)
 	http.ServeContent(w, r, p, time.Time{}, strings.NewReader(string(data)))
+}
+
+// readPage reads the paging of a list request: page (from 1) and per_page
+// (from 1 to maxPerPage, defaultPerPage when absent). Any page whose
+// offset fits an int is accepted, so every row is reachable; ok is false
+// for an invalid value.
+func readPage(q url.Values, defaultPerPage, maxPerPage int) (page, perPage int, ok bool) {
+	page, perPage = 1, defaultPerPage
+	if s := q.Get("per_page"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > maxPerPage {
+			return 0, 0, false
+		}
+		perPage = n
+	}
+	if s := q.Get("page"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n-1 > math.MaxInt/perPage {
+			return 0, 0, false
+		}
+		page = n
+	}
+	return page, perPage, true
 }

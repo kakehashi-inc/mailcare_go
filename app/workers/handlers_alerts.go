@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"net/http"
 	"regexp"
-	"strconv"
 
 	"mailcare/app/models"
 	"mailcare/app/modules"
@@ -63,9 +62,11 @@ func groupDTOs(idx *sql.DB, groups []*models.BounceGroup) ([]GroupDTO, error) {
 
 // Paging of the group list.
 const (
+	// groupDetailMessages is how many mails the group detail lists (the
+	// newest; the rest through the mail list's group filter).
+	groupDetailMessages  = 200
 	defaultGroupPageSize = 50
 	maxGroupPageSize     = 500
-	maxGroupPage         = 1000000 // bounds the offset
 )
 
 // handleListGroups answers one page (page, per_page) of the groups of a
@@ -85,22 +86,10 @@ func (c *core) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
-	page, perPage := 1, defaultGroupPageSize
-	for _, p := range []struct {
-		name string
-		dst  *int
-		max  int
-	}{{"page", &page, maxGroupPage}, {"per_page", &perPage, maxGroupPageSize}} {
-		s := q.Get(p.name)
-		if s == "" {
-			continue
-		}
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 || n > p.max {
-			writeError(w, http.StatusBadRequest, "system.invalidRequest")
-			return
-		}
-		*p.dst = n
+	page, perPage, ok := readPage(q, defaultGroupPageSize, maxGroupPageSize)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
 	}
 	scope, ok := modules.GroupListScope(q.Get("scope"))
 	if !ok {
@@ -188,7 +177,9 @@ func (c *core) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	messages, _, err := models.ListMessages(idx, models.MessageFilter{GroupKey: g.GroupKey, Limit: 200})
+	// The newest groupDetailMessages mails; messages_total says how many
+	// the group has, all of them listed by the mail list's group filter.
+	messages, messagesTotal, err := models.ListMessages(idx, models.MessageFilter{GroupKey: g.GroupKey, Limit: groupDetailMessages})
 	if err != nil {
 		writeInternalError(w, "failed to list messages", err)
 		return
@@ -209,7 +200,8 @@ func (c *core) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"group": toGroupDTO(g, completed, latest), "stats": stats, "report": report,
-		"reports": reportDTOs, "messages": toMessageDTOs(messages), "history": toStateChangeDTOs(history),
+		"reports": reportDTOs, "messages": toMessageDTOs(messages), "messages_total": messagesTotal,
+		"history": toStateChangeDTOs(history),
 	})
 }
 

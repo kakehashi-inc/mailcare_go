@@ -47,6 +47,7 @@ var categoryTones = map[string]tone{
 	"dmarc_dkim_failed": toneWarning, "dmarc_not_authenticated": toneWarning, "user_unknown": toneNeutral,
 	"mailbox_full": toneNeutral, "mailbox_disabled": toneNeutral, "domain_not_found": toneNeutral,
 	"delivery_delay": toneInfo, "dns_resolver_failure": toneDanger, "dns_failure_external": toneInfo,
+	"dns_lookup_failure": toneWarning,
 }
 
 var stateTones = map[string]tone{"open": toneDanger, "resolved": toneSuccess, "ignored": toneNeutral}
@@ -305,7 +306,7 @@ func groupBadges(g *models.BounceGroup, a Analysis, t func(string, map[string]an
 	if a.Unanalyzable && a.Status != "running" {
 		list = append(list, badge{t("value.reportStatus.unanalyzable", nil), toneDanger})
 	}
-	if g.Actionable && g.NeedsAnalysis && a.Status != "running" {
+	if g.NeedsAnalysis && a.Status != "running" {
 		list = append(list, badge{t("field.group.needsAnalysis", nil), toneWarning})
 	}
 	return list

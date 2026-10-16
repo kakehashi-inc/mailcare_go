@@ -28,29 +28,29 @@ type spfLookupFunc func(ctx context.Context, domain string) dnscheck.SPFResult
 // mailengine.SourceSPFResolver for the domains of the monitored mail
 // addresses, in front of the resolvers of the run and of the stored lookups
 // (sending_source_lookups, one row per kind and name, shared by every mailbox
-// and run). A row at most SourceCacheFreshAge old is used without asking,
-// so mailboxes sharing an SMTP host or a domain, and the runs of the same
-// hour, cost one lookup; a row dated after now (the clock was set back) is
+// and run). A row at most dnscheck.CacheFreshAge old (the one period of
+// every stored DNS lookup) is used without asking, so mailboxes sharing an
+// SMTP host or a domain, and the runs of that period, cost one lookup; a row dated after now (the clock was set back) is
 // never fresh. Otherwise the source is looked up: a complete lookup (a host
 // name answered for both families, an SPF record evaluated completely)
 // replaces the row (one short write, outside the transaction of any
 // message), except that a complete lookup that found nothing (no address,
-// no host name) never replaces a non-empty row at most SourceCacheMaxAge
-// old: that row is used as it is (keptRow), so that one odd or spoofed
-// empty answer cannot shrink the sending sources (the statement that writes checks
-// it again, so a run storing an empty answer cannot replace the row another
-// run stored after keptRow looked); a lookup that is not complete
-// never replaces it but falls back
-// to it when it is at most SourceCacheMaxAge old, which then counts as
-// complete, so that a DNS failure for a while neither drops the addresses
-// of the sending servers nor stops the backscatter rule. Without such a row the
-// lookup stays incomplete: the backscatter rule does not apply in the run
-// (an address of a sending source may be missing; a host name still matches as text).
-// The rows no source refers to at that moment (read again then, so that a
-// source another job has just added keeps its row) are deleted before the
-// first lookup of the run. Every source is looked up at most once per run;
+// no host name) never replaces a non-empty row, whatever its age: that row
+// is used as it is (keptRow), so that an odd or spoofed empty answer
+// cannot shrink the sending sources (the statement that writes checks it
+// again, so a run storing an empty answer cannot replace the row another
+// run stored after keptRow looked); a lookup that is not complete never
+// replaces it but falls back to it, whatever its age, which then counts as
+// complete, so that a DNS failure neither drops the addresses of the
+// sending servers nor stops the backscatter rule, however long it lasts.
+// Without such a row the lookup stays incomplete: the backscatter rule
+// does not apply in the run (an address of a sending source may be
+// missing; a host name still matches as text). The rows no source refers
+// to at that moment (read again then, so that a source another job has
+// just added keeps its row) are deleted before the first lookup of the
+// run; no row is deleted for its age. Every source is looked up at most once per run;
 // the grouping asks only when a message needs an address compared
-// (mailengine sourceLookups), and may ask for several host names at once.
+// (mailengine sourceLookups), and asks for the host names one after another.
 type sourceCache struct {
 	db         *sql.DB
 	now        func() time.Time
@@ -134,17 +134,13 @@ func mailboxDomain(address string) (string, bool) {
 }
 
 // sourceSPFDomains returns the domains whose SPF record a run evaluates: the
-// distinct domains of the mailboxes in mailbox order, at most
-// MaxSPFDomains.
+// distinct domains of the mailboxes in mailbox order.
 func sourceSPFDomains(mailboxes []*models.Mailbox) []string {
 	var out []string
 	for _, mb := range mailboxes {
 		d, ok := mailboxDomain(mb.Address)
 		if !ok || slices.Contains(out, d) {
 			continue
-		}
-		if len(out) == MaxSPFDomains {
-			break
 		}
 		out = append(out, d)
 	}
@@ -156,12 +152,10 @@ func sourceSPFDomains(mailboxes []*models.Mailbox) []string {
 // and, when the lookup was answered (both families), stored for every kind
 // the name is (the SMTP host of a mailbox, a host name of the setting). An
 // answer without any address stores nothing while one of those kinds holds
-// a non-empty row at most SourceCacheMaxAge old; that row's addresses
-// are used (answered; keptRow).
-// When the lookup is not answered the freshest stored ones at most
-// SourceCacheMaxAge old stand in (answered then); without such a row the
-// addresses the lookup found, if any, are returned unanswered, and nothing
-// is stored.
+// a non-empty row; that row's addresses are used (answered; keptRow).
+// When the lookup is not answered the freshest stored ones stand in
+// (answered then); without such a row the addresses the lookup found, if
+// any, are returned unanswered, and nothing is stored.
 func (c *sourceCache) ResolveHost(ctx context.Context, host string) ([]netip.Addr, bool) {
 	c.mu.Lock()
 	res, ok := c.hosts[host]
@@ -171,7 +165,7 @@ func (c *sourceCache) ResolveHost(ctx context.Context, host string) ([]netip.Add
 	}
 	c.prune()
 	kinds := c.hostKinds[host]
-	if row := c.storedRow(kinds, host, SourceCacheFreshAge, true); row != nil {
+	if row := c.storedRow(kinds, host, true); row != nil {
 		res = sourceHost{addrs: storedAddrs(row), answered: true}
 	} else {
 		var addrs []netip.Addr
@@ -209,7 +203,7 @@ func (c *sourceCache) ResolveHost(ctx context.Context, host string) ([]netip.Add
 				}
 			}
 		default:
-			if row := c.storedRow(kinds, host, SourceCacheMaxAge, false); row != nil {
+			if row := c.storedRow(kinds, host, false); row != nil {
 				res = sourceHost{addrs: storedAddrs(row), answered: true}
 			}
 		}
@@ -223,10 +217,9 @@ func (c *sourceCache) ResolveHost(ctx context.Context, host string) ([]netip.Add
 // ResolveSPF evaluates the SPF record of a domain of the monitored mail
 // addresses (mailengine.SourceSPFResolver): the stored result while fresh,
 // else evaluated, a complete evaluation stored (one that found nothing only
-// when the stored result is empty or older than SourceCacheMaxAge, else
-// the stored result is used as it is: keptRow); an incomplete one falls
-// back to the stored result when it is at most SourceCacheMaxAge old,
-// which counts as complete, and stays incomplete without one. A stored
+// when the stored result is empty, else the stored result is used as it
+// is: keptRow); an incomplete one falls back to the stored result, whatever
+// its age, which counts as complete, and stays incomplete without one. A stored
 // result that takes in too much address space is never used (usableSPF).
 // Without an SPF lookup (the DNS check is off) nothing is read or used:
 // incomplete.
@@ -242,7 +235,7 @@ func (c *sourceCache) ResolveSPF(ctx context.Context, domain string) ([]netip.Pr
 	}
 	c.prune()
 	kinds := []string{models.SendingSourceKindSPF}
-	if row := usableSPF(c.storedRow(kinds, domain, SourceCacheFreshAge, true)); row != nil {
+	if row := usableSPF(c.storedRow(kinds, domain, true)); row != nil {
 		res = sourceSPF{prefixes: parseStoredPrefixes(row.Addresses), hosts: row.Hosts, complete: true}
 	} else {
 		r := c.lookupSPF(ctx, domain)
@@ -274,7 +267,7 @@ func (c *sourceCache) ResolveSPF(ctx context.Context, domain string) ([]netip.Pr
 				}
 			}
 		default:
-			if row := usableSPF(c.storedRow(kinds, domain, SourceCacheMaxAge, false)); row != nil {
+			if row := usableSPF(c.storedRow(kinds, domain, false)); row != nil {
 				res = sourceSPF{prefixes: parseStoredPrefixes(row.Addresses), hosts: row.Hosts, complete: true}
 			}
 		}
@@ -298,12 +291,13 @@ func usableSPF(row *models.SendingSourceLookup) *models.SendingSourceLookup {
 }
 
 // storedRow returns the most recently fetched stored row of a name among
-// its kinds that is at most maxAge old (nil when there is none or it cannot
-// be read). fresh asks for a row to use without looking the source up: a
-// row dated after now (the clock was set back since it was written) has no
-// known age and never is one; it may still stand in for a failed lookup
-// (fresh false) until the daily cleanup deletes it (SourceCacheMaxFuture).
-func (c *sourceCache) storedRow(kinds []string, name string, maxAge time.Duration, fresh bool) *models.SendingSourceLookup {
+// its kinds (nil when there is none or it cannot be read). fresh asks for a
+// row to use without looking the source up: at most
+// dnscheck.CacheFreshAge old; a row dated after now (the clock was set back since it was written)
+// has no known age and never is one. Any row may stand in for a failed
+// lookup (fresh false), a row dated after now until the daily cleanup
+// deletes it.
+func (c *sourceCache) storedRow(kinds []string, name string, fresh bool) *models.SendingSourceLookup {
 	var best *models.SendingSourceLookup
 	for _, kind := range kinds {
 		row, err := models.GetSendingSourceLookup(c.db, kind, name)
@@ -313,8 +307,7 @@ func (c *sourceCache) storedRow(kinds []string, name string, maxAge time.Duratio
 			}
 			continue
 		}
-		age := c.now().Sub(row.FetchedAt)
-		if age > maxAge || (fresh && age < 0) {
+		if age := c.now().Sub(row.FetchedAt); fresh && (age > dnscheck.CacheFreshAge || age < 0) {
 			continue
 		}
 		if best == nil || row.FetchedAt.After(best.FetchedAt) {
@@ -326,12 +319,11 @@ func (c *sourceCache) storedRow(kinds []string, name string, maxAge time.Duratio
 
 // keptRow returns the stored row a complete lookup of a name that found
 // nothing must not replace: the most recently fetched row among its kinds
-// that lists an address or a host name and is at most SourceCacheMaxAge
-// old (one dated after now included); nil when there is none. The row is
-// left untouched (its fetched_at is not renewed), so the empty answer
-// replaces it once it is older than that. Every kind is judged together: an
-// empty row written for one kind would otherwise be the freshest of the
-// name in the next run and be used in place of the kept one.
+// that lists an address or a host name, whatever its age; nil when there
+// is none. The row is left untouched (its fetched_at is not renewed).
+// Every kind is judged together: an empty row written for one kind would
+// otherwise be the freshest of the name in the next run and be used in
+// place of the kept one.
 func (c *sourceCache) keptRow(kinds []string, name string) *models.SendingSourceLookup {
 	var best *models.SendingSourceLookup
 	for _, kind := range kinds {
@@ -342,7 +334,7 @@ func (c *sourceCache) keptRow(kinds []string, name string) *models.SendingSource
 			}
 			continue
 		}
-		if (len(row.Addresses) == 0 && len(row.Hosts) == 0) || c.now().Sub(row.FetchedAt) > SourceCacheMaxAge {
+		if len(row.Addresses) == 0 && len(row.Hosts) == 0 {
 			continue
 		}
 		if best == nil || row.FetchedAt.After(best.FetchedAt) {
@@ -353,18 +345,14 @@ func (c *sourceCache) keptRow(kinds []string, name string) *models.SendingSource
 }
 
 // store writes the row of a source fetched now, except that a row listing
-// nothing does not replace a non-empty one at most SourceCacheMaxAge old
-// (the rule of keptRow, applied again by the statement itself: another run
-// may have stored that row since keptRow looked) unless force (the stored
-// row is one the runs may not use, usableSPF). It reports whether the row
-// was written. A failure is logged: the stored rows are only a fallback.
+// nothing does not replace a non-empty one (the rule of keptRow, applied
+// again by the statement itself: another run may have stored that row
+// since keptRow looked) unless force (the stored row is one the runs may
+// not use, usableSPF). It reports whether the row was written. A failure is
+// logged: the stored rows are only a fallback.
 func (c *sourceCache) store(row *models.SendingSourceLookup, force bool) bool {
 	row.FetchedAt = c.now()
-	keepSince := row.FetchedAt.Add(-SourceCacheMaxAge)
-	if force {
-		keepSince = time.Time{}
-	}
-	written, err := models.ReplaceSendingSourceLookup(c.db, row, keepSince)
+	written, err := models.ReplaceSendingSourceLookup(c.db, row, !force)
 	if err != nil {
 		log.Printf("failed to store the lookup of %s: %v", row.Name, err)
 	}
@@ -373,7 +361,8 @@ func (c *sourceCache) store(row *models.SendingSourceLookup, force bool) bool {
 
 // prune deletes, once per run, the stored rows no current source refers to:
 // no mailbox has that SMTP host or an address of that domain any more, or
-// the host name left sending_source_hosts. The mailboxes and the setting are
+// the host name left sending_source_hosts (never a row of a reporting MTA,
+// kind reporter, which is no source). The mailboxes and the setting are
 // read again here, after the rows, rather than taken from the start of the
 // run: another job (several run at once) may have added a source since and
 // stored its row, which must stay. A failure is logged and deletes nothing.
@@ -397,7 +386,9 @@ func (c *sourceCache) pruneGone() {
 	sources := map[sendingSourceKey]bool{}
 	eachSendingSource(ResolveSendingSourceHosts(c.db), mailboxes, func(k sendingSourceKey) { sources[k] = true })
 	for _, row := range rows {
-		if sources[sendingSourceKey{row.Kind, row.Name}] {
+		// The reporting MTAs are no sources: the daily cleanup deletes
+		// them by age (pruneDNSChecks).
+		if row.Kind == models.SendingSourceKindReporter || sources[sendingSourceKey{row.Kind, row.Name}] {
 			continue
 		}
 		if err := models.DeleteSendingSourceLookup(c.db, row.ID); err != nil {

@@ -9,12 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// MinReportRunes is the smallest report body (runes, headings and blank lines
-// removed) accepted as a real analysis. Anything shorter is treated as a
-// failed run (a truncated or refused answer) so that it never replaces a good
-// earlier report.
-const MinReportRunes = 40
-
 // placeholderLine matches a line that is nothing but a prompt template
 // placeholder such as "<what failed and why, citing ...>" or
 // "1. <concrete action>", optionally prefixed by a list number. The bracket
@@ -151,7 +145,8 @@ func isTemplateReport(block string) bool {
 
 // ValidateOutput reports why a parsed output that has a REPORT block is not
 // a usable analysis: the report still carries template placeholders (the
-// agent echoed the prompt), the report body is shorter than MinReportRunes,
+// agent echoed the prompt), the report body is empty (headings and blank
+// lines removed),
 // the META summary is a placeholder, or the report or summary contains a
 // secret-like string (ErrSecretLikeContent). It returns nil for a usable
 // output. Callers treat a non-nil error as a failed run so that the previous
@@ -163,8 +158,8 @@ func ValidateOutput(out Output) error {
 	if m := placeholderLine.FindString(out.Report); m != "" {
 		return fmt.Errorf("report still contains the template placeholder %q", strings.TrimSpace(m))
 	}
-	if n := utf8.RuneCountInString(reportBody(out.Report)); n < MinReportRunes {
-		return fmt.Errorf("report body too short (%d runes, minimum %d)", n, MinReportRunes)
+	if strings.TrimSpace(reportBody(out.Report)) == "" {
+		return errors.New("report body is empty")
 	}
 	if placeholderSummary.MatchString(strings.TrimSpace(out.Meta.Summary)) {
 		return fmt.Errorf("summary is the template placeholder %q", out.Meta.Summary)

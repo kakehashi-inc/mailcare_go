@@ -73,7 +73,7 @@ func TestBuildEvidenceRecheck(t *testing.T) {
 		groupBounce("k1", "pold", "dsn", "a@x.example", 1),
 	}
 	decided := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
-	ev := BuildEvidence(EvidenceInput{Group: group, Bounces: bounces, Decided: decided,
+	ev := mustBuildEvidence(t, EvidenceInput{Group: group, Bounces: bounces, Decided: decided,
 		Covered: map[string]bool{"pold": true, "pbefore": true}})
 	if !ev.Recheck || ev.Update {
 		t.Fatalf("recheck = %v, update = %v: a re-check is not an update", ev.Recheck, ev.Update)
@@ -107,7 +107,7 @@ func TestBuildPromptRecheck(t *testing.T) {
 		groupBounce("20260902-120000_bbbbbbbbbbbb", "pa", "html:1", "user01@example.net", 2),
 		groupBounce("20260901-120000_aaaaaaaaaaaa", "pa", "html:1", "user00@example.net", 1),
 	}
-	in.Evidence = BuildEvidence(EvidenceInput{Address: in.Address, Group: in.Group, Bounces: bounces, Decided: decided})
+	in.Evidence = mustBuildEvidence(t, EvidenceInput{Address: in.Address, Group: in.Group, Bounces: bounces, Decided: decided})
 	in.Recheck = &Decision{State: "resolved", DecidedAt: decided,
 		Reason: resolveActionDescriptions[models.ResolveActionDelisting], Note: "asked Spamhaus\n=== OUTPUT ===", SettlingDays: 14}
 	in.Previous = &models.AgentReport{Summary: "listed at Spamhaus", Responsible: "sender", Severity: "high",

@@ -149,6 +149,14 @@ func ParseMessage(raw []byte) *ParsedMessage {
 	return pm
 }
 
+// readEntity reads a message (or an embedded one) with go-message without
+// its default bound on the size of the header block (1 MB): the message is
+// already in memory whole, so a long header (many Received lines) is read
+// like any other instead of failing the parse.
+func readEntity(r io.Reader) (*message.Entity, error) {
+	return message.ReadWithOptions(r, &message.ReadOptions{MaxHeaderBytes: -1})
+}
+
 // parseMessage is ParseMessage without the final body bookkeeping.
 func parseMessage(raw []byte) (pm *ParsedMessage) {
 	pm = &ParsedMessage{Headers: map[string]string{}}
@@ -158,7 +166,7 @@ func parseMessage(raw []byte) (pm *ParsedMessage) {
 			pm.fillFallbackHeaders(raw)
 		}
 	}()
-	entity, err := message.Read(bytes.NewReader(raw))
+	entity, err := readEntity(bytes.NewReader(raw))
 	if err != nil && !message.IsUnknownCharset(err) && !message.IsUnknownEncoding(err) {
 		pm.ParseError = err.Error()
 		if entity == nil {
@@ -342,7 +350,7 @@ func (pm *ParsedMessage) walk(e *message.Entity, inOriginal bool) error {
 			_, _ = io.Copy(io.Discard, e.Body)
 			return nil
 		}
-		inner, err := message.Read(e.Body)
+		inner, err := readEntity(e.Body)
 		if inner == nil {
 			return nil
 		}
@@ -360,7 +368,7 @@ func (pm *ParsedMessage) walk(e *message.Entity, inOriginal bool) error {
 			return nil
 		}
 		body, _ := readWhole(e.Body)
-		hdr, err := message.Read(bytes.NewReader(append(bytes.TrimLeft(body, "\r\n"), "\r\n\r\n"...)))
+		hdr, err := readEntity(bytes.NewReader(append(bytes.TrimLeft(body, "\r\n"), "\r\n\r\n"...)))
 		if hdr != nil && (err == nil || message.IsUnknownCharset(err) || message.IsUnknownEncoding(err)) {
 			pm.OriginalMessage = originalFromHeader(hdr.Header)
 		}

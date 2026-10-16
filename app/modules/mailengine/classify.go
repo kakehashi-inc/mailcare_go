@@ -430,10 +430,8 @@ func classifyWith(pm *ParsedMessage, body string, mb mailboxIdentity) (Classific
 //     nothing resolved): a sending server reports about mail it handled
 //     itself;
 //   - none of the Received headers of the original shows one of the
-//     sending sources (SendingSources.MatchReceived), and the headers can be
-//     judged: at most maxReceivedLines of them, none past the bounds of
-//     receivedSources (a hostile original cannot make the comparison
-//     costly; past a bound the notice is left alone). The grouping
+//     sending sources (SendingSources.MatchReceived; every header is read,
+//     in one pass over its text). The grouping
 //     classifies a message the rule takes again with the addresses and host
 //     names it looked up (classifyWithSources in group.go), so the rule itself stays
 //     pure;
@@ -466,7 +464,7 @@ func isBackscatter(pm *ParsedMessage, mb mailboxIdentity) bool {
 	if pm.DeliveryStatus != nil && mb.sources.Match(pm.DeliveryStatus.ReportingMTA) {
 		return false
 	}
-	if matched, judged := mb.sources.matchReceivedLines(om.Received); matched || !judged {
+	if mb.sources.matchReceivedLines(om.Received) {
 		return false
 	}
 	if mb.domain != "" {
@@ -505,6 +503,34 @@ func isDaemonAddress(address string) bool {
 	return false
 }
 
+// blockSuccess is what blockKind returns for a per-recipient block that
+// reports a success.
+const blockSuccess = "success"
+
+// blockKind is what one per-recipient block of a DSN reports: failed or
+// delayed by its Action (normalized by the parser), blockSuccess for
+// delivered / relayed / expanded, and without a usable Action by the class
+// of its Status (5 failed, 4 delayed, 2 success); "" when it tells nothing.
+// The classification (kindFromDeliveryStatus) and the extraction of the
+// failed recipients (ExtractBounces) read the blocks the same way.
+func blockKind(r DeliveryStatusRecipient) string {
+	switch r.Action {
+	case bounceKindFailed, bounceKindDelayed:
+		return r.Action
+	case "delivered", "relayed", "expanded":
+		return blockSuccess
+	}
+	switch {
+	case strings.HasPrefix(r.Status, "5"):
+		return bounceKindFailed
+	case strings.HasPrefix(r.Status, "4"):
+		return bounceKindDelayed
+	case strings.HasPrefix(r.Status, "2"):
+		return blockSuccess
+	}
+	return ""
+}
+
 // kindFromDeliveryStatus derives failed / delayed / other from the DSN actions
 // (normalized by the parser: failed / delayed / delivered / relayed /
 // expanded or ""), falling back to the class of the status code. A DSN that
@@ -515,22 +541,13 @@ func kindFromDeliveryStatus(pm *ParsedMessage, body string) string {
 	var failed, delayed, success int
 	if pm.DeliveryStatus != nil {
 		for _, r := range pm.DeliveryStatus.Recipients {
-			switch r.Action {
-			case "failed":
+			switch blockKind(r) {
+			case bounceKindFailed:
 				failed++
-			case "delayed":
+			case bounceKindDelayed:
 				delayed++
-			case "delivered", "relayed", "expanded":
+			case blockSuccess:
 				success++
-			default:
-				switch {
-				case strings.HasPrefix(r.Status, "5"):
-					failed++
-				case strings.HasPrefix(r.Status, "4"):
-					delayed++
-				case strings.HasPrefix(r.Status, "2"):
-					success++
-				}
 			}
 		}
 	}

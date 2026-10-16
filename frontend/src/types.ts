@@ -30,8 +30,6 @@ export const IGNORE_REASONS = [
     'other',
 ] as const;
 export type IgnoreReason = (typeof IGNORE_REASONS)[number];
-/** Maximum length of the details written with a state change (characters). */
-export const MAX_STATE_NOTE_LENGTH = 2000;
 export type Responsible = 'sender' | 'recipient' | 'domain' | 'unknown';
 export type Severity = 'high' | 'medium' | 'low' | '';
 /** How firmly the agent established the cause from the notices. */
@@ -77,6 +75,7 @@ export const BOUNCE_CATEGORIES = [
     'message_too_large',
     'server_config',
     'dns_resolver_failure',
+    'dns_lookup_failure',
     'unknown_failure',
     'dmarc_spf_missing',
     'dmarc_dkim_failed',
@@ -336,6 +335,8 @@ export interface BounceDTO {
     original_from: string;
     original_date: string | null;
     responsible: string;
+    /** The group the recipient block was filed into ("" when none). */
+    group_key?: string;
 }
 
 export interface JobDTO {
@@ -492,7 +493,7 @@ export interface SettingsDTO {
      * can. Administrators only.
      */
     analyze_refusal?: '' | 'result.agent.unavailable' | 'result.agent.usageLimited';
-    /** IANA zone the scheduler interprets check_times, cleanup_time and notify_time in. */
+    /** IANA zone the scheduler interprets check_times, cleanup_time and notify_times in. */
     server_timezone: string;
 }
 
@@ -541,8 +542,8 @@ export interface NotificationSettingsDTO {
     /** public_base_url, or the address of the server when it is empty. */
     effective_base_url: string;
     notify_enabled: boolean;
-    /** HH:MM, server local time. */
-    notify_time: string;
+    /** HH:MM times, server local time, sorted (at least one). */
+    notify_times: string[];
     /** 1 = every day ... 7 = every 7 days. */
     notify_interval_days: number;
     notify_user_ids: number[];
@@ -561,7 +562,8 @@ export interface NotificationSettingsInput {
     smtp_from?: string;
     public_base_url?: string;
     notify_enabled?: boolean;
-    notify_time?: string;
+    /** An empty list restores the default times. */
+    notify_times?: string[];
     notify_interval_days?: number;
     notify_user_ids?: number[];
 }
@@ -611,7 +613,10 @@ export interface GroupDetailResponse {
     stats: { recipients: string[]; remote_ips: string[]; remote_mtas: string[] };
     report: ReportDTO | null;
     reports: ReportDTO[];
+    /** The newest mails of the group (at most 200). */
     messages: MessageDTO[];
+    /** How many mails the group has: the mail list filtered by the group shows them all. */
+    messages_total: number;
     /** State history, newest first. */
     history: StateChangeDTO[];
 }
@@ -632,7 +637,10 @@ export interface MessageListResponse {
 /** GET /api/v1/mailboxes/{id}/messages/{key} */
 export interface MessageDetailResponse {
     message: MessageDTO;
+    /** The first recipient block of the notice. */
     bounce: BounceDTO | null;
+    /** Every recipient block of the notice, in order (one per per-recipient block judged). */
+    bounces?: BounceDTO[];
     /** Text body sections in MIME order (one entry per section with content). */
     text_sections: string[];
     /** The parsed-message JSON (message_id, subject, from, to, date, delivery_status, ...). */

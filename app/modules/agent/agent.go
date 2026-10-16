@@ -36,7 +36,6 @@ package agent
 import (
 	"database/sql"
 	"io/fs"
-	"time"
 
 	"mailcare/app/modules/mailengine"
 )
@@ -45,8 +44,6 @@ import (
 const (
 	// DefaultProvider is the agent CLI used when AnalyzeInput.Provider is "".
 	DefaultProvider = "codex"
-	// Timeout is a safety-net backstop on one agent CLI run.
-	Timeout = 30 * time.Minute
 	// PromptFileName, ResultFileName and ReportFileName are written inside the
 	// workspace directory of a run.
 	PromptFileName = "PROMPT.md"
@@ -58,23 +55,38 @@ const (
 	MetaBegin   = "<<<MLC:META>>>"
 	MetaEnd     = "<<<MLC:/META>>>"
 	// EvidenceDirName is the directory inside the workspace that holds one
-	// evidence file per sample notice.
+	// evidence file per sample notice and the patterns file.
 	EvidenceDirName = "evidence"
+	// PatternsFileName is the patterns file inside the workspace: every
+	// pattern of the group and every distinct recipient, remote IP and
+	// remote MTA, whatever the prompt shows of them (PatternsFile).
+	PatternsFileName = EvidenceDirName + "/patterns.txt"
+	// The limits below only keep the prompt (and what the agent reads into
+	// its context) within the size a model handles; nothing they leave out
+	// is lost: what the prompt does not show is in the evidence files and
+	// the patterns file, which the prompt names.
+	//
 	// MaxPromptPatterns bounds how many bounce patterns the PATTERNS section
-	// lists (the most frequent first; the rest is counted).
+	// lists (the most frequent first; the rest is counted, and every
+	// pattern is in the patterns file).
 	MaxPromptPatterns = 20
-	// MaxEvidenceSamples bounds how many sample notices (one per pattern)
-	// the EVIDENCE section carries.
+	// MaxEvidenceSamples bounds how many sample blocks (one per pattern) the
+	// EVIDENCE section shows; every other pattern still gets its sample in
+	// its evidence file, named in PATTERNS.
 	MaxEvidenceSamples = 5
 	// MaxExcerptLines bounds the body excerpt of one sample in the prompt (half
 	// of it when the diagnostic comes from the delivery-status part); a
 	// longer body is cut around the diagnostic and marked [TRUNCATED].
 	MaxExcerptLines = 40
 	// MaxEvidenceReads is how many evidence files the agent may read in one
-	// run, and only under the conditions the prompt names.
+	// run, and only under the conditions the prompt names: every file read
+	// goes whole into the context of the agent (the patterns file is not
+	// counted).
 	MaxEvidenceReads = 3
 	// MaxPromptListItems bounds how many distinct recipients, remote IPs and
-	// remote MTAs the group summary of the prompt lists (the rest is counted).
+	// remote MTAs the group summary of the prompt lists, and how many
+	// sending IPs a DMARC pattern line lists (the rest is counted, and every
+	// item is in the patterns file).
 	MaxPromptListItems = 30
 	// MaxSummaryRunes bounds the summary derived from the report body when the
 	// META block carries none.

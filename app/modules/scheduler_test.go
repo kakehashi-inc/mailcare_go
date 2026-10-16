@@ -404,7 +404,7 @@ func TestSchedulerSkipsJobsThatDoNothing(t *testing.T) {
 	}
 	on := true
 	str := func(v string) *string { return &v }
-	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &on, Time: str("06:00"),
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &on, Times: &[]string{"06:00"},
 		SMTPHost: str("smtp.example.test"), SMTPFrom: str("mailcare@example.test"), UserIDs: &[]int64{bob.ID}}); err != nil {
 		t.Fatal(err)
 	}
@@ -432,5 +432,117 @@ func TestSchedulerSkipsJobsThatDoNothing(t *testing.T) {
 	}
 	if ps, _ := ResolveProbeSettings(db, nil); ps.NextCheckAt.Valid || ps.CheckFailures != 0 {
 		t.Errorf("the arrival check was not cleared: next %v, failures %d", ps.NextCheckAt, ps.CheckFailures)
+	}
+}
+
+// TestSchedulerNotifiesAtEveryTime: with two notification times the
+// scheduler queues a notify job at each of them on a notification day, also
+// at the second time of the day the first one sent the mail, and never twice
+// for one time and day.
+func TestSchedulerNotifiesAtEveryTime(t *testing.T) {
+	db := newTestDB(t)
+	jm := NewJobManager(db, nil, t.TempDir(), t.TempDir(), nil)
+	admin, err := CreateUserFrom(db, NewUser{Username: "admin", Email: "admin@example.test", Password: "password123", Role: RoleAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	str := func(v string) *string { return &v }
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Enabled: &on, Times: &[]string{"18:00,09:00"},
+		SMTPHost: str("smtp.example.test"), SMTPFrom: str("mailcare@example.test"), UserIDs: &[]int64{admin.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScheduler(db, jm)
+	clock := localDate(2026, 9, 17, 0, 0, 0)
+	s.now = func() time.Time { return clock }
+	s.lastTick = clock
+	// tickAt ticks at the given time and returns how many notify jobs were
+	// queued; each queued job is then finished as a sent notification.
+	tickAt := func(at time.Time) int {
+		t.Helper()
+		clock = at
+		s.Tick()
+		jobs := activeJobsOfKind(t, db, JobKindNotify)
+		for _, j := range jobs {
+			if _, err := db.Exec(`UPDATE jobs SET status = ? WHERE id = ?`, JobStatusDone, j.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := SetNotifyLastSent(db, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return len(jobs)
+	}
+	for _, c := range []struct {
+		at   time.Time
+		want int
+	}{
+		{localDate(2026, 9, 17, 8, 59, 50), 0},
+		{localDate(2026, 9, 17, 9, 0, 10), 1},
+		{localDate(2026, 9, 17, 9, 0, 40), 0}, // the same minute again
+		{localDate(2026, 9, 17, 17, 59, 50), 0},
+		{localDate(2026, 9, 17, 18, 0, 10), 1}, // the second time of the day the mail went out
+		{localDate(2026, 9, 17, 18, 0, 40), 0},
+		{localDate(2026, 9, 18, 9, 0, 10), 1},
+	} {
+		if got := tickAt(c.at); got != c.want {
+			t.Errorf("tick at %v: %d notify job(s), want %d", c.at, got, c.want)
+		}
+	}
+	// Every time has a separate guard: two times due in one tick queue one
+	// job, and when the clock is set back over them neither fires again.
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Times: &[]string{"09:00", "09:01"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		at   time.Time
+		want int
+	}{
+		{localDate(2026, 9, 18, 23, 0, 0), 1}, // 09:01 of the 18th, a notification day
+		{localDate(2026, 9, 19, 8, 59, 50), 0},
+		{localDate(2026, 9, 19, 9, 1, 10), 1},
+		{localDate(2026, 9, 19, 8, 59, 55), 0}, // the clock was set back
+		{localDate(2026, 9, 19, 9, 1, 15), 0},
+	} {
+		if got := tickAt(c.at); got != c.want {
+			t.Errorf("tick at %v: %d notify job(s), want %d", c.at, got, c.want)
+		}
+	}
+}
+
+// TestNotifyTimesSetting: notify_time holds a list; unset it is 09:00 and
+// 17:00, a single saved time is a list of one, a saved value that does not
+// parse falls back to the default, and an empty list saved restores the
+// default (the row is removed).
+func TestNotifyTimesSetting(t *testing.T) {
+	db := newTestDB(t)
+	if DefaultNotifyTimes != "09:00,17:00" {
+		t.Errorf("default %q, want 09:00,17:00", DefaultNotifyTimes)
+	}
+	if got := FormatCheckTimes(ResolveNotifyTimes(db)); got != DefaultNotifyTimes {
+		t.Errorf("unset: %q", got)
+	}
+	for saved, want := range map[string]string{"06:30": "06:30", "7:00,06:30,07:00": "06:30,07:00", "25:00": DefaultNotifyTimes} {
+		if err := models.SetSetting(db, SettingNotifyTime, saved); err != nil {
+			t.Fatal(err)
+		}
+		if got := FormatCheckTimes(ResolveNotifyTimes(db)); got != want {
+			t.Errorf("saved %q: %q, want %q", saved, got, want)
+		}
+	}
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Times: &[]string{"12:00", "08:00"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := models.GetSetting(db, SettingNotifyTime); got != "08:00,12:00" {
+		t.Errorf("stored %q", got)
+	}
+	if err := SaveNotificationSettings(db, nil, &NotificationInput{Times: &[]string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := models.GetSettingStrict(db, SettingNotifyTime); found {
+		t.Error("an empty list was stored instead of restoring the default")
+	}
+	if got := FormatCheckTimes(ResolveNotifyTimes(db)); got != DefaultNotifyTimes {
+		t.Errorf("after an empty list: %q", got)
 	}
 }

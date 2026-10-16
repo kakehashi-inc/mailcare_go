@@ -9,9 +9,13 @@ import (
 // DNSCheck is a row of dns_checks (master database): the outcome of looking
 // up again a name that a notice reported as a failed DNS lookup (design
 // document "mail classification" 4.4). Name is lower-case without the
-// trailing dot, QType MX / A / AAAA, Outcome exists / not_found / broken (an
-// inconclusive lookup is not stored), Detail the evidence, one line per
-// resolver and authoritative server, and Direct whether the authoritative
+// trailing dot, QType the kind of verification (NAME, dnscheck.VerifyKind:
+// whether mail can be delivered to the name, whatever record type the
+// notice named; the rows of the earlier verification per record type, MX /
+// A / AAAA, are no longer read and go with the daily cleanup), Outcome
+// exists / not_found / broken (an inconclusive lookup is not stored),
+// Detail the evidence, one line per resolver (the lookups made and their
+// answers) and authoritative server, and Direct whether the authoritative
 // servers of the name were asked as well (the verification of a notice that
 // shows mail from the sending sources) rather than the resolvers alone. The rows are shared
 // by every mailbox and kept across a reindex, so every notice about a name
@@ -48,8 +52,8 @@ func InsertDNSCheck(db Execer, c *DNSCheck) error {
 // already has one the notice that verified it would use, checked within the
 // window [from, to] (both ends included): for a direct row (c.Direct) a
 // direct one, for any other row any one (a notice without the
-// authoritative check uses either kind, one with it only a direct one while
-// it can still be verified live, see FindDNSCheck). It returns the earliest
+// authoritative check uses either kind, one with it only a direct one, see
+// FindDNSCheck). It returns the earliest
 // such row of the window: the row stored now (inserted = true, c.ID set) or
 // the one stored first by another run verifying the same name at the same
 // time (inserted = false, c.ID left 0). The check and the insert are one
@@ -95,15 +99,31 @@ func InsertDNSCheckIfAbsent(db *sql.DB, c *DNSCheck, from, to time.Time) (*DNSCh
 // FindDNSCheck returns the earliest outcome for the name and type checked
 // within the window [from, to], both ends included, of a direct
 // verification only when directOnly, else of either kind (sql.ErrNoRows
-// when there is none). A notice uses the earliest outcome checked from 24
-// hours before it was received to 48 hours after (dnscheck.ReuseRange), so
-// that it keeps the same outcome however often it is grouped again, and an
-// old notice is never judged by a lookup made days after it.
+// when there is none). A live verification passes the fresh period
+// (dnscheck.CacheFreshAge before now up to now), the stored-only mode the
+// window of the notice (dnscheck.ReuseRange); the earliest row of the
+// window wins, so that runs verifying the same name at once agree.
 func FindDNSCheck(db *sql.DB, name, qtype string, from, to time.Time, directOnly bool) (*DNSCheck, error) {
 	c := &DNSCheck{}
 	err := db.QueryRow(`SELECT `+dnsCheckColumns+` FROM dns_checks
 		WHERE name = ? AND qtype = ? AND checked_at >= ? AND checked_at <= ? AND direct >= ?
 		ORDER BY checked_at ASC, id ASC LIMIT 1`, name, qtype, from.UTC(), to.UTC(), directOnly).
+		Scan(&c.ID, &c.Name, &c.QType, &c.Outcome, &c.Detail, &c.Direct, &c.CheckedAt)
+	if err != nil {
+		return nil, err
+	}
+	c.CheckedAt = c.CheckedAt.UTC()
+	return c, nil
+}
+
+// LatestDNSCheck returns the latest outcome for the name and type, whatever
+// its age and kind (sql.ErrNoRows when there is none): the stand-in of a
+// live verification that gave nothing.
+func LatestDNSCheck(db *sql.DB, name, qtype string) (*DNSCheck, error) {
+	c := &DNSCheck{}
+	err := db.QueryRow(`SELECT `+dnsCheckColumns+` FROM dns_checks
+		WHERE name = ? AND qtype = ?
+		ORDER BY checked_at DESC, id DESC LIMIT 1`, name, qtype).
 		Scan(&c.ID, &c.Name, &c.QType, &c.Outcome, &c.Detail, &c.Direct, &c.CheckedAt)
 	if err != nil {
 		return nil, err

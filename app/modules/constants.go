@@ -62,19 +62,7 @@ const (
 const (
 	DefaultWebListenAddr = "0.0.0.0"
 	DefaultWebPort       = 9790
-	// ReadHeaderTimeout bounds how long a client may take to send its request
-	// headers (protects the server from slowloris-style connections).
-	ReadHeaderTimeout = 10 * time.Second
-	// HTTPReadTimeout bounds the whole request read (headers and body).
-	HTTPReadTimeout = 30 * time.Second
-	// HTTPWriteTimeout bounds the response write; no endpoint waits for a
-	// job, so a response never takes long on purpose.
-	HTTPWriteTimeout = 5 * time.Minute
-	// HTTPIdleTimeout closes keep-alive connections idle for that long.
-	HTTPIdleTimeout = 2 * time.Minute
-	// ShutdownGraceTimeout bounds how long a graceful shutdown waits for the HTTP
-	// server to drain in-flight requests before giving up.
-	ShutdownGraceTimeout  = 5 * time.Second
+	// DefaultCookieTTLHours is the lifetime of a "Stay logged in" session.
 	DefaultCookieTTLHours = 720 // 30 days
 )
 
@@ -99,8 +87,6 @@ const (
 	MaxServerKeepDays = 3650
 	// DefaultIMAPPort is the IMAPS port used when none is given.
 	DefaultIMAPPort = 993
-	// IMAPTimeout bounds one IMAP network operation.
-	IMAPTimeout = 60 * time.Second
 )
 
 // --- IMAP security modes (mailboxes.imap_security) ---
@@ -120,15 +106,14 @@ const (
 const (
 	// DefaultAgentProvider is the agent CLI used for analysis when none is set.
 	DefaultAgentProvider = agent.DefaultProvider
-	// AgentTimeout is a safety-net backstop on one agent CLI run.
-	AgentTimeout = agent.Timeout
 	// Output markers the agent must emit (rare enough not to appear in prose).
 	AgentReportBegin = agent.ReportBegin
 	AgentReportEnd   = agent.ReportEnd
 	AgentMetaBegin   = agent.MetaBegin
 	AgentMetaEnd     = agent.MetaEnd
-	// AgentMaxEvidenceSamples bounds how many sample notices (one per bounce
-	// pattern) one prompt carries.
+	// AgentMaxEvidenceSamples bounds how many sample blocks (one per bounce
+	// pattern) the prompt shows; the samples of the other patterns are in
+	// their evidence files, named in the prompt.
 	AgentMaxEvidenceSamples = agent.MaxEvidenceSamples
 	// DefaultAgentKeepDays is how many days the workspace directory of an
 	// analysis run (data/agent/<address>/<group_key>/<report_id>/) is kept;
@@ -205,6 +190,7 @@ const (
 	CategoryMessageTooLarge    = "message_too_large"    // unit: sender address, authority: recipient domain
 	CategoryServerConfig       = "server_config"        // unit: the sending side's reporting MTA, authority: recipient domain
 	CategoryDNSResolverFailure = "dns_resolver_failure" // unit: the sending side's reporting MTA (its resolver failed on a name that exists)
+	CategoryDNSLookupFailure   = "dns_lookup_failure"   // unit: recipient domain (a temporary DNS lookup failure not verified yet)
 	CategoryUnknownFailure     = "unknown_failure"      // unit: recipient domain, authority: status code + diagnostic template
 	// Not actionable by the mail administrator (recipient side; excluded from Alerts by default).
 	CategoryUserUnknown        = "user_unknown"         // unit: recipient address
@@ -223,7 +209,7 @@ const (
 func KnownCategories() []string {
 	return []string{
 		CategoryIPBlocked, CategoryRateLimited, CategorySenderBlocked, CategoryAuthFailure, CategoryContentRejected,
-		CategoryMessageTooLarge, CategoryServerConfig, CategoryDNSResolverFailure, CategoryUnknownFailure,
+		CategoryMessageTooLarge, CategoryServerConfig, CategoryDNSResolverFailure, CategoryDNSLookupFailure, CategoryUnknownFailure,
 		CategoryDMARCSPFMissing, CategoryDMARCDKIMFailed, CategoryDMARCNotAuthenticated,
 		CategoryUserUnknown, CategoryMailboxFull, CategoryMailboxDisabled, CategoryDomainNotFound, CategoryDNSFailureExternal,
 		CategoryDeliveryDelay,
@@ -294,7 +280,7 @@ const (
 	SettingSMTPFrom        = "smtp_from"
 	SettingPublicBaseURL   = "public_base_url" // e.g. https://mailcare.example.com (links in mails)
 	SettingNotifyEnabled   = "notify_enabled"  // "1" or "0" (default)
-	SettingNotifyTime      = "notify_time"     // HH:MM local
+	SettingNotifyTime      = "notify_time"     // comma-separated HH:MM list, local (one time is a list of one)
 	SettingNotifyInterval  = "notify_interval_days"
 	SettingNotifyUserIDs   = "notify_user_ids" // comma-separated users.id
 	SettingNotifyLastSent  = "notify_last_sent_at"
@@ -364,9 +350,9 @@ const (
 	SettingProbeCheckFailures        = "probe_check_failures"
 	SettingProbeCheckFailingSince    = "probe_check_failing_since"
 	SettingProbeUnreadableNotifiedAt = "probe_unreadable_notified_at"
-	// SettingProbeWideSweepAt is when the daily sweep of the cleanup last
-	// ran (recorded probe mails ProbeSearchMaxDays back and unrecorded probe
-	// mails; internal).
+	// SettingProbeWideSweepAt is the time of the daily sweep of older
+	// versions; no longer used, a check that read the probe server removes
+	// it.
 	SettingProbeWideSweepAt = "probe_wide_sweep_at"
 	// SettingProbeSubjectTag is the identifier at the start of the subject
 	// of the probe mails ("[<identifier>:<token>]"; DefaultProbeSubjectTag).
@@ -397,24 +383,9 @@ const (
 	// could not read the probe server; every further failure doubles it, up
 	// to the failure threshold.
 	ProbeCheckRetryInterval = 10 * time.Minute
-	// ProbeIMAPTimeout bounds one session with the probe server (longer than
-	// IMAPTimeout: the searches, the fetch and the deletion of a check run
-	// in it).
-	ProbeIMAPTimeout = 3 * time.Minute
-	// ProbeSearchMaxDays bounds how far back a check searches (by the
-	// arrival date on the probe server); the wide sweep covers the records
-	// of that many days.
-	ProbeSearchMaxDays = 14
-	// ProbeCleanupScanMax bounds the candidates for unrecorded probe mails
-	// one daily sweep reads and ProbeCleanupMax the probe mails one check
-	// deletes under the rule for the unrecorded ones (both the oldest
-	// first; the rest on the next sweeps: mails that cannot be deleted do
-	// not hold back the ones behind them while they are fewer than the
-	// difference). ProbeLeftoverMinAge is how long such a mail stays on the
-	// probe server at least (another MailCare sharing the server may still
-	// look for it).
-	ProbeCleanupScanMax = 2000
-	ProbeCleanupMax     = 500
+	// ProbeLeftoverMinAge is how long a probe mail that is not a verified
+	// one of this MailCare stays on the probe server at least (another
+	// MailCare sharing the server may still look for it).
 	ProbeLeftoverMinAge = 24 * time.Hour
 	// DefaultProbeSubjectTag is the default identifier of the probe mails.
 	DefaultProbeSubjectTag = "MC"
@@ -427,22 +398,23 @@ const (
 	MinProbeRecordKeepDays = 7
 	// ProbeHeader carries the token of a probe mail as a header as well.
 	ProbeHeader = "X-MailCare-Probe"
-	// MaxProbeNoteLength bounds the details written when a probe mail is
-	// resolved by hand (characters).
-	MaxProbeNoteLength = 2000
+	// ProbeSubjectMark is the part of the subject form of the probe mails
+	// ("[<identifier>:<token>] Probe ...", probeSubject) every check lists
+	// the probe mailbox by, whatever the identifier.
+	ProbeSubjectMark = "] Probe "
 )
 
 // --- Notification defaults ---
 
 const (
-	DefaultSMTPPort           = 587
-	DefaultSMTPSecurity       = IMAPSecurityStartTLS // the security values are shared with IMAP
-	DefaultNotifyTime         = "09:00"
+	DefaultSMTPPort     = 587
+	DefaultSMTPSecurity = IMAPSecurityStartTLS // the security values are shared with IMAP
+	// DefaultNotifyTimes is the notification schedule when notify_time is
+	// not set (local time, HH:MM, as stored; the owner's value).
+	DefaultNotifyTimes        = "09:00,17:00"
 	DefaultNotifyIntervalDays = 1
 	MinNotifyIntervalDays     = 1
 	MaxNotifyIntervalDays     = 7
-	// SMTPTimeout bounds one SMTP session.
-	SMTPTimeout = 60 * time.Second
 	// NotifyMailSubjectPrefix starts the subject of every notification mail.
 	NotifyMailSubjectPrefix = "[MailCare] "
 )
@@ -455,8 +427,9 @@ const (
 	// normalization and de-duplication.
 	MaxSendingSourceEntries = 500
 	// MaxDNSCheckResolvers bounds dns_check_resolvers: every resolver gets a
-	// control query and one query per name verified (3 s timeout each), and a
-	// handful of public resolvers already gives independent answers.
+	// control query and the queries of every name verified (each within
+	// the per-query timeout), and a handful of public resolvers already
+	// gives independent answers (a value of the settings screen).
 	MaxDNSCheckResolvers = 10
 	// DefaultDNSCheckEnabled is whether DNS lookup failures are verified when
 	// dns_check_enabled is not set.
@@ -464,26 +437,6 @@ const (
 	// DefaultDNSCheckSystemResolverOnly is whether only the OS resolver is
 	// used when dns_check_system_resolver_only is not set.
 	DefaultDNSCheckSystemResolverOnly = false
-	// MaxSPFDomains bounds the domains of the monitored mail addresses whose
-	// SPF record a run evaluates (the first ones in mailbox order); the
-	// others add nothing.
-	MaxSPFDomains = 20
-	// SourceCacheFreshAge is how long the stored result of a complete
-	// lookup of a sending source (sending_source_lookups) is used without
-	// asking again, by every mailbox and run.
-	SourceCacheFreshAge = time.Hour
-	// SourceCacheMaxAge is how long the stored result of a complete
-	// lookup stands in for a lookup that fails, and how long a non-empty one
-	// is kept in place of a complete lookup that found nothing; an older one
-	// does neither.
-	SourceCacheMaxAge = 14 * 24 * time.Hour
-	// SourceCacheKeepAge is the age past which the daily cleanup deletes
-	// a stored lookup of a sending source.
-	SourceCacheKeepAge = 90 * 24 * time.Hour
-	// SourceCacheMaxFuture is how far after now a stored lookup may be
-	// dated (the clock was set back since it was written) before the daily
-	// cleanup deletes it. Such a row is never fresh.
-	SourceCacheMaxFuture = 24 * time.Hour
 )
 
 // DefaultDNSCheckResolvers returns the resolvers queried when

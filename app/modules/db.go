@@ -13,6 +13,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
 
+	"mailcare/app/models"
 	"mailcare/app/modules/dbschema"
 )
 
@@ -39,8 +40,7 @@ func OpenDB(dbPath string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", models.SQLiteDSN(dbPath))
 	if err != nil {
 		return nil, err
 	}

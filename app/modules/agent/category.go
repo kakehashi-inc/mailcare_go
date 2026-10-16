@@ -22,6 +22,8 @@ const (
 	// exist: the resolver of the sending side's mail server, or the receiving side's / a third party's DNS.
 	CategoryDNSResolverFailure = "dns_resolver_failure"
 	CategoryDNSFailureExternal = "dns_failure_external"
+	// A temporary DNS lookup failure whose name MailCare has not verified yet.
+	CategoryDNSLookupFailure = "dns_lookup_failure"
 	// DMARC categories: records of DMARC aggregate reports that failed DMARC.
 	CategoryDMARCSPFMissing       = "dmarc_spf_missing"
 	CategoryDMARCDKIMFailed       = "dmarc_dkim_failed"
@@ -122,6 +124,12 @@ var CategoryGlossary = map[string]CategoryInfo{
 		Guidance:    "the name was verified to exist, so give the checks of that mail server's name resolution: its resolver configuration (resolv.conf), the local caching resolver (e.g. unbound or systemd-resolved) and the upstream resolver it forwards to, reachability of UDP and TCP port 53, DNSSEC validation failures, and EDNS / large responses being dropped; say that a one-off failure for a single domain is weak evidence of a resolver problem while many domains failing at the same time is strong evidence, and how to verify name resolution works again",
 		Actionable:  true,
 	},
+	CategoryDNSLookupFailure: {
+		Description: "A notice reports a temporary DNS lookup failure (e.g. \"Host not found, try again\") for a name that MailCare has not verified yet (the DNS check is off, or no resolver could be asked): the fault may lie with the resolver of the sending side's mail server or with the receiving side's DNS. MailCare verifies the name again at the next grouping.",
+		Unit:        "the recipient domain whose lookup failed",
+		Guidance:    "say which side the notices point to, if any; give the lookups that tell the two apart (the name through the resolver of the sending side's mail server, through an independent public resolver and at the domain's authoritative name servers) and the checks of the sending side's resolver path if the failure repeats for many domains",
+		Actionable:  true,
+	},
 	CategoryUserUnknown: {
 		Description: "The recipient address does not exist (user unknown, no such user, recipient not found).",
 		Unit:        "the recipient address that does not exist",
@@ -153,7 +161,7 @@ var CategoryGlossary = map[string]CategoryInfo{
 		Actionable:  false,
 	},
 	CategoryDNSFailureExternal: {
-		Description: "A notice reports a failed DNS lookup for the recipient domain or its mail server, but MailCare looked the name up again and it exists (or only some resolvers or name servers fail to answer): the receiving side's DNS or the resolver of the third-party server that reported the failure is at fault.",
+		Description: "A notice reports a failed DNS lookup for the recipient domain or its mail server, and MailCare's lookup of the name puts the fault outside the sending side's mail server: the name has an address to deliver to and the notice came from a third-party server (its resolver is at fault), or the receiving side's DNS is broken (no MX target with an address, a null MX, resolvers or name servers failing or disagreeing), or a host name of the receiving side (not the recipient domain) does not exist.",
 		Unit:        "the recipient domain whose DNS lookup failed",
 		Guidance:    "say that the domain exists and the failure lies with the receiving side's DNS or a third party's resolver, whether it looks temporary, and what to tell the recipient domain administrator if it persists; nothing on the sending side's mail server needs to change",
 		Actionable:  false,

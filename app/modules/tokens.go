@@ -42,7 +42,8 @@ func slugify(name string) string {
 }
 
 // GenerateUniqueIdentifier returns an identifier derived from name that does
-// not collide with an existing token.
+// not collide with an existing token (base, then base-2, base-3, ...: every
+// step passes one existing token, so the search ends).
 func GenerateUniqueIdentifier(db *sql.DB, name string) (string, error) {
 	base := slugify(name)
 	if base == "" {
@@ -63,9 +64,6 @@ func GenerateUniqueIdentifier(db *sql.DB, name string) (string, error) {
 			return "", err
 		}
 		candidate = fmt.Sprintf("%s-%d", base, i)
-		if i > 1000 {
-			return "", errors.New("could not allocate a unique identifier")
-		}
 	}
 }
 

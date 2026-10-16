@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -120,8 +121,9 @@ func TestGroupExport(t *testing.T) {
 		t.Fatalf("messages %+v", export.Messages)
 	}
 	m := export.Messages[0]
-	if m.Bounce == nil || m.Bounce.GroupKey != gk || m.Bounce.ID != m.Message.ID || m.Bounce.PatternKey == "" ||
-		m.Bounce.Recipient != "jiro@nowhere.example.org" || len(m.DMARCRecords) != 0 {
+	if m.Bounce == nil || m.Bounce.GroupKey != gk || m.Bounce.MessageID != m.Message.ID || m.Bounce.RecipientIndex != 0 ||
+		m.Bounce.PatternKey == "" || m.Bounce.Recipient != "jiro@nowhere.example.org" || len(m.DMARCRecords) != 0 ||
+		len(m.Bounces) != 1 || !reflect.DeepEqual(m.Bounces[0], *m.Bounce) {
 		t.Errorf("index rows %+v %+v", m.Message, m.Bounce)
 	}
 	// Every listed file is in the archive, and the archive holds nothing else.

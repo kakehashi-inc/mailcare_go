@@ -238,7 +238,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	var dto NotificationSettingsDTO
 	decode(t, rec.Body.Bytes(), &dto)
 	if dto.SMTPPort != modules.DefaultSMTPPort || dto.SMTPSecurity != modules.DefaultSMTPSecurity || dto.NotifyEnabled ||
-		dto.NotifyTime != modules.DefaultNotifyTime || dto.NotifyIntervalDays != 1 || len(dto.NotifyUserIDs) != 0 ||
+		strings.Join(dto.NotifyTimes, ",") != modules.DefaultNotifyTimes || dto.NotifyIntervalDays != 1 || len(dto.NotifyUserIDs) != 0 ||
 		dto.SMTPPasswordSet || dto.LastSentAt != nil || dto.NextSendAt != nil || len(dto.Recipients) != 2 ||
 		dto.EffectiveBaseURL != "http://127.0.0.1:9790" {
 		t.Errorf("defaults %+v", dto)
@@ -264,7 +264,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	rec = do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", map[string]any{
 		"smtp_host": srv.Host(), "smtp_port": srv.Port(), "smtp_security": "none", "smtp_username": "u", "smtp_password": "p",
 		"smtp_from": "MailCare@Example.test", "public_base_url": "https://mailcare.example.test/", "notify_enabled": true,
-		"notify_time": "8:15", "notify_interval_days": 2, "notify_user_ids": []int64{bobID, adminID},
+		"notify_times": []string{"18:30", "8:15"}, "notify_interval_days": 2, "notify_user_ids": []int64{bobID, adminID},
 	}, s.admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("put: %d %s", rec.Code, rec.Body.String())
@@ -272,7 +272,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	decode(t, rec.Body.Bytes(), &dto)
 	if dto.SMTPHost != srv.Host() || dto.SMTPPort != srv.Port() || dto.SMTPSecurity != "none" || dto.SMTPUsername != "u" ||
 		!dto.SMTPPasswordSet || dto.SMTPFrom != "mailcare@example.test" || dto.PublicBaseURL != "https://mailcare.example.test" ||
-		dto.EffectiveBaseURL != "https://mailcare.example.test" || !dto.NotifyEnabled || dto.NotifyTime != "08:15" ||
+		dto.EffectiveBaseURL != "https://mailcare.example.test" || !dto.NotifyEnabled || strings.Join(dto.NotifyTimes, ",") != "08:15,18:30" ||
 		dto.NotifyIntervalDays != 2 || len(dto.NotifyUserIDs) != 2 || dto.NextSendAt == nil {
 		t.Errorf("after put %+v", dto)
 	}
@@ -284,6 +284,12 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	decode(t, rec.Body.Bytes(), &dto)
 	if rec.Code != http.StatusOK || !dto.SMTPPasswordSet || dto.NotifyIntervalDays != 3 || dto.SMTPHost != srv.Host() {
 		t.Errorf("partial put: %d %+v", rec.Code, dto)
+	}
+	// An empty list of times restores the default.
+	rec = do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", map[string]any{"notify_times": []string{}}, s.admin)
+	decode(t, rec.Body.Bytes(), &dto)
+	if rec.Code != http.StatusOK || strings.Join(dto.NotifyTimes, ",") != modules.DefaultNotifyTimes {
+		t.Errorf("empty notify_times: %d %+v", rec.Code, dto.NotifyTimes)
 	}
 	// While a password is stored, changing the host, port, security mode or
 	// username needs the password in the same request; a refused update
@@ -320,7 +326,7 @@ func TestNotificationSettingsEndpoints(t *testing.T) {
 	}
 	// Validation errors.
 	for _, bad := range []map[string]any{
-		{"notify_interval_days": 8}, {"notify_time": "24:00"}, {"smtp_security": "tls"}, {"smtp_port": 0},
+		{"notify_interval_days": 8}, {"notify_times": []string{"09:00", "24:00"}}, {"smtp_security": "tls"}, {"smtp_port": 0},
 		{"smtp_from": "nope"}, {"public_base_url": "ftp://x"}, {"notify_user_ids": []int64{999}},
 	} {
 		if rec := do(t, s.h, http.MethodPut, "/api/v1/settings/notifications", bad, s.admin); rec.Code != http.StatusBadRequest {

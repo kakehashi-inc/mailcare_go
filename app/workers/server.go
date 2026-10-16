@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -58,6 +57,9 @@ type core struct {
 
 	srv          *http.Server
 	shutdownOnce sync.Once
+	// cancelBase ends the context of every request (BaseContext of srv)
+	// when the shutdown begins.
+	cancelBase context.CancelFunc
 
 	// controlToken is the token every control request must carry (fresh at
 	// every start; startServer writes it to the data directory for the CLI).
@@ -193,24 +195,22 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 		log.Printf("Created default token: %s", tok.Token)
 	}
 
-	// The timeouts bound slow or idle clients: request headers, the whole
-	// request read, the response write (no endpoint waits for a job) and
-	// idle keep-alive connections.
-	c.srv = &http.Server{
-		Handler:           c.webHandler(),
-		ReadHeaderTimeout: modules.ReadHeaderTimeout,
-		ReadTimeout:       modules.HTTPReadTimeout,
-		WriteTimeout:      modules.HTTPWriteTimeout,
-		IdleTimeout:       modules.HTTPIdleTimeout,
-	}
+	// The context of every request ends when the shutdown begins.
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	c.cancelBase = cancelBase
+	c.srv = newHTTPServer(c.webHandler(), baseCtx)
 	listeners, err := listenWithLoopback(webListen, webPort)
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %w", webPort, err)
 	}
 	// The control token is written only once this server listens (a start
 	// that fails before never replaces the token of a running server; the
-	// server lock keeps a second server of this data directory out).
-	if err := modules.WriteControlToken(dataDir, webPort, c.controlToken); err != nil {
+	// server lock keeps a second server of this data directory out). A
+	// signal ends a wait for the file (fileinuse on Windows).
+	tokenCtx, stopTokenWait := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err = modules.WriteControlToken(tokenCtx, dataDir, webPort, c.controlToken)
+	stopTokenWait()
+	if err != nil {
 		for _, ln := range listeners {
 			ln.Close()
 		}
@@ -221,12 +221,17 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 	c.jm.Start()
 	c.sched.Start()
 
-	sigCh := make(chan os.Signal, 1)
+	// The first signal shuts down; a second one exits at once (without
+	// waiting for the jobs and the requests in flight).
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
-		c.shutdown()
+		go c.shutdown()
+		<-sigCh
+		log.Println("Second signal: exiting at once")
+		os.Exit(modules.ExitGeneral)
 	}()
 
 	if n, _ := models.CountUsers(db); n == 0 {
@@ -247,6 +252,14 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 	log.Printf("workers: %d", c.jm.Workers())
 	log.Printf("mail retention: %d days", modules.ResolveMailKeepDays(db))
 
+	return c.serve(listeners)
+}
+
+// serve serves the listeners until the server shuts down and returns once
+// the shutdown has finished, that is once the requests in flight have ended
+// (Serve itself returns as soon as the shutdown starts). A failing listener
+// shuts the server down too and its error is returned.
+func (c *core) serve(listeners []net.Listener) error {
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup
 	for _, ln := range listeners {
@@ -263,8 +276,7 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 		}(ln)
 	}
 	wg.Wait()
-	c.sched.Stop()
-	c.jm.Stop()
+	c.shutdown() // waits for a shutdown in progress to finish
 	select {
 	case err := <-errCh:
 		return err
@@ -273,18 +285,41 @@ func startServer(webListen string, webPort int, workers int, checkTimes []string
 	}
 }
 
-// shutdown gracefully stops the HTTP server. Safe to call multiple times
-// (signal handler and control endpoint may both trigger it). The job worker
-// and the scheduler are stopped by startServer once the listeners are closed.
+// shutdown stops the server: first the scheduler and the job manager (the
+// running jobs are canceled and waited for), then the HTTP server: the
+// context of every request in flight ends, no new connection is taken and
+// the requests in flight are waited for (each read or write of a client
+// that stopped still ends at its timeout). Safe to call multiple times
+// (signal handler and control endpoint may both trigger it); every call
+// returns once the shutdown has finished.
 func (c *core) shutdown() {
 	c.shutdownOnce.Do(func() {
 		log.Println("Shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), modules.ShutdownGraceTimeout)
-		defer cancel()
+		if c.sched != nil {
+			c.sched.Stop()
+		}
+		if c.jm != nil {
+			c.jm.Stop()
+		}
+		if c.cancelBase != nil {
+			c.cancelBase()
+		}
 		if c.srv != nil {
-			_ = c.srv.Shutdown(ctx)
+			_ = c.srv.Shutdown(context.Background())
 		}
 	})
+}
+
+// newHTTPServer builds the HTTP server of MailCare with baseCtx as the
+// context of every request. MailCare cuts no connection that is still
+// communicating: no time and no size limit on a request or a response (a
+// reverse proxy in front protects against slow or hostile clients over a
+// network).
+func newHTTPServer(h http.Handler, baseCtx context.Context) *http.Server {
+	return &http.Server{
+		Handler:     h,
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
+	}
 }
 
 // userFrom returns the authenticated user attached by the auth middleware.
@@ -301,9 +336,6 @@ func withUser(r *http.Request, u *models.User) *http.Request {
 }
 
 // --- Response / request helpers ---
-
-// maxJSONBody bounds the size of a JSON request body.
-const maxJSONBody = 1 << 20
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -369,7 +401,7 @@ func (c *core) writeControlTokenRefused(w http.ResponseWriter) {
 // decodeJSON reads a JSON body into v. It returns false (after answering
 // 400) when the body is not valid JSON.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxJSONBody))
+	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil {
 		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return false

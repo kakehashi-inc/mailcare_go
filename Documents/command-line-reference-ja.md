@@ -134,7 +134,9 @@ mailcare service start [--web-listen ADDR] [--web-port N] [--workers N] [--check
   指定して起動し直す。
 - 範囲外または形の不正な値は、サーバーを起動する前に終了コード 2 で終わる。
 - 1 つのデータディレクトリにサーバーは 1 つ: 2 つ目の起動は `another MailCare server is running for this data
-  directory` で失敗し（終了コード 5）、データベースに触れない。
+  directory` で失敗し（終了コード 5）、データベースに触れない。サーバーはデータディレクトリの `server.lock` をロックし、
+  停止時にファイルを削除する。異常終了で残ったファイルは次の起動を妨げない。
+- 停止は、まずスケジューラと実行中のジョブを止め（そのメールは次の実行で扱う）、処理中の要求に停止を知らせてから、要求（ダウンロードを含む）の終わりを待つ（待つ時間に制限は無い）。待っている間にもう一度 Ctrl+C（SIGINT / SIGTERM）を送ると、待たずにすぐ終了する。
 - 待ち受けアドレスが特定のアドレス（`0.0.0.0`、`::`、`127.0.0.1`、`::1`、`localhost` 以外）のときは、2 章のコマンドのために、
   同じポートで `127.0.0.1` でも待ち受ける。`::1` ではコマンドがサーバーに届かない（コマンドは `127.0.0.1` に接続するため）。
 - サーバーがデフォルトの API トークンを作成したときは、その値をログに 1 度だけ出す。利用者がまだいなければ、Web の
@@ -156,6 +158,8 @@ mailcare service stop [--web-port N]
 - そのポートで別のデータディレクトリのサーバーが動いていれば、停止しない
   （`the server on port N serves another data directory: <dir>`、終了コード 5）。
 - ポートにサーバーがいない、またはコントロールトークンを拒否された: 終了コード 5。
+- コマンドは、サーバーが要求を受け付けた時点で戻る（`Server shutdown initiated`）。サーバーはその後 `service start` の
+  とおりに止まる: スケジューラと実行中のジョブを先に止め、処理中の要求の終わりを待つ。
 
 ### 3.3 service status
 
@@ -489,7 +493,7 @@ mailcare analyze [ADDRESS] [--group KEY | --all]
 
 - `--group` と `--all` は同時に指定できない。ADDRESS の無い `--group` は終了コード 2。
 - エージェントの CLI がインストールされていない、または利用上限が続いているときは終了コード 3 で拒否する（2.3）。
-- ジョブの途中でエージェントが利用上限を知らせたときは、残りのグループを次の分析に回し、ジョブはエラーで終わる。
+- ジョブの途中でエージェントが利用上限を知らせたときは、ジョブはエラーで終わり、分析できなかったグループは上限の後の分析に回る（`--group`・`--all` でも同じ。`--group` で指定した対象外のグループも）。
 
 ### 7.7 notify
 
@@ -523,7 +527,7 @@ mailcare cleanup [ADDRESS ...] [--wait]
 3. 書き込みの中断で残った一時ファイル（1 日より古いもの）を削除する。
 4. `agent_keep_days` を過ぎたエージェントの作業ディレクトリを削除する。
 5. メールの保持日数（最低 7 日）を過ぎた確認メールの記録を削除する。
-6. 完了から 30 日を過ぎたジョブと、保持期間を過ぎた DNS 検証の結果・送信元の取得結果を削除する。
+6. 完了から 30 日を過ぎたジョブと、保持期間を過ぎた DNS 検証の結果・通知元の取得結果を削除する。
 
 `--wait` は `sync` と同じ（2.2）。
 
@@ -585,7 +589,7 @@ mailcare groups set-state ADDRESS KEY open|resolved|ignored [--reason CODE] [--n
 | オプション | 内容 |
 | --- | --- |
 | `--reason CODE` | 対応内容（`resolved`）または判断理由（`ignored`）。どちらでも必須 |
-| `--note TEXT` | 詳細、2000 文字まで: 行ったこと（`resolved`）、または言葉で書いた理由（`ignored` で `--reason other`） |
+| `--note TEXT` | 詳細: 行ったこと（`resolved`）、または言葉で書いた理由（`ignored` で `--reason other`） |
 
 | 対応内容（`resolved`） | 意味 |
 | --- | --- |
@@ -651,7 +655,7 @@ mailcare settings show [--json]
 | `data_dir` | コマンドのデータディレクトリ |
 | `smtp_password`、`probe_imap_password` | `(set)` または `(not set)`。JSON では `smtp_password_set`、`probe_imap_password_set`。パスワードは表示しない |
 | `effective_base_url` | `public_base_url` が空の間に通知メールで使う URL |
-| `notify_last_sent_at`、`next_send_at` | 最後に送った通知、次の定時の通知（通知が無効なら無し） |
+| `notify_last_sent_at`、`next_send_at` | 最後に送った通知、次の定時の通知（通知日に当たる通知時刻のうち次のもの。通知が無効なら無し） |
 | `sending_source_mailbox_hosts` | メールアドレスの SMTP サーバー（`mailbox update --smtp-host` で設定する） |
 | `sending_source_mailboxes_without_host` | テキストでは `mailboxes without a host name`。`sending_source_hosts` が空のときの、SMTP サーバーの無いメールアドレス。これらのアドレスでは、送信元以外から送信されたメールのバウンスを見分けられない |
 | `probe_last_send_at`、`probe_next_check_at` | 最後の確認メールの送信、次の到着確認 |
@@ -755,11 +759,13 @@ mailcare settings set KEY [VALUE]
 | `smtp_from` | 差出人アドレス | なし |
 | `public_base_url` | 公開 URL（メール内のリンクの元）: クエリとフラグメントの無い `http` / `https` の絶対 URL | `http://<web_listen または localhost>:<web_port>` |
 | `notify_enabled` | 通知の有効 / 無効 | 無効 |
-| `notify_time` | 通知時刻: `HH:MM` 1 つ（ローカル時刻） | `09:00` |
+| `notify_time` | 通知時刻: カンマ区切りの `HH:MM`（ローカル時刻）。通知日にはそれぞれの時刻に送る。`""` = 既定 | `09:00,17:00` |
 | `notify_interval_days` | 通知間隔（日）、1〜7 | 1 |
 | `notify_user_ids` | 通知先: カンマ区切りの利用者 ID（`user list`）、100 人まで | なし |
 
 - `notify_enabled` を有効にできるのは `smtp_host` と `smtp_from` があるときだけで、有効な間はどちらも空にできない。
+- 通知日は、まだ通知を送っていない日、最後に通知を送った日、またはその日から `notify_interval_days` 日以上たった日。
+  通知日には `notify_time` のそれぞれの時刻に通知を送る。
 - `smtp_password` の前に `smtp_username` が必要。ユーザー名がある間の `smtp_password ""` は拒否する。認証をやめるには
   `settings set smtp_username ""` を実行する（パスワードも消える）。
 - パスワードの保存中に `smtp_host`、`smtp_port`、`smtp_security`、`smtp_username` を別の空でない値に変えるときは、

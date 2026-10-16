@@ -139,7 +139,11 @@ Starts the server (Web screens, job workers and scheduler) in the foreground. Ct
   the start fails because of them, start again with correct values.
 - A value out of range or in the wrong form ends the command with exit code 2 before the server starts.
 - One server per data directory: a second start fails with `another MailCare server is running for this data
-  directory` (exit code 5) without touching the database.
+  directory` (exit code 5) without touching the database. The server holds the lock of `server.lock` in the data
+  directory and removes the file when it stops; a file left by a crash does not block the next start.
+- Stopping first stops the scheduler and the running jobs (their mail is handled again by the next run), tells the
+  requests in progress that the server stops, then waits for them (downloads included) to end, without a time limit.
+  A second Ctrl+C (SIGINT or SIGTERM) while it waits exits at once.
 - When the listen address is a specific address (not `0.0.0.0`, `::`, `127.0.0.1`, `::1` or `localhost`), the server
   also listens on `127.0.0.1` at the same port for the commands of section 2. With `::1` the commands cannot reach the
   server, because they connect to `127.0.0.1`.
@@ -162,6 +166,8 @@ Stops the running server of this data directory.
 - A server of another data directory on that port is left running
   (`the server on port N serves another data directory: <dir>`, exit code 5).
 - No server on the port, or a refused control token: exit code 5.
+- The command returns once the server has taken the request (`Server shutdown initiated`). The server then stops as
+  under `service start`: the scheduler and the running jobs first, then it waits for the requests in progress.
 
 ### 3.3 service status
 
@@ -501,8 +507,9 @@ Runs the analysis by the AI agent over the groups of one mailbox, or of every ma
 
 - `--group` and `--all` exclude each other; `--group` without ADDRESS: exit code 2.
 - Refused with exit code 3 when the CLI of the agent is not installed or a usage limit lasts (2.3).
-- When the agent reports its usage limit during the job, the remaining groups wait for the next analysis and the job
-  ends with an error.
+- When the agent reports its usage limit during the job, the job ends with an error and the groups not analyzed wait
+  for the analysis after the limit (with `--group` and `--all` too; an excluded group asked for with `--group` as
+  well).
 
 ### 7.7 notify
 
@@ -537,7 +544,7 @@ Applies the retentions now, as the daily cleanup at `cleanup_time` does. For eac
 3. Removes temporary files left by interrupted writes (older than 1 day).
 4. Removes agent working directories older than `agent_keep_days`.
 5. Removes probe mail records older than the mail retention (7 days at least).
-6. Removes jobs finished more than 30 days ago, and stored DNS check results and sending source lookups past their
+6. Removes jobs finished more than 30 days ago, and stored DNS check results and reporting MTA lookups past their
    retention.
 
 `--wait` as for `sync` (2.2).
@@ -602,7 +609,7 @@ Changes the state of a group, as the Alerts screen does. The state history recor
 | Option | Meaning |
 | --- | --- |
 | `--reason CODE` | Action taken (`resolved`) or reason for ignoring (`ignored`); required for both |
-| `--note TEXT` | Details, up to 2000 characters: what was done (`resolved`), or the reason in words (`ignored` with `--reason other`) |
+| `--note TEXT` | Details: what was done (`resolved`), or the reason in words (`ignored` with `--reason other`) |
 
 | Action taken (`resolved`) | Meaning |
 | --- | --- |
@@ -669,7 +676,7 @@ set:
 | `data_dir` | Data directory of the command |
 | `smtp_password`, `probe_imap_password` | `(set)` or `(not set)`; JSON: `smtp_password_set`, `probe_imap_password_set`. Passwords are never shown |
 | `effective_base_url` | URL used in the notification emails while `public_base_url` is empty |
-| `notify_last_sent_at`, `next_send_at` | Last notification sent; next scheduled notification (none while notifications are off) |
+| `notify_last_sent_at`, `next_send_at` | Last notification sent; next scheduled notification, the next of the notification times on a notification day (none while notifications are off) |
 | `sending_source_mailbox_hosts` | SMTP hosts of the mailboxes (set with `mailbox update --smtp-host`) |
 | `sending_source_mailboxes_without_host` | Text: `mailboxes without a host name`. Mailboxes without an SMTP host while `sending_source_hosts` is empty; bounces of mail not sent from the sending sources are not recognized for them |
 | `probe_last_send_at`, `probe_next_check_at` | Last probe send; next arrival check |
@@ -781,12 +788,14 @@ Changes one setting.
 | `smtp_from` | From address | None |
 | `public_base_url` | Public URL for the links in the emails: absolute `http` / `https` URL without query or fragment | `http://<web_listen or localhost>:<web_port>` |
 | `notify_enabled` | Notifications on or off | Off |
-| `notify_time` | Notification time: one `HH:MM` (local time) | `09:00` |
+| `notify_time` | Notification times: comma-separated `HH:MM` (local time), sent at each of them on a notification day; `""` = the default | `09:00,17:00` |
 | `notify_interval_days` | Interval in days, 1-7 | 1 |
 | `notify_user_ids` | Recipients: comma-separated user IDs (`user list`), up to 100 | None |
 
 - `notify_enabled` can be turned on only while `smtp_host` and `smtp_from` are set, and neither can be emptied while
   it is on.
+- A notification day is a day with no notification sent yet, the day of the last notification, or a day at least
+  `notify_interval_days` days after it; on such a day a notification goes out at each of the `notify_time` times.
 - `smtp_password` needs `smtp_username` first. `smtp_password ""` is refused while a username is set; to stop
   authenticating, run `settings set smtp_username ""`, which removes the password too.
 - While a password is stored, changing `smtp_host`, `smtp_port`, `smtp_security` or `smtp_username` to another

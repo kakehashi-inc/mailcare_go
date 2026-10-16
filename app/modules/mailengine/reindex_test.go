@@ -3,6 +3,7 @@ package mailengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"os"
 	"path/filepath"
@@ -48,10 +49,8 @@ func seedRawWithIdentity(t *testing.T, root, address, key string, raw []byte, id
 }
 
 // TestReindexSyntheticUIDCollision checks that a raw file whose synthetic
-// identity (UIDVALIDITY 0, UID = FNV-32 of the key) collides with an
-// indexed row is stored under the next free UID, and that when the retries
-// are exhausted the file is reported, counted as skipped and the rest of
-// the index is still built.
+// identity (UIDVALIDITY 0, UID = FNV-32 of the key) collides with indexed
+// rows is stored under the next free UID, however many rows collide.
 func TestReindexSyntheticUIDCollision(t *testing.T) {
 	root := t.TempDir()
 	address := "newsletter@example.jp"
@@ -89,66 +88,35 @@ func TestReindexSyntheticUIDCollision(t *testing.T) {
 	}
 	db.Close()
 
-	// With fewer retries than colliding rows the file is left out, reported
-	// and counted; the other files are indexed and the index is installed.
-	saved := maxSyntheticUIDRetries
-	maxSyntheticUIDRetries = 2
-	defer func() { maxSyntheticUIDRetries = saved }()
-	// Rebuild from the previous state: newKey now carries (0, uid+3), so
-	// re-seed the old index with the three blockers only.
+	// A long run of colliding rows (keys sorted before newKey, so they are
+	// stored first): every one is passed.
 	root = t.TempDir()
-	for i, key := range occupied {
-		seedRawWithIdentity(t, root, address, key, raw, &Source{Folder: defaultFolder, UIDValidity: 0, UID: uid + uint32(i)})
+	const run = 60
+	for i := range run {
+		seedRawWithIdentity(t, root, address, fmt.Sprintf("20260901-120000_a%011d", i), raw, &Source{Folder: defaultFolder, UIDValidity: 0, UID: uid + uint32(i)})
 	}
 	seedRawWithIdentity(t, root, address, newKey, raw, nil)
-	lines = nil
-	res, err = Reindex(context.Background(), root, address, nil, func(m string) { lines = append(lines, m) })
+	res, err = Reindex(context.Background(), root, address, nil, nil)
 	if err != nil {
-		t.Fatalf("reindex with exhausted retries: %v", err)
+		t.Fatalf("reindex of a long run: %v", err)
 	}
-	if res.Messages != 3 || res.Skipped != 1 {
-		t.Errorf("result = %+v, want 3 messages and 1 skipped", res)
-	}
-	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "error: skipping "+newKey) || !strings.Contains(joined, "1 skipped") {
-		t.Errorf("progress lacks the skip report:\n%s", joined)
+	if res.Messages != run+1 || res.Skipped != 0 {
+		t.Errorf("result = %+v, want %d messages and nothing skipped", res, run+1)
 	}
 	db = mustOpenIndex(t, root, address)
 	defer db.Close()
-	if _, err := models.GetMessageByKey(db, newKey); err == nil {
-		t.Error("the skipped file was indexed after all")
-	}
-	if n := countRows(t, db, "messages"); n != 3 {
-		t.Errorf("%d messages indexed, want 3", n)
+	if m, err := models.GetMessageByKey(db, newKey); err != nil || m.UID != uid+run {
+		t.Errorf("colliding file after a long run = %+v (err %v), want UID %d", m, err, uid+run)
 	}
 }
 
-// TestRetryFileOp checks that a file operation is retried until it succeeds
-// within the timeout and gives up with the last error afterwards.
+// TestRetryFileOp checks that a failure that is not about a file in use
+// ends the operation at once (the wait itself is tested in fileinuse).
 func TestRetryFileOp(t *testing.T) {
-	savedInterval, savedTimeout := fileRetryInterval, fileRetryTimeout
-	fileRetryInterval, fileRetryTimeout = time.Millisecond, 200*time.Millisecond
-	defer func() { fileRetryInterval, fileRetryTimeout = savedInterval, savedTimeout }()
-
 	calls := 0
-	err := retryFileOp(func() error {
-		calls++
-		if calls < 3 {
-			return errors.New("still open")
-		}
-		return nil
-	})
-	if err != nil || calls != 3 {
-		t.Errorf("retry: err %v after %d calls, want success at the third", err, calls)
-	}
-	calls = 0
-	sentinel := errors.New("never")
-	start := time.Now()
-	if err := retryFileOp(func() error { calls++; return sentinel }); !errors.Is(err, sentinel) {
-		t.Errorf("exhausted retry returned %v, want the last error", err)
-	}
-	if calls < 2 || time.Since(start) < fileRetryTimeout {
-		t.Errorf("gave up after %d calls in %s", calls, time.Since(start))
+	other := errors.New("permission")
+	if err := retryFileOp(context.Background(), nil, func() error { calls++; return other }); !errors.Is(err, other) || calls != 1 {
+		t.Errorf("other failure: %v after %d calls, want it at once", err, calls)
 	}
 	// The swap itself works on real files (a missing side file is fine).
 	dir := t.TempDir()
@@ -158,7 +126,7 @@ func TestRetryFileOp(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := swapIndexFiles(src, dst); err != nil {
+	if err := swapIndexFiles(context.Background(), nil, src, dst); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(dst); err != nil || string(data) != src {

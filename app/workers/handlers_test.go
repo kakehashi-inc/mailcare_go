@@ -442,6 +442,7 @@ func TestMessagesEndpoints(t *testing.T) {
 	var detail struct {
 		Message      MessageDTO        `json:"message"`
 		Bounce       *BounceDTO        `json:"bounce"`
+		Bounces      []*BounceDTO      `json:"bounces"`
 		TextSections []string          `json:"text_sections"`
 		Headers      map[string]string `json:"headers"`
 	}
@@ -472,6 +473,36 @@ func TestMessagesEndpoints(t *testing.T) {
 	decode(t, rec.Body.Bytes(), &detail)
 	if detail.Bounce == nil || detail.Bounce.Responsible != modules.ResponsibleDomain {
 		t.Errorf("bounce responsible: %+v", detail.Bounce)
+	}
+	// A notice with several failed recipients: every one is listed with the
+	// group it was filed into and the responsible party of that group;
+	// "bounce" is the first.
+	idx, err = s.openIndex(httptest.NewRequest(http.MethodGet, "/", nil), s.mb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := models.ListBouncesByMessage(idx, detail.Message.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("bounces rows %+v, %v", rows, err)
+	}
+	const otherGroup = "00000000000000ff"
+	if err := models.UpsertGroup(idx, &models.BounceGroup{GroupKey: otherGroup, Category: "mailbox_full", UnitValue: "saburo@nowhere.example.org",
+		Responsible: modules.ResponsibleRecipient}); err != nil {
+		t.Fatal(err)
+	}
+	second := *rows[0]
+	second.GroupKey, second.Recipient = otherGroup, "saburo@nowhere.example.org"
+	if err := models.ReplaceBounces(idx, detail.Message.ID, []*models.Bounce{rows[0], &second}); err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+	rec = do(t, s.h, http.MethodGet, s.path("/messages/"+s.keys[1]), nil, s.user)
+	detail.Bounces = nil
+	decode(t, rec.Body.Bytes(), &detail)
+	if len(detail.Bounces) != 2 || detail.Bounce == nil || detail.Bounce.GroupKey != detail.Message.GroupKey ||
+		detail.Bounces[1].GroupKey != otherGroup || detail.Bounces[1].Responsible != modules.ResponsibleRecipient ||
+		detail.Bounces[0].Responsible != modules.ResponsibleDomain {
+		t.Errorf("several recipients: bounce %+v, bounces %+v", detail.Bounce, detail.Bounces)
 	}
 	// An ordinary mail has bounce null and an empty text list when it has
 	// no text section.

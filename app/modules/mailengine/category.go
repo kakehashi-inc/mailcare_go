@@ -71,6 +71,9 @@ var categoryDefs = map[string]categoryDef{
 	// reported it is the unit), or the receiving side's DNS did.
 	categoryDNSResolverFailure: {true, responsibleSender, unitReportingMTA, authorityNone},
 	categoryDNSFailureExternal: {false, responsibleDomain, unitRecipientDomain, authorityNone},
+	// A temporary DNS lookup failure not verified yet: either side may be at
+	// fault, so it is shown (the next grouping verifies it again).
+	categoryDNSLookupFailure: {true, responsibleUnknown, unitRecipientDomain, authorityNone},
 	// DMARC categories: filed by CategorizeDMARCRecord, which sets the unit
 	// itself (the domain of the record; no authority).
 	categoryDMARCSPFMissing:       {true, responsibleSender, unitNone, authorityNone},
@@ -115,8 +118,9 @@ type categoryRule struct {
 //     warning is verified too, and the domain status codes (5.1.2 / 5.4.4 /
 //     5.4.6) because a permanent lookup failure carries one of them;
 //  2. the actionable categories, most specific first (blacklist and rate
-//     limit wording, then delays, authentication, sender, size, content,
-//     server configuration);
+//     limit wording, authentication, sender, size, content, server
+//     configuration), then a delay notice that none of them took (a delay
+//     whose reason is a sending-side problem keeps that category);
 //  3. the recipient-side categories by wording;
 //  4. everything else is an unknown failure.
 var categoryRules = []categoryRule{
@@ -132,7 +136,13 @@ var categoryRules = []categoryRule{
 	}},
 
 	// --- 1'. DNS lookup failures (4.4) ---
+	// Verified: a name that does not exist is an unknown domain when it is
+	// the recipient domain, and a fault of the receiving side's DNS when it
+	// is another name of it (a host its MX records point to).
 	{"dns_verified_not_found", categoryDomainNotFound, func(f *categoryFacts) bool {
+		return f.dnsFound && f.verdict.Outcome == DNSOutcomeNotFound && f.dnsNameIsRecipientDomain()
+	}},
+	{"dns_verified_name_not_found", categoryDNSFailureExternal, func(f *categoryFacts) bool {
 		return f.dnsFound && f.verdict.Outcome == DNSOutcomeNotFound
 	}},
 	{"dns_resolver_failure", categoryDNSResolverFailure, func(f *categoryFacts) bool {
@@ -141,14 +151,19 @@ var categoryRules = []categoryRule{
 	{"dns_failure_external", categoryDNSFailureExternal, func(f *categoryFacts) bool {
 		return f.dnsFound && ((f.verdict.Outcome == DNSOutcomeExists && !f.verdict.FromSendingSource) || f.verdict.Outcome == DNSOutcomeBroken)
 	}},
-	// Not verified (checking disabled, outside the conditions, or no resolver
-	// answered): a delay warning or a temporary failure is a delivery delay,
-	// a permanent failure an unknown domain.
-	{"dns_unverified_delay", categoryDeliveryDelay, func(f *categoryFacts) bool {
+	// Not verified (checking disabled, outside the conditions, or the
+	// answers cut short; the next grouping verifies these again): a delay
+	// warning or a temporary failure may lie with either side and is shown;
+	// a permanent failure is an unknown domain for the recipient domain and
+	// a fault of the receiving side's DNS for another of its names.
+	{"dns_unverified_temporary", categoryDNSLookupFailure, func(f *categoryFacts) bool {
 		return f.dnsFound && !f.verdict.Outcome.verified() && (f.kind == bounceKindDelayed || f.dns.Temporary)
 	}},
 	{"dns_unverified_not_found", categoryDomainNotFound, func(f *categoryFacts) bool {
-		return f.dnsFound && !f.verdict.Outcome.verified() && f.kind == bounceKindFailed && !f.dns.Temporary
+		return f.dnsFound && !f.verdict.Outcome.verified() && f.kind == bounceKindFailed && f.dnsNameIsRecipientDomain()
+	}},
+	{"dns_unverified_name_not_found", categoryDNSFailureExternal, func(f *categoryFacts) bool {
+		return f.dnsFound && !f.verdict.Outcome.verified() && f.kind == bounceKindFailed
 	}},
 
 	// A permanent lookup failure normally carries 5.4.4 (Postfix) or 5.1.2
@@ -180,9 +195,6 @@ var categoryRules = []categoryRule{
 		// unless it is about TLS / the session itself.
 		return f.status == "4.7.0" && !serverConfigRe.MatchString(f.text)
 	}},
-	{"delayed_kind", categoryDeliveryDelay, func(f *categoryFacts) bool {
-		return f.kind == bounceKindDelayed
-	}},
 	{"auth_failure", categoryAuthFailure, func(f *categoryFacts) bool {
 		if authStatusRe.MatchString(f.status) {
 			return true
@@ -205,6 +217,11 @@ var categoryRules = []categoryRule{
 	}},
 	{"server_config", categoryServerConfig, func(f *categoryFacts) bool {
 		return statusClass(f.status, "5.5.", "5.6.") || f.status == "5.3.0" || serverConfigRe.MatchString(f.text)
+	}},
+	// A delay notice whose reason is none of the sending-side problems
+	// above is a plain delay, whatever its wording says about the recipient.
+	{"delayed_kind", categoryDeliveryDelay, func(f *categoryFacts) bool {
+		return f.kind == bounceKindDelayed
 	}},
 
 	// --- 3. recipient-side wording ---
@@ -424,8 +441,18 @@ func newCategoryFacts(b *models.Bounce, kind string) *categoryFacts {
 	f.senderDomain = domainOf(f.senderAddress)
 	f.sendingIP = extractSendingIP(f.text, strings.ToLower(b.RemoteIP))
 	f.blacklist = knownBlacklist(f.text)
-	f.dns, f.dnsFound = ParseDNSFailure(b.Diagnostic)
+	f.dns, f.dnsFound = ParseDNSFailure(b.Diagnostic, b.RemoteMTA)
 	return f
+}
+
+// dnsNameIsRecipientDomain reports whether the name of the DNS lookup
+// failure is the recipient domain (a form that names none means it).
+func (f *categoryFacts) dnsNameIsRecipientDomain() bool {
+	if f.dns.Name == "" {
+		return true
+	}
+	domain, ok := normalizeDNSName(strings.TrimPrefix(f.bounce.RecipientDomain, "@"))
+	return ok && f.dns.Name == domain
 }
 
 // senderRejection reports whether the diagnostic refuses the sender address

@@ -68,13 +68,26 @@ func withAuthority(s *fakeServer) {
 	s.authority("example.jp MX", data("mx1.example.jp"))
 }
 
+// mailHost gives a host name addresses in the resolver role of s.
+func mailHost(s *fakeServer, host string, a ...string) {
+	for _, v := range a {
+		t := "A"
+		if netip.MustParseAddr(v).Is6() {
+			t = "AAAA"
+		}
+		s.resolve(host+" "+t, data(v))
+	}
+}
+
 // TestVerifyExists verifies a name every path answers: exists, stored with
-// the evidence of the resolver and the authoritative server, and reused by
-// the next notice without a query.
+// the evidence of the lookups (the MX targets and the A and AAAA of each)
+// and of the authoritative server, and reused by the next notice without a
+// query.
 func TestVerifyExists(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp", "mx2.example.jp"))
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
 	withAuthority(s)
 	c := newTestChecker(db, s.port, "127.0.0.1")
 
@@ -86,12 +99,14 @@ func TestVerifyExists(t *testing.T) {
 		t.Fatalf("stored %d rows", len(rows))
 	}
 	r := rows[0]
-	if r.Name != "example.jp" || r.QType != "MX" || r.Outcome != "exists" {
+	if r.Name != "example.jp" || r.QType != VerifyKind || r.Outcome != "exists" {
 		t.Errorf("row %+v", r)
 	}
 	for _, want := range []string{
-		"name=example.jp type=MX outcome=exists",
-		"resolver 127.0.0.1: control ok; MX ok (mx1.example.jp, mx2.example.jp)",
+		"name=example.jp outcome=exists",
+		"checked as a mail domain: MX, then the A and AAAA of every MX target (or of the name itself without MX)",
+		"resolver 127.0.0.1: control ok; MX ok (mx1.example.jp, mx2.example.jp); mx1.example.jp: A ok (192.0.2.1), AAAA no data; " +
+			"mx2.example.jp: A NXDOMAIN, AAAA NXDOMAIN",
 		"authoritative ns1.example.jp (127.0.0.1): MX ok (mx1.example.jp)",
 	} {
 		if !strings.Contains(r.Detail, want) {
@@ -103,8 +118,8 @@ func TestVerifyExists(t *testing.T) {
 	}
 
 	before := len(s.received())
-	if got, ok := verify(t, c, "example.jp", "MX", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
-		t.Fatalf("second Verify = %q, %v", got, ok)
+	if got, ok := verify(t, c, "example.jp", "A", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
+		t.Fatalf("second Verify (another record type) = %q, %v", got, ok)
 	}
 	if after := len(s.received()); after != before {
 		t.Errorf("the reused outcome made %d queries", after-before)
@@ -143,11 +158,166 @@ func TestVerifyNotFound(t *testing.T) {
 	}
 }
 
-// TestVerifyBrokenByAuthoritative checks that a resolver answer the
-// authoritative server contradicts (NXDOMAIN, SERVFAIL) is broken, and that
-// an authoritative server that does not answer or is not authoritative for
-// the name does not vote.
-func TestVerifyBrokenByAuthoritative(t *testing.T) {
+// TestVerifyMailDomain checks the verification of a mail domain through the
+// configured resolvers: every MX target is looked up for both A and AAAA,
+// and the domain exists when any target has an address (every combination
+// of A and AAAA per target of a domain with two targets); without any
+// address it is broken, a null MX (RFC 7505) is broken, a domain without MX
+// records is the mail host itself (RFC 5321), and NXDOMAIN is not_found.
+func TestVerifyMailDomain(t *testing.T) {
+	s := startFakeServers(t, "127.0.0.1")[0]
+	// The states of one MX target.
+	type target struct {
+		name  string
+		addrs []string // "" in the list: exists without an address
+	}
+	states := []target{
+		{"both", []string{"192.0.2.1", "2001:db8::1"}},
+		{"a", []string{"192.0.2.2"}},
+		{"aaaa", []string{"2001:db8::3"}},
+		{"none", nil},
+		{"nx", nil},
+	}
+	hostOf := func(st target, domain string) string { return st.name + "." + domain }
+	setTarget := func(st target, domain string) {
+		h := hostOf(st, domain)
+		switch st.name {
+		case "none":
+			s.resolve(h+" TXT", data("no address")) // the name exists without A and AAAA
+		case "nx":
+		default:
+			mailHost(s, h, st.addrs...)
+		}
+	}
+	hasAddress := func(st target) bool { return len(st.addrs) > 0 }
+	type want struct {
+		domain  string
+		outcome mailengine.DNSOutcome
+	}
+	var cases []want
+	for i, x := range states {
+		for j, y := range states {
+			domain := fmt.Sprintf("c%d%d.example.jp", i, j)
+			s.resolve(domain+" MX", data(hostOf(x, domain), hostOf(y, domain)))
+			setTarget(x, domain)
+			setTarget(y, domain)
+			outcome := mailengine.DNSOutcomeBroken
+			if hasAddress(x) || hasAddress(y) {
+				outcome = mailengine.DNSOutcomeExists
+			}
+			cases = append(cases, want{domain, outcome})
+		}
+		// One target alone.
+		domain := fmt.Sprintf("s%d.example.jp", i)
+		s.resolve(domain+" MX", data(hostOf(x, domain)))
+		setTarget(x, domain)
+		outcome := mailengine.DNSOutcomeBroken
+		if hasAddress(x) {
+			outcome = mailengine.DNSOutcomeExists
+		}
+		cases = append(cases, want{domain, outcome})
+	}
+	s.resolve("nullmx.example.jp MX", data(""))
+	s.resolve("implicit.example.jp A", data("192.0.2.9"))
+	s.resolve("implicit6.example.jp AAAA", data("2001:db8::9"))
+	s.resolve("noaddr.example.jp TXT", data("nothing to deliver to"))
+	cases = append(cases,
+		want{"nullmx.example.jp", mailengine.DNSOutcomeBroken},
+		want{"implicit.example.jp", mailengine.DNSOutcomeExists},
+		want{"implicit6.example.jp", mailengine.DNSOutcomeExists},
+		want{"noaddr.example.jp", mailengine.DNSOutcomeBroken},
+		want{"nosuch.example.jp", mailengine.DNSOutcomeNotFound},
+	)
+	db := openTestMasterDB(t)
+	c := newTestChecker(db, s.port, "127.0.0.1")
+	for _, tc := range cases {
+		got, ok := c.Verify(context.Background(), mailengine.DNSFailure{Name: tc.domain, QType: "MX"}, tc.domain, time.Now(), false)
+		if !ok || got != tc.outcome {
+			t.Errorf("%s: Verify = %q, %v; want %q", tc.domain, got, ok, tc.outcome)
+		}
+	}
+	detail := func(name string) string {
+		t.Helper()
+		row, err := models.FindDNSCheck(db, name, VerifyKind, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return row.Detail
+	}
+	for name, want := range map[string]string{
+		"c03.example.jp": "MX ok (both.c03.example.jp, none.c03.example.jp); both.c03.example.jp: A ok (192.0.2.1), AAAA ok (2001:db8::1); " +
+			"none.c03.example.jp: A no data, AAAA no data",
+		"c34.example.jp":       "MX ok (none.c34.example.jp, nx.c34.example.jp); none.c34.example.jp: A no data, AAAA no data; nx.c34.example.jp: A NXDOMAIN, AAAA NXDOMAIN",
+		"nullmx.example.jp":    "MX ok (.) (null MX: the domain accepts no mail)",
+		"implicit.example.jp":  "MX none (the name itself is the mail host); A ok (192.0.2.9), AAAA no data",
+		"implicit6.example.jp": "MX none (the name itself is the mail host); A no data, AAAA ok (2001:db8::9)",
+		"noaddr.example.jp":    "MX none (the name itself is the mail host); A no data, AAAA no data",
+	} {
+		if d := detail(name); !strings.Contains(d, "resolver 127.0.0.1: control ok; "+want) {
+			t.Errorf("%s: detail lacks %q:\n%s", name, want, d)
+		}
+	}
+}
+
+// TestVerifyHost checks the verification of a host name (an MX target of
+// the recipient domain): its A and AAAA records both; it exists with an
+// address of either family, whatever record type the notice named (a notice
+// "type=AAAA: Host found but no data record" for a host with an A record
+// is exists), and is broken without any and not_found when it does not
+// exist. The authoritative servers are asked whether it exists (A; no
+// data counts as existing).
+func TestVerifyHost(t *testing.T) {
+	db := openTestMasterDB(t)
+	s := startFakeServers(t, "127.0.0.1")[0]
+	s.resolve("example.jp MX", data("v4.example.jp", "v6.example.jp", "dual.example.jp", "none.example.jp", "nosuch.example.jp"))
+	mailHost(s, "v4.example.jp", "192.0.2.10")
+	mailHost(s, "v6.example.jp", "2001:db8::10")
+	mailHost(s, "dual.example.jp", "192.0.2.20", "2001:db8::20")
+	s.resolve("none.example.jp TXT", data("no address"))
+	withAuthority(s)
+	s.authority("v4.example.jp A", data("192.0.2.10"))
+	s.authority("v6.example.jp AAAA", data("2001:db8::10"))
+	s.authority("dual.example.jp A", data("192.0.2.20"))
+	s.authority("none.example.jp TXT", data("no address"))
+	c := newTestChecker(db, s.port, "127.0.0.1")
+	for _, tc := range []struct {
+		name, qtype string
+		want        mailengine.DNSOutcome
+		resolver    string
+		auth        string
+	}{
+		{"v4.example.jp", "AAAA", mailengine.DNSOutcomeExists, "A ok (192.0.2.10), AAAA no data", "A ok (192.0.2.10)"},
+		{"v6.example.jp", "A", mailengine.DNSOutcomeExists, "A no data, AAAA ok (2001:db8::10)", "A no data"},
+		{"dual.example.jp", "AAAA", mailengine.DNSOutcomeExists, "A ok (192.0.2.20), AAAA ok (2001:db8::20)", "A ok (192.0.2.20)"},
+		{"none.example.jp", "A", mailengine.DNSOutcomeBroken, "A no data, AAAA no data", "A no data"},
+		{"nosuch.example.jp", "AAAA", mailengine.DNSOutcomeNotFound, "A NXDOMAIN, AAAA NXDOMAIN", "A NXDOMAIN"},
+	} {
+		got, ok := verify(t, c, tc.name, tc.qtype, "example.jp")
+		if !ok || got != tc.want {
+			t.Errorf("%s %s: Verify = %q, %v; want %q", tc.name, tc.qtype, got, ok, tc.want)
+			continue
+		}
+		row, err := models.FindDNSCheck(db, tc.name, VerifyKind, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		for _, want := range []string{
+			"checked as a host (an MX target of the recipient domain): A and AAAA",
+			"resolver 127.0.0.1: control ok; " + tc.resolver,
+			"authoritative ns1.example.jp (127.0.0.1): " + tc.auth,
+		} {
+			if !strings.Contains(row.Detail, want) {
+				t.Errorf("%s %s: detail lacks %q:\n%s", tc.name, tc.qtype, want, row.Detail)
+			}
+		}
+	}
+}
+
+// TestVerifyAuthoritativeVote checks the authoritative answers: NXDOMAIN
+// against resolvers that obtained an address is broken, an answer that the
+// name exists (records, no data, a CNAME) agrees, and a server that fails,
+// does not answer or is not authoritative for the name does not vote.
+func TestVerifyAuthoritativeVote(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		auth fakeAnswer
@@ -155,8 +325,8 @@ func TestVerifyBrokenByAuthoritative(t *testing.T) {
 		note string
 	}{
 		{"nxdomain", answerWith(fakeNX), mailengine.DNSOutcomeBroken, "MX NXDOMAIN"},
-		{"servfail", answerWith(fakeServFail), mailengine.DNSOutcomeBroken, "MX SERVFAIL"},
-		{"nodata", answerWith(fakeNoData), mailengine.DNSOutcomeBroken, "MX none; A no data; AAAA no data"},
+		{"servfail", answerWith(fakeServFail), mailengine.DNSOutcomeExists, "MX SERVFAIL"},
+		{"nodata", answerWith(fakeNoData), mailengine.DNSOutcomeExists, "MX no data"},
 		{"not authoritative", answerWith(fakeNotAuth, "mx1.example.jp"), mailengine.DNSOutcomeExists, "MX not authoritative for the name"},
 		{"cname", data("cname:mail.example.net"), mailengine.DNSOutcomeExists, "MX CNAME mail.example.net"},
 		{"drop", answerWith(fakeDrop), mailengine.DNSOutcomeExists, "MX timeout"},
@@ -165,6 +335,7 @@ func TestVerifyBrokenByAuthoritative(t *testing.T) {
 			db := openTestMasterDB(t)
 			s := startFakeServers(t, "127.0.0.1")[0]
 			s.resolve("example.jp MX", data("mx1.example.jp"))
+			mailHost(s, "mx1.example.jp", "192.0.2.1")
 			withAuthority(s)
 			s.authority("example.jp MX", tc.auth)
 			c := newTestChecker(db, s.port, "127.0.0.1")
@@ -180,28 +351,43 @@ func TestVerifyBrokenByAuthoritative(t *testing.T) {
 }
 
 // TestVerifySilentAuthoritativeNotAskedAgain checks that an authoritative
-// address that did not answer is not asked again in the run.
+// address that did not answer is not asked again for failureTTL
+// (RFC 2308 7.2), and is asked again after it.
 func TestVerifySilentAuthoritativeNotAskedAgain(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
-	s.resolve("www.example.jp A", data("192.0.2.1"))
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
+	mailHost(s, "www.example.jp", "192.0.2.1")
+	mailHost(s, "mail.example.jp", "192.0.2.1")
 	withAuthority(s)
 	s.authority("example.jp MX", answerWith(fakeDrop))
-	s.authority("www.example.jp A", data("192.0.2.1"))
+	s.authority("www.example.jp MX", answerWith(fakeNoData))
+	s.authority("mail.example.jp MX", answerWith(fakeNoData))
 	c := newTestChecker(db, s.port, "127.0.0.1")
+	start := time.Now()
+	now := start
+	c.now = func() time.Time { return now }
 	if got, ok := verify(t, c, "example.jp", "MX", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
 		t.Fatalf("Verify = %q, %v", got, ok)
 	}
+	now = start.Add(failureTTL - time.Second)
 	if got, ok := verify(t, c, "www.example.jp", "A", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
 		t.Fatalf("second Verify = %q, %v", got, ok)
 	}
-	if q := s.receivedFor("www.example.jp"); containsQuery(q, "auth www.example.jp A udp") {
-		t.Errorf("the silent authoritative server was asked again: %v", q)
+	if q := s.receivedFor("www.example.jp"); containsQuery(q, "auth www.example.jp MX udp") {
+		t.Errorf("the silent authoritative server was asked again within the TTL: %v", q)
 	}
 	rows := storedChecks(t, db)
-	if len(rows) != 2 || !strings.Contains(rows[1].Detail, "no response earlier in this run") {
+	if len(rows) != 2 || !strings.Contains(rows[1].Detail, "no response in the last 5 minutes") {
 		t.Errorf("rows %+v", rows)
+	}
+	now = start.Add(failureTTL)
+	if got, ok := verify(t, c, "mail.example.jp", "A", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
+		t.Fatalf("third Verify = %q, %v", got, ok)
+	}
+	if q := s.receivedFor("mail.example.jp"); !containsQuery(q, "auth mail.example.jp MX udp") {
+		t.Errorf("the authoritative server was not asked again after the TTL: %v", q)
 	}
 }
 
@@ -210,6 +396,7 @@ func TestVerifySplitResolvers(t *testing.T) {
 	db := openTestMasterDB(t)
 	servers := startFakeServers(t, "127.0.0.1", "127.0.0.2")
 	servers[0].resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(servers[0], "mx1.example.jp", "192.0.2.1")
 	// 127.0.0.2 does not know the name: NXDOMAIN.
 	c := newTestChecker(db, servers[0].port, "127.0.0.1", "127.0.0.2")
 	if got, ok := verify(t, c, "example.jp", "MX", "example.jp"); !ok || got != mailengine.DNSOutcomeBroken {
@@ -218,6 +405,50 @@ func TestVerifySplitResolvers(t *testing.T) {
 	rows := storedChecks(t, db)
 	if len(rows) != 1 || !strings.Contains(rows[0].Detail, "resolver 127.0.0.2: control ok; MX NXDOMAIN") {
 		t.Errorf("rows %+v", rows)
+	}
+}
+
+// TestVerifyOneResolverFailing checks that a resolver that fails (SERVFAIL,
+// no reply) while the others answer is left out of the vote: the others
+// decide (exists, not_found); only when every resolver fails is the name
+// broken (DNS does not answer normally for it), stored and reused.
+func TestVerifyOneResolverFailing(t *testing.T) {
+	servers := startFakeServers(t, "127.0.0.1", "127.0.0.2", "127.0.0.3")
+	for _, s := range servers[:2] {
+		s.resolve("example.jp MX", data("mx1.example.jp"))
+		mailHost(s, "mx1.example.jp", "192.0.2.1")
+	}
+	servers[2].resolve("example.jp MX", answerWith(fakeServFail))
+	servers[1].resolve("gone.example.jp MX", answerWith(fakeDrop))
+	for _, s := range servers {
+		s.resolve("dead.example.jp MX", answerWith(fakeServFail))
+	}
+	db := openTestMasterDB(t)
+	c := newTestChecker(db, servers[0].port, "127.0.0.1", "127.0.0.2", "127.0.0.3")
+	for _, tc := range []struct {
+		name string
+		want mailengine.DNSOutcome
+	}{
+		{"example.jp", mailengine.DNSOutcomeExists},
+		{"gone.example.jp", mailengine.DNSOutcomeNotFound},
+		{"dead.example.jp", mailengine.DNSOutcomeBroken},
+	} {
+		got, ok := c.Verify(context.Background(), mailengine.DNSFailure{Name: tc.name, QType: "MX"}, "example.jp", time.Now(), false)
+		if !ok || got != tc.want {
+			t.Errorf("%s: Verify = %q, %v; want %q", tc.name, got, ok, tc.want)
+		}
+	}
+	rows := storedChecks(t, db)
+	if len(rows) != 3 || !strings.Contains(rows[0].Detail, "resolver 127.0.0.3: control ok; MX SERVFAIL") {
+		t.Errorf("rows %+v", rows)
+	}
+	before := len(servers[0].received())
+	if got, ok := c.Verify(context.Background(), mailengine.DNSFailure{Name: "dead.example.jp", QType: "MX"}, "example.jp", time.Now(), false); !ok ||
+		got != mailengine.DNSOutcomeBroken {
+		t.Errorf("dead.example.jp again: Verify = %q, %v", got, ok)
+	}
+	if q := servers[0].received(); len(q) != before {
+		t.Errorf("a stored broken outcome made queries: %v", q[before:])
 	}
 }
 
@@ -231,6 +462,7 @@ func TestVerifyIndirect(t *testing.T) {
 	servers := startFakeServers(t, "127.0.0.1", "127.0.0.2")
 	resolver, attacker := servers[0], servers[1]
 	resolver.resolve("evil.example MX", data("mx.evil.example"))
+	mailHost(resolver, "mx.evil.example", "192.0.2.66")
 	resolver.resolve("evil.example NS", data("ns1.evil.example"))
 	resolver.resolve("ns1.evil.example A", data(attacker.ip))
 	attacker.authority("evil.example MX", data("mx.evil.example"))
@@ -262,13 +494,14 @@ func TestVerifyIndirect(t *testing.T) {
 }
 
 // TestVerifyIndirectVote: without the authoritative servers the resolvers
-// alone vote: all of them answering is exists, all NXDOMAIN is not_found
-// (where an authoritative server holding the name would have made it
-// broken), and resolvers that disagree are broken.
+// alone vote: all of them obtaining an address is exists, all NXDOMAIN is
+// not_found (where an authoritative server holding the name would have
+// made it broken), and resolvers that disagree are broken.
 func TestVerifyIndirectVote(t *testing.T) {
 	servers := startFakeServers(t, "127.0.0.1", "127.0.0.2")
 	for _, s := range servers {
 		s.resolve("both.example.jp MX", data("mx1.example.jp"))
+		mailHost(s, "mx1.example.jp", "192.0.2.1")
 	}
 	servers[0].resolve("half.example.jp MX", data("mx1.example.jp")) // 127.0.0.2: NXDOMAIN
 	withAuthority(servers[0])
@@ -277,7 +510,7 @@ func TestVerifyIndirectVote(t *testing.T) {
 		name             string
 		direct, indirect mailengine.DNSOutcome
 	}{
-		{"both.example.jp", mailengine.DNSOutcomeBroken, mailengine.DNSOutcomeExists}, // the authoritative server knows no such MX
+		{"both.example.jp", mailengine.DNSOutcomeBroken, mailengine.DNSOutcomeExists}, // the authoritative server knows no such name
 		{"gone.example.jp", mailengine.DNSOutcomeBroken, mailengine.DNSOutcomeNotFound},
 		{"half.example.jp", mailengine.DNSOutcomeBroken, mailengine.DNSOutcomeBroken},
 	} {
@@ -291,90 +524,15 @@ func TestVerifyIndirectVote(t *testing.T) {
 	}
 }
 
-// TestVerifyImplicitMX checks the implicit MX: a name without MX records
-// exists when it has an address, and is broken when it has none.
-func TestVerifyImplicitMX(t *testing.T) {
-	db := openTestMasterDB(t)
-	s := startFakeServers(t, "127.0.0.1")[0]
-	s.resolve("host.example.jp A", data("192.0.2.10"))
-	s.resolve("v6.example.jp AAAA", data("2001:db8::10"))
-	s.resolve("txt.example.jp TXT", data())
-	c := newTestChecker(db, s.port, "127.0.0.1")
-	for _, tc := range []struct {
-		name string
-		want mailengine.DNSOutcome
-		note string
-	}{
-		{"host.example.jp", mailengine.DNSOutcomeExists, "MX none; A ok (192.0.2.10)"},
-		{"v6.example.jp", mailengine.DNSOutcomeExists, "MX none; A no data; AAAA ok (2001:db8::10)"},
-		{"txt.example.jp", mailengine.DNSOutcomeBroken, "MX none; A no data; AAAA no data"},
-	} {
-		if got, ok := verify(t, c, tc.name, "MX", "example.jp"); !ok || got != tc.want {
-			t.Errorf("%s: Verify = %q, %v; want %q", tc.name, got, ok, tc.want)
-		}
-	}
-	rows := storedChecks(t, db)
-	if len(rows) != 3 {
-		t.Fatalf("rows %+v", rows)
-	}
-	for i, note := range []string{"MX none; A ok (192.0.2.10)", "MX none; A no data; AAAA ok (2001:db8::10)", "MX none; A no data; AAAA no data"} {
-		if !strings.Contains(rows[i].Detail, "control ok; "+note) {
-			t.Errorf("row %d: %s", i, rows[i].Detail)
-		}
-	}
-}
-
-// TestVerifyAddressNoData checks that a failure of type A or AAAA whose
-// name exists without records of that type (an IPv4-only host asked for
-// AAAA) is exists, whether the resolver or the authoritative server gives
-// no data, while a name that does not exist stays not_found.
-func TestVerifyAddressNoData(t *testing.T) {
-	db := openTestMasterDB(t)
-	s := startFakeServers(t, "127.0.0.1")[0]
-	s.resolve("v4.example.jp A", data("192.0.2.10"))
-	s.resolve("v6.example.jp AAAA", data("2001:db8::10"))
-	s.resolve("dual.example.jp AAAA", data("2001:db8::20"))
-	withAuthority(s)
-	s.authority("v4.example.jp A", data("192.0.2.10"))
-	s.authority("v6.example.jp AAAA", data("2001:db8::10"))
-	s.authority("dual.example.jp A", data("192.0.2.20")) // the authoritative server has no AAAA of it
-	c := newTestChecker(db, s.port, "127.0.0.1")
-	for _, tc := range []struct {
-		name, qtype string
-		want        mailengine.DNSOutcome
-		resolver    string
-		auth        string
-	}{
-		{"v4.example.jp", "AAAA", mailengine.DNSOutcomeExists, "AAAA no data (no AAAA record, name exists)", "AAAA no data (no AAAA record, name exists)"},
-		{"v6.example.jp", "A", mailengine.DNSOutcomeExists, "A no data (no A record, name exists)", "A no data (no A record, name exists)"},
-		{"dual.example.jp", "AAAA", mailengine.DNSOutcomeExists, "AAAA ok (2001:db8::20)", "AAAA no data (no AAAA record, name exists)"},
-		{"nosuch.example.jp", "AAAA", mailengine.DNSOutcomeNotFound, "AAAA NXDOMAIN", "AAAA NXDOMAIN"},
-	} {
-		got, ok := verify(t, c, tc.name, tc.qtype, "example.jp")
-		if !ok || got != tc.want {
-			t.Errorf("%s %s: Verify = %q, %v; want %q", tc.name, tc.qtype, got, ok, tc.want)
-			continue
-		}
-		row, err := models.FindDNSCheck(db, tc.name, tc.qtype, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		for _, want := range []string{"resolver 127.0.0.1: control ok; " + tc.resolver, "authoritative ns1.example.jp (127.0.0.1): " + tc.auth} {
-			if !strings.Contains(row.Detail, want) {
-				t.Errorf("%s %s: detail lacks %q:\n%s", tc.name, tc.qtype, want, row.Detail)
-			}
-		}
-	}
-}
-
 // TestVerifyOtherRunStoredFirst simulates another job verifying the same
 // name at the same time and storing its outcome while this Checker is still
-// asking: no second row is stored, and the other run's outcome is returned
-// and remembered, so every notice of the window gets the same outcome.
+// asking: no second row is stored, and the other run's outcome is returned,
+// so every notice of the name gets the same outcome while it is fresh.
 func TestVerifyOtherRunStoredFirst(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
 	withAuthority(s)
 	var once sync.Once
 	s.onQuery(func(q string) {
@@ -382,7 +540,7 @@ func TestVerifyOtherRunStoredFirst(t *testing.T) {
 			return
 		}
 		once.Do(func() {
-			if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "other run", Direct: true}); err != nil {
+			if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "example.jp", QType: VerifyKind, Outcome: "broken", Detail: "other run", Direct: true}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -415,6 +573,7 @@ func TestVerifyConcurrentCheckers(t *testing.T) {
 	db := openTestMasterDB(t)
 	servers := startFakeServers(t, "127.0.0.1", "127.0.0.2")
 	servers[0].resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(servers[0], "mx1.example.jp", "192.0.2.1")
 	// 127.0.0.2 does not know the name: NXDOMAIN.
 	checkers := []*Checker{newTestChecker(db, servers[0].port, "127.0.0.1"), newTestChecker(db, servers[0].port, "127.0.0.2")}
 	got := make([]mailengine.DNSOutcome, len(checkers))
@@ -483,6 +642,7 @@ func TestVerifyControlFailure(t *testing.T) {
 	servers := startFakeServers(t, "127.0.0.1", "127.0.0.2")
 	good, bad := servers[0], servers[1]
 	good.resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(good, "mx1.example.jp", "192.0.2.1")
 	good.resolve("www.example.jp A", data("192.0.2.1"))
 	bad.resolve(controlName+" A", answerWith(fakeDrop))
 	bad.resolve("example.jp MX", answerWith(fakeNX))
@@ -494,7 +654,7 @@ func TestVerifyControlFailure(t *testing.T) {
 	if got, ok := verify(t, c, "www.example.jp", "A", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
 		t.Fatalf("second Verify = %q, %v", got, ok)
 	}
-	if q := bad.received(); len(q) != 1 || q[0] != "rd example.com A udp" {
+	if q := bad.received(); len(q) != queryAttempts || q[0] != "rd example.com A udp" {
 		t.Errorf("the unreachable resolver received %v", q)
 	}
 	rows := storedChecks(t, db)
@@ -513,67 +673,21 @@ func TestVerifyControlFailure(t *testing.T) {
 	}
 }
 
-// TestVerifyInconclusiveNotStored checks that a name every resolver fails
-// on is not verified, not stored, and not looked up again in the run.
-func TestVerifyInconclusiveNotStored(t *testing.T) {
-	db := openTestMasterDB(t)
-	s := startFakeServers(t, "127.0.0.1")[0]
-	s.resolve("example.jp MX", answerWith(fakeServFail))
-	s.resolve("example.jp NS", answerWith(fakeServFail))
-	c := newTestChecker(db, s.port, "127.0.0.1")
-	for i := 0; i < 2; i++ {
-		if got, ok := verify(t, c, "example.jp", "MX", "example.jp"); ok || got != "" {
-			t.Fatalf("Verify %d = %q, %v", i, got, ok)
-		}
-	}
-	if rows := storedChecks(t, db); len(rows) != 0 {
-		t.Errorf("stored %+v", rows)
-	}
-	if q := s.receivedFor("example.jp"); len(q) != 2 { // MX and NS of the first call only
-		t.Errorf("queries %v", q)
-	}
-	if st := c.Stats(); st != (Stats{Inconclusive: 2}) {
-		t.Errorf("stats %+v", st)
-	}
-}
-
-// TestVerifyMaxLookups checks the bound on live verifications per run.
-func TestVerifyMaxLookups(t *testing.T) {
-	db := openTestMasterDB(t)
-	s := startFakeServers(t, "127.0.0.1")[0]
-	s.resolve("a.example.jp A", data("192.0.2.1"))
-	s.resolve("b.example.jp A", data("192.0.2.2"))
-	c := New(db, Config{Enabled: true, Resolvers: []string{"127.0.0.1"}, Port: s.port, Timeout: testTimeout, MaxLookups: 1})
-	if _, ok := verify(t, c, "a.example.jp", "A", "example.jp"); !ok {
-		t.Fatal("first name not verified")
-	}
-	if got, ok := verify(t, c, "b.example.jp", "A", "example.jp"); ok || got != "" {
-		t.Errorf("over the limit: Verify = %q, %v", got, ok)
-	}
-	if q := s.receivedFor("b.example.jp"); len(q) != 0 {
-		t.Errorf("a name over the limit was looked up: %v", q)
-	}
-	// A reused outcome does not count against the limit.
-	if _, ok := verify(t, c, "a.example.jp", "A", "example.jp"); !ok {
-		t.Error("reuse over the limit failed")
-	}
-	if st := c.Stats(); st != (Stats{Verified: 1, Reused: 1, OverBudget: 1}) {
-		t.Errorf("stats %+v", st)
-	}
-}
-
-// TestVerifyReusesStoredOutcome checks the reuse rule: the earliest outcome
-// checked from 24 hours before the notice is used without a query, and an
-// older one is not (the notice, recent enough, is verified live).
+// TestVerifyReusesStoredOutcome checks the reuse rule of a live Checker:
+// the earliest outcome checked within CacheFreshAge before now is used
+// without a query, whatever the age of the notice, and an older one is not
+// (the name is verified live).
 func TestVerifyReusesStoredOutcome(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("old.example.jp MX", data("mx1.example.jp"))
-	notice := time.Now().Add(-10 * time.Hour)
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
+	now := time.Now()
+	notice := now.Add(-10 * 24 * time.Hour)
 	for _, r := range []*models.DNSCheck{
-		{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "earliest", Direct: true, CheckedAt: notice.Add(-23 * time.Hour)},
-		{Name: "example.jp", QType: "MX", Outcome: "exists", Detail: "later", Direct: true, CheckedAt: notice.Add(time.Hour)},
-		{Name: "old.example.jp", QType: "MX", Outcome: "not_found", Detail: "too old", Direct: true, CheckedAt: notice.Add(-25 * time.Hour)},
+		{Name: "example.jp", QType: VerifyKind, Outcome: "broken", Detail: "earliest", Direct: true, CheckedAt: now.Add(-CacheFreshAge + time.Hour)},
+		{Name: "example.jp", QType: VerifyKind, Outcome: "exists", Detail: "later", Direct: true, CheckedAt: now.Add(-time.Hour)},
+		{Name: "old.example.jp", QType: VerifyKind, Outcome: "not_found", Detail: "too old", Direct: true, CheckedAt: now.Add(-CacheFreshAge - time.Hour)},
 	} {
 		if err := models.InsertDNSCheck(db, r); err != nil {
 			t.Fatal(err)
@@ -594,13 +708,61 @@ func TestVerifyReusesStoredOutcome(t *testing.T) {
 	if st := c.Stats(); st != (Stats{Verified: 1, Reused: 1}) {
 		t.Errorf("stats %+v", st)
 	}
-	// A notice dated in the future finds the outcome checked now.
-	future := time.Now().Add(72 * time.Hour)
-	if got, ok := c.Verify(context.Background(), mailengine.DNSFailure{Name: "old.example.jp", QType: "MX"}, "example.jp", future, true); !ok || got != mailengine.DNSOutcomeExists {
-		t.Errorf("future notice: Verify = %q, %v", got, ok)
+	// A notice dated in the future and a notice of today find the outcome
+	// checked now.
+	for _, at := range []time.Time{time.Now().Add(72 * time.Hour), time.Now()} {
+		if got, ok := c.Verify(context.Background(), mailengine.DNSFailure{Name: "old.example.jp", QType: "MX"}, "example.jp", at, true); !ok || got != mailengine.DNSOutcomeExists {
+			t.Errorf("notice %v: Verify = %q, %v", at, got, ok)
+		}
 	}
-	if st := c.Stats(); st.Reused != 2 || st.Verified != 1 {
-		t.Errorf("future notice: stats %+v", st)
+	if st := c.Stats(); st.Reused != 3 || st.Verified != 1 {
+		t.Errorf("later notices: stats %+v", st)
+	}
+}
+
+// TestVerifyFallsBackToLatest checks the stand-in of a live verification
+// that gives nothing: the latest stored outcome of the name, whatever its
+// age and kind (reused), when no resolver answers or the name may not be
+// looked up for the notice; without a stored outcome the notice stays not
+// verified and nothing is stored.
+func TestVerifyFallsBackToLatest(t *testing.T) {
+	db := openTestMasterDB(t)
+	s := startFakeServers(t, "127.0.0.1")[0]
+	s.resolve("customer.jp MX", data("mx.customer.jp"))
+	s.resolve("example.jp MX", answerWith(fakeDrop))
+	now := time.Now()
+	for _, r := range []*models.DNSCheck{
+		{Name: "example.jp", Outcome: "broken", Direct: true, CheckedAt: now.Add(-40 * 24 * time.Hour)},
+		{Name: "example.jp", Outcome: "not_found", CheckedAt: now.Add(-3 * 24 * time.Hour)},
+		{Name: "other.example", Outcome: "exists", CheckedAt: now.Add(-5 * 24 * time.Hour)},
+	} {
+		r.QType, r.Detail = VerifyKind, "stored"
+		if err := models.InsertDNSCheck(db, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newTestChecker(db, s.port, "127.0.0.1")
+	ctx := context.Background()
+	// No resolver answers the name: the latest row stands in (of the
+	// resolvers alone, though the notice shows mail sent from the sending
+	// sources).
+	if got, status := c.VerifyStatus(ctx, mailengine.DNSFailure{Name: "example.jp", QType: "MX"}, "example.jp", now, true); got != mailengine.DNSOutcomeNotFound || status != mailengine.DNSStatusReused {
+		t.Errorf("no answer: VerifyStatus = %q, %v; want the latest not_found", got, status)
+	}
+	// A name the notice may not have looked up: the stored row still stands in.
+	if got, status := c.VerifyStatus(ctx, mailengine.DNSFailure{Name: "other.example", QType: "MX"}, "customer.jp", now, false); got != mailengine.DNSOutcomeExists || status != mailengine.DNSStatusReused {
+		t.Errorf("not applicable: VerifyStatus = %q, %v; want the stored exists", got, status)
+	}
+	if q := s.receivedFor("other.example"); len(q) != 0 {
+		t.Errorf("a name outside the recipient domain was asked: %v", q)
+	}
+	// Nothing stored: not verified.
+	s.resolve("new.example.jp MX", answerWith(fakeDrop))
+	if got, status := c.VerifyStatus(ctx, mailengine.DNSFailure{Name: "new.example.jp", QType: "MX"}, "example.jp", now, false); got != "" || status != mailengine.DNSStatusInconclusive {
+		t.Errorf("nothing stored: VerifyStatus = %q, %v; want inconclusive", got, status)
+	}
+	if rows := storedChecks(t, db); len(rows) != 3 {
+		t.Errorf("rows %+v: nothing may be stored", rows)
 	}
 }
 
@@ -640,7 +802,7 @@ func TestVerifyStoredOnly(t *testing.T) {
 	withAuthority(s)
 	old, recent := time.Now().Add(-72*time.Hour), time.Now().Add(-time.Hour)
 	for name, at := range map[string]time.Time{"old.example.jp": old, "recent.example.jp": recent} {
-		if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: name, QType: "MX", Outcome: "exists", Detail: "stored",
+		if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: name, QType: VerifyKind, Outcome: "exists", Detail: "stored",
 			CheckedAt: at.Add(-time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
@@ -681,135 +843,65 @@ func TestVerifyStoredOnly(t *testing.T) {
 	}
 }
 
-// TestVerifyLiveOnlyForRecentNotices checks the age limit of the live
-// verification (mailengine.DNSLiveMaxAge, 48 hours by the notice time): an
-// older notice uses the outcome stored for it and otherwise stays not
-// verified without a single question (not even the control query or the MX
-// targets of the recipient domain); a recent one is verified live. The
-// limit is inclusive.
-func TestVerifyLiveOnlyForRecentNotices(t *testing.T) {
-	if mailengine.DNSLiveMaxAge != 48*time.Hour {
-		t.Fatalf("DNSLiveMaxAge = %v, want 48h", mailengine.DNSLiveMaxAge)
-	}
-	db := openTestMasterDB(t)
-	s := startFakeServers(t, "127.0.0.1")[0]
-	for _, name := range []string{"old.example.jp", "recent.example.jp", "edge-in.example.jp", "edge-out.example.jp", "partner.example.com"} {
-		s.resolve(name+" MX", data("mx1."+name))
-	}
-	threeDays := time.Now().Add(-72 * time.Hour)
-	if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "stored.example.jp", QType: "MX", Outcome: "broken", Detail: "stored",
-		CheckedAt: threeDays.Add(-2 * time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	c := newTestChecker(db, s.port, "127.0.0.1")
-	ctx := context.Background()
-	check := func(name, recipient string, at time.Time) (mailengine.DNSOutcome, bool) {
-		return c.Verify(ctx, mailengine.DNSFailure{Name: name, QType: "MX"}, recipient, at, false)
-	}
-
-	// Three days old, nothing stored: not verified, no question at all
-	// (the name is outside the recipient domain, so the MX targets would be
-	// needed too).
-	if got, ok := check("old.example.jp", "example.jp", threeDays); ok || got != "" {
-		t.Errorf("3 days old, nothing stored: Verify = %q, %v", got, ok)
-	}
-	if got, ok := check("partner.example.com", "example.jp", threeDays); ok || got != "" {
-		t.Errorf("3 days old, another domain: Verify = %q, %v", got, ok)
-	}
-	if q := s.received(); len(q) != 0 {
-		t.Errorf("queries for old notices: %v", q)
-	}
-	// Three days old, stored inside the window of its time: used.
-	if got, ok := check("stored.example.jp", "example.jp", threeDays); !ok || got != mailengine.DNSOutcomeBroken {
-		t.Errorf("3 days old, stored: Verify = %q, %v; want the stored broken", got, ok)
-	}
-	if q := s.received(); len(q) != 0 {
-		t.Errorf("queries for a stored outcome: %v", q)
-	}
-	// One hour old: verified live.
-	if got, ok := check("recent.example.jp", "example.jp", time.Now().Add(-time.Hour)); !ok || got != mailengine.DNSOutcomeExists {
-		t.Errorf("1 hour old: Verify = %q, %v", got, ok)
-	}
-	// The limit: 47h59m is live, 48h01m is not.
-	if got, ok := check("edge-in.example.jp", "example.jp", time.Now().Add(-48*time.Hour+time.Minute)); !ok || got != mailengine.DNSOutcomeExists {
-		t.Errorf("47h59m old: Verify = %q, %v", got, ok)
-	}
-	if got, ok := check("edge-out.example.jp", "example.jp", time.Now().Add(-48*time.Hour-time.Minute)); ok || got != "" {
-		t.Errorf("48h01m old: Verify = %q, %v", got, ok)
-	}
-	if q := s.receivedFor("edge-out.example.jp"); len(q) != 0 {
-		t.Errorf("queries for the notice past the limit: %v", q)
-	}
-	// The window ends 48 hours after the notice: an old notice about a name
-	// verified live for a recent one in the meantime (stored, and remembered
-	// by this Checker) does not use that outcome and asks nothing.
-	before := len(s.received())
-	if got, ok := check("recent.example.jp", "example.jp", threeDays); ok || got != "" {
-		t.Errorf("3 days old after a live verification: Verify = %q, %v; want not verified", got, ok)
-	}
-	if q := s.received(); len(q) != before {
-		t.Errorf("queries for the old notice: %v", q[before:])
-	}
-	if st := c.Stats(); st != (Stats{Verified: 2, Reused: 1, TooOld: 4}) {
-		t.Errorf("stats %+v", st)
-	}
-}
-
-// TestVerifyRowOfItsWindowLater checks a notice verified live late in its window:
-// the row checked 30 hours after the notice belongs to it and is reused when
-// the notice is grouped again days later, without a query, while a new
-// Checker for a notice of today does not take it (it lies before that
-// window) and verifies live.
+// TestVerifyRowOfItsWindowLater checks that a stored outcome serves every
+// notice while it is fresh and is checked again after: a notice verified
+// at T is grouped again at T + CacheFreshAge without a query, and a second
+// later the name is verified live again and a new row stored, whatever the
+// age of the notice.
 func TestVerifyRowOfItsWindowLater(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
-	notice := time.Now().Add(-5 * 24 * time.Hour).UTC().Truncate(time.Second)
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
+	start := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Second)
+	notice := start.Add(-5 * 24 * time.Hour)
 	failure := mailengine.DNSFailure{Name: "example.jp", QType: "MX"}
 	ctx := context.Background()
 
 	first := newTestChecker(db, s.port, "127.0.0.1")
-	first.now = func() time.Time { return notice.Add(30 * time.Hour) }
+	first.now = func() time.Time { return start }
 	if got, status := first.VerifyStatus(ctx, failure, "example.jp", notice, true); got != mailengine.DNSOutcomeExists || status != mailengine.DNSStatusVerified {
-		t.Fatalf("30 hours old: VerifyStatus = %q, %v", got, status)
+		t.Fatalf("first: VerifyStatus = %q, %v", got, status)
 	}
-	rows := storedChecks(t, db)
-	if len(rows) != 1 {
+	if rows := storedChecks(t, db); len(rows) != 1 {
 		t.Fatalf("rows %+v", rows)
 	}
 	asked := len(s.received())
 
 	again := newTestChecker(db, s.port, "127.0.0.1")
+	again.now = func() time.Time { return start.Add(CacheFreshAge) }
 	if got, status := again.VerifyStatus(ctx, failure, "example.jp", notice, true); got != mailengine.DNSOutcomeExists || status != mailengine.DNSStatusReused {
-		t.Errorf("5 days old, row of the notice: VerifyStatus = %q, %v; want the stored exists", got, status)
+		t.Errorf("still fresh: VerifyStatus = %q, %v; want the stored exists", got, status)
 	}
 	if q := s.received(); len(q) != asked {
 		t.Errorf("queries for a reused outcome: %v", q[asked:])
 	}
-	if got, status := again.VerifyStatus(ctx, failure, "example.jp", time.Now(), true); got != mailengine.DNSOutcomeExists || status != mailengine.DNSStatusVerified {
-		t.Errorf("a notice of today: VerifyStatus = %q, %v; want a live verification", got, status)
+	later := newTestChecker(db, s.port, "127.0.0.1")
+	later.now = func() time.Time { return start.Add(CacheFreshAge + time.Second) }
+	if got, status := later.VerifyStatus(ctx, failure, "example.jp", notice, true); got != mailengine.DNSOutcomeExists || status != mailengine.DNSStatusVerified {
+		t.Errorf("no longer fresh: VerifyStatus = %q, %v; want a live verification", got, status)
 	}
 	if rows := storedChecks(t, db); len(rows) != 2 {
-		t.Errorf("rows %+v, want a second one for today's notice", rows)
+		t.Errorf("rows %+v, want a second one", rows)
 	}
 }
 
-// TestVerifyStoreClampedToWindow checks a live verification that ends after
-// the window of its notice (a notice exactly 48 hours old when the check
-// started): the row is dated at the end of the window, so that grouping the
-// notice again finds it.
-func TestVerifyStoreClampedToWindow(t *testing.T) {
+// TestVerifyStoreDatedAtTheWindow checks that a live verification is dated
+// when it took its time (the end of the fresh period it looked in), not
+// when the check ended.
+func TestVerifyStoreDatedAtTheWindow(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
 	start := time.Now().UTC().Truncate(time.Second)
-	notice := start.Add(-mailengine.DNSLiveMaxAge)
+	notice := start.Add(-48 * time.Hour)
 	c := newTestChecker(db, s.port, "127.0.0.1")
 	calls := 0
 	c.now = func() time.Time {
 		calls++
 		if calls == 1 {
-			return start // the age gate and the window
+			return start // the time of the verification
 		}
 		return start.Add(5 * time.Second) // the check took five seconds
 	}
@@ -817,29 +909,36 @@ func TestVerifyStoreClampedToWindow(t *testing.T) {
 	if got, status := c.VerifyStatus(context.Background(), failure, "example.jp", notice, true); got != mailengine.DNSOutcomeExists || status != mailengine.DNSStatusVerified {
 		t.Fatalf("VerifyStatus = %q, %v", got, status)
 	}
-	from, to := ReuseRange(notice, start)
-	row, err := models.FindDNSCheck(db, "example.jp", "MX", from, to, false)
-	if err != nil || !row.CheckedAt.Equal(to) || row.Outcome != "exists" {
-		t.Errorf("stored row %+v, %v; want one checked at %v", row, err, to)
+	row, err := models.LatestDNSCheck(db, "example.jp", VerifyKind)
+	if err != nil || !row.CheckedAt.Equal(start) || row.Outcome != "exists" {
+		t.Errorf("stored row %+v, %v; want one checked at %v", row, err, start)
 	}
 }
 
-// TestVerifySendmailForm checks that a failure without a type (the
-// Sendmail forms) is verified and stored as MX, and that an unknown type is
-// not verified.
-func TestVerifySendmailForm(t *testing.T) {
+// TestVerifyAnyRecordType checks that the verification does not depend on
+// the record type a notice names: a failure without a type (the Sendmail
+// forms) is verified and stored as a verification of the name, and a
+// failure of the same name with any other type reuses it.
+func TestVerifyAnyRecordType(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
 	c := newTestChecker(db, s.port, "127.0.0.1")
 	if got, ok := verify(t, c, "example.jp", "", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
 		t.Fatalf("Verify = %q, %v", got, ok)
 	}
-	if rows := storedChecks(t, db); len(rows) != 1 || rows[0].QType != "MX" {
+	if rows := storedChecks(t, db); len(rows) != 1 || rows[0].QType != VerifyKind {
 		t.Errorf("rows %+v", rows)
 	}
-	if got, ok := verify(t, c, "example.jp", "TXT", "example.jp"); ok || got != "" {
-		t.Errorf("TXT: Verify = %q, %v", got, ok)
+	before := len(s.received())
+	for _, qtype := range []string{"MX", "A", "AAAA", "TXT"} {
+		if got, ok := verify(t, c, "example.jp", qtype, "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
+			t.Errorf("%s: Verify = %q, %v", qtype, got, ok)
+		}
+	}
+	if q := s.received(); len(q) != before {
+		t.Errorf("other record types made queries: %v", q[before:])
 	}
 }
 
@@ -859,6 +958,7 @@ func TestVerifyTransport(t *testing.T) {
 			db := openTestMasterDB(t)
 			s := startFakeServers(t, "127.0.0.1")[0]
 			s.resolve("example.jp MX", answerWith(tc.mode, "mx1.example.jp"))
+			mailHost(s, "mx1.example.jp", "192.0.2.1")
 			c := newTestChecker(db, s.port, "127.0.0.1")
 			if got, ok := verify(t, c, "example.jp", "MX", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
 				t.Fatalf("Verify = %q, %v", got, ok)
@@ -871,15 +971,19 @@ func TestVerifyTransport(t *testing.T) {
 }
 
 // TestVerifyTruncatedWithoutTCP checks that a truncated reply whose TCP
-// exchange fails counts as a failure of the resolver.
+// exchange fails is no answer: the only resolver gave none, so the name is
+// inconclusive and nothing is stored.
 func TestVerifyTruncatedWithoutTCP(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", answerWith(fakeTruncate, "mx1.example.jp"))
 	s.tcp.Close()
 	c := newTestChecker(db, s.port, "127.0.0.1")
-	if got, ok := verify(t, c, "example.jp", "MX", "example.jp"); ok || got != "" {
-		t.Errorf("Verify = %q, %v", got, ok)
+	if got, ok := c.Verify(context.Background(), mailengine.DNSFailure{Name: "example.jp", QType: "MX"}, "example.jp", time.Now(), false); ok || got != "" {
+		t.Errorf("Verify = %q, %v; want inconclusive", got, ok)
+	}
+	if rows := storedChecks(t, db); len(rows) != 0 {
+		t.Errorf("rows %+v", rows)
 	}
 }
 
@@ -889,6 +993,7 @@ func TestVerifyCanceled(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
 	c := newTestChecker(db, s.port, "127.0.0.1")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -987,6 +1092,7 @@ func TestSystemResolver(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve(controlName+" AAAA", data())
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	s.resolve("mx1.example.jp A", data("192.0.2.1"))
 	s.resolve("host.example.jp A", data("192.0.2.10"))
 	withAuthority(s)
 	s.authority("host.example.jp A", data("192.0.2.10"))
@@ -1000,28 +1106,24 @@ func TestSystemResolver(t *testing.T) {
 		want mailengine.DNSOutcome
 		note string
 	}{
-		{"example.jp", mailengine.DNSOutcomeExists, "resolver system: control ok; MX ok (mx1.example.jp)"},
-		{"host.example.jp", mailengine.DNSOutcomeExists, "MX not found (NXDOMAIN or no data); address ok (192.0.2.10)"},
-		{"nosuch.example.jp", mailengine.DNSOutcomeNotFound, "address not found (NXDOMAIN or no data)"},
+		{"example.jp", mailengine.DNSOutcomeExists, "resolver system: control ok; MX ok (mx1.example.jp); mx1.example.jp: address ok (192.0.2.1)"},
+		{"host.example.jp", mailengine.DNSOutcomeExists, "MX not found (NXDOMAIN or no data); address of the name itself ok (192.0.2.10)"},
+		{"nosuch.example.jp", mailengine.DNSOutcomeNotFound, "address of the name itself not found (NXDOMAIN or no data)"},
 	} {
 		got, ok := verify(t, c, tc.name, "MX", "example.jp")
 		if !ok || got != tc.want {
 			t.Errorf("%s: Verify = %q, %v; want %q", tc.name, got, ok, tc.want)
 			continue
 		}
-		row, err := models.FindDNSCheck(db, tc.name, "MX", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
-		if err != nil || !strings.Contains(row.Detail, tc.note) {
+		row, err := models.FindDNSCheck(db, tc.name, VerifyKind, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
+		if err != nil || !strings.Contains(row.Detail, tc.note) || !strings.Contains(row.Detail, "authoritative: not asked (only the OS resolver is used)") {
 			t.Errorf("%s: %v %+v", tc.name, err, row)
 		}
 	}
-	// No AAAA record (Go reports it as not found): an address of the other
-	// family shows that the name exists.
+	// A notice naming another record type of the same name: the same
+	// verification (an IPv4-only host with an AAAA failure exists).
 	if got, ok := verify(t, c, "host.example.jp", "AAAA", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {
 		t.Errorf("AAAA of an IPv4-only host: Verify = %q, %v", got, ok)
-	} else if row, err := models.FindDNSCheck(db, "host.example.jp", "AAAA", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false); err != nil ||
-		!strings.Contains(row.Detail, "AAAA not found (NXDOMAIN or no data); address ok (192.0.2.10) (no AAAA record, name exists)") ||
-		!strings.Contains(row.Detail, "authoritative: not asked (only the OS resolver is used)") {
-		t.Errorf("AAAA of an IPv4-only host: %v %+v", err, row)
 	}
 	// Only the OS resolver is contacted: no authoritative server directly,
 	// even for a notice that clearly concerns mail from the sending sources.
@@ -1048,7 +1150,47 @@ func TestSystemResolver(t *testing.T) {
 	}
 }
 
-// TestNormalize checks the validation of names and types.
+// TestSystemResolverDestinations checks the destinations of a name through
+// the OS resolver: a null MX accepts no mail (broken), an MX target with
+// only an IPv6 address exists, and so does a name without MX whose only
+// address is IPv6 (the implicit MX).
+func TestSystemResolverDestinations(t *testing.T) {
+	db := openTestMasterDB(t)
+	s := startFakeServers(t, "127.0.0.1")[0]
+	s.resolve(controlName+" AAAA", data())
+	s.resolve("example.jp MX", data("mx1.example.jp", "mx6.example.jp"))
+	s.resolve("mx1.example.jp A", data("192.0.2.1"))
+	s.resolve("mx6.example.jp AAAA", data("2001:db8::25"))
+	s.resolve("nullmx.example.jp MX", data(""))
+	s.resolve("nullmx.example.jp A", data("192.0.2.30"))
+	s.resolve("implicit6.example.jp AAAA", data("2001:db8::26"))
+	c := New(db, Config{Enabled: true, SystemOnly: true, Port: s.port, Timeout: time.Second})
+	c.allowLocal = true
+	c.sys = goResolverTo(s)
+	skipWithoutGoResolver(t, c, s)
+
+	for _, tc := range []struct {
+		name string
+		want mailengine.DNSOutcome
+		note string
+	}{
+		{"nullmx.example.jp", mailengine.DNSOutcomeBroken, "(null MX: the domain accepts no mail)"},
+		{"mx6.example.jp", mailengine.DNSOutcomeExists, "address ok (2001:db8::25)"},
+		{"implicit6.example.jp", mailengine.DNSOutcomeExists, "address of the name itself ok (2001:db8::26)"},
+	} {
+		got, ok := verify(t, c, tc.name, "MX", "example.jp")
+		if !ok || got != tc.want {
+			t.Errorf("%s: Verify = %q, %v; want %q", tc.name, got, ok, tc.want)
+			continue
+		}
+		row, err := models.FindDNSCheck(db, tc.name, VerifyKind, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), false)
+		if err != nil || !strings.Contains(row.Detail, tc.note) {
+			t.Errorf("%s: %v %+v; want the evidence %q", tc.name, err, row, tc.note)
+		}
+	}
+}
+
+// TestNormalize checks the validation of names.
 func TestNormalize(t *testing.T) {
 	for in, want := range map[string]string{
 		"Example.JP.":                   "example.jp",
@@ -1064,12 +1206,6 @@ func TestNormalize(t *testing.T) {
 		got, ok := normalizeName(in)
 		if got != want || ok != (want != "") {
 			t.Errorf("normalizeName(%q) = %q, %v", in, got, ok)
-		}
-	}
-	for in, want := range map[string]string{"": "MX", "mx": "MX", "A": "A", "aaaa": "AAAA", "TXT": "", "NS": ""} {
-		got, ok := normalizeQType(in)
-		if got != want || ok != (want != "") {
-			t.Errorf("normalizeQType(%q) = %q, %v", in, got, ok)
 		}
 	}
 }
@@ -1138,8 +1274,8 @@ func TestServerAllowed(t *testing.T) {
 		}
 	}
 	if got := c.usableServerAddrs([]netip.Addr{netip.MustParseAddr("2001:4860:4860::8888"), netip.MustParseAddr("10.0.0.1"),
-		netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("8.8.8.8")}); len(got) != 2 ||
-		got[0] != netip.MustParseAddr("1.1.1.1") || got[1] != netip.MustParseAddr("8.8.8.8") {
+		netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("8.8.8.8")}); len(got) != 3 ||
+		got[0] != netip.MustParseAddr("1.1.1.1") || got[1] != netip.MustParseAddr("8.8.8.8") || got[2] != netip.MustParseAddr("2001:4860:4860::8888") {
 		t.Errorf("usableServerAddrs = %v", got)
 	}
 	local := New(nil, Config{})

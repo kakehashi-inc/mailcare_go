@@ -15,6 +15,7 @@ import (
 	"net/smtp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -70,7 +71,9 @@ type OutgoingMail struct {
 
 // SendMail delivers one UTF-8 text/plain mail through the configured server.
 // from is the envelope and header sender, to the envelope and header
-// recipients. The whole session is bounded by SMTPTimeout and by ctx.
+// recipients. Each step is bounded by its timeout of RFC 5321 4.5.3.2
+// (smtpTimeouts); the session as a whole has no time limit (ctx still
+// stops it).
 func SendMail(ctx context.Context, cfg SMTPConfig, from string, to []string, subject, textBody string) error {
 	return SendMessage(ctx, cfg, from, to, OutgoingMail{Subject: subject, Body: textBody})
 }
@@ -104,39 +107,50 @@ func SendMessage(ctx context.Context, cfg SMTPConfig, from string, to []string, 
 	host := strings.TrimSpace(cfg.Host)
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
-	ctx, cancel := context.WithTimeout(ctx, SMTPTimeout)
-	defer cancel()
+	// The connection is made within the connect timeout of the operating
+	// system; a cancellation of ctx cuts it at any step.
 	dialer := &net.Dialer{}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	raw, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", addr, err)
 	}
-	deadline, _ := ctx.Deadline()
-	_ = conn.SetDeadline(deadline)
+	conn := &smtpConn{Conn: raw, ctx: ctx}
+	stop := context.AfterFunc(ctx, func() { _ = raw.SetDeadline(time.Unix(1, 0)) })
+	defer stop()
+	// step gives the next command (sending it and reading its reply) its
+	// timeout.
+	step := func(d time.Duration) {
+		_ = raw.SetDeadline(time.Now().Add(d))
+		conn.keepCut()
+	}
 	tlsConfig := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+	var c net.Conn = conn
+	step(smtpTimeouts.greeting)
 	if cfg.Security == IMAPSecuritySSL {
 		tlsConn := tls.Client(conn, tlsConfig)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			conn.Close()
-			return fmt.Errorf("TLS handshake with %s: %w", addr, err)
+			raw.Close()
+			return fmt.Errorf("TLS handshake with %s: %w", addr, ctxErr(ctx, err))
 		}
-		conn = tlsConn
+		c = tlsConn
 	}
-	client, err := smtp.NewClient(conn, host)
+	client, err := smtp.NewClient(c, host)
 	if err != nil {
-		conn.Close()
-		return fmt.Errorf("SMTP greeting from %s: %w", addr, err)
+		raw.Close()
+		return fmt.Errorf("SMTP greeting from %s: %w", addr, ctxErr(ctx, err))
 	}
 	defer client.Close()
+	step(smtpTimeouts.command)
 	if err := client.Hello(ehloName(from)); err != nil {
-		return fmt.Errorf("EHLO: %w", err)
+		return fmt.Errorf("EHLO: %w", ctxErr(ctx, err))
 	}
 	if cfg.Security == IMAPSecurityStartTLS {
 		if ok, _ := client.Extension("STARTTLS"); !ok {
 			return errors.New("the server does not offer STARTTLS")
 		}
+		step(smtpTimeouts.command)
 		if err := client.StartTLS(tlsConfig); err != nil {
-			return fmt.Errorf("STARTTLS: %w", err)
+			return fmt.Errorf("STARTTLS: %w", ctxErr(ctx, err))
 		}
 	}
 	if cfg.Username != "" {
@@ -144,34 +158,99 @@ func SendMessage(ctx context.Context, cfg SMTPConfig, from string, to []string, 
 		if err != nil {
 			return err
 		}
+		step(smtpTimeouts.command)
 		if err := client.Auth(auth); err != nil {
-			return fmt.Errorf("authentication failed: %w", err)
+			return fmt.Errorf("authentication failed: %w", ctxErr(ctx, err))
 		}
 	}
+	step(smtpTimeouts.mail)
 	if err := client.Mail(from); err != nil {
-		return fmt.Errorf("MAIL FROM: %w", err)
+		return fmt.Errorf("MAIL FROM: %w", ctxErr(ctx, err))
 	}
 	for _, r := range recipients {
+		step(smtpTimeouts.rcpt)
 		if err := client.Rcpt(r); err != nil {
-			return fmt.Errorf("RCPT TO %s: %w", r, err)
+			return fmt.Errorf("RCPT TO %s: %w", r, ctxErr(ctx, err))
 		}
 	}
+	step(smtpTimeouts.dataInit)
 	w, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("DATA: %w", err)
+		return fmt.Errorf("DATA: %w", ctxErr(ctx, err))
 	}
-	if _, err := w.Write([]byte(buildMessage(from, recipients, mail, time.Now()))); err != nil {
+	// Each write of the message must complete within the data block
+	// timeout; the time of the whole message is not limited.
+	conn.perWrite.Store(int64(smtpTimeouts.dataBlock))
+	_, werr := w.Write([]byte(buildMessage(from, recipients, mail, time.Now())))
+	conn.perWrite.Store(0)
+	if werr != nil {
 		w.Close()
-		return fmt.Errorf("send message: %w", err)
+		return fmt.Errorf("send message: %w", ctxErr(ctx, werr))
 	}
+	step(smtpTimeouts.dataEnd)
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("send message: %w", err)
+		return fmt.Errorf("send message: %w", ctxErr(ctx, err))
 	}
+	step(smtpTimeouts.command)
 	if err := client.Quit(); err != nil {
 		// The message was accepted; a failed QUIT is not worth reporting.
 		return nil
 	}
 	return nil
+}
+
+// smtpTimeouts are the per-command timeouts of the client, from RFC 5321
+// 4.5.3.2: the initial 220 greeting (and the TLS handshake before it on an
+// implicit TLS connection) 5 minutes, MAIL 5 minutes, RCPT 5 minutes, DATA
+// initiation 2 minutes, each write of the data block 3 minutes, DATA
+// termination (the final "." until its reply) 10 minutes. EHLO, STARTTLS,
+// AUTH and QUIT are not listed there; they get the 5 minutes of the other
+// commands. A variable so that the tests can shorten them.
+var smtpTimeouts = struct {
+	greeting, command, mail, rcpt, dataInit, dataBlock, dataEnd time.Duration
+}{
+	greeting:  5 * time.Minute,
+	command:   5 * time.Minute,
+	mail:      5 * time.Minute,
+	rcpt:      5 * time.Minute,
+	dataInit:  2 * time.Minute,
+	dataBlock: 3 * time.Minute,
+	dataEnd:   10 * time.Minute,
+}
+
+// smtpConn is the connection of one session: while perWrite is set (the
+// data block), each write gets that long to complete.
+type smtpConn struct {
+	net.Conn
+	ctx      context.Context
+	perWrite atomic.Int64 // time.Duration; 0 = the deadline of the step
+}
+
+func (c *smtpConn) Write(b []byte) (int, error) {
+	if d := time.Duration(c.perWrite.Load()); d > 0 {
+		if err := c.Conn.SetWriteDeadline(time.Now().Add(d)); err != nil {
+			return 0, err
+		}
+		c.keepCut()
+	}
+	return c.Conn.Write(b)
+}
+
+// keepCut moves the deadline back to the past when ctx ended: a deadline
+// set after the cancellation cut the connection must not reopen it.
+func (c *smtpConn) keepCut() {
+	if c.ctx.Err() != nil {
+		_ = c.Conn.SetDeadline(time.Unix(1, 0))
+	}
+}
+
+// ctxErr prefers the error of ctx when it ended (the transport error is
+// then only the cut connection).
+func ctxErr(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil {
+		return cerr
+	}
+	return err
 }
 
 // ehloName derives the EHLO host name from the sender's domain.

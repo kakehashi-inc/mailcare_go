@@ -108,8 +108,8 @@ func TestSystemHostResolver(t *testing.T) {
 		t.Errorf("asked %v, want %v once each", stub.asked, want)
 	}
 	for _, d := range stub.deadlines {
-		if d <= 0 || d > DefaultTimeout {
-			t.Errorf("a lookup with the deadline %v, want within %v", d, DefaultTimeout)
+		if d <= 0 || d > systemCallTimeout(DefaultTimeout) {
+			t.Errorf("a lookup with the deadline %v, want within %v", d, systemCallTimeout(DefaultTimeout))
 		}
 	}
 	// A canceled lookup is not remembered.
@@ -186,50 +186,42 @@ func (b *blackholeSystem) LookupNetIP(ctx context.Context, network, host string)
 	return nil, &net.DNSError{Err: "i/o timeout", Name: host, IsTimeout: true}
 }
 
-// TestSystemHostResolverBudget: the lookups of the source host names through
-// the OS resolver count against the budget of the run, those made at the
-// same time each; once it is used up a name not looked up yet is not
-// answered without asking (and not remembered), while the names looked up
-// before keep their result.
-func TestSystemHostResolverBudget(t *testing.T) {
-	const timeout = 40 * time.Millisecond
+// TestSystemHostResolverNoBudget: every source host name is looked up,
+// however long the earlier ones took (each question is bounded by the
+// per-query timeout alone); a name no answer came for is not answered and
+// remembered for the run.
+func TestSystemHostResolverNoBudget(t *testing.T) {
+	const timeout = 20 * time.Millisecond
 	sys := &blackholeSystem{}
-	// Each name waits for two timeouts (A and AAAA): the budget lets two
-	// names in turn be asked, the third is not.
-	r := newSystemHostResolver(sys, timeout, 3*timeout)
+	r := newSystemHostResolver(sys, timeout)
 	ctx := context.Background()
-	for _, host := range []string{"a.example.jp", "b.example.jp", "c.example.jp"} {
+	var names []string
+	for i := range 6 {
+		names = append(names, fmt.Sprintf("h%d.example.jp", i))
+	}
+	for _, host := range names {
 		if got, answered := r.ResolveHost(ctx, host); got != nil || answered {
 			t.Errorf("%s: %v, %v; want not answered", host, got, answered)
 		}
 	}
-	want := []string{"ip4 a.example.jp.", "ip6 a.example.jp.", "ip4 b.example.jp.", "ip6 b.example.jp."}
-	if !reflect.DeepEqual(sys.asked, want) {
-		t.Errorf("asked %v, want %v", sys.asked, want)
+	if len(sys.asked) != 2*len(names) {
+		t.Errorf("asked %v, want A and AAAA of every name", sys.asked)
 	}
-	// A name looked up before is answered from the run; one never looked
-	// up is still refused.
-	start := time.Now()
-	r.ResolveHost(ctx, "a.example.jp")
-	r.ResolveHost(ctx, "c.example.jp")
-	if elapsed := time.Since(start); len(sys.asked) != len(want) || elapsed > timeout {
-		t.Errorf("after the budget: %d questions, %v; want no more", len(sys.asked), elapsed)
+	// Remembered: no new question.
+	r.ResolveHost(ctx, names[0])
+	if len(sys.asked) != 2*len(names) {
+		t.Errorf("a remembered name was asked again: %v", sys.asked)
 	}
-
-	// Four names at once: each counts in full, so the budget of two names'
-	// time ends the run after them.
+	// Names asked at the same time are all looked up.
 	sys = &blackholeSystem{}
-	r = newSystemHostResolver(sys, timeout, 4*timeout)
+	r = newSystemHostResolver(sys, timeout)
 	var wg sync.WaitGroup
-	for i := range 4 {
+	for i := range 8 {
 		wg.Go(func() { r.ResolveHost(ctx, fmt.Sprintf("p%d.example.jp", i)) })
 	}
 	wg.Wait()
-	if got, answered := r.ResolveHost(ctx, "late.example.jp"); got != nil || answered || len(sys.asked) != 8 {
-		t.Errorf("after four names at once: %v, %v, %d questions; want refused after 8", got, answered, len(sys.asked))
-	}
-	if NewSystemHostResolver().budget != DefaultSourceBudget {
-		t.Error("the budget of a run is not the budget of the sending sources")
+	if len(sys.asked) != 16 {
+		t.Errorf("eight names at once: %d questions, want 16", len(sys.asked))
 	}
 }
 
@@ -249,4 +241,29 @@ func (h *hostsFileSystem) LookupNetIP(ctx context.Context, network, host string)
 		return nil, &net.AddrError{Err: "no suitable address found", Addr: host}
 	}
 	return a, nil
+}
+
+// TestSystemError checks how an error of the OS resolver counts: not found
+// as NXDOMAIN, an error reply (server misbehaving, or temporary without a
+// timeout: SERVFAIL) as a failure, a timeout or anything else as no answer.
+func TestSystemError(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		err  error
+		want answer
+	}{
+		{"not found", &net.DNSError{Err: "no such host", IsNotFound: true}, answerNX},
+		{"timeout", &net.DNSError{Err: "i/o timeout", IsTimeout: true, IsTemporary: true}, answerNone},
+		{"server misbehaving", &net.DNSError{Err: "server misbehaving"}, answerFail},
+		{"SERVFAIL", &net.DNSError{Err: "SERVFAIL", IsTemporary: true}, answerFail},
+		{"other", &net.DNSError{Err: "connection refused"}, answerNone},
+		{"no address of the family", &net.AddrError{Err: "no suitable address"}, answerNX},
+		{"deadline", context.DeadlineExceeded, answerNone},
+		{"wrapped deadline", fmt.Errorf("lookup: %w", context.DeadlineExceeded), answerNone},
+		{"other error", errors.New("unexpected"), answerNone},
+	} {
+		if got, _ := systemError(c.err); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
 }

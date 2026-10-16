@@ -25,10 +25,8 @@ type verifyCall struct {
 // The dns progress lines of a run with one notice: verified (or reused, by
 // a verifier that does not tell), or left inconclusive.
 const (
-	dnsLineVerified = "dns: 1 notice(s): 1 verified, 0 reused from stored results, 0 over budget (run again), " +
-		"0 not applicable, 0 inconclusive, 0 too old for a live check"
-	dnsLineInconclusive = "dns: 1 notice(s): 0 verified, 0 reused from stored results, 0 over budget (run again), " +
-		"0 not applicable, 1 inconclusive, 0 too old for a live check"
+	dnsLineVerified     = "dns: 1 notice(s): 1 verified, 0 reused from stored results, 0 not applicable, 0 inconclusive"
+	dnsLineInconclusive = "dns: 1 notice(s): 0 verified, 0 reused from stored results, 0 not applicable, 1 inconclusive"
 )
 
 // fakeVerifier answers every name with the same outcome and records the
@@ -296,7 +294,7 @@ func TestSourceMatcherResolves(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			r := &fakeResolver{hosts: sourceHosts, reporters: reporters}
 			m := sourceMatcher{sources: c.sources, resolver: r}
-			if got, known := m.match(context.Background(), c.mta, true); got != c.want || known != c.known {
+			if got, known := m.match(context.Background(), c.mta); got != c.want || known != c.known {
 				t.Errorf("match(%q) = %v, %v; want %v, %v", c.mta, got, known, c.want, c.known)
 			}
 			if len(r.reporterCalls) != c.reporterCalls || len(r.hostCalls) != c.hostCalls {
@@ -313,7 +311,7 @@ func TestSourceMatcherResolves(t *testing.T) {
 	r := &fakeResolver{hosts: sourceHosts, reporters: reporters}
 	m := sourceMatcher{sources: hosts, resolver: r}
 	for _, mta := range []string{"[203.0.113.25]", "relay.example.jp", "elsewhere.example", "[198.51.100.7]"} {
-		m.match(context.Background(), mta, true)
+		m.match(context.Background(), mta)
 	}
 	if len(r.hostCalls) != 2 {
 		t.Errorf("source host names resolved %v, want once each", r.hostCalls)
@@ -323,8 +321,8 @@ func TestSourceMatcherResolves(t *testing.T) {
 	cancel()
 	r = &fakeResolver{hosts: sourceHosts, reporters: reporters}
 	m = sourceMatcher{sources: hosts, resolver: r}
-	m.match(ctx, "[203.0.113.25]", true)
-	if matched, _ := m.match(context.Background(), "[203.0.113.25]", true); !matched || len(r.hostCalls) != 4 {
+	m.match(ctx, "[203.0.113.25]")
+	if matched, _ := m.match(context.Background(), "[203.0.113.25]"); !matched || len(r.hostCalls) != 4 {
 		t.Errorf("after a cancellation: ResolveHost %v", r.hostCalls)
 	}
 }
@@ -333,8 +331,8 @@ func TestSourceMatcherResolves(t *testing.T) {
 // told: a host name whose lookup was not answered (the limits of the run,
 // no resolver answered, a cancellation), was refused by the resolver (a
 // single-label name), or answered without any address (NXDOMAIN, no
-// data), a name not looked up because the notice is too old for live
-// lookups or because there is no resolver at all, and an empty or
+// data), a name not looked up because there is no resolver at all, and an
+// empty or
 // unreadable reporting MTA: neither a sending server nor an outside server
 // (known false). The text or an IP literal decides without any lookup, and
 // addresses that were found and are none of the sending sources make it an
@@ -346,26 +344,24 @@ func TestSourceMatcherUnknown(t *testing.T) {
 		name           string
 		sources        SendingSources
 		mta            string
-		live           bool
 		noResolver     bool
 		matched, known bool
 		lookups        int
 	}{
-		{"unanswered name", ipv4, "relay.example.net", true, false, false, false, 1},
-		{"unanswered name, hosts configured", hosts, "relay.example.net", true, false, false, false, 1},
-		{"refused single-label name", ipv4, "mailhost", true, false, false, false, 1},
-		{"answered without addresses", ipv4, "nxdomain.example.net", true, false, false, false, 1},
-		{"addresses, no sending source", ipv4, "other.example.net", true, false, false, true, 1},
-		{"addresses, a sending source", ipv4, "source.example.net", true, false, true, true, 1},
-		{"too old for a live lookup", ipv4, "other.example.net", false, false, false, false, 0},
-		{"no resolver", ipv4, "other.example.net", true, true, false, false, 0},
-		{"empty", ipv4, "", true, false, false, false, 0},
-		{"unreadable", ipv4, "[192.0.2.25", true, false, false, false, 0},
-		{"source host name as text", hosts, "mx1.example.jp", false, true, true, true, 0},
-		{"ip literal", ipv4, "[192.0.2.25]", false, true, true, true, 0},
-		{"ip literal elsewhere", ipv4, "[198.51.100.1]", false, true, false, true, 0},
-		{"nothing configured", SendingSources{}, "relay.example.net", true, false, true, true, 0},
-		{"nothing configured, empty", SendingSources{}, "", true, false, true, true, 0},
+		{"unanswered name", ipv4, "relay.example.net", false, false, false, 1},
+		{"unanswered name, hosts configured", hosts, "relay.example.net", false, false, false, 1},
+		{"refused single-label name", ipv4, "mailhost", false, false, false, 1},
+		{"answered without addresses", ipv4, "nxdomain.example.net", false, false, false, 1},
+		{"addresses, no sending source", ipv4, "other.example.net", false, false, true, 1},
+		{"addresses, a sending source", ipv4, "source.example.net", false, true, true, 1},
+		{"no resolver", ipv4, "other.example.net", true, false, false, 0},
+		{"empty", ipv4, "", false, false, false, 0},
+		{"unreadable", ipv4, "[192.0.2.25", false, false, false, 0},
+		{"source host name as text", hosts, "mx1.example.jp", true, true, true, 0},
+		{"ip literal", ipv4, "[192.0.2.25]", true, true, true, 0},
+		{"ip literal elsewhere", ipv4, "[198.51.100.1]", true, false, true, 0},
+		{"nothing configured", SendingSources{}, "relay.example.net", false, true, true, 0},
+		{"nothing configured, empty", SendingSources{}, "", false, true, true, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := &fakeResolver{
@@ -376,7 +372,7 @@ func TestSourceMatcherUnknown(t *testing.T) {
 			if c.noResolver {
 				m.resolver = nil
 			}
-			if matched, known := m.match(context.Background(), c.mta, c.live); matched != c.matched || known != c.known {
+			if matched, known := m.match(context.Background(), c.mta); matched != c.matched || known != c.known {
 				t.Errorf("match(%q) = %v, %v; want %v, %v", c.mta, matched, known, c.matched, c.known)
 			}
 			if len(r.reporterCalls) != c.lookups {
@@ -559,7 +555,7 @@ func TestGroupMailboxDNSVerification(t *testing.T) {
 			category: categoryDNSFailureExternal, unit: "infoseek.jp", rule: "dns_failure_external"},
 		{name: "exists, reporting MTA not configured and not resolved", raw: delayedDNS, fake: exists(), sources: sourceOther,
 			wantName: "infoseek.jp", wantDomain: "infoseek.jp",
-			category: categoryDeliveryDelay, unit: "infoseek.jp", rule: "dns_unverified_delay"},
+			category: categoryDNSLookupFailure, unit: "infoseek.jp", rule: "dns_unverified_temporary", actionable: true},
 		{name: "broken", raw: delayedDNS, fake: &fakeVerifier{outcome: DNSOutcomeBroken, ok: true}, sources: sourceMX1,
 			wantName: "infoseek.jp", wantDomain: "infoseek.jp",
 			category: categoryDNSFailureExternal, unit: "infoseek.jp", rule: "dns_failure_external"},
@@ -568,11 +564,11 @@ func TestGroupMailboxDNSVerification(t *testing.T) {
 			category: categoryDomainNotFound, unit: "infoseek.jp", rule: "dns_verified_not_found"},
 		{name: "not verified delay", raw: delayedDNS, fake: &fakeVerifier{outcome: DNSOutcomeExists, ok: false},
 			wantName: "infoseek.jp", wantDomain: "infoseek.jp",
-			category: categoryDeliveryDelay, unit: "infoseek.jp", rule: "dns_unverified_delay"},
+			category: categoryDNSLookupFailure, unit: "infoseek.jp", rule: "dns_unverified_temporary", actionable: true},
 		{name: "nil verifier", raw: delayedDNS, nilVerifier: true,
-			category: categoryDeliveryDelay, unit: "infoseek.jp", rule: "dns_unverified_delay"},
+			category: categoryDNSLookupFailure, unit: "infoseek.jp", rule: "dns_unverified_temporary", actionable: true},
 		{name: "no option", raw: delayedDNS,
-			category: categoryDeliveryDelay, unit: "infoseek.jp", rule: "dns_unverified_delay"},
+			category: categoryDNSLookupFailure, unit: "infoseek.jp", rule: "dns_unverified_temporary", actionable: true},
 		// A permanent failure carries 5.4.4 / 5.1.2; the status code must not
 		// hide a name that exists.
 		{name: "postfix 5.4.4 exists, sending server", raw: failedPostfix, fake: exists(), sources: sourceMX1,
@@ -926,8 +922,8 @@ const (
 // are configured for the mailbox and the first hop of the Received headers
 // of the notice, from the top, that is not internal records one of the
 // sending sources as its connecting address (a configured prefix, or an
-// address the complete lookups of the run found), within the 8 topmost
-// headers. The content of the notice never counts: a forged notice that
+// address the complete lookups of the run found); internal hops are passed
+// over however many there are. The content of the notice never counts: a forged notice that
 // copies the name of the sending MTA, a Received header of a source host on
 // the returned original and a DKIM signature of the monitored domain does
 // not pass, and neither does a client that names a source address as its
@@ -958,7 +954,7 @@ func TestDirectOnlyForSentMail(t *testing.T) {
 		{"genuine, IPv6", source6, "mx.evil.example", "", []string{hopSource6}, nil, nil, true},
 		{"internal hops passed over", source4, "", "", append(slices.Clone(internal), hopSource4), nil, nil, true},
 		{"an IPv4-mapped internal hop passed over", source4, "", "", []string{hopMapped, hopSource4}, nil, nil, true},
-		{"more than 8 hops", source4, "", "", append(slices.Clone(internal), hopPrivate, hopSource4), nil, nil, false},
+		{"more than 8 internal hops passed over", source4, "", "", append(slices.Clone(internal), hopPrivate, hopSource4), nil, nil, true},
 		{"hosted inbound", source4, "", "", []string{
 			"by 2002:a05:6a10:a8c:b0:5e1:2c3a:1f0e with SMTP id x1csp123456pxb; Tue, 02 Sep 2025 00:15:31 -0700 (PDT)",
 			"from mx1.example.jp (mx1.example.jp. [192.0.2.25]) by mx.google.com with ESMTPS id y2si123 for <newsletter@example.jp> " +
@@ -1014,7 +1010,7 @@ func TestDirectOnlyForSentMail(t *testing.T) {
 // from the from clause of a Received header, in the forms MTAs write, and
 // that the HELO a client chose is never taken for it.
 func TestReceivedFromAddr(t *testing.T) {
-	long := "from a.example (a.example [192.0.2.1]) by b.example with ESMTP id " + strings.Repeat("x", maxReceivedLineBytes)
+	long := "from a.example (a.example [192.0.2.1]) by b.example with ESMTP id " + strings.Repeat("x", 1<<20)
 	for _, c := range []struct {
 		line      string
 		want      string // "" = none
@@ -1040,9 +1036,9 @@ func TestReceivedFromAddr(t *testing.T) {
 		{"(qmail 12345 invoked by uid 89); 2 Sep 2025 00:15:31 -0000", "", false, true},
 		{"(from root@localhost) by host.example (8.15.2/8.15.2/Submit) id x", "", false, true},
 		{"", "", false, true},
-		// Two addresses: not judged; a line past the bound neither.
+		// Two addresses: not judged. A long line is read whole.
 		{"from a.example (a.example [192.0.2.5]) (b.example [203.0.113.5]) by mx.example.jp", "", false, false},
-		{long, "", false, false},
+		{long, "192.0.2.1", true, true},
 	} {
 		addr, found, ok := receivedFromAddr(c.line)
 		got := ""
@@ -1068,34 +1064,11 @@ func TestReceivedFromAddr(t *testing.T) {
 	}
 }
 
-func TestLiveCheckAllowed(t *testing.T) {
-	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
-	for _, c := range []struct {
-		name string
-		at   time.Time
-		want bool
-	}{
-		{"zero", time.Time{}, true},
-		{"in the future", now.Add(time.Hour), true},
-		{"now", now, true},
-		{"one hour", now.Add(-time.Hour), true},
-		{"exactly 48 hours", now.Add(-DNSLiveMaxAge), true},
-		{"48 hours and a second", now.Add(-DNSLiveMaxAge - time.Second), false},
-		{"three days", now.Add(-72 * time.Hour), false},
-	} {
-		if got := LiveCheckAllowed(c.at, now); got != c.want {
-			t.Errorf("%s: LiveCheckAllowed = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
-// TestReporterResolvedOnlyForRecentNotices: the reporting MTA of a verified
-// DNS lookup failure is resolved only for a notice at most DNSLiveMaxAge
-// old (by its INTERNALDATE); for an older one whose reporting MTA only a
-// lookup could tell, nothing is looked up and the notice stays not
-// verified, while the text of a source host name still decides without a
-// lookup.
-func TestReporterResolvedOnlyForRecentNotices(t *testing.T) {
+// TestReporterResolvedWhateverTheAge: the reporting MTA of a verified DNS
+// lookup failure is resolved however old the notice is (there is no age
+// limit; the stored verification of the name says when it was checked),
+// and the text of a source host name still decides without a lookup.
+func TestReporterResolvedWhateverTheAge(t *testing.T) {
 	notice := dnsNotice(bounceKindFailed, "5.4.4", "n@nowhere.example", "mail.example.jp",
 		"Name service error for name=nowhere.example type=MX: Host not found")
 	for _, c := range []struct {
@@ -1109,13 +1082,11 @@ func TestReporterResolvedOnlyForRecentNotices(t *testing.T) {
 	}{
 		{"one hour", time.Hour, NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil), 1,
 			"dns_resolver_failure", categoryDNSResolverFailure, "mail.example.jp"},
-		{"47h59m", 48*time.Hour - time.Minute, NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil), 1,
+		{"three days", 72 * time.Hour, NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil), 1,
 			"dns_resolver_failure", categoryDNSResolverFailure, "mail.example.jp"},
-		{"48h01m", 48*time.Hour + time.Minute, NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil), 0,
-			"dns_unverified_not_found", categoryDomainNotFound, "nowhere.example"},
-		{"three days", 72 * time.Hour, NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil), 0,
-			"dns_unverified_not_found", categoryDomainNotFound, "nowhere.example"},
-		{"three days, source host name as text", 72 * time.Hour, NewSendingSources(nil, nil, []string{"mail.example.jp"}, nil), 0,
+		{"thirty days", 30 * 24 * time.Hour, NewSendingSources([]string{"192.0.2.0/24"}, nil, nil, nil), 1,
+			"dns_resolver_failure", categoryDNSResolverFailure, "mail.example.jp"},
+		{"thirty days, source host name as text", 30 * 24 * time.Hour, NewSendingSources(nil, nil, []string{"mail.example.jp"}, nil), 0,
 			"dns_resolver_failure", categoryDNSResolverFailure, "mail.example.jp"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1129,6 +1100,9 @@ func TestReporterResolvedOnlyForRecentNotices(t *testing.T) {
 			}
 			if len(v.reporterCalls) != c.calls {
 				t.Errorf("ResolveReporter %v, want %d calls", v.reporterCalls, c.calls)
+			}
+			if len(v.calls) != 1 {
+				t.Errorf("verifier calls %d, want 1 (no age limit)", len(v.calls))
 			}
 			b, err := models.GetBounceByMessageID(mustOpenIndex(t, root, address), msg.ID)
 			if err != nil {
@@ -1169,9 +1143,8 @@ func (v *statusVerifier) ResolveReporter(context.Context, string) ([]netip.Addr,
 // TestDNSProgressLineCounts checks the dns progress line of a run: every
 // notice whose name reached the verifier counts once, by the status the
 // verifier told, except a name that exists while whether the reporting MTA
-// is a sending server could not be told (inconclusive; too old when only a lookup of
-// its name, not allowed for an old notice, could have told); the notices
-// not checked because the check is off are named last, only when there are
+// is a sending server could not be told (inconclusive); the notices not
+// checked because the check is off are named last, only when there are
 // any; a status that does not fit the outcome is corrected.
 func TestDNSProgressLineCounts(t *testing.T) {
 	type answer = struct {
@@ -1180,16 +1153,16 @@ func TestDNSProgressLineCounts(t *testing.T) {
 	}
 	v := &statusVerifier{answers: map[string]answer{
 		"a.nowhere.example": {DNSOutcomeExists, DNSStatusVerified},
-		"b.nowhere.example": {"", DNSStatusOverBudget},
+		"b.nowhere.example": {"", DNSStatusInconclusive},
 		"c.nowhere.example": {"", DNSStatusNotApplicable},
 		"d.nowhere.example": {"", DNSStatusInconclusive},
-		"e.nowhere.example": {"", DNSStatusTooOld},
+		"e.nowhere.example": {"", DNSStatusNotApplicable},
 		"f.nowhere.example": {"", DNSStatusCheckOff},
 		"g.nowhere.example": {DNSOutcomeNotFound, DNSStatusReused},
-		"h.nowhere.example": {DNSOutcomeExists, DNSStatusReused},       // old notice, reporting MTA a name
-		"i.nowhere.example": {DNSOutcomeExists, DNSStatusVerified},     // recent notice, reporting MTA not answered
-		"j.nowhere.example": {"", DNSStatusVerified},                   // not verified after all
-		"k.nowhere.example": {DNSOutcomeNotFound, DNSStatusOverBudget}, // an outcome with a status that does not fit it
+		"h.nowhere.example": {DNSOutcomeExists, DNSStatusReused},         // old notice, reporting MTA not answered
+		"i.nowhere.example": {DNSOutcomeExists, DNSStatusVerified},       // recent notice, reporting MTA not answered
+		"j.nowhere.example": {"", DNSStatusVerified},                     // not verified after all
+		"k.nowhere.example": {DNSOutcomeNotFound, DNSStatusInconclusive}, // an outcome with a status that does not fit it
 	}}
 	root := t.TempDir()
 	address := "newsletter@example.jp"
@@ -1214,52 +1187,44 @@ func TestDNSProgressLineCounts(t *testing.T) {
 		WithSendingSources(sources), WithDNS(v, sources)); err != nil {
 		t.Fatal(err)
 	}
-	want := "dns: 11 notice(s): 2 verified, 1 reused from stored results, 1 over budget (run again), 1 not applicable, " +
-		"3 inconclusive, 2 too old for a live check, 1 not checked (the DNS check is off)"
+	want := "dns: 11 notice(s): 2 verified, 1 reused from stored results, 2 not applicable, " +
+		"5 inconclusive, 1 not checked (the DNS check is off)"
 	if got := dnsLines(lines); len(got) != 1 || got[0] != want {
 		t.Errorf("progress %q,\nwant %q", got, want)
 	}
 }
 
-// TestNoticeEntryBounds checks the bounds of the reading of the Received
-// headers of a notice: a header of exactly maxReceivedLineBytes is judged
-// and one byte more is not; a header that cannot be judged above the hop of
-// a sending source ends the reading (no entry), so that a forger cannot
-// hide the real entry behind it; and only the word right after "from" is
-// taken as the address when no comment holds one.
-func TestNoticeEntryBounds(t *testing.T) {
+// TestNoticeEntry checks the reading of the Received headers of a notice:
+// a header is read whole however long it is; internal hops are passed over
+// however many there are; a header that cannot be judged above the hop of a
+// sending source ends the reading (no entry), so that a forger cannot hide
+// the real entry behind it; and only the word right after "from" is taken
+// as the address when no comment holds one.
+func TestNoticeEntry(t *testing.T) {
 	const prefix = "from a.example (a.example [192.0.2.1]) by b.example with ESMTP id "
-	pad := func(size int) string { return prefix + strings.Repeat("x", size-len(prefix)) }
-	for _, c := range []struct {
-		name      string
-		line      string
-		want      string // "" = none
-		found, ok bool
-	}{
-		{"8 KB", pad(maxReceivedLineBytes), "192.0.2.1", true, true},
-		{"8 KB and one byte", pad(maxReceivedLineBytes + 1), "", false, false},
-		{"an address after the HELO word outside comments", "from unknown 192.0.2.9 by mx.example.jp with SMTP", "", false, true},
-	} {
-		addr, found, ok := receivedFromAddr(c.line)
-		got := ""
-		if addr.IsValid() {
-			got = addr.String()
-		}
-		if got != c.want || found != c.found || ok != c.ok {
-			t.Errorf("%s: receivedFromAddr = %q, %v, %v; want %q, %v, %v", c.name, got, found, ok, c.want, c.found, c.ok)
-		}
+	long := prefix + strings.Repeat("x", 1<<20)
+	if addr, found, ok := receivedFromAddr(long); !found || !ok || addr != netip.MustParseAddr("192.0.2.1") {
+		t.Errorf("a 1 MB header: receivedFromAddr = %s, %v, %v; want 192.0.2.1", addr, found, ok)
+	}
+	if addr, found, ok := receivedFromAddr("from unknown 192.0.2.9 by mx.example.jp with SMTP"); addr.IsValid() || found || !ok {
+		t.Errorf("an address after the HELO word outside comments: receivedFromAddr = %s, %v, %v; want none", addr, found, ok)
 	}
 	twoAddrs := "from a.example (a.example [192.0.2.5]) (b.example [203.0.113.5]) by mx.example.jp with ESMTP id 4QF"
 	for name, received := range map[string]string{
 		"two addresses above the source hop":  twoAddrs + "\n" + hopSource4,
-		"a header past the bound above it":    pad(maxReceivedLineBytes+1) + "\n" + hopSource4,
 		"an internal hop, then two addresses": hopPrivate + "\n" + twoAddrs + "\n" + hopSource4,
 	} {
 		if addr, ok := noticeEntry(received); ok {
 			t.Errorf("%s: noticeEntry = %s, want no entry", name, addr)
 		}
 	}
-	if addr, ok := noticeEntry(hopPrivate + "\n" + hopSource4); !ok || addr != netip.MustParseAddr("192.0.2.25") {
-		t.Errorf("internal hop, then the source hop: noticeEntry = %s, %v; want 192.0.2.25", addr, ok)
+	for name, received := range map[string]string{
+		"an internal hop, then the source hop":      hopPrivate + "\n" + hopSource4,
+		"twelve internal hops, then the source hop": strings.Repeat(hopPrivate+"\n", 12) + hopSource4,
+		"a long header, then the source hop":        "by mx.example.jp with LMTP id " + strings.Repeat("x", 1<<20) + "\n" + hopSource4,
+	} {
+		if addr, ok := noticeEntry(received); !ok || addr != netip.MustParseAddr("192.0.2.25") {
+			t.Errorf("%s: noticeEntry = %s, %v; want 192.0.2.25", name, addr, ok)
+		}
 	}
 }

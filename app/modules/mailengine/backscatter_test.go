@@ -163,8 +163,8 @@ func TestMatchReceived(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := c.sources.MatchReceived(c.line); got != c.want {
-				addrs, hosts, ok := receivedSources(c.line)
-				t.Errorf("MatchReceived(%q) = %v, want %v (addresses %v, names %q, judged %v)", c.line, got, c.want, addrs, hosts, ok)
+				addrs, hosts := receivedSources(c.line)
+				t.Errorf("MatchReceived(%q) = %v, want %v (addresses %v, names %q)", c.line, got, c.want, addrs, hosts)
 			}
 		})
 	}
@@ -184,55 +184,47 @@ func bracketedHops(n, repeat int) string {
 	return b.String()
 }
 
-// TestReceivedBounds: the Received headers of an original are judged only
-// within the bounds (at most 100 headers, 8 KB per header, 64 distinct
-// addresses per header, repeats counted once); past one the original is not
-// judged, MatchReceived counts the line as showing a sending source, and the backscatter
-// rule leaves the notice alone. Up to the bounds the rule applies as before.
-func TestReceivedBounds(t *testing.T) {
+// TestReceivedNoBounds: every Received header of an original is judged,
+// however many there are, however long each is and however many addresses
+// it names: a sending source after thousands of other addresses, past the
+// hundredth header or deep into a long header still shows the mail was sent
+// from the sending sources, and an original without one is backscatter.
+func TestReceivedNoBounds(t *testing.T) {
 	sources := NewSendingSources([]string{"203.0.113.0/24"}, nil, []string{"mail.example.jp"}, nil)
 	const hop = "from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net (Postfix) with ESMTP"
-	pad := func(size int) string {
-		return hop + " id " + strings.Repeat("x", size-len(hop)-len(" id "))
-	}
+	const source = "from mail.example.jp (mail.example.jp [203.0.113.5]) by mx.partner.example.net (Postfix) with ESMTP"
+	long := hop + " id " + strings.Repeat("x", 64<<10) + " [203.0.113.5]"
 	for _, c := range []struct {
-		name   string
-		lines  []string
-		judged bool
+		name  string
+		lines []string
+		match bool
 	}{
-		{"64 distinct addresses", []string{bracketedHops(64, 1)}, true},
-		{"65 distinct addresses", []string{bracketedHops(65, 1)}, false},
-		{"64 distinct addresses, each three times", []string{bracketedHops(64, 3)}, true},
-		{"8 KB", []string{pad(maxReceivedLineBytes)}, true},
-		{"8 KB and one byte", []string{pad(maxReceivedLineBytes + 1)}, false},
-		{"100 headers", slices.Repeat([]string{hop}, 100), true},
-		{"101 headers", slices.Repeat([]string{hop}, 101), false},
+		{"5000 distinct addresses, then a source", []string{bracketedHops(5000, 1) + " [203.0.113.5]"}, true},
+		{"5000 distinct addresses, each three times", []string{bracketedHops(5000, 3)}, false},
+		{"a source after 64 KiB", []string{long}, true},
+		{"a source in the 1000th header", append(slices.Repeat([]string{hop}, 999), source), true},
+		{"1000 headers without a source", slices.Repeat([]string{hop}, 1000), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if matched, judged := sources.matchReceivedLines(c.lines); matched || judged != c.judged {
-				t.Errorf("matchReceivedLines = %v, %v; want no match, judged %v", matched, judged, c.judged)
+			if got := sources.matchReceivedLines(c.lines); got != c.match {
+				t.Errorf("matchReceivedLines = %v, want %v", got, c.match)
 			}
-			if got := sources.MatchReceived(c.lines[0]); len(c.lines) == 1 && got != !c.judged {
-				t.Errorf("MatchReceived = %v, want %v", got, !c.judged)
+			if got := sources.MatchReceived(c.lines[len(c.lines)-1]); len(c.lines) == 1 && got != c.match {
+				t.Errorf("MatchReceived = %v, want %v", got, c.match)
 			}
 			var headers strings.Builder
 			for _, l := range c.lines {
 				headers.WriteString("Received: " + l + "\r\n")
 			}
 			cls := ClassifyWith(ParseMessage(returnedNotice("message/rfc822", headers.String())), "newsletter@example.jp", sources)
-			want := ruleDSNReport
-			if c.judged {
-				want = ruleBackscatter
+			want := ruleBackscatter
+			if c.match {
+				want = ruleDSNReport
 			}
 			if cls.Rule != want {
 				t.Errorf("rule %q, want %q", cls.Rule, want)
 			}
 		})
-	}
-	// An address of a sending source past the bounds is not looked for: the line is not
-	// judged either way.
-	if sources.MatchReceived(bracketedHops(70, 1)+" [203.0.113.5]") != true {
-		t.Error("an unjudged line does not count as showing a sending source")
 	}
 }
 
@@ -248,25 +240,37 @@ func hugeHop(size int) string {
 	return b.String()
 }
 
-// TestReceivedHostileOriginalIsCheap: judged against 1000 prefixes (an SPF
-// record at its bound), a single Received header of 8 MB of bracketed
-// addresses costs next to nothing and is not judged; so is an original
-// with a header of almost 1 MB (the most the parser reads) or with
-// thousands of short headers, which the backscatter rule leaves alone.
-func TestReceivedHostileOriginalIsCheap(t *testing.T) {
+// TestReceivedHostileOriginalIsLinear: a header is read in one pass and
+// every address is looked up among the prefixes by their lengths (addrIndex),
+// so 100000 prefixes (SPF records can list many ranges) and a header of 4 MB
+// of bracketed addresses are judged in about the time of reading the header,
+// not in the product of both; so are an original with a header of almost
+// 1 MB (the most the parser reads) and one with thousands of short
+// headers. None of them shows a sending source, so the backscatter rule
+// takes them. The time limit is far above the linear cost (also under the
+// race detector) and far below the cost of comparing every address with
+// every prefix.
+func TestReceivedHostileOriginalIsLinear(t *testing.T) {
 	var prefixes []netip.Prefix
-	for i := range 1000 {
-		prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(i / 250), byte(i % 250), 0}), 24))
+	for i := range 100000 {
+		bits := 24
+		if i%2 == 1 {
+			bits = 32
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), bits).Masked())
 	}
 	sources := NewSendingSources(nil, nil, []string{"mail.example.jp"}, nil).withResolved(nil, prefixes, nil)
-	line := hugeHop(8 << 20)
+	line := hugeHop(4 << 20)
 	start := time.Now()
-	matched, judged := sources.matchReceivedLines([]string{line})
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Errorf("an 8 MB header judged in %v", elapsed)
+	matched := sources.matchReceivedLines([]string{line})
+	if elapsed := time.Since(start); elapsed > 20*time.Second {
+		t.Errorf("a 4 MB header judged in %v", elapsed)
 	}
-	if matched || judged || !sources.MatchReceived(line) {
-		t.Errorf("an 8 MB header: matched %v, judged %v; want not judged (counted as a match by MatchReceived)", matched, judged)
+	if matched {
+		t.Error("a 4 MB header without a sending source matched")
+	}
+	if !sources.MatchReceived(hugeHop(1<<20) + " [10.0.1.7]") {
+		t.Error("a sending source after 1 MB of addresses was not found")
 	}
 	big := "Received: " + hugeHop(1<<20-4096) + "\r\n"
 	many := strings.Repeat("Received: from spam-sender.example (unknown [198.51.100.7]) by mx.partner.example.net\r\n", 5000)
@@ -277,12 +281,42 @@ func TestReceivedHostileOriginalIsCheap(t *testing.T) {
 		}
 		start := time.Now()
 		cls := ClassifyWith(pm, "newsletter@example.jp", sources)
-		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		if elapsed := time.Since(start); elapsed > 20*time.Second {
 			t.Errorf("%s: classified in %v", name, elapsed)
 		}
-		if cls.Rule != ruleDSNReport {
-			t.Errorf("%s: rule %q, want %q (not judged)", name, cls.Rule, ruleDSNReport)
+		if cls.Rule != ruleBackscatter {
+			t.Errorf("%s: rule %q, want %q", name, cls.Rule, ruleBackscatter)
 		}
+	}
+}
+
+// TestAddrIndex: the index finds an address in a prefix of any length of
+// the same family, among the single addresses, and never across families.
+func TestAddrIndex(t *testing.T) {
+	x := newAddrIndex([]netip.Prefix{
+		netip.MustParsePrefix("203.0.113.77/24"), // unmasked on purpose
+		netip.MustParsePrefix("198.51.100.8/29"),
+		netip.MustParsePrefix("2001:db8:1::/48"),
+		netip.MustParsePrefix("::ffff:192.0.2.0/120"),
+	}, []netip.Addr{netip.MustParseAddr("192.0.2.200"), netip.MustParseAddr("2001:db8:9::1")})
+	for addr, want := range map[string]bool{
+		"203.0.113.1":   true,
+		"203.0.114.1":   false,
+		"198.51.100.15": true,
+		"198.51.100.16": false,
+		"2001:db8:1::5": true,
+		"2001:db8:2::5": false,
+		"192.0.2.1":     false, // only an IPv4-mapped prefix covers it
+		"192.0.2.200":   true,
+		"2001:db8:9::1": true,
+		"2001:db8:9::2": false,
+	} {
+		if got := x.contains(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("contains(%s) = %v, want %v", addr, got, want)
+		}
+	}
+	if (addrIndex{}).contains(netip.MustParseAddr("192.0.2.1")) {
+		t.Error("the empty index matched")
 	}
 }
 

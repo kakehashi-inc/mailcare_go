@@ -56,7 +56,7 @@ export const DEFAULT_FOLDER = 'INBOX';
 
 // Default values of the notification (SMTP) settings form (mirrors the server defaults).
 export const DEFAULT_SMTP_PORT = 587;
-export const DEFAULT_NOTIFY_TIME = '09:00';
+export const DEFAULT_NOTIFY_TIMES = ['09:00', '17:00'];
 // Notification interval choices: every day ... every 7 days.
 export const NOTIFY_INTERVAL_MIN_DAYS = 1;
 export const NOTIFY_INTERVAL_MAX_DAYS = 7;
@@ -74,8 +74,6 @@ export const MIN_PROBE_SEND_GAP_MINUTES = 15;
 /** The default identifier of the probe mails and its rule (the server checks the same). */
 export const DEFAULT_PROBE_SUBJECT_TAG = 'MC';
 export const PROBE_SUBJECT_TAG_RE = /^[A-Za-z0-9._-]{1,16}$/;
-/** Maximum length of the details written when a probe mail is resolved by hand (characters). */
-export const MAX_PROBE_NOTE_LENGTH = 2000;
 // Page size of the probe mail list.
 export const PROBE_PAGE_SIZE = 50;
 

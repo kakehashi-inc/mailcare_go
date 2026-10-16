@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -49,7 +48,7 @@ func (c *core) handleControlStatus(w http.ResponseWriter, r *http.Request) {
 // handleControlCreateJob queues a job on behalf of the local CLI.
 func (c *core) handleControlCreateJob(w http.ResponseWriter, r *http.Request) {
 	var body modules.JobRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxJSONBody)).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeControlError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

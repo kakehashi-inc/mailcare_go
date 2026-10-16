@@ -137,16 +137,17 @@ func TestParseDMARCAttachmentFormats(t *testing.T) {
 	}
 }
 
-// TestParseDMARCZipLimits: a zip attachment is tried for at most
-// maxDMARCZipMembers members, and members that do not start like XML are
-// skipped without being read whole.
+// TestParseDMARCZipLimits: every member of a zip attachment is tried, a
+// member that does not start like XML is skipped after its first bytes,
+// and the decompressed total (those first bytes included) stays within
+// maxDMARCReportSize.
 func TestParseDMARCZipLimits(t *testing.T) {
-	archive := func(before int) []byte {
+	archive := func(before int, size int) []byte {
 		var buf bytes.Buffer
 		zw := zip.NewWriter(&buf)
 		for i := 0; i < before; i++ {
 			w, _ := zw.Create(fmt.Sprintf("junk%d.bin", i))
-			_, _ = w.Write(bytes.Repeat([]byte{0}, 1<<20))
+			_, _ = w.Write(bytes.Repeat([]byte{0}, size))
 		}
 		w, _ := zw.Create("report.xml")
 		_, _ = w.Write([]byte(dmarcXML(recSPFMissing)))
@@ -155,11 +156,11 @@ func TestParseDMARCZipLimits(t *testing.T) {
 		}
 		return buf.Bytes()
 	}
-	if parseDMARCAttachment(archive(maxDMARCZipMembers-1)) == nil {
-		t.Error("the report after the skipped members was not found")
+	if parseDMARCAttachment(archive(200, 1<<20)) == nil {
+		t.Error("the report after many skipped members was not found")
 	}
-	if parseDMARCAttachment(archive(maxDMARCZipMembers)) != nil {
-		t.Error("a report beyond the member limit was read")
+	if parseDMARCAttachment(archive(maxDMARCReportSize/dmarcHeadSize, dmarcHeadSize)) != nil {
+		t.Error("a report beyond the decompressed budget was read")
 	}
 	if parseDMARCAttachment(append([]byte(dmarcXML(recSPFMissing)), bytes.Repeat([]byte(" "), maxDMARCReportSize)...)) != nil {
 		t.Error("an XML document above the size limit was read")

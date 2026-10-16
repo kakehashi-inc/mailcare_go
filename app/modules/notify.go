@@ -109,7 +109,7 @@ type NotificationSettings struct {
 	SMTPPasswordSet bool
 	PublicBaseURL   string
 	Enabled         bool
-	Time            string // HH:MM local
+	Times           []string // HH:MM local, sorted, at least one
 	IntervalDays    int
 	UserIDs         []int64
 	LastSentAt      sql.NullTime
@@ -128,15 +128,12 @@ func ResolveNotificationSettings(db *sql.DB, key []byte) (*NotificationSettings,
 		},
 		PublicBaseURL: models.GetSetting(db, SettingPublicBaseURL),
 		Enabled:       models.GetSetting(db, SettingNotifyEnabled) == "1",
-		Time:          resolveStr(db, SettingNotifyTime, "", DefaultNotifyTime),
+		Times:         ResolveNotifyTimes(db),
 		IntervalDays:  resolveInt(db, SettingNotifyInterval, 0, DefaultNotifyIntervalDays),
 		UserIDs:       ParseNotifyUserIDs(models.GetSetting(db, SettingNotifyUserIDs)),
 	}
 	if ValidateSMTPSecurity(s.SMTP.Security) != nil {
 		s.SMTP.Security = DefaultSMTPSecurity
-	}
-	if _, err := ValidateNotifyTime(s.Time); err != nil {
-		s.Time = DefaultNotifyTime
 	}
 	if ValidateNotifyInterval(s.IntervalDays) != nil {
 		s.IntervalDays = DefaultNotifyIntervalDays
@@ -189,13 +186,40 @@ func FormatNotifyUserIDs(ids []int64) string {
 	return strings.Join(parts, ",")
 }
 
-// ValidateNotifyTime checks one HH:MM time and returns it normalized.
-func ValidateNotifyTime(s string) (string, error) {
-	times, err := ParseCheckTimes([]string{s})
-	if err != nil || len(times) != 1 {
-		return "", wording.New("validation.common.timeFormat", fmt.Sprintf("invalid notify_time %q (use one HH:MM time, 00:00-23:59)", strings.TrimSpace(s)))
+// DefaultNotifyTimeList returns DefaultNotifyTimes as a slice.
+func DefaultNotifyTimeList() []string {
+	times, _ := ParseCheckTimes([]string{DefaultNotifyTimes})
+	return times
+}
+
+// ParseNotifyTimes parses notification times the way the sync times are
+// parsed (ParseCheckTimes: "HH:MM" or "H:MM" entries, each entry may be a
+// comma-separated list; normalized, sorted, duplicates dropped). An empty
+// input gives the default schedule (DefaultNotifyTimes): the times decide
+// when the notification is sent, and notify_enabled switches it off.
+func ParseNotifyTimes(inputs []string) ([]string, error) {
+	times, err := ParseCheckTimes(inputs)
+	if err != nil {
+		return nil, wording.New("validation.common.timeFormat",
+			fmt.Sprintf("invalid notify_time %q (use HH:MM times, 00:00-23:59, separated by commas)", strings.TrimSpace(strings.Join(inputs, ","))))
 	}
-	return times[0], nil
+	if len(times) == 0 {
+		return DefaultNotifyTimeList(), nil
+	}
+	return times, nil
+}
+
+// ResolveNotifyTimes returns the notification times (saved > default). A
+// saved value that fails to parse falls back to the default with a log
+// line.
+func ResolveNotifyTimes(db *sql.DB) []string {
+	saved := models.GetSetting(db, SettingNotifyTime)
+	times, err := ParseNotifyTimes([]string{saved})
+	if err != nil {
+		log.Printf("ignoring invalid saved notify_time %q: %v", saved, err)
+		return DefaultNotifyTimeList()
+	}
+	return times
 }
 
 // ValidateNotifyInterval checks the interval in days.
@@ -266,7 +290,7 @@ type NotificationInput struct {
 	SMTPFrom          *string
 	PublicBaseURL     *string
 	Enabled           *bool
-	Time              *string
+	Times             *[]string // HH:MM entries (each may be a comma-separated list); empty = DefaultNotifyTimes
 	IntervalDays      *int
 	UserIDs           *[]int64
 }
@@ -374,16 +398,13 @@ func saveNotificationSettings(db *sql.DB, key []byte, in *NotificationInput) err
 	if enabled && (host == "" || from == "") {
 		return errNotifySMTPRequired
 	}
-	if in.Time != nil {
-		t := strings.TrimSpace(*in.Time)
-		if t == "" {
-			t = DefaultNotifyTime
-		}
-		norm, err := ValidateNotifyTime(t)
+	if in.Times != nil {
+		times, err := ParseNotifyTimes(*in.Times)
 		if err != nil {
 			return err
 		}
-		writes = append(writes, write{SettingNotifyTime, norm, norm == DefaultNotifyTime})
+		value := FormatCheckTimes(times)
+		writes = append(writes, write{SettingNotifyTime, value, value == DefaultNotifyTimes})
 	}
 	if in.IntervalDays != nil {
 		if err := ValidateNotifyInterval(*in.IntervalDays); err != nil {
@@ -486,20 +507,6 @@ func NotificationRecipients(db *sql.DB, s *NotificationSettings) (selected []*mo
 
 // --- Timing ---
 
-// notifyTimeOfDay parses HH:MM.
-func notifyTimeOfDay(s string) (h, m int, ok bool) {
-	hh, mm, found := strings.Cut(s, ":")
-	if !found {
-		return 0, 0, false
-	}
-	h, err1 := strconv.Atoi(hh)
-	m, err2 := strconv.Atoi(mm)
-	if err1 != nil || err2 != nil {
-		return 0, 0, false
-	}
-	return h, m, true
-}
-
 // localDateOf returns the local calendar day of t at 00:00.
 func localDateOf(t time.Time) time.Time {
 	t = t.In(time.Local)
@@ -511,61 +518,69 @@ func daysBetween(a, b time.Time) int {
 	return int(localDateOf(b).Sub(localDateOf(a)).Round(24*time.Hour).Hours() / 24)
 }
 
-// NotifyDue decides whether the scheduler should queue a notification at
-// now: notifications are enabled, an occurrence of the notify time lies in
-// (last, now] and was not fired yet (lastFired is the "YYYY-MM-DD HH:MM" of
-// the previous firing, so the same minute never fires twice), and the
-// calendar days since the last sent mail reach the interval (no last mail:
-// the first occurrence fires). It returns the occurrence key to remember.
-func NotifyDue(last, now time.Time, s *NotificationSettings, lastFired string) (string, bool) {
-	if s == nil || !s.Enabled {
-		return "", false
+// notifyDay reports whether the local day of t is a notification day: no
+// notification mail was sent yet, or the last one was sent on that same day
+// (every listed time of the day sends), or IntervalDays calendar days or
+// more after it.
+func notifyDay(s *NotificationSettings, t time.Time) bool {
+	if !s.LastSentAt.Valid {
+		return true
 	}
-	h, m, ok := notifyTimeOfDay(s.Time)
-	if !ok {
-		return "", false
-	}
-	now = now.In(time.Local)
-	today := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, time.Local)
-	for _, occ := range []time.Time{today.AddDate(0, 0, -1), today} {
-		if !occ.After(last) || occ.After(now) {
-			continue
-		}
-		key := occ.Format("2006-01-02 15:04")
-		if key == lastFired {
-			continue
-		}
-		if s.LastSentAt.Valid && daysBetween(s.LastSentAt.Time, occ) < s.IntervalDays {
-			continue
-		}
-		return key, true
-	}
-	return "", false
+	d := daysBetween(s.LastSentAt.Time, t)
+	return d == 0 || d >= s.IntervalDays
 }
 
-// NextNotifyAt returns the next time a notification will be sent (false
-// when notifications are disabled).
+// NotifyDue returns the notification times the scheduler fires at now:
+// notifications are enabled, the occurrence of the time lies in (last, now]
+// and was not fired yet (fired maps each HH:MM to the "YYYY-MM-DD HH:MM" of
+// its last firing, so the same minute never fires twice, as with the sync
+// times), and it falls on a notification day (notifyDay). An occurrence
+// before the scheduler started is never fired afterwards. The caller
+// records every returned time in fired and queues one notification.
+func NotifyDue(last, now time.Time, s *NotificationSettings, fired map[string]string) []dueTime {
+	if s == nil || !s.Enabled {
+		return nil
+	}
+	var due []dueTime
+	for _, d := range dueCheckTimes(last, now, s.Times, fired) {
+		if notifyDay(s, d.at) {
+			due = append(due, d)
+		}
+	}
+	return due
+}
+
+// NextNotifyAt returns the next time a notification will be sent: the first
+// occurrence of a listed time after now that falls on a notification day
+// (false when notifications are disabled or no time is set).
 func NextNotifyAt(now time.Time, s *NotificationSettings) (time.Time, bool) {
 	if s == nil || !s.Enabled {
 		return time.Time{}, false
 	}
-	h, m, ok := notifyTimeOfDay(s.Time)
-	if !ok {
-		return time.Time{}, false
-	}
 	now = now.In(time.Local)
-	cand := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, time.Local)
+	// A notification day comes at the latest IntervalDays days after the
+	// last mail; a last mail dated in the future (the clock was set back)
+	// moves it further.
+	days := s.IntervalDays + 1
 	if s.LastSentAt.Valid {
-		d := localDateOf(s.LastSentAt.Time).AddDate(0, 0, s.IntervalDays)
-		earliest := time.Date(d.Year(), d.Month(), d.Day(), h, m, 0, 0, time.Local)
-		if earliest.After(cand) {
-			cand = earliest
+		if ahead := daysBetween(now, s.LastSentAt.Time); ahead > 0 {
+			days += ahead
 		}
 	}
-	for !cand.After(now) {
-		cand = cand.AddDate(0, 0, 1)
+	for offset := 0; offset <= days; offset++ {
+		day := now.AddDate(0, 0, offset)
+		for _, hm := range s.Times {
+			h, m, ok := parseClock(hm)
+			if !ok {
+				continue
+			}
+			cand := time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, time.Local)
+			if cand.After(now) && notifyDay(s, cand) {
+				return cand, true
+			}
+		}
 	}
-	return cand, true
+	return time.Time{}, false
 }
 
 // --- Content ---

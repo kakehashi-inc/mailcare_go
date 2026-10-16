@@ -72,8 +72,9 @@ const groupColumns = `group_key, category, actionable, unit_value, authority, re
 // columns (category, actionable, unit, authority, domain, status code,
 // template, responsible). Counters, dates, state and needs_analysis are
 // maintained by RefreshGroupCounters and the state setters. A new group
-// starts flagged for analysis only when it is actionable: recipient-side
-// groups are never analyzed, so their flag is always 0.
+// starts flagged for analysis only when it is actionable (a recipient-side
+// group is analyzed only on request); a group that stops being actionable
+// loses the flag the grouping set.
 func UpsertGroup(db Execer, g *BounceGroup) error {
 	now := time.Now().UTC()
 	if g.State == "" {
@@ -85,6 +86,7 @@ func UpsertGroup(db Execer, g *BounceGroup) error {
 		   remote_ip_count, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, ?, ?)
 		 ON CONFLICT(group_key) DO UPDATE SET category = excluded.category, actionable = excluded.actionable,
+		   needs_analysis = CASE WHEN groups.actionable = 1 AND excluded.actionable = 0 THEN 0 ELSE groups.needs_analysis END,
 		   unit_value = excluded.unit_value, authority = excluded.authority,
 		   recipient_domain = excluded.recipient_domain, status_code = excluded.status_code,
 		   diagnostic_template = excluded.diagnostic_template, responsible = excluded.responsible,
@@ -98,11 +100,11 @@ func UpsertGroup(db Execer, g *BounceGroup) error {
 // RefreshGroupCounters recomputes the message/recipient/IP counts and the
 // first/last seen dates of a group from its members: its bounces and its
 // DMARC records (each table filtered by the group key separately; a report
-// mail with several records of the group counts once). It never sets the
-// analysis flag itself (the grouping phase flags an actionable group that
-// received a bounce or DMARC record of a pattern its latest completed
-// report did not cover, see mailengine); a recipient-side group
-// (actionable = 0) always ends with the flag cleared.
+// mail with several records of the group counts once). It never touches the
+// analysis flag (the grouping phase flags an actionable group that received
+// a bounce or DMARC record of a pattern its latest completed report did not
+// cover, see mailengine; a recipient-side group is flagged only by an
+// explicit request that has not finished yet).
 func RefreshGroupCounters(db Execer, groupKey string) error {
 	// MIN()/MAX() over a DATETIME column carry no declared type, so the driver
 	// returns them as strings (see ParseSQLiteTime).
@@ -110,7 +112,7 @@ func RefreshGroupCounters(db Execer, groupKey string) error {
 	var firstRaw, lastRaw sql.NullString
 	if err := db.QueryRow(`SELECT COUNT(DISTINCT m.id), MIN(m.date), MAX(m.date),
 		COUNT(DISTINCT NULLIF(g.recipient, '')), COUNT(DISTINCT NULLIF(g.remote_ip, ''))
-		FROM (SELECT id AS message_id, recipient, remote_ip FROM bounces WHERE group_key = ?
+		FROM (SELECT message_id, recipient, remote_ip FROM bounces WHERE group_key = ?
 		      UNION ALL
 		      SELECT message_id, '', source_ip FROM dmarc_records WHERE group_key = ?) g
 		JOIN messages m ON m.id = g.message_id`, groupKey, groupKey).Scan(&count, &firstRaw, &lastRaw, &recipients, &ips); err != nil {
@@ -118,7 +120,7 @@ func RefreshGroupCounters(db Execer, groupKey string) error {
 	}
 	_, err := db.Exec(
 		`UPDATE groups SET message_count = ?, recipient_count = ?, remote_ip_count = ?, first_seen = ?, last_seen = ?,
-		   needs_analysis = CASE WHEN actionable = 0 THEN 0 ELSE needs_analysis END, updated_at = ?
+		   updated_at = ?
 		 WHERE group_key = ?`,
 		count, recipients, ips, ParseSQLiteTime(firstRaw), ParseSQLiteTime(lastRaw), time.Now().UTC(), groupKey,
 	)
@@ -134,16 +136,27 @@ func DeleteEmptyGroups(db Execer) error {
 	return err
 }
 
+// DeleteGroupIfEmpty removes one group when it no longer has members
+// (bounces or DMARC records).
+func DeleteGroupIfEmpty(db Execer, groupKey string) error {
+	_, err := db.Exec(`DELETE FROM groups WHERE group_key = ?
+		  AND NOT EXISTS (SELECT 1 FROM bounces b WHERE b.group_key = groups.group_key)
+		  AND NOT EXISTS (SELECT 1 FROM dmarc_records d WHERE d.group_key = groups.group_key)`, groupKey)
+	return err
+}
+
 // SetGroupState changes the state (open / resolved / ignored) of a group at
 // the given time with the reason code and the note the user left (NULL when
 // none; both NULL for open) and clears the re-check flag. The analysis flag
-// becomes needsAnalysis for an open actionable group and is cleared
-// otherwise: a resolved or ignored group is analyzed only after it was sent
-// back for a re-check. The caller validates the change and records it in the
-// history (modules.ChangeGroupState).
+// becomes needsAnalysis for an open actionable group, stays as it is for an
+// open recipient-side group (an explicit request that has not finished) and
+// is cleared otherwise: a resolved or ignored group is analyzed only after
+// it was sent back for a re-check. The caller validates the change and
+// records it in the history (modules.ChangeGroupState).
 func SetGroupState(db Execer, groupKey, state string, reason, note sql.NullString, at time.Time, needsAnalysis bool) error {
 	_, err := db.Exec(`UPDATE groups SET state = ?, state_updated_at = ?, state_reason = ?, state_note = ?,
-		   needs_recheck = 0, needs_analysis = CASE WHEN ? = 'open' AND actionable = 1 THEN ? ELSE 0 END, updated_at = ?
+		   needs_recheck = 0, needs_analysis = CASE WHEN ? <> 'open' THEN 0 WHEN actionable = 1 THEN ? ELSE needs_analysis END,
+		   updated_at = ?
 		 WHERE group_key = ?`,
 		state, at.UTC(), reason, note, state, boolToInt(needsAnalysis), time.Now().UTC(), groupKey)
 	return err
@@ -152,7 +165,7 @@ func SetGroupState(db Execer, groupKey, state string, reason, note sql.NullStrin
 // SetGroupNeedsRecheck sends a resolved or ignored group back to the users
 // (needs_recheck = 1) and flags it for analysis when it is actionable.
 func SetGroupNeedsRecheck(db Execer, groupKey string) error {
-	_, err := db.Exec(`UPDATE groups SET needs_recheck = 1, needs_analysis = actionable, updated_at = ?
+	_, err := db.Exec(`UPDATE groups SET needs_recheck = 1, needs_analysis = MAX(needs_analysis, actionable), updated_at = ?
 		 WHERE group_key = ? AND state <> 'open'`, time.Now().UTC(), groupKey)
 	return err
 }
@@ -174,11 +187,11 @@ func UpdateGroupResponsible(db *sql.DB, groupKey, responsible string) error {
 
 // RestoreGroupState puts back the state columns of a group (state, its
 // change time, reason and note, the re-check flag and the analysis flag),
-// taken from g, when an index is rebuilt and the group key came back. The
-// analysis flag is never set on a recipient-side group.
+// taken from g, when an index is rebuilt and the group key came back (the
+// caller decides the analysis flag, mailengine carryover).
 func RestoreGroupState(db *sql.DB, g *BounceGroup) error {
 	_, err := db.Exec(`UPDATE groups SET state = ?, state_updated_at = ?, state_reason = ?, state_note = ?,
-		   needs_recheck = ?, needs_analysis = CASE WHEN actionable = 0 THEN 0 ELSE ? END, updated_at = ?
+		   needs_recheck = ?, needs_analysis = ?, updated_at = ?
 		 WHERE group_key = ?`,
 		g.State, utcNullTime(g.StateUpdatedAt), g.StateReason, g.StateNote, boolToInt(g.NeedsRecheck),
 		boolToInt(g.NeedsAnalysis), time.Now().UTC(), g.GroupKey)
@@ -188,6 +201,27 @@ func RestoreGroupState(db *sql.DB, g *BounceGroup) error {
 // GetGroup returns one group (sql.ErrNoRows when absent).
 func GetGroup(db Execer, groupKey string) (*BounceGroup, error) {
 	return scanGroup(db.QueryRow(`SELECT `+groupColumns+` FROM groups WHERE group_key = ?`, groupKey))
+}
+
+// GroupResponsiblesOfMessage returns the responsible party of every group
+// the recipient blocks of a message are filed into, by group key, in one
+// query (a block without a group, or whose group is gone, has no entry).
+func GroupResponsiblesOfMessage(db Execer, messageID int64) (map[string]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT g.group_key, g.responsible FROM bounces b
+		JOIN groups g ON g.group_key = b.group_key WHERE b.message_id = ?`, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, responsible string
+		if err := rows.Scan(&key, &responsible); err != nil {
+			return nil, err
+		}
+		out[key] = responsible
+	}
+	return out, rows.Err()
 }
 
 // Group list scopes of Alerts. A recipient-side group (actionable = 0) is
@@ -328,14 +362,16 @@ func ListGroupsPage(db *sql.DB, f GroupFilter, offset, limit int) ([]*BounceGrou
 	return groups, total, err
 }
 
-// ListGroupsNeedingAnalysis returns the actionable groups flagged for
-// analysis, oldest last-seen first: open groups with a pattern their latest
-// report did not cover (new groups included) and resolved / ignored groups
-// sent back for a re-check (SetGroupNeedsRecheck; SetGroupState clears the
-// flag of the other resolved / ignored groups). Recipient-side groups are
-// never analyzed.
+// ListGroupsNeedingAnalysis returns the groups flagged for analysis, oldest
+// last-seen first: actionable open groups with a pattern their latest
+// report did not cover (new groups included), actionable resolved / ignored
+// groups sent back for a re-check (SetGroupNeedsRecheck; SetGroupState
+// clears the flag of the other resolved / ignored groups), and any group an
+// explicit request flagged whose analysis has not finished (stopped by the
+// usage limit). A recipient-side group carries the flag only through such a
+// request.
 func ListGroupsNeedingAnalysis(db *sql.DB) ([]*BounceGroup, error) {
-	return queryGroups(db, `SELECT `+groupColumns+` FROM groups WHERE needs_analysis = 1 AND actionable = 1
+	return queryGroups(db, `SELECT `+groupColumns+` FROM groups WHERE needs_analysis = 1
 		ORDER BY last_seen ASC`)
 }
 

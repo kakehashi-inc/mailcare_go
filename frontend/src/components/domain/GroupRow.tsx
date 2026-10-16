@@ -30,7 +30,7 @@ export function GroupRow({ group, to, actions }: GroupRowProps) {
                 <div className='flex min-w-0 flex-wrap items-center gap-2'>
                     <CategoryBadge category={group.category} />
                     {group.actionable && <SeverityBadge severity={group.report_severity} />}
-                    {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
+                    {group.needs_analysis && group.report_status !== 'running' && (
                         <Badge tone='warning' icon='pending_actions'>
                             {t('field.group.needsAnalysis')}
                         </Badge>

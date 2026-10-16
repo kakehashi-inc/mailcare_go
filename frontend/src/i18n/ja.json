@@ -164,8 +164,7 @@
         },
         "group": {
             "resolveActionRequired": "対応内容を選択してください。",
-            "ignoreReasonRequired": "判断理由を選択してください。",
-            "stateNoteTooLong": "詳細は {{max}} 文字以内で入力してください。"
+            "ignoreReasonRequired": "判断理由を選択してください。"
         },
         "agent": {
             "providerUnknown": "選択したプロバイダーは使用できません。",
@@ -515,6 +514,10 @@
             "dns_resolver_failure": {
                 "label": "DNS 名前解決の不調（送信側のメールサーバー）",
                 "description": "送信側のメールサーバーが宛先の名前を DNS で解決できず、配信できていません。名前自体は存在します。送信側のメールサーバーの名前解決（resolv.conf、キャッシュ DNS、53 番ポート、DNSSEC など）を確認してください。"
+            },
+            "dns_lookup_failure": {
+                "label": "名前解決の失敗（未確認）",
+                "description": "名前解決の一時的な失敗を知らせる通知ですが、名前をまだ確かめられていないため、送信側と宛先側のどちらの問題かは分かりません。DNS 検証が有効なら、次のグループ化で改めて確かめます。"
             },
             "unknown_failure": {
                 "label": "原因不明の失敗",

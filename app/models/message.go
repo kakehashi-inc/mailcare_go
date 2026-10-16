@@ -42,19 +42,20 @@ type Message struct {
 	// there. The raw file and the row stay until the local retention.
 	ServerDeletedAt sql.NullTime `json:"-"`
 
-	// GroupKey is the group of the bounce (bounces.group_key), "" when the
-	// message is not a grouped bounce. It is read with the row, never written
-	// through it.
+	// GroupKey is the group of the first recipient block of the bounce
+	// (bounces.group_key of recipient_index 0), "" when the message is not a
+	// grouped bounce. It is read with the row, never written through it.
 	GroupKey string `json:"group_key"`
 }
 
-// messageColumns lists the columns of a messages row joined with its bounces
-// row (alias m / b), in scanMessage order.
+// messageColumns lists the columns of a messages row joined with the
+// bounces row of its first recipient block (alias m / b), in scanMessage
+// order.
 const messageColumns = `m.id, m.message_key, m.folder, m.uidvalidity, m.uid, m.message_id, m.subject, m.from_address,
 	m.from_name, m.to_address, m.to_name, m.date, m.received_at, m.size, m.text_count, m.html_count, m.body_source,
 	m.classified, m.is_bounce, m.bounce_kind, m.rule, m.fetched_at, m.server_deleted_at, COALESCE(b.group_key, '')`
 
-const messageFrom = ` FROM messages m LEFT JOIN bounces b ON b.id = m.id`
+const messageFrom = ` FROM messages m LEFT JOIN bounces b ON b.message_id = m.id AND b.recipient_index = 0`
 
 // InsertMessage adds a message row and fills in its ID. Times are
 // normalized to UTC.
@@ -103,6 +104,15 @@ func UpdateMessageClassification(db Execer, id int64, isBounce bool, bounceKind,
 // processed yet, oldest first.
 func ListUnclassifiedMessages(db *sql.DB) ([]*Message, error) {
 	return queryMessages(db, `SELECT `+messageColumns+messageFrom+` WHERE m.classified = 0 ORDER BY m.date ASC, m.id ASC`)
+}
+
+// ListMessagesByBounceRulePrefix returns the classified messages that have
+// a bounces row whose category rule starts with prefix, oldest first (the
+// grouping verifies the DNS lookup failures of such notices again).
+func ListMessagesByBounceRulePrefix(db *sql.DB, prefix string) ([]*Message, error) {
+	return queryMessages(db, `SELECT `+messageColumns+messageFrom+` WHERE m.classified = 1
+		AND m.id IN (SELECT message_id FROM bounces WHERE substr(category_rule, 1, length(?)) = ?)
+		ORDER BY m.date ASC, m.id ASC`, prefix, prefix)
 }
 
 // CountUnclassifiedMessages returns how many messages still await grouping.
@@ -178,8 +188,8 @@ func MaxUIDForValidity(db *sql.DB, uidValidity uint32, folder string) (uint32, e
 // ExpiredMessage is what the mail retention (mailengine.PruneMailbox) needs
 // of a message older than the retention: its id, the key its files are
 // named after, how many body section files of each kind exist and the
-// groups it is a member of (the group of its bounce, or the groups of the
-// records of a DMARC report; none for any other message).
+// groups it is a member of (the groups of its failed recipients, or the
+// groups of the records of a DMARC report; none for any other message).
 type ExpiredMessage struct {
 	ID         int64
 	MessageKey string
@@ -191,9 +201,10 @@ type ExpiredMessage struct {
 // ListMessagesOlderThan returns the messages whose date is before cutoff,
 // oldest first.
 func ListMessagesOlderThan(db *sql.DB, cutoff time.Time) ([]ExpiredMessage, error) {
-	rows, err := db.Query(`SELECT m.id, m.message_key, m.text_count, m.html_count, COALESCE(b.group_key, ''),
+	rows, err := db.Query(`SELECT m.id, m.message_key, m.text_count, m.html_count,
+		COALESCE((SELECT GROUP_CONCAT(DISTINCT b.group_key) FROM bounces b WHERE b.message_id = m.id AND b.group_key <> ''), ''),
 		COALESCE((SELECT GROUP_CONCAT(DISTINCT d.group_key) FROM dmarc_records d WHERE d.message_id = m.id), '')
-		`+messageFrom+` WHERE m.date < ? ORDER BY m.date ASC, m.id ASC`, cutoff.UTC())
+		FROM messages m WHERE m.date < ? ORDER BY m.date ASC, m.id ASC`, cutoff.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -201,12 +212,12 @@ func ListMessagesOlderThan(db *sql.DB, cutoff time.Time) ([]ExpiredMessage, erro
 	var out []ExpiredMessage
 	for rows.Next() {
 		var m ExpiredMessage
-		var bounceKey, recordKeys string
-		if err := rows.Scan(&m.ID, &m.MessageKey, &m.TextCount, &m.HTMLCount, &bounceKey, &recordKeys); err != nil {
+		var bounceKeys, recordKeys string
+		if err := rows.Scan(&m.ID, &m.MessageKey, &m.TextCount, &m.HTMLCount, &bounceKeys, &recordKeys); err != nil {
 			return nil, err
 		}
-		if bounceKey != "" {
-			m.GroupKeys = append(m.GroupKeys, bounceKey)
+		if bounceKeys != "" {
+			m.GroupKeys = append(m.GroupKeys, strings.Split(bounceKeys, ",")...)
 		}
 		if recordKeys != "" {
 			m.GroupKeys = append(m.GroupKeys, strings.Split(recordKeys, ",")...)
@@ -216,7 +227,7 @@ func ListMessagesOlderThan(db *sql.DB, cutoff time.Time) ([]ExpiredMessage, erro
 	return out, rows.Err()
 }
 
-// DeleteMessage removes a message row; its bounces row and its
+// DeleteMessage removes a message row; its bounces rows and its
 // dmarc_records rows go with it (ON DELETE CASCADE). The files of the
 // message are the caller's business.
 func DeleteMessage(db *sql.DB, id int64) error {
@@ -452,7 +463,7 @@ func messageWhere(f MessageFilter) (string, []any) {
 	if f.GroupKey != "" {
 		// The members of a group: the mails of its bounces and the report
 		// mails of its DMARC records, each table searched by its group index.
-		conds = append(conds, `(m.id IN (SELECT id FROM bounces WHERE group_key = ?)
+		conds = append(conds, `(m.id IN (SELECT message_id FROM bounces WHERE group_key = ?)
 		  OR m.id IN (SELECT message_id FROM dmarc_records WHERE group_key = ?))`)
 		args = append(args, f.GroupKey, f.GroupKey)
 	}

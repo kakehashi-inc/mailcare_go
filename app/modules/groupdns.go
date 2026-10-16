@@ -23,10 +23,11 @@ import (
 // for mb nor ends its "nothing configured" default of the DNS judgement
 // (4.4). The run looks up more
 // addresses of the sending sources through a sourceCache (stored per source and shared
-// by every mailbox, reused for an hour, the fallback of a failed lookup):
+// by every mailbox, reused while fresh (dnscheck.CacheFreshAge), the
+// fallback of a failed lookup):
 // the addresses of the host names (WithSourceHostResolver) and, only while the
 // DNS check is on, what the SPF records of the domains of the mailboxes
-// list (WithSourceSPF, at most MaxSPFDomains domains). While the check is on the verifier makes
+// list (WithSourceSPF). While the check is on the verifier makes
 // these lookups through the configured resolvers like every lookup of the
 // check (the source host names through the OS resolver first); while it is
 // off only the OS resolver is asked for the host names
@@ -35,12 +36,13 @@ import (
 // failure verification (4.4, WithDNS) verifies live only while the check is
 // on; while it is off WithDNS gets a StoredOnly Checker, which files a
 // notice by the outcome stored for it (the reuse rule) and queries nothing
-// (no verification, no reporting MTA, no SPF), so that switching the check
+// (no verification, no SPF; a reporting MTA only by its stored addresses),
+// so that switching the check
 // off or on does not move the notices already verified between groups; the
 // others stay unverified. A new verifier, resolver and cache
-// are made for every call because the per-run limits and memories (the
-// number of names, the budget, a resolver that did not answer is not asked
-// again, the names looked up) belong to one run. Nothing is looked up here:
+// are made for every call because the memories of a run (a resolver that
+// did not answer is not asked again, the names looked up) belong to one
+// run. Nothing is looked up here:
 // the grouping looks up the sending sources and the reporting MTAs only when a
 // message needs them. An error (the mailboxes could not be listed) fails the
 // run instead of grouping without the host names of the mailboxes.
@@ -106,15 +108,18 @@ var (
 
 // pruneDNSChecks deletes the DNS verification results checked before the
 // mail retention (mail_keep_days) and the reuse window before it
-// (dnscheck.ReuseWindow): a notice still retained may use a result checked
-// up to that window before it was received, and every notice older than the
-// retention is removed by then. It also deletes the stored lookups of the
-// sending sources older than SourceCacheKeepAge (long past the age
-// at which they stand in for a failed lookup) and those dated more than
-// SourceCacheMaxFuture after now (the clock was set back). The tables are
-// shared by every mailbox, so like the job history they are pruned once per
-// cleanup, whichever child runs first. Every deletion is tried even when one
-// before it failed; the failures are joined.
+// (dnscheck.ReuseWindow): while the check is off a notice still retained
+// may use a result checked up to that window before it was received, and
+// every notice older than the retention is removed by then. The stored
+// lookups of the reporting MTAs (sending_source_lookups, kind reporter)
+// derive from notices too and go by the same cutoff. It also deletes the
+// stored lookups dated after now (the clock was set back: their age is
+// unknown); no stored lookup of a sending source is deleted for its age (a
+// name no source refers to any more goes with the next run,
+// sourceCache.prune). The tables are shared by every mailbox, so like the
+// job history they are pruned once per cleanup, whichever child runs
+// first. Every deletion is tried even when one before it failed; the
+// failures are joined.
 func (m *JobManager) pruneDNSChecks(progress func(string)) error {
 	var errs []error
 	keepDays := ResolveMailKeepDays(m.db)
@@ -127,18 +132,18 @@ func (m *JobManager) pruneDNSChecks(progress func(string)) error {
 		progress(fmt.Sprintf("removed %d dns check result(s) older than the mail retention (%d days) and the %d-hour reuse window",
 			removed, keepDays, int(dnscheck.ReuseWindow.Hours())))
 	}
-	if stale, err := models.DeleteSendingSourceLookupsOlderThan(m.db, now.Add(-SourceCacheKeepAge)); err != nil {
-		progress(fmt.Sprintf("error: sending source lookups: %v", err))
-		errs = append(errs, fmt.Errorf("sending source lookups: %w", err))
-	} else if stale > 0 {
-		progress(fmt.Sprintf("removed %d stored sending source lookup(s) older than %d days", stale, int(SourceCacheKeepAge.Hours()/24)))
+	if removed, err := models.DeleteSendingSourceLookupsOlderThan(m.db, models.SendingSourceKindReporter, cutoff); err != nil {
+		progress(fmt.Sprintf("error: reporting MTA lookups: %v", err))
+		errs = append(errs, fmt.Errorf("reporting MTA lookups: %w", err))
+	} else if removed > 0 {
+		progress(fmt.Sprintf("removed %d stored reporting MTA lookup(s) older than the mail retention (%d days) and the %d-hour reuse window",
+			removed, keepDays, int(dnscheck.ReuseWindow.Hours())))
 	}
-	if future, err := models.DeleteSendingSourceLookupsNewerThan(m.db, now.Add(SourceCacheMaxFuture)); err != nil {
+	if future, err := models.DeleteFutureSendingSourceLookups(m.db); err != nil {
 		progress(fmt.Sprintf("error: sending source lookups: %v", err))
 		errs = append(errs, fmt.Errorf("sending source lookups: %w", err))
 	} else if future > 0 {
-		progress(fmt.Sprintf("removed %d stored sending source lookup(s) dated more than %d hours in the future", future,
-			int(SourceCacheMaxFuture.Hours())))
+		progress(fmt.Sprintf("removed %d stored sending source lookup(s) dated in the future", future))
 	}
 	return errors.Join(errs...)
 }

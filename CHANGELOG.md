@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Several notification times can be set (09:00 and 17:00 by default); on a notification day the notification mail goes out at each of them.
+- A bounce that reports several failed recipients counts every one of them in the alerts, the message details and the downloads.
+- The DNS check verifies whether mail can be delivered to the reported name (its mail servers and their IPv4 and IPv6 addresses), whatever record type the notice names and however old the notice is. DNS lookup results are reused for 12 hours.
+- A name lookup failure that could not be verified yet is shown as the new alert type "Name lookup failure (not verified)" instead of a delivery delay, and is checked again at each grouping while the DNS check is on.
+- A delay notice whose reason is a sending-side problem (authentication, sender, size, content or server configuration) is filed under that problem.
+- Name lookup failures reported by Exim, qmail, Microsoft Exchange and Microsoft 365, Gmail, and more Postfix and Sendmail wordings are recognized.
+- The AI analysis receives every pattern of an alert, not only the first ones.
+- The alert details show how many messages the alert has and link to the rest of them in the mail list.
+
+### Fixed
+
+- Work is no longer cut off by fixed time, size or count limits: analyses, DNS checks, mail fetching and sending, probe checks, downloads and web requests run to the end while the other side keeps responding, and the caps on notes, progress lines and probe cleanups are gone.
+- The DNS check sends one query at a time instead of many at once, and a resolver that fails while others answer no longer makes a name look broken.
+- Stored lookups of the sending sources keep standing in while a new lookup fails, so bounces of mail not sent from the sending sources are still recognized after 14 days of failed lookups.
+- An analysis asked for by hand that stops at the agent's usage limit runs after the limit, also for an excluded alert.
+- A failed lookup of a mail server name, rather than of the recipient domain, is no longer filed as a missing recipient domain.
+- Bounces whose returned message has very many or very long Received headers are judged instead of being left as genuine bounces.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

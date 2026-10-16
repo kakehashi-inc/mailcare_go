@@ -19,9 +19,10 @@ import { ErrorState } from '../components/ui/ErrorState';
 import { CheckboxField, InputField, SelectField, ToggleField } from '../components/ui/Field';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
 import { LoadingBlock } from '../components/ui/Spinner';
+import { TimeListField, timeListValid } from '../components/ui/TimeListField';
 import { useToast } from '../components/ui/Toast';
 import {
-    DEFAULT_NOTIFY_TIME,
+    DEFAULT_NOTIFY_TIMES,
     DEFAULT_SMTP_PORT,
     NOTIFY_INTERVAL_MAX_DAYS,
     NOTIFY_INTERVAL_MIN_DAYS,
@@ -29,7 +30,7 @@ import {
 import { useAsync } from '../hooks/useAsync';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import type { NotificationSettingsDTO, NotificationSettingsInput, SmtpSecurity } from '../types';
-import { isClockTime, isEmailAddress, isHttpUrl, isIntegerInRange } from '../utils/validate';
+import { isEmailAddress, isHttpUrl, isIntegerInRange } from '../utils/validate';
 
 interface FormState {
     smtp_host: string;
@@ -41,7 +42,7 @@ interface FormState {
     smtp_from: string;
     public_base_url: string;
     notify_enabled: boolean;
-    notify_time: string;
+    notify_times: string[];
     notify_interval_days: number;
     notify_user_ids: number[];
 }
@@ -65,7 +66,7 @@ function fromDto(dto: NotificationSettingsDTO): FormState {
         smtp_from: dto.smtp_from ?? '',
         public_base_url: dto.public_base_url ?? '',
         notify_enabled: dto.notify_enabled ?? false,
-        notify_time: dto.notify_time || DEFAULT_NOTIFY_TIME,
+        notify_times: dto.notify_times?.length ? [...dto.notify_times] : [...DEFAULT_NOTIFY_TIMES],
         notify_interval_days: dto.notify_interval_days || NOTIFY_INTERVAL_MIN_DAYS,
         notify_user_ids: [...(dto.notify_user_ids ?? [])],
     };
@@ -97,7 +98,7 @@ function diff(form: FormState, saved: FormState): NotificationSettingsInput {
     if (form.smtp_from.trim() !== saved.smtp_from) out.smtp_from = form.smtp_from.trim();
     if (form.public_base_url.trim() !== saved.public_base_url) out.public_base_url = form.public_base_url.trim();
     if (form.notify_enabled !== saved.notify_enabled) out.notify_enabled = form.notify_enabled;
-    if (form.notify_time !== saved.notify_time) out.notify_time = form.notify_time;
+    if (form.notify_times.join(',') !== saved.notify_times.join(',')) out.notify_times = [...form.notify_times];
     if (form.notify_interval_days !== saved.notify_interval_days) {
         out.notify_interval_days = form.notify_interval_days;
     }
@@ -127,6 +128,7 @@ export function SettingsNotificationsPage() {
     const [testing, setTesting] = useState(false);
     const [sending, setSending] = useState(false);
     const recipientsId = useId();
+    const timesId = useId();
 
     useEffect(() => {
         if (!settings.data) return;
@@ -232,7 +234,7 @@ export function SettingsNotificationsPage() {
             : form.notify_enabled && form.smtp_from.trim() === ''
               ? smtpRequired
               : undefined;
-    const timeError = isClockTime(form.notify_time) ? undefined : t('validation.common.timeFormat');
+    const timesValid = timeListValid(form.notify_times) && form.notify_times.length > 0;
     const urlError =
         form.public_base_url.trim() !== '' && !isHttpUrl(form.public_base_url)
             ? t('validation.common.urlFormat')
@@ -253,7 +255,7 @@ export function SettingsNotificationsPage() {
           : 'smtp_username' in changes
             ? t('validation.connection.passwordRequired')
             : undefined;
-    const valid = !hostError && !portError && !fromError && !timeError && !urlError && !passwordError;
+    const valid = !hostError && !portError && !fromError && timesValid && !urlError && !passwordError;
     const canSave = dirty && valid && !saving;
     // The test mail is sent with the typed values, saved or not.
     const testAddress = testTo.trim() || currentUser?.user.email || '';
@@ -420,22 +422,26 @@ export function SettingsNotificationsPage() {
                             checked={form.notify_enabled}
                             onChange={v => set('notify_enabled', v)}
                         />
-                        <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
-                            <InputField
-                                label={t('field.notification.time')}
-                                type='time'
-                                step={60}
-                                value={form.notify_time}
-                                onChange={e => set('notify_time', e.target.value)}
-                                hint={
-                                    general.data?.server_timezone
+                        <div className='grid grid-cols-1 items-start gap-4 md:grid-cols-2'>
+                            <fieldset aria-describedby={`${timesId}-hint`}>
+                                <legend className='text-sm font-medium text-ink'>{t('field.notification.time')}</legend>
+                                <p id={`${timesId}-hint`} className='mt-1 text-sm text-muted'>
+                                    {general.data?.server_timezone
                                         ? t('page.settingsGeneral.serverTimeZone', {
                                               zone: general.data.server_timezone,
                                           })
-                                        : t('field.notification.timeHint')
-                                }
-                                error={timeError}
-                            />
+                                        : t('field.notification.timeHint')}
+                                </p>
+                                <div className='mt-3'>
+                                    <TimeListField
+                                        id={timesId}
+                                        label={t('field.notification.time')}
+                                        times={form.notify_times}
+                                        onChange={next => set('notify_times', next)}
+                                        minCount={1}
+                                    />
+                                </div>
+                            </fieldset>
                             <SelectField
                                 label={t('field.notification.interval')}
                                 value={String(form.notify_interval_days)}

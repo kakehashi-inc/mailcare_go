@@ -10,10 +10,12 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Message is one accepted mail.
@@ -38,6 +40,8 @@ type Server struct {
 	RejectRecipients []string
 
 	ln       net.Listener
+	delay    time.Duration // SetDelay
+	stallOn  string        // SetStallOn
 	mu       sync.Mutex
 	messages []Message
 	wg       sync.WaitGroup
@@ -54,6 +58,21 @@ func Start() (*Server, error) {
 	s.wg.Add(1)
 	go s.serve()
 	return s, nil
+}
+
+// SetDelay makes the server wait d before every reply (a slow server).
+func (s *Server) SetDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delay = d
+}
+
+// SetStallOn names a command ("MAIL", "RCPT", "DATA", "." for the end of
+// the data) the server never answers.
+func (s *Server) SetStallOn(cmd string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stallOn = cmd
 }
 
 // Host / Port are the listening address.
@@ -114,9 +133,17 @@ func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
+	s.mu.Lock()
+	delay, stallOn := s.delay, s.stallOn
+	s.mu.Unlock()
 	reply := func(line string) {
+		time.Sleep(delay)
 		_, _ = w.WriteString(line + "\r\n")
 		_ = w.Flush()
+	}
+	// stall waits for the client to give up (it closes the connection).
+	stall := func() {
+		_, _ = io.Copy(io.Discard, r)
 	}
 	readLine := func() (string, bool) {
 		line, err := r.ReadString('\n')
@@ -135,6 +162,10 @@ func (s *Server) handle(conn net.Conn) {
 			return
 		}
 		cmd := strings.ToUpper(line)
+		if stallOn != "" && stallOn != "." && strings.HasPrefix(cmd, stallOn) {
+			stall()
+			return
+		}
 		switch {
 		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
 			if s.Mechanisms != "" {
@@ -200,6 +231,10 @@ func (s *Server) handle(conn net.Conn) {
 					return
 				}
 				if l == "." {
+					if stallOn == "." {
+						stall()
+						return
+					}
 					break
 				}
 				b.WriteString(strings.TrimPrefix(l, ".") + "\r\n")

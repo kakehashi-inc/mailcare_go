@@ -324,7 +324,7 @@ func TestApplySettingDefaultsAndWebListen(t *testing.T) {
 	if sources, _ := ResolveSendingSources(db); len(sources.Hosts) != 0 {
 		t.Errorf("sending source hosts not cleared: %v", sources.Hosts)
 	}
-	if s, _ := ResolveNotificationSettings(db, nil); s.SMTP.Port != DefaultSMTPPort || s.Time != DefaultNotifyTime || s.IntervalDays != DefaultNotifyIntervalDays {
+	if s, _ := ResolveNotificationSettings(db, nil); s.SMTP.Port != DefaultSMTPPort || FormatCheckTimes(s.Times) != DefaultNotifyTimes || s.IntervalDays != DefaultNotifyIntervalDays {
 		t.Errorf("notification defaults not restored: %+v", s)
 	}
 	for in, want := range map[string]string{"10.0.0.5": "10.0.0.5", "::1": "::1", "[::1]": "::1", "mailcare.example.test": "mailcare.example.test",

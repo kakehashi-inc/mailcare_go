@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { getSettings, updateSettings, ApiError } from '../api/client';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
-import { Button, IconButton } from '../components/ui/Button';
+import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { DescriptionList } from '../components/ui/DescriptionList';
 import { ErrorState } from '../components/ui/ErrorState';
@@ -14,9 +14,9 @@ import {
     SelectField,
     TextareaField,
     ToggleField,
-    controlClass,
 } from '../components/ui/Field';
 import { PageContainer, PageHeader } from '../components/ui/PageHeader';
+import { TimeListField, timeListValid } from '../components/ui/TimeListField';
 import { LoadingBlock } from '../components/ui/Spinner';
 import { useToast } from '../components/ui/Toast';
 import { useAsync } from '../hooks/useAsync';
@@ -76,7 +76,6 @@ export function SettingsGeneralPage() {
     const toast = useToast();
     const settings = useAsync(getSettings, []);
     const [times, setTimes] = useState<string[]>([]);
-    const [newTime, setNewTime] = useState('');
     const [provider, setProvider] = useState('');
     const [model, setModel] = useState('');
     const [effort, setEffort] = useState('');
@@ -120,10 +119,7 @@ export function SettingsGeneralPage() {
         setDirty(false);
     }, [settings.data]);
 
-    const invalidTimes = times.filter(x => !TIME_RE.test(x));
-    const duplicate = new Set(times).size !== times.length;
-    const newTimeValid = newTime === '' || TIME_RE.test(newTime);
-    const newTimeDuplicate = newTime !== '' && times.includes(newTime);
+    const timesValid = timeListValid(times);
     const selectedProvider = settings.data?.providers.find(p => p.name === provider);
     const modelSupported = Boolean(selectedProvider?.model_option);
     const modelValid = model.trim() === '' || MODEL_RE.test(model.trim());
@@ -172,8 +168,7 @@ export function SettingsGeneralPage() {
     const listError = (err: ListError | null) => (err ? t(err.key, err.params) : undefined);
     const canSave =
         dirty &&
-        invalidTimes.length === 0 &&
-        !duplicate &&
+        timesValid &&
         workersValid &&
         keepDaysValid &&
         mailKeepDaysValid &&
@@ -187,18 +182,6 @@ export function SettingsGeneralPage() {
         modelValid &&
         effortValid &&
         !saving;
-
-    function addTime() {
-        if (!TIME_RE.test(newTime) || times.includes(newTime)) return;
-        setTimes(prev => [...prev, newTime].sort());
-        setNewTime('');
-        setDirty(true);
-    }
-
-    function removeTime(index: number) {
-        setTimes(prev => prev.filter((_, i) => i !== index));
-        setDirty(true);
-    }
 
     async function save() {
         setSaving(true);
@@ -269,78 +252,16 @@ export function SettingsGeneralPage() {
                         title={t('field.setting.checkTimes')}
                         description={`${t('field.setting.checkTimesHint')} ${t('page.settingsGeneral.serverTimeZone', { zone: settings.data.server_timezone || '-' })}`}
                     />
-                    {times.length === 0 ? (
-                        <p className='text-sm text-muted'>{t('page.settingsGeneral.noCheckTimes')}</p>
-                    ) : (
-                        <ul
-                            className={`flex flex-col gap-2 ${CONTROL_WIDTH.short}`}
-                            aria-label={t('field.setting.checkTimes')}
-                        >
-                            {times.map((time, i) => (
-                                <li
-                                    key={`${time}-${i}`}
-                                    className='flex items-center justify-between gap-3 rounded-md border border-line px-3 py-1'
-                                >
-                                    <span
-                                        className={`font-mono text-base ${TIME_RE.test(time) ? 'text-ink' : 'text-danger'}`}
-                                    >
-                                        {time}
-                                    </span>
-                                    <IconButton
-                                        icon='delete'
-                                        label={t('action.setting.removeTime', { time })}
-                                        onClick={() => removeTime(i)}
-                                    />
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                    {(invalidTimes.length > 0 || duplicate) && (
-                        <Alert tone='danger' className='mt-3'>
-                            {invalidTimes.length > 0
-                                ? t('validation.common.timeFormat')
-                                : t('validation.common.timeDuplicate')}
-                        </Alert>
-                    )}
-                    <form
-                        className='mt-4'
-                        onSubmit={e => {
-                            e.preventDefault();
-                            addTime();
+                    <TimeListField
+                        id='check-times'
+                        label={t('field.setting.checkTimes')}
+                        times={times}
+                        onChange={next => {
+                            setTimes(next);
+                            setDirty(true);
                         }}
-                    >
-                        <label htmlFor='new-check-time' className='mb-1 block text-sm font-medium text-ink'>
-                            {t('action.setting.addTime')}
-                        </label>
-                        <div className='flex items-center gap-2'>
-                            <input
-                                id='new-check-time'
-                                type='time'
-                                step={60}
-                                value={newTime}
-                                onChange={e => setNewTime(e.target.value)}
-                                aria-invalid={!newTimeValid || newTimeDuplicate || undefined}
-                                aria-describedby='new-check-time-hint'
-                                className={`${controlClass} min-w-0 ${CONTROL_WIDTH.short}`}
-                            />
-                            <Button
-                                type='submit'
-                                icon='add'
-                                disabled={!newTime || !newTimeValid || newTimeDuplicate}
-                                className='shrink-0'
-                            >
-                                {t('common.add')}
-                            </Button>
-                        </div>
-                        <p
-                            id='new-check-time-hint'
-                            className={`mt-1 text-sm ${newTimeDuplicate ? 'text-danger' : 'text-muted'}`}
-                        >
-                            {newTimeDuplicate
-                                ? t('validation.common.timeDuplicate')
-                                : t('page.settingsGeneral.addTimeHint')}
-                        </p>
-                    </form>
+                        emptyText={t('page.settingsGeneral.noCheckTimes')}
+                    />
                 </Card>
 
                 <Card>

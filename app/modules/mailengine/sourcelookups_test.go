@@ -192,14 +192,12 @@ func (f spfByDomain) ResolveSPF(_ context.Context, domain string) ([]netip.Prefi
 	return f[domain], nil, true
 }
 
-// TestBackscatterSPFUnionCap: the records of the domains of a run each
-// stay within the bounds of one evaluation, but may take in more address
-// space together than one record may (2^24 IPv4 or 2^112 IPv6 addresses,
-// every address counted once): the SPF supplement is then incomplete for the
-// run, the backscatter rule does not take the notice and the progress line
-// names the reason. Together within the bounds (a range listed by both
-// counts once), the rule applies.
-func TestBackscatterSPFUnionCap(t *testing.T) {
+// TestBackscatterSPFUnionNoCap: the records of the domains of a run are
+// taken together whatever address space they cover in total (each record
+// is bounded by the /8 and /16 sanity limits of each evaluation, not by
+// a sum chosen for the run): the backscatter rule applies with all of them
+// and the progress line names no skip.
+func TestBackscatterSPFUnionNoCap(t *testing.T) {
 	samples := []string{"postfix_backscatter.eml", "postfix_dsn.eml"}
 	smtp := NewSendingSources(nil, nil, []string{"smtp.example.jp"}, nil) // in no header of the samples
 	p := func(s ...string) []netip.Prefix {
@@ -209,30 +207,23 @@ func TestBackscatterSPFUnionCap(t *testing.T) {
 		}
 		return out
 	}
-	const skipped = "; backscatter detection was skipped for this run: SPF ranges too wide in total"
 	for _, c := range []struct {
-		name   string
-		spf    spfByDomain
-		rules  map[string]int
-		reason bool
+		name string
+		spf  spfByDomain
 	}{
-		{"IPv4 within together", spfByDomain{"example.jp": p("20.0.0.0/9"), "example.com": p("20.128.0.0/9")},
-			map[string]int{ruleBackscatter: 2}, false},
-		{"IPv4 the same range twice", spfByDomain{"example.jp": p("20.0.0.0/8"), "example.com": p("20.0.0.0/8")},
-			map[string]int{ruleBackscatter: 2}, false},
-		{"IPv4 too wide together", spfByDomain{"example.jp": p("20.0.0.0/8"), "example.com": p("30.0.0.0/32")},
-			map[string]int{ruleDSNReport: 2}, true},
-		{"IPv6 too wide together", spfByDomain{"example.jp": p("2400::/16"), "example.com": p("2600::/16")},
-			map[string]int{ruleDSNReport: 2}, true},
+		{"IPv4 two halves", spfByDomain{"example.jp": p("20.0.0.0/9"), "example.com": p("20.128.0.0/9")}},
+		{"IPv4 the same range twice", spfByDomain{"example.jp": p("20.0.0.0/8"), "example.com": p("20.0.0.0/8")}},
+		{"IPv4 more than one /8 together", spfByDomain{"example.jp": p("20.0.0.0/8"), "example.com": p("30.0.0.0/8")}},
+		{"IPv6 more than one /16 together", spfByDomain{"example.jp": p("2400::/16"), "example.com": p("2600::/16")}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rules, progress := groupSamples(t, samples, WithSendingSources(smtp), WithSourceHostResolver(&fakeSourceHosts{}),
 				WithSourceSPF(c.spf, []string{"example.jp", "example.com"}))
-			if !reflect.DeepEqual(rules, c.rules) {
-				t.Errorf("rules %v, want %v\n%s", rules, c.rules, progress)
+			if want := map[string]int{ruleBackscatter: 2}; !reflect.DeepEqual(rules, want) {
+				t.Errorf("rules %v, want %v\n%s", rules, want, progress)
 			}
-			if got := strings.Contains(progress, skipped); got != c.reason {
-				t.Errorf("progress names the reason: %v, want %v\n%s", got, c.reason, progress)
+			if strings.Contains(progress, "skipped") {
+				t.Errorf("progress names a skip:\n%s", progress)
 			}
 		})
 	}
@@ -262,23 +253,18 @@ func (s *slowSourceHosts) ResolveHost(_ context.Context, host string) ([]netip.A
 	return addrs(fmt.Sprintf("192.0.2.%d", n)), n%2 == 0
 }
 
-// TestSourceHostLookupsInParallel: the source host names are looked up at most
-// four at a time, and what they found is taken in the order of the names,
-// so the run and its progress line do not depend on which answered first.
-func TestSourceHostLookupsInParallel(t *testing.T) {
+// TestSourceHostLookupsOneAtATime: the source host names are looked up one
+// after another, and what they found is taken in the order of the names.
+func TestSourceHostLookupsOneAtATime(t *testing.T) {
 	var hosts []string
 	for i := range 10 {
 		hosts = append(hosts, fmt.Sprintf("mx%d.example.jp", i))
 	}
-	r := &slowSourceHosts{delay: 20 * time.Millisecond}
+	r := &slowSourceHosts{delay: 5 * time.Millisecond}
 	l := newSourceLookups(r, NewSendingSources(nil, nil, hosts, nil), nil, nil)
-	start := time.Now()
 	e := l.get(context.Background())
-	if r.most != maxParallelHostLookups {
-		t.Errorf("%d lookups at the same time, want %d", r.most, maxParallelHostLookups)
-	}
-	if elapsed := time.Since(start); elapsed >= 10*r.delay {
-		t.Errorf("the lookups took %v, as long as one after another", elapsed)
+	if r.most != 1 {
+		t.Errorf("%d lookups at the same time, want 1", r.most)
 	}
 	var want []netip.Addr
 	for i := range 10 {

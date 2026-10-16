@@ -60,6 +60,7 @@ var defaultRecheckDays = map[string]int{
 	categoryDomainNotFound:        7,
 	categoryDeliveryDelay:         7,
 	categoryDNSFailureExternal:    7,
+	categoryDNSLookupFailure:      3,
 	categoryAuthFailure:           3,
 	categoryContentRejected:       3,
 	categoryMessageTooLarge:       3,

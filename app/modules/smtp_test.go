@@ -1,8 +1,12 @@
 package modules
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"mime"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -208,6 +212,247 @@ func TestMailLocale(t *testing.T) {
 		labels, err := loadCategoryLabels(lang)
 		if err != nil || len(labels) != len(KnownCategories()) {
 			t.Errorf("%s category labels: %d (err %v)", lang, len(labels), err)
+		}
+	}
+}
+
+// shortSMTPTimeouts shortens every per-command timeout for a test.
+func shortSMTPTimeouts(t *testing.T, d time.Duration) {
+	t.Helper()
+	saved := smtpTimeouts
+	smtpTimeouts.greeting, smtpTimeouts.command, smtpTimeouts.mail, smtpTimeouts.rcpt = d, d, d, d
+	smtpTimeouts.dataInit, smtpTimeouts.dataBlock, smtpTimeouts.dataEnd = d, d, d
+	t.Cleanup(func() { smtpTimeouts = saved })
+}
+
+// TestSMTPTimeoutsOfRFC5321 checks the per-command timeouts against RFC 5321
+// 4.5.3.2.
+func TestSMTPTimeoutsOfRFC5321(t *testing.T) {
+	for name, tc := range map[string]struct{ got, want time.Duration }{
+		"greeting": {smtpTimeouts.greeting, 5 * time.Minute}, "mail": {smtpTimeouts.mail, 5 * time.Minute},
+		"rcpt": {smtpTimeouts.rcpt, 5 * time.Minute}, "data initiation": {smtpTimeouts.dataInit, 2 * time.Minute},
+		"data block": {smtpTimeouts.dataBlock, 3 * time.Minute}, "data termination": {smtpTimeouts.dataEnd, 10 * time.Minute},
+		"other commands": {smtpTimeouts.command, 5 * time.Minute},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: %v, want %v", name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestSendMailPerCommandTimeouts checks that each command has a timeout of
+// its reply and the session none: a slow server whose every reply comes
+// within the timeout of its command delivers the mail although the whole
+// session takes many times that long, while a server that does not answer
+// one command fails at that command after its timeout.
+func TestSendMailPerCommandTimeouts(t *testing.T) {
+	const timeout = 400 * time.Millisecond
+	shortSMTPTimeouts(t, timeout)
+	srv := startFakeSMTP(t)
+	srv.SetDelay(100 * time.Millisecond) // per reply line: EHLO (three lines) stays within the timeout
+	cfg := SMTPConfig{Host: srv.Host(), Port: srv.Port(), Security: IMAPSecurityNone, From: "mailcare@example.test"}
+	var to []string
+	for i := range 10 {
+		to = append(to, fmt.Sprintf("r%d@example.test", i))
+	}
+	start := time.Now()
+	if err := SendMail(context.Background(), cfg, cfg.From, to, "slow", "body"); err != nil {
+		t.Fatalf("slow server: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 3*timeout {
+		t.Errorf("the slow session took %v, want longer than several command timeouts", elapsed)
+	}
+	if len(srv.Messages()) != 1 {
+		t.Fatalf("messages %d", len(srv.Messages()))
+	}
+	for stallOn, want := range map[string]string{"MAIL": "MAIL FROM", "RCPT": "RCPT TO", "DATA": "DATA", ".": "send message"} {
+		srv := startFakeSMTP(t)
+		srv.SetStallOn(stallOn)
+		cfg := SMTPConfig{Host: srv.Host(), Port: srv.Port(), Security: IMAPSecurityNone, From: "mailcare@example.test"}
+		start := time.Now()
+		err := SendMail(context.Background(), cfg, cfg.From, []string{"a@example.test"}, "x", "y")
+		elapsed := time.Since(start)
+		if err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("stalled on %s: %v, want an error of %s", stallOn, err, want)
+		}
+		if elapsed < timeout || elapsed > 10*timeout {
+			t.Errorf("stalled on %s: gave up after %v, want the command timeout %v", stallOn, elapsed, timeout)
+		}
+	}
+}
+
+// TestSendMailCanceled checks that a cancellation stops a stalled session.
+func TestSendMailCanceled(t *testing.T) {
+	srv := startFakeSMTP(t)
+	srv.SetStallOn("MAIL")
+	cfg := SMTPConfig{Host: srv.Host(), Port: srv.Port(), Security: IMAPSecurityNone, From: "mailcare@example.test"}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	if err := SendMail(ctx, cfg, cfg.From, []string{"a@example.test"}, "x", "y"); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled session: %v", err)
+	}
+}
+
+// TestSendMailTimeoutOfEachCommand checks that each command waits for its
+// reply as long as the timeout of that command in RFC 5321 4.5.3.2 allows:
+// with that timeout long and every other one short, a server that does not
+// answer the command fails it only after the long one.
+func TestSendMailTimeoutOfEachCommand(t *testing.T) {
+	const short, long = 150 * time.Millisecond, 900 * time.Millisecond
+	for _, tc := range []struct {
+		stallOn, want string
+		timeout       *time.Duration
+	}{
+		{"EHLO", "EHLO", &smtpTimeouts.command},
+		{"MAIL", "MAIL FROM", &smtpTimeouts.mail},
+		{"RCPT", "RCPT TO", &smtpTimeouts.rcpt},
+		{"DATA", "DATA", &smtpTimeouts.dataInit},
+		{".", "send message", &smtpTimeouts.dataEnd},
+	} {
+		t.Run(tc.stallOn, func(t *testing.T) {
+			shortSMTPTimeouts(t, short)
+			*tc.timeout = long
+			srv := startFakeSMTP(t)
+			srv.SetStallOn(tc.stallOn)
+			cfg := SMTPConfig{Host: srv.Host(), Port: srv.Port(), Security: IMAPSecurityNone, From: "mailcare@example.test"}
+			start := time.Now()
+			err := SendMail(context.Background(), cfg, cfg.From, []string{"a@example.test"}, "x", "y")
+			elapsed := time.Since(start)
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Errorf("stalled on %s: %v, want an error of %s", tc.stallOn, err, tc.want)
+			}
+			if elapsed < long*3/4 || elapsed > long+3*time.Second {
+				t.Errorf("stalled on %s: gave up after %v, want the timeout of the command %v", tc.stallOn, elapsed, long)
+			}
+		})
+	}
+}
+
+// TestSendMailGreetingTimeout checks that a server that accepts the
+// connection and never greets fails the session after the greeting timeout.
+func TestSendMailGreetingTimeout(t *testing.T) {
+	const short, long = 150 * time.Millisecond, 900 * time.Millisecond
+	shortSMTPTimeouts(t, short)
+	smtpTimeouts.greeting = long
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			accepted <- conn
+		}
+	}()
+	t.Cleanup(func() {
+		select {
+		case conn := <-accepted:
+			conn.Close()
+		default:
+		}
+	})
+	cfg := SMTPConfig{Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, Security: IMAPSecurityNone, From: "mailcare@example.test"}
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- SendMail(context.Background(), cfg, cfg.From, []string{"a@example.test"}, "x", "y") }()
+	select {
+	case err := <-done:
+		elapsed := time.Since(start)
+		if err == nil || !strings.HasPrefix(err.Error(), "SMTP greeting") {
+			t.Errorf("silent server: %v, want an error of the greeting", err)
+		}
+		if elapsed < long*3/4 || elapsed > long+3*time.Second {
+			t.Errorf("silent server: gave up after %v, want the greeting timeout %v", elapsed, long)
+		}
+	case <-time.After(long + 5*time.Second):
+		t.Fatal("the session waited for the greeting without a time limit")
+	}
+}
+
+// TestSendMailDataBlockPerWrite checks that the data block timeout bounds
+// each write of the message, not the whole message: a server that reads a
+// large message slowly, but never stalls a write for the timeout, receives
+// it although the transfer takes several times that long.
+func TestSendMailDataBlockPerWrite(t *testing.T) {
+	const timeout = 600 * time.Millisecond
+	shortSMTPTimeouts(t, timeout)
+	smtpTimeouts.dataEnd = 10 * time.Second // the server still reads what the buffers hold after the last write
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	received := make(chan int, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// A fixed receive window: the message cannot sit in the buffers.
+		_ = conn.(*net.TCPConn).SetReadBuffer(256 << 10)
+		slowSMTPSink(conn, received)
+	}()
+	body := strings.Repeat(strings.Repeat("x", 76)+"\n", 16<<20/77)
+	cfg := SMTPConfig{Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port, Security: IMAPSecurityNone, From: "mailcare@example.test"}
+	start := time.Now()
+	if err := SendMail(context.Background(), cfg, cfg.From, []string{"a@example.test"}, "large", body); err != nil {
+		t.Fatalf("slowly read message: %v after %v", err, time.Since(start))
+	}
+	if elapsed := time.Since(start); elapsed < 3*timeout {
+		t.Errorf("the transfer took %v, want longer than several data block timeouts", elapsed)
+	}
+	select {
+	case n := <-received:
+		if n < len(body) {
+			t.Errorf("the server received %d bytes, want the whole message (%d bytes of body)", n, len(body))
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the server did not receive the message")
+	}
+}
+
+// slowSMTPSink serves one SMTP session that accepts every command and reads
+// the data block in pieces of at most 256 KiB, pausing 30 ms after each
+// (a blocked write waits well within its timeout, the whole message far
+// beyond it), and sends the size of the data block on received.
+func slowSMTPSink(conn net.Conn, received chan<- int) {
+	r := bufio.NewReader(conn)
+	reply := func(line string) { _, _ = conn.Write([]byte(line + "\r\n")) }
+	reply("220 slow ESMTP")
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		switch cmd := strings.ToUpper(strings.TrimSpace(line)); {
+		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
+			reply("250 slow")
+		case cmd == "DATA":
+			reply("354 go ahead")
+			buf := make([]byte, 256<<10)
+			var tail []byte
+			n := 0
+			for !strings.HasSuffix(string(tail), "\r\n.\r\n") {
+				k, err := r.Read(buf)
+				if err != nil {
+					return
+				}
+				n += k
+				tail = append(tail, buf[:k]...)
+				if len(tail) > 5 {
+					tail = tail[len(tail)-5:]
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			received <- n
+			reply("250 2.0.0 queued")
+		case cmd == "QUIT":
+			reply("221 bye")
+			return
+		default:
+			reply("250 ok")
 		}
 	}
 }

@@ -26,6 +26,7 @@ type SendingSources struct {
 	prefixes   []netip.Prefix
 	hosts      map[string]bool
 	resolved   []netip.Addr
+	index      addrIndex       // prefixes and resolved, for matchAddr
 	otherHosts map[string]bool // SMTP hosts of the other mailboxes: matched as text and looked up, not configured for this one
 	extraHosts map[string]bool // host names of SPF records: matched as text, no configured host name
 	configured bool            // any non-blank entry was given in ipv4, ipv6 or hosts
@@ -65,6 +66,7 @@ func NewSendingSources(ipv4, ipv6, hosts []string, resolved []netip.Addr) Sendin
 			o.resolved = append(o.resolved, a.Unmap().WithZone(""))
 		}
 	}
+	o.index = newAddrIndex(o.prefixes, o.resolved)
 	return o
 }
 
@@ -156,13 +158,16 @@ func (o SendingSources) withResolved(addrs []netip.Addr, prefixes []netip.Prefix
 	}
 	o.extraHosts = extra
 	resolved := make([]netip.Addr, 0, len(o.resolved)+len(addrs))
-	resolved = append(resolved, o.resolved...)
+	known := make(map[netip.Addr]bool, len(o.resolved)+len(addrs))
+	for _, a := range o.resolved {
+		resolved, known[a] = append(resolved, a), true
+	}
 	for _, a := range addrs {
 		if !a.IsValid() {
 			continue
 		}
-		if a = a.Unmap().WithZone(""); !slices.Contains(resolved, a) {
-			resolved = append(resolved, a)
+		if a = a.Unmap().WithZone(""); !known[a] {
+			resolved, known[a] = append(resolved, a), true
 		}
 	}
 	all := make([]netip.Prefix, 0, len(o.prefixes)+len(prefixes))
@@ -179,6 +184,7 @@ func (o SendingSources) withResolved(addrs []netip.Addr, prefixes []netip.Prefix
 		}
 	}
 	o.resolved, o.prefixes = resolved, all
+	o.index = newAddrIndex(all, resolved)
 	return o
 }
 
@@ -192,7 +198,7 @@ func (o SendingSources) withResolved(addrs []netip.Addr, prefixes []netip.Prefix
 // the grouping matches through sourceMatcher, which also resolves names.
 func (o SendingSources) Match(reportingMTA string) bool {
 	m := sourceMatcher{sources: o}
-	matched, _ := m.match(context.Background(), reportingMTA, false)
+	matched, _ := m.match(context.Background(), reportingMTA)
 	return matched
 }
 
@@ -214,18 +220,6 @@ func (o SendingSources) matchMTA(reportingMTA string) bool {
 	return o.matchHost(normalizeHostName(host))
 }
 
-// Bounds of the work on the Received headers of one returned original
-// (2.6). Past one of them the headers are not judged, and the backscatter
-// rule does not take the notice (fail-safe): an original made of many or
-// huge headers full of addresses would otherwise make the comparison with
-// many prefixes cost seconds for every message and pass. Ordinary mail stays
-// far below them (MTAs refuse mail with more hops than about 100 as a loop).
-const (
-	maxReceivedLines     = 100     // Received headers of the original
-	maxReceivedLineBytes = 8 << 10 // bytes of one Received header (folded onto one line)
-	maxReceivedAddrs     = 64      // distinct IP literals of one Received header
-)
-
 // MatchReceived reports whether one Received header of a returned message
 // (folded onto one line) shows one of the sending sources (2.6), without
 // resolving anything and without any network. An IP literal of the line
@@ -234,63 +228,109 @@ const (
 // resolved addresses given to NewSendingSources; a host name matches when it is
 // one of the configured host names as text (lower-cased, without a trailing
 // dot). receivedSources says which IP literals and host names of the line
-// are looked at. A line past the bounds (maxReceivedLineBytes,
-// maxReceivedAddrs) is not judged and counts as showing a sending source, so that the
-// rule that asks does not take the notice. With an empty configuration
-// nothing matches, unlike Match: the rule that asks does not apply then (it
-// needs a host name anyway).
+// are looked at. Every header is judged whatever its length: it is read in
+// one pass (no regular expression), and every distinct address is compared
+// with the prefixes once. With an empty configuration nothing matches,
+// unlike Match: the rule that asks does not apply then (it needs a host
+// name anyway).
 func (o SendingSources) MatchReceived(line string) bool {
-	matched, judged := o.matchReceivedLines([]string{line})
-	return matched || !judged
+	return o.matchReceivedLines([]string{line})
 }
 
 // matchReceivedLines reports whether any of the Received headers of a
-// returned original shows one of the sending sources (see
-// MatchReceived), and whether the headers could be judged at all: judged is
-// false when there are more than maxReceivedLines of them or one is past the
-// bounds of receivedSources. Every distinct address is compared once. With
-// an empty configuration nothing matches.
-func (o SendingSources) matchReceivedLines(lines []string) (matched, judged bool) {
+// returned original shows one of the sending sources (see MatchReceived).
+// Every distinct address is compared once. With an empty configuration
+// nothing matches.
+func (o SendingSources) matchReceivedLines(lines []string) bool {
 	if o.Empty() {
-		return false, true
-	}
-	if len(lines) > maxReceivedLines {
-		return false, false
+		return false
 	}
 	seen := map[netip.Addr]bool{}
 	for _, line := range lines {
-		addrs, hosts, ok := receivedSources(line)
-		if !ok {
-			return false, false
-		}
+		addrs, hosts := receivedSources(line)
 		for _, a := range addrs {
 			if seen[a] {
 				continue
 			}
 			seen[a] = true
 			if o.matchAddr(a) {
-				return true, true
+				return true
 			}
 		}
 		for _, h := range hosts {
 			if o.matchHost(h) {
-				return true, true
+				return true
 			}
 		}
 	}
-	return false, true
+	return false
 }
 
 // matchAddr reports whether an unmapped address lies in a configured prefix
-// (Prefix.Contains never matches across the address families) or is one of
-// the resolved addresses given to NewSendingSources.
+// (never across the address families) or is one of the resolved addresses
+// (addrIndex: the cost does not grow with the number of prefixes).
 func (o SendingSources) matchAddr(addr netip.Addr) bool {
-	for _, p := range o.prefixes {
-		if p.Contains(addr) {
+	return o.index.contains(addr)
+}
+
+// addrIndex finds an address among prefixes and single addresses with one
+// map lookup per prefix length in use (at most 33 for IPv4 and 129 for
+// IPv6), whatever their number: the SPF records of the monitored domains
+// can list many ranges, and a Received header of a returned original many
+// addresses, so comparing every address with every range would grow with
+// the product of both.
+type addrIndex struct {
+	prefixes           map[netip.Prefix]bool // masked
+	lengths4, lengths6 []int                 // the prefix lengths in use per family
+	addrs              map[netip.Addr]bool
+}
+
+// newAddrIndex indexes the prefixes and the (unmapped) addresses.
+func newAddrIndex(prefixes []netip.Prefix, addrs []netip.Addr) addrIndex {
+	x := addrIndex{prefixes: make(map[netip.Prefix]bool, len(prefixes)), addrs: make(map[netip.Addr]bool, len(addrs))}
+	used4, used6 := map[int]bool{}, map[int]bool{}
+	for _, p := range prefixes {
+		if !p.IsValid() {
+			continue
+		}
+		p = p.Masked()
+		x.prefixes[p] = true
+		if p.Addr().Is4() {
+			used4[p.Bits()] = true
+		} else {
+			used6[p.Bits()] = true
+		}
+	}
+	for bits := range used4 {
+		x.lengths4 = append(x.lengths4, bits)
+	}
+	for bits := range used6 {
+		x.lengths6 = append(x.lengths6, bits)
+	}
+	slices.Sort(x.lengths4)
+	slices.Sort(x.lengths6)
+	for _, a := range addrs {
+		x.addrs[a] = true
+	}
+	return x
+}
+
+// contains reports whether an unmapped address is one of the addresses or
+// lies in one of the prefixes of the same family.
+func (x addrIndex) contains(addr netip.Addr) bool {
+	if x.addrs[addr] {
+		return true
+	}
+	lengths := x.lengths4
+	if addr.Is6() {
+		lengths = x.lengths6
+	}
+	for _, bits := range lengths {
+		if p, err := addr.Prefix(bits); err == nil && x.prefixes[p] {
 			return true
 		}
 	}
-	return slices.Contains(o.resolved, addr)
+	return false
 }
 
 // receivedToken is one word of a Received header and the depth of the
@@ -355,25 +395,16 @@ func receivedTokens(line string) []receivedToken {
 //     Exim, "HELO mail.example.jp" of qmail).
 //
 // Other words (the queue id, the protocol, the recipient, the time stamp)
-// are not looked at. The addresses are returned without repeats. ok is
-// false, and nothing is returned, for a line longer than
-// maxReceivedLineBytes (not even split into words) or one that names more
-// than maxReceivedAddrs distinct addresses: such a line is not judged.
-// Unreadable input yields nothing; it never fails.
-func receivedSources(line string) (addrs []netip.Addr, hosts []string, ok bool) {
-	if len(line) > maxReceivedLineBytes {
-		return nil, nil, false
-	}
-	tooMany := false
+// are not looked at. The addresses are returned without repeats. The line
+// is read in one pass, so its length costs linear time. Unreadable input
+// yields nothing; it never fails.
+func receivedSources(line string) (addrs []netip.Addr, hosts []string) {
+	seen := map[netip.Addr]bool{}
 	addAddr := func(a netip.Addr) {
-		if tooMany || slices.Contains(addrs, a) {
-			return
+		if !seen[a] {
+			seen[a] = true
+			addrs = append(addrs, a)
 		}
-		if len(addrs) == maxReceivedAddrs {
-			tooMany = true
-			return
-		}
-		addrs = append(addrs, a)
 	}
 	addHost := func(s string) {
 		if s = normalizeHostName(s); s != "" && !strings.ContainsAny(s, "[]") {
@@ -390,9 +421,6 @@ func receivedSources(line string) (addrs []netip.Addr, hosts []string, ok bool) 
 	}
 	tokens := receivedTokens(line)
 	for i, t := range tokens {
-		if tooMany {
-			return nil, nil, false
-		}
 		for _, inner := range bracketed(t.text) {
 			if a, ok := ipLiteral(inner); ok {
 				addAddr(a)
@@ -424,10 +452,7 @@ func receivedSources(line string) (addrs []netip.Addr, hosts []string, ok bool) 
 			}
 		}
 	}
-	if tooMany {
-		return nil, nil, false
-	}
-	return addrs, hosts, true
+	return addrs, hosts
 }
 
 // bracketed returns the contents of every [...] pair of a word.

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
-import { IGNORE_REASONS, MAX_STATE_NOTE_LENGTH, RESOLVE_ACTIONS } from '../../types';
+import { IGNORE_REASONS, RESOLVE_ACTIONS } from '../../types';
 import { Button } from '../ui/Button';
 import { RadioGroupField, TextareaField } from '../ui/Field';
 
@@ -99,7 +99,6 @@ export function GroupStateDialog({ state, group, busy = false, onConfirm, onCanc
                             value={note}
                             onChange={e => setNote(e.target.value)}
                             rows={4}
-                            maxLength={MAX_STATE_NOTE_LENGTH}
                             disabled={busy}
                         />
                     )}

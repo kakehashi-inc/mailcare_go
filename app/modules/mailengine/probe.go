@@ -20,17 +20,13 @@ import (
 // may hold other mail too (a dedicated one is recommended, not required),
 // so every step is limited to the probe mails and leaves the rest alone:
 //
-//   - The server is asked for the subjects that carry one of the given
-//     tokens (16 hex digits; UID SEARCH SINCE <day> with SUBJECT "<token>"
-//     ORed in batches of 50, every list within its SINCE day, no limit), and
-//     when candidates are asked for, for the subjects that carry
-//     "[<identifier>:" that arrived before a day (UID SEARCH BEFORE <day>
-//     SUBJECT, no SINCE; at most Max of them are read, the oldest UIDs
-//     first, so the work stays bounded; the caller bounds how many it
-//     deletes). Only SUBJECT, SINCE and BEFORE are used: some servers answer
-//     nothing for a search on a custom header. Only UID, INTERNALDATE,
-//     ENVELOPE and the Subject and probe header fields are read, with
-//     BODY.PEEK, so no flag (\Seen) changes.
+//   - One listing per check: the server is asked once for the subjects that
+//     carry the mark of the probe subject form (UID SEARCH SUBJECT "<mark>",
+//     the whole folder, every identifier), and the messages found are read
+//     once. Only SUBJECT is used: some servers answer nothing for a search
+//     on a custom header. Only UID, INTERNALDATE, ENVELOPE and the Subject
+//     and probe header fields are read, with BODY.PEEK, so no flag (\Seen)
+//     changes.
 //   - A message counts as a probe mail only when its subject carries
 //     "[<identifier>:<token>]" (anywhere: a relay may put "[SPAM]" in
 //     front; the raw Subject field, then its RFC 2047 decoding, then the
@@ -60,14 +56,6 @@ type ProbeMessage struct {
 // the server.
 type ProbeRecorder func(found []ProbeMessage) (remove map[uint32]bool, err error)
 
-// ProbeTokens is one list of tokens to look for: the subjects carrying one
-// of them that arrived on or after the day of Since (IMAP SINCE compares
-// the arrival date on the server; zero: no bound).
-type ProbeTokens struct {
-	Tokens []string
-	Since  time.Time
-}
-
 // probeSubjectRE finds "[<identifier>:<token>]" in a subject and captures
 // the token.
 var probeSubjectRE = regexp.MustCompile(`\[([A-Za-z0-9._-]{1,16}):([0-9a-f]{16})\]`)
@@ -91,66 +79,16 @@ func headerFields(raw []byte) map[string][]string {
 	return out
 }
 
-// ProbeCandidates asks also for the subjects that carry Prefix
-// ("[<identifier>:") and arrived before the day of Before (no SINCE: the
-// whole folder before that day); at most Max of them are read (the lowest
-// UIDs: the oldest first); zero Max leaves them out.
-type ProbeCandidates struct {
-	Prefix string
-	Before time.Time
-	Max    int
-}
-
-// probeTokenBatch bounds how many tokens one SEARCH names.
-const probeTokenBatch = 50
-
-// subjectAny matches the subjects that carry one of the values (a balanced
-// tree of ORs, so the command stays shallow). go-imap sends a "Subject"
-// header criterion as the SUBJECT key, not as HEADER.
-func subjectAny(values []string) imap.SearchCriteria {
-	if len(values) == 1 {
-		return imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: values[0]}}}
+// searchProbeUIDs lists the messages whose subject carries mark (the probe
+// subject form; one UID SEARCH over the whole folder) and returns their
+// UIDs, sorted.
+func searchProbeUIDs(ctx context.Context, s *imapSession, mark string) ([]imap.UID, error) {
+	criteria := imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: mark}}}
+	result, err := s.client.UIDSearch(&criteria, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("search: %w", ctxErr(ctx, err))
 	}
-	mid := len(values) / 2
-	return imap.SearchCriteria{Or: [][2]imap.SearchCriteria{{subjectAny(values[:mid]), subjectAny(values[mid:])}}}
-}
-
-// searchProbeUIDs runs one SEARCH per probeTokenBatch tokens of every list
-// and one for the candidates, and returns the UIDs found (sorted, without
-// duplicates).
-func searchProbeUIDs(ctx context.Context, s *imapSession, lists []ProbeTokens, cand ProbeCandidates) ([]imap.UID, error) {
-	seen := map[imap.UID]bool{}
-	var uids []imap.UID
-	if cand.Max > 0 && cand.Prefix != "" {
-		criteria := imap.SearchCriteria{Before: cand.Before,
-			Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: cand.Prefix}}}
-		result, err := s.client.UIDSearch(&criteria, nil).Wait()
-		if err != nil {
-			return nil, fmt.Errorf("search: %w", ctxErr(ctx, err))
-		}
-		list := result.AllUIDs()
-		slices.Sort(list)
-		for _, uid := range list[:min(len(list), cand.Max)] {
-			seen[uid] = true
-			uids = append(uids, uid)
-		}
-	}
-	for _, list := range lists {
-		for start := 0; start < len(list.Tokens); start += probeTokenBatch {
-			criteria := subjectAny(list.Tokens[start:min(start+probeTokenBatch, len(list.Tokens))])
-			criteria.Since = list.Since
-			result, err := s.client.UIDSearch(&criteria, nil).Wait()
-			if err != nil {
-				return nil, fmt.Errorf("search: %w", ctxErr(ctx, err))
-			}
-			for _, uid := range result.AllUIDs() {
-				if !seen[uid] {
-					seen[uid] = true
-					uids = append(uids, uid)
-				}
-			}
-		}
-	}
+	uids := result.AllUIDs()
 	slices.Sort(uids)
 	return uids, nil
 }
@@ -186,19 +124,19 @@ func probeMessageToken(envelopeSubject string, section []byte, header string) (s
 	return "", ""
 }
 
-// CheckProbeServer searches the folder of the probe server for the probe
-// mails of the given token lists and the candidates (see above), hands the
-// probe mails found to record (in UID order: the oldest first) and deletes
-// the UIDs record returns. It returns the probe mails deleted. A failed
-// deletion is returned with ErrProbeDelete wrapped, after record ran, with
-// the probe mails of the batches deleted before it.
-func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, header string, lists []ProbeTokens,
-	cand ProbeCandidates, record ProbeRecorder) (deleted []ProbeMessage, err error) {
+// CheckProbeServer lists the probe mails of the folder of the probe server
+// (the subjects that carry mark; see above), hands them to record (in UID
+// order: the oldest first) and deletes the UIDs record returns. It returns
+// the probe mails deleted. A failed deletion is returned with
+// ErrProbeDelete wrapped, after record ran, with the probe mails of the
+// batches deleted before it.
+func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, header, mark string,
+	record ProbeRecorder) (deleted []ProbeMessage, err error) {
 	if conn == nil {
 		return nil, errors.New("mailengine: probe server is nil")
 	}
-	if header == "" {
-		return nil, errors.New("mailengine: probe header is empty")
+	if header == "" || mark == "" {
+		return nil, errors.New("mailengine: probe header or subject mark is empty")
 	}
 	s, err := connect(ctx, conn, password)
 	if err != nil {
@@ -208,7 +146,7 @@ func CheckProbeServer(ctx context.Context, conn *models.Mailbox, password, heade
 	if _, err := s.selectFolder(ctx, conn.Folder); err != nil {
 		return nil, err
 	}
-	uids, err := searchProbeUIDs(ctx, s, lists, cand)
+	uids, err := searchProbeUIDs(ctx, s, mark)
 	if err != nil {
 		return nil, err
 	}

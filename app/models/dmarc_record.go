@@ -120,7 +120,7 @@ func groupDMARCRecords(db Execer, groupKey string) ([]*GroupBounce, error) {
 			return nil, err
 		}
 		gb.Date = date.UTC()
-		gb.ID = r.MessageID
+		gb.MessageID = r.MessageID
 		gb.GroupKey = r.GroupKey
 		gb.CategoryRule = r.CategoryRule
 		gb.PatternKey = r.PatternKey

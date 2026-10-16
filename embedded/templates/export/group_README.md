@@ -58,7 +58,7 @@ Times are RFC 3339 strings in UTC; a time or value that is not known is
   "group":    Group,
   "history":  [ { "state", "reason", "note", "changed_by", "changed_at" } ],
   "stats":    { "recipients": [string], "remote_ips": [string], "remote_mtas": [string] },
-  "messages": [ { "message": Message, "bounce": Bounce | null,
+  "messages": [ { "message": Message, "bounce": Bounce | null, "bounces": [Bounce],
                   "dmarc_records": [DMARCRecord], "files": [string] } ]
 }
 ```
@@ -71,20 +71,23 @@ Times are RFC 3339 strings in UTC; a time or value that is not known is
 - `stats`: the distinct failed recipient addresses, remote IPs (of the
   bounces, plus the sending IPs of the DMARC records) and remote MTAs of the
   group, sorted.
-- `messages`: every mail of the group, newest first. `bounce` is set for a
-  bounce notice and `null` for a DMARC aggregate report mail;
+- `messages`: every mail of the group, newest first. A bounce notice that
+  reports several failed recipients has one Bounce per failed recipient;
+  `bounces` holds those filed into this group, in the order of the notice
+  (empty for a DMARC aggregate report mail), and `bounce` is the first of
+  them (`null` for a DMARC aggregate report mail);
   `dmarc_records` holds the records of that report that belong to this group
   (empty for a bounce). `files` lists the paths of the mail's files relative
   to the folder of this README (`mails/...`).
-- Relations: `message.id` = `bounce.id` = `dmarc_records[].message_id`;
-  `bounce.group_key` and `dmarc_records[].group_key` = `group.group_key`.
+- Relations: `message.id` = `bounces[].message_id` = `dmarc_records[].message_id`;
+  `bounces[].group_key` and `dmarc_records[].group_key` = `group.group_key`.
 
 ### Group
 
 | Field | Meaning |
 | --- | --- |
 | `group_key` | 16 hex digits identifying the group |
-| `category` | cause: `ip_blocked`, `rate_limited`, `auth_failure`, `sender_blocked`, `content_rejected`, `message_too_large`, `server_config`, `dns_resolver_failure`, `unknown_failure`, `dmarc_spf_missing`, `dmarc_dkim_failed`, `dmarc_not_authenticated` (the sending side acts), `user_unknown`, `mailbox_full`, `mailbox_disabled`, `domain_not_found`, `dns_failure_external`, `delivery_delay` (recipient side or transient) |
+| `category` | cause: `ip_blocked`, `rate_limited`, `auth_failure`, `sender_blocked`, `content_rejected`, `message_too_large`, `server_config`, `dns_resolver_failure`, `dns_lookup_failure`, `unknown_failure`, `dmarc_spf_missing`, `dmarc_dkim_failed`, `dmarc_not_authenticated` (the sending side acts), `user_unknown`, `mailbox_full`, `mailbox_disabled`, `domain_not_found`, `dns_failure_external`, `delivery_delay` (recipient side or transient) |
 | `unit_value` | what to act on: a sending IP, a sender address or a domain (`""` when the category has none) |
 | `authority` | who made the decision: a blocklist, the receiving domain, or for `unknown_failure` the status code and diagnostic |
 | `actionable` | `true` when the sending side can act on it; `false` for recipient-side problems |
@@ -111,14 +114,15 @@ Times are RFC 3339 strings in UTC; a time or value that is not known is
 | `text_count`, `html_count` | number of body section files of each kind |
 | `body_source` | body the detection read: `text`, `html` or `""` |
 | `classified`, `is_bounce`, `bounce_kind`, `rule` | detection outcome; kind `failed`, `delayed`, `auto_reply`, `other`, `report` (DMARC), `junk` or `""`; name of the detection rule that matched |
-| `group_key` | group of its bounce (`""` for a DMARC report mail) |
+| `group_key` | group of its first failed recipient (`""` for a DMARC report mail) |
 | `server_deleted_at` | when MailCare deleted it from the IMAP server |
 
 ### Bounce (the `bounces` index record)
 
 | Field | Meaning |
 | --- | --- |
-| `id` | = `message.id` |
+| `id` | row id |
+| `message_id`, `recipient_index` | the mail (`message.id`) and the position of the failed recipient in the notice (0 = the first) |
 | `group_key`, `pattern_key`, `category_rule` | group, pattern inside the group (status code, template, remote MTA, source kind), rule that chose the category |
 | `recipient`, `recipient_domain` | the recipient the delivery failed for |
 | `action`, `status_code`, `smtp_code` | DSN action (`failed`, `delayed`, ...), enhanced status code, SMTP reply code |

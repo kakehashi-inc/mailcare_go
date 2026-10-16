@@ -223,8 +223,8 @@ func halfWidthKatakana(b []byte) int {
 }
 
 // htmlMetaCharsetRe finds <meta charset="..."> or
-// <meta http-equiv="Content-Type" content="text/html; charset=..."> in the
-// head of an HTML document.
+// <meta http-equiv="Content-Type" content="text/html; charset=..."> in an
+// HTML document.
 var htmlMetaCharsetRe = regexp.MustCompile(`(?i)<meta[^>]+charset\s*=\s*["']?\s*([a-z0-9._:\-]+)`)
 
 // decodeBodyBytes converts the bytes of a text part that go-message did not
@@ -237,11 +237,9 @@ func decodeBodyBytes(data []byte, label string, isHTML bool) []byte {
 		return data
 	}
 	if isHTML {
-		head := data
-		if len(head) > 4096 {
-			head = head[:4096]
-		}
-		if m := htmlMetaCharsetRe.FindSubmatch(head); m != nil {
+		// The first declaration counts wherever it is: a browser honours a
+		// <meta charset> met while parsing as well (HTML Standard 13.2.3.4).
+		if m := htmlMetaCharsetRe.FindSubmatch(data); m != nil {
 			return decodeBytes(string(m[1]), data)
 		}
 	}

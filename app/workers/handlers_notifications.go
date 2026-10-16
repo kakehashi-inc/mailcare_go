@@ -31,7 +31,7 @@ type NotificationSettingsDTO struct {
 	PublicBaseURL      string                     `json:"public_base_url"`
 	EffectiveBaseURL   string                     `json:"effective_base_url"`
 	NotifyEnabled      bool                       `json:"notify_enabled"`
-	NotifyTime         string                     `json:"notify_time"`
+	NotifyTimes        []string                   `json:"notify_times"`
 	NotifyIntervalDays int                        `json:"notify_interval_days"`
 	NotifyUserIDs      []int64                    `json:"notify_user_ids"`
 	LastSentAt         *string                    `json:"last_sent_at"`
@@ -42,17 +42,17 @@ type NotificationSettingsDTO struct {
 // notificationSettingsInput mirrors NotificationSettingsInput of the design
 // (absent fields are left unchanged; an empty password is kept).
 type notificationSettingsInput struct {
-	SMTPHost           *string  `json:"smtp_host"`
-	SMTPPort           *int     `json:"smtp_port"`
-	SMTPSecurity       *string  `json:"smtp_security"`
-	SMTPUsername       *string  `json:"smtp_username"`
-	SMTPPassword       *string  `json:"smtp_password"`
-	SMTPFrom           *string  `json:"smtp_from"`
-	PublicBaseURL      *string  `json:"public_base_url"`
-	NotifyEnabled      *bool    `json:"notify_enabled"`
-	NotifyTime         *string  `json:"notify_time"`
-	NotifyIntervalDays *int     `json:"notify_interval_days"`
-	NotifyUserIDs      *[]int64 `json:"notify_user_ids"`
+	SMTPHost           *string   `json:"smtp_host"`
+	SMTPPort           *int      `json:"smtp_port"`
+	SMTPSecurity       *string   `json:"smtp_security"`
+	SMTPUsername       *string   `json:"smtp_username"`
+	SMTPPassword       *string   `json:"smtp_password"`
+	SMTPFrom           *string   `json:"smtp_from"`
+	PublicBaseURL      *string   `json:"public_base_url"`
+	NotifyEnabled      *bool     `json:"notify_enabled"`
+	NotifyTimes        *[]string `json:"notify_times"`
+	NotifyIntervalDays *int      `json:"notify_interval_days"`
+	NotifyUserIDs      *[]int64  `json:"notify_user_ids"`
 }
 
 // notificationSettingsDTO builds the DTO from the saved settings.
@@ -76,7 +76,7 @@ func (c *core) notificationSettingsDTO() (*NotificationSettingsDTO, error) {
 	dto := &NotificationSettingsDTO{
 		SMTPHost: s.SMTP.Host, SMTPPort: s.SMTP.Port, SMTPSecurity: s.SMTP.Security, SMTPUsername: s.SMTP.Username,
 		SMTPPasswordSet: s.SMTPPasswordSet, SMTPFrom: s.SMTP.From, PublicBaseURL: s.PublicBaseURL,
-		EffectiveBaseURL: modules.BaseURLFor(s, c.webListen, c.webPort), NotifyEnabled: s.Enabled, NotifyTime: s.Time,
+		EffectiveBaseURL: modules.BaseURLFor(s, c.webListen, c.webPort), NotifyEnabled: s.Enabled, NotifyTimes: s.Times,
 		NotifyIntervalDays: s.IntervalDays, NotifyUserIDs: ids, LastSentAt: nullTimeString(s.LastSentAt), Recipients: recipients,
 	}
 	if next, ok := modules.NextNotifyAt(time.Now(), s); ok {
@@ -103,7 +103,7 @@ func (c *core) handleUpdateNotificationSettings(w http.ResponseWriter, r *http.R
 	in := &modules.NotificationInput{
 		SMTPHost: body.SMTPHost, SMTPPort: body.SMTPPort, SMTPSecurity: body.SMTPSecurity, SMTPUsername: body.SMTPUsername,
 		SMTPPassword: body.SMTPPassword, SMTPFrom: body.SMTPFrom, PublicBaseURL: body.PublicBaseURL, Enabled: body.NotifyEnabled,
-		Time: body.NotifyTime, IntervalDays: body.NotifyIntervalDays, UserIDs: body.NotifyUserIDs,
+		Times: body.NotifyTimes, IntervalDays: body.NotifyIntervalDays, UserIDs: body.NotifyUserIDs,
 	}
 	if err := modules.SaveNotificationSettings(c.db, c.key, in); err != nil {
 		writeErrorMessage(w, r, err)

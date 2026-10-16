@@ -71,20 +71,18 @@ func (r *DMARCRecord) Failed() bool {
 }
 
 // maxDMARCReportSize bounds the size of a report document, and the total a
-// zip attachment may decompress over all the members tried. A compressed
+// zip attachment may decompress over all its members (the leading bytes
+// looked at in a member that is no report included). A compressed
 // attachment can expand without limit (a zip bomb); real reports stay far
 // below this, so a larger document is not treated as a report.
 const maxDMARCReportSize = 64 << 20
-
-// maxDMARCZipMembers bounds how many members of a zip attachment are tried.
-const maxDMARCZipMembers = 16
 
 // errDMARCTooLarge is returned when a document exceeds its budget.
 var errDMARCTooLarge = errors.New("mailengine: DMARC report document too large")
 
 // parseDMARCAttachment reads a DMARC aggregate report from the bytes of one
-// attachment: a zip archive (the first of at most maxDMARCZipMembers members
-// that parses, within maxDMARCReportSize decompressed bytes in total), a
+// attachment: a zip archive (the first member that parses, within
+// maxDMARCReportSize decompressed bytes in total), a
 // gzip stream or a bare XML document, recognized by their content rather
 // than by the declared type or the file name. nil means the attachment is no
 // report.
@@ -96,21 +94,20 @@ func parseDMARCAttachment(data []byte) *DMARCReport {
 			return nil
 		}
 		budget := int64(maxDMARCReportSize)
-		tried := 0
 		for _, f := range zr.File {
 			if f.FileInfo().IsDir() {
 				continue
 			}
-			if tried++; tried > maxDMARCZipMembers || budget <= 0 {
+			if budget <= 0 {
 				return nil
 			}
 			rc, err := f.Open()
 			if err != nil {
 				continue
 			}
-			doc, err := readLimited(rc, budget)
+			doc, used, err := readLimited(rc, budget)
 			rc.Close()
-			budget -= int64(len(doc))
+			budget -= used
 			if err != nil {
 				return nil
 			}
@@ -125,7 +122,7 @@ func parseDMARCAttachment(data []byte) *DMARCReport {
 			return nil
 		}
 		defer gr.Close()
-		doc, err := readLimited(gr, maxDMARCReportSize)
+		doc, _, err := readLimited(gr, maxDMARCReportSize)
 		if err != nil {
 			return nil
 		}
@@ -142,20 +139,22 @@ func parseDMARCAttachment(data []byte) *DMARCReport {
 // not start like XML (after a BOM and white space), or its root element,
 // found within those bytes, is not <feedback> (the XML members of Office
 // documents, for instance), so a member that is no report costs little.
-func readLimited(r io.Reader, limit int64) ([]byte, error) {
+// used is how many decompressed bytes were read (the document, or the
+// leading bytes looked at).
+func readLimited(r io.Reader, limit int64) (doc []byte, used int64, err error) {
 	br := bufio.NewReader(io.LimitReader(r, limit+1))
 	head, _ := br.Peek(dmarcHeadSize)
 	if !mayBeDMARCReport(head) {
-		return nil, nil
+		return nil, int64(len(head)), nil
 	}
-	doc, err := io.ReadAll(br)
+	doc, err = io.ReadAll(br)
 	if err != nil {
-		return nil, err
+		return nil, int64(len(doc)), err
 	}
 	if int64(len(doc)) > limit {
-		return doc, errDMARCTooLarge
+		return doc, int64(len(doc)), errDMARCTooLarge
 	}
-	return doc, nil
+	return doc, int64(len(doc)), nil
 }
 
 // dmarcHeadSize is how many leading bytes of a document mayBeDMARCReport

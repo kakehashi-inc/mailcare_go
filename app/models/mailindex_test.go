@@ -1,6 +1,7 @@
 package models
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -102,5 +103,19 @@ func TestOpenMailIndexConcurrent(t *testing.T) {
 	}
 	if _, err := os.Stat(path + dbschema.LockSuffix); !os.IsNotExist(err) {
 		t.Errorf("the lock file is left behind: %v", err)
+	}
+}
+
+// A statement waits for the lock of another connection without a limit:
+// the busy timeout is the largest SQLite takes.
+func TestSQLiteDSNBusyTimeout(t *testing.T) {
+	db, err := OpenMailIndex(filepath.Join(t.TempDir(), "x.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var ms int64
+	if err := db.QueryRow(`PRAGMA busy_timeout`).Scan(&ms); err != nil || ms != math.MaxInt32 {
+		t.Errorf("busy_timeout = %d (err %v), want %d", ms, err, int64(math.MaxInt32))
 	}
 }

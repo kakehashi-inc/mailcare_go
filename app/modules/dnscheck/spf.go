@@ -6,9 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
-
-	"mailcare/app/modules/mailengine"
 )
 
 // The SPF records of the domains of the monitored mail addresses (RFC 7208)
@@ -25,19 +22,30 @@ import (
 // unknown modifiers are ignored, and so is any term whose domain-spec holds
 // a macro ("%"). An evaluation that cannot be finished is incomplete, and
 // so is one with a term that yields a range wider than spfMinBits4 /
-// spfMinBits6 and one whose ranges together cover more than
-// spfMaxSpaceBits4 / spfMaxSpaceBits6 allow; a domain without an SPF record
-// (NXDOMAIN, no TXT record, no "v=spf1" record) is complete without
-// addresses.
+// spfMinBits6 and one that exceeds the lookup limits of RFC 7208 4.6.4
+// (the record is invalid then, a permerror, for every receiver); a domain
+// without an SPF record (NXDOMAIN, no TXT record, no "v=spf1" record) is
+// complete without addresses.
 
-// Bounds of the evaluation of one domain (fail-safe: reaching one makes it
+// Limits of the evaluation of one domain (reaching one makes it
 // incomplete, except a loop, which is skipped). New sets the Checker's
 // fields from them; tests may lower them.
 const (
-	defaultSPFMaxQueries   = 30   // DNS queries per domain, includes and redirects counted
-	defaultSPFMaxDepth     = 10   // nesting of include and redirect
-	defaultSPFMaxPrefixes  = 1000 // prefixes per domain
-	defaultSPFMaxMXTargets = 10   // MX targets of one mx term (RFC 7208 4.6.4)
+	// spfMaxQueries is the number of terms that cause DNS queries
+	// (include, a, mx, ptr, exists and redirect, nested ones included)
+	// an evaluation may meet (RFC 7208 4.6.4: past it the result is a
+	// permerror).
+	spfMaxQueries = 10
+	// spfMaxVoidLookups is the number of such terms whose query answers
+	// NXDOMAIN or no data an evaluation may meet (RFC 7208 4.6.4, the
+	// recommended default; past it the result is a permerror).
+	spfMaxVoidLookups = 2
+	// spfMaxMXTargets is the number of MX records one mx term may have
+	// (RFC 7208 4.6.4: past it the mx term is a permerror).
+	spfMaxMXTargets = 10
+	// spfMaxDepth bounds the nesting of include and redirect: a guard of
+	// the recursion (the term limit keeps a valid record well within it).
+	spfMaxDepth = 10
 )
 
 // spfMinBits4 and spfMinBits6 are the shortest prefixes an SPF term may
@@ -52,32 +60,15 @@ const (
 	spfMinBits6 = 16
 )
 
-// spfMaxSpaceBits4 and spfMaxSpaceBits6 bound the address space that all
-// the prefixes of one evaluation cover together, every address counted once
-// (overlapping and adjacent prefixes merged): 2^24 IPv4 addresses (one /8)
-// and 2^112 IPv6 addresses (one /16), the bounds of mailengine, which the
-// grouping also applies to the prefixes of all the domains of a run
-// together. An evaluation that covers more is incomplete (fail-safe), like a
-// single range wider than spfMinBits4 / spfMinBits6: many narrower terms
-// ("ip4:N.0.0.0/8" for every N) would otherwise take every address for a sending source
-// just the same. The records of the large mail services stay far below them
-// (testdata/spf_real_senders.txt: Google Workspace, Microsoft 365, Amazon
-// SES and SendGrid together cover fewer than 2^20 IPv4 addresses).
-const (
-	spfMaxSpaceBits4 = mailengine.SPFMaxSpaceBits4
-	spfMaxSpaceBits6 = mailengine.SPFMaxSpaceBits6
-)
-
 // SPFResult is the evaluation of the SPF record of one domain: the prefixes
 // it lists (masked; an address is a single-address prefix) and the host
 // names its a and mx terms point to (the a hosts and the MX targets,
 // normalized), in record order without repeats. Complete is false when the
 // evaluation could not be finished: a lookup failed (SERVFAIL, a timeout,
-// no resolver answered), a bound was reached, a term yielded a range wider
-// than spfMinBits4 / spfMinBits6, the prefixes together cover more than
-// spfMaxSpaceBits4 / spfMaxSpaceBits6 allow, a record was malformed or
-// there were two, the time budget of the sending sources was used up or ctx
-// ended. What was found before is kept.
+// no resolver answered), a limit of RFC 7208 was exceeded or the nesting
+// guard reached, a term yielded a range wider than spfMinBits4 /
+// spfMinBits6, a record was malformed or there were two, or ctx ended.
+// What was found before is kept.
 type SPFResult struct {
 	Prefixes []netip.Prefix
 	Hosts    []string
@@ -91,11 +82,8 @@ func (c *Checker) ResolveSPF(ctx context.Context, domain string) (prefixes []net
 }
 
 // LookupSPF evaluates the SPF record of one of the monitored domains,
-// once per run (remembered unless ctx ended). Every query counts against
-// the time budget of the sending sources (Config.SourceBudget, apart from the
-// budget of the verification, so that the names hostile notices make the
-// run look up cannot use it up first) and is bounded by the per-query
-// timeout. A Checker whose
+// once per run (remembered unless ctx ended). Every query is bounded by
+// the per-query timeout. A Checker whose
 // verification is off (or StoredOnly) reads no SPF record: the result is
 // incomplete, so nothing relies on it.
 func (c *Checker) LookupSPF(ctx context.Context, domain string) SPFResult {
@@ -114,9 +102,6 @@ func (c *Checker) LookupSPF(ctx context.Context, domain string) SPFResult {
 	}
 	e := &spfEval{c: c, seenPrefix: map[netip.Prefix]bool{}, seenHost: map[string]bool{}}
 	e.domain(ctx, name, 0, nil)
-	if !e.failed && mailengine.SPFTooMuchSpace(e.prefixes) {
-		e.failed = true
-	}
 	res = SPFResult{Prefixes: e.prefixes, Hosts: e.hosts, Complete: !e.failed}
 	if ended(ctx) {
 		res.Complete = false
@@ -131,7 +116,8 @@ func (c *Checker) LookupSPF(ctx context.Context, domain string) SPFResult {
 // spfEval is the evaluation of the SPF record of one domain.
 type spfEval struct {
 	c          *Checker
-	queries    int
+	terms      int // terms that cause DNS queries (spfMaxQueries)
+	voids      int // of them, those answered with NXDOMAIN or no data (spfMaxVoidLookups)
 	prefixes   []netip.Prefix
 	seenPrefix map[netip.Prefix]bool
 	hosts      []string
@@ -156,7 +142,13 @@ func (e *spfEval) domain(ctx context.Context, domain string, depth int, chain []
 	}
 	chain = append(chain[:len(chain):len(chain)], domain)
 	txts, a, ok := e.query(ctx, domain, typeTXT)
-	if !ok || a != answerData {
+	if !ok {
+		return
+	}
+	if a != answerData {
+		if depth > 0 {
+			e.void() // an include or redirect target without a record
+		}
 		return
 	}
 	record, found, usable := pickSPF(txts)
@@ -196,7 +188,13 @@ func (e *spfEval) domain(ctx context.Context, domain string, depth int, chain []
 		case "all":
 			hasAll = true // whatever its qualifier: it still keeps a redirect from being followed
 			continue
-		case "ptr", "exists", "ip4", "ip6", "a", "mx", "include":
+		case "ptr", "exists", "a", "mx", "include":
+			// Terms that cause DNS queries count against the limit of RFC
+			// 7208 4.6.4 whatever their qualifier, as in an evaluation.
+			if !e.countTerm() {
+				return
+			}
+		case "ip4", "ip6":
 		default:
 			e.failed = true // an unknown mechanism is a syntax error (RFC 7208 5)
 			return
@@ -237,7 +235,31 @@ func (e *spfEval) domain(ctx context.Context, domain string, depth int, chain []
 			e.failed = true
 			return
 		}
+		if !e.countTerm() {
+			return
+		}
 		e.domain(ctx, target, depth+1, chain)
+	}
+}
+
+// countTerm counts a term that causes DNS queries; past spfMaxQueries the
+// record is invalid (RFC 7208 4.6.4) and the evaluation incomplete.
+func (e *spfEval) countTerm() bool {
+	e.terms++
+	if e.terms > e.c.spfMaxQueries {
+		e.failed = true
+		return false
+	}
+	return true
+}
+
+// void counts a term whose query answered NXDOMAIN or no data; past
+// spfMaxVoidLookups the record is invalid (RFC 7208 4.6.4) and the
+// evaluation incomplete.
+func (e *spfEval) void() {
+	e.voids++
+	if e.voids > e.c.spfMaxVoid {
+		e.failed = true
 	}
 }
 
@@ -285,10 +307,11 @@ func (e *spfEval) ipTerm(mech, rest string) {
 // hostTerm collects an a or mx term: rest is the optional ":domain" and the
 // optional dual CIDR length ("/24", "//64", "/24//64") applied to the
 // addresses found (RFC 7208 5.6). The a host, or every MX target (at most
-// spfMaxMXTargets; a null MX has none), is recorded as a host name and its
-// A and AAAA addresses as prefixes (one shorter than spfMinBits4 /
-// spfMinBits6 makes the evaluation incomplete, see addPrefix). NXDOMAIN and
-// no data add nothing.
+// spfMaxMXTargets, RFC 7208 4.6.4; a null MX has none), is recorded as a
+// host name and its A and AAAA addresses as prefixes (one shorter than
+// spfMinBits4 / spfMinBits6 makes the evaluation incomplete, see
+// addPrefix). NXDOMAIN and no data add nothing and count as a void lookup
+// (the MX question of an mx term, the addresses of an a term).
 func (e *spfEval) hostTerm(ctx context.Context, mech, rest, current string) {
 	target := current
 	if value, ok := strings.CutPrefix(rest, ":"); ok {
@@ -326,6 +349,8 @@ func (e *spfEval) hostTerm(ctx context.Context, mech, rest, current string) {
 				}
 				hosts = append(hosts, v)
 			}
+		} else {
+			e.void()
 		}
 		if len(hosts) > e.c.spfMaxMXTargets {
 			e.failed = true
@@ -334,6 +359,7 @@ func (e *spfEval) hostTerm(ctx context.Context, mech, rest, current string) {
 	}
 	for _, h := range hosts {
 		e.addHost(h)
+		found := false
 		for _, t := range []queryType{typeA, typeAAAA} {
 			values, a, ok := e.query(ctx, h, t)
 			if !ok {
@@ -342,6 +368,7 @@ func (e *spfEval) hostTerm(ctx context.Context, mech, rest, current string) {
 			if a != answerData {
 				continue
 			}
+			found = true
 			for _, v := range values {
 				addr, err := netip.ParseAddr(v)
 				if err != nil {
@@ -355,28 +382,23 @@ func (e *spfEval) hostTerm(ctx context.Context, mech, rest, current string) {
 				e.addPrefix(netip.PrefixFrom(addr, bits))
 			}
 		}
+		if mech == "a" && !found {
+			e.void()
+		}
 	}
 }
 
 // query asks one question of the evaluation through the first reachable
 // resolver that answers (no vote: the monitored domains are trusted). ok
-// is false, and the evaluation incomplete, when the bound of queries or the
-// time budget of the sending sources was reached first or no
-// resolver answered (an error reply or none at all); otherwise the answer
-// is data, no data or NXDOMAIN.
+// is false, and the evaluation incomplete, when it is already incomplete,
+// ctx ended or no resolver answered (an error reply or none at all);
+// otherwise the answer is data, no data or NXDOMAIN.
 func (e *spfEval) query(ctx context.Context, name string, t queryType) ([]string, answer, bool) {
 	if e.failed || ended(ctx) {
 		e.failed = true
 		return nil, answerNone, false
 	}
-	if e.queries >= e.c.spfMaxQueries || !e.c.sourceBudgetLeft() {
-		e.failed = true
-		return nil, answerNone, false
-	}
-	e.queries++
-	start := time.Now()
 	values, a := e.c.firstRecords(ctx, name, t)
-	e.c.spendSource(time.Since(start))
 	if a == answerFail || a == answerNone {
 		e.failed = true
 		return nil, a, false
@@ -385,8 +407,7 @@ func (e *spfEval) query(ctx context.Context, name string, t queryType) ([]string
 }
 
 // addPrefix records a prefix (masked) unless it is already there; a prefix
-// shorter than spfMinBits4 / spfMinBits6, and more than spfMaxPrefixes,
-// make the evaluation incomplete.
+// shorter than spfMinBits4 / spfMinBits6 makes the evaluation incomplete.
 func (e *spfEval) addPrefix(p netip.Prefix) {
 	minBits := spfMinBits6
 	if p.Addr().Is4() {
@@ -398,10 +419,6 @@ func (e *spfEval) addPrefix(p netip.Prefix) {
 	}
 	p = p.Masked()
 	if e.seenPrefix[p] {
-		return
-	}
-	if len(e.prefixes) >= e.c.spfMaxPrefixes {
-		e.failed = true
 		return
 	}
 	e.seenPrefix[p] = true
@@ -417,11 +434,10 @@ func (e *spfEval) addHost(h string) {
 }
 
 // SPFTooWide reports whether prefixes (an SPF evaluation, or a stored one
-// of an earlier run) take in more than an evaluation may count as sending sources: a
-// range wider than spfMinBits4 / spfMinBits6, or more address space
-// together than spfMaxSpaceBits4 / spfMaxSpaceBits6 allow. LookupSPF never
-// completes with such prefixes; the cache of the sending sources (app/modules)
-// does not use a stored result that does (one written before these limits).
+// of an earlier run) hold a range wider than an evaluation may count as a
+// sending source (spfMinBits4 / spfMinBits6). LookupSPF never completes
+// with such a prefix; the cache of the sending sources (app/modules) does
+// not use a stored result that holds one (one written before this limit).
 func SPFTooWide(prefixes []netip.Prefix) bool {
 	for _, p := range prefixes {
 		minBits := spfMinBits6
@@ -432,7 +448,7 @@ func SPFTooWide(prefixes []netip.Prefix) bool {
 			return true
 		}
 	}
-	return mailengine.SPFTooMuchSpace(prefixes)
+	return false
 }
 
 // firstRecords returns the records of one type of a name through the first
@@ -444,7 +460,7 @@ func (c *Checker) firstRecords(ctx context.Context, name string, t queryType) ([
 		var values []string
 		var a answer
 		if p.addr.IsValid() {
-			a, values, _ = c.lookupType(ctx, p.addr, name, t, nil)
+			a, values, _ = c.lookupType(ctx, p.addr, name, t, false)
 		} else {
 			values, a = c.systemRecords(ctx, name, t)
 		}

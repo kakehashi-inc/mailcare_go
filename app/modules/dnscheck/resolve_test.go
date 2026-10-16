@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"mailcare/app/models"
 	"mailcare/app/modules/mailengine"
 )
 
@@ -94,6 +95,7 @@ func TestSystemResolverAbsoluteNames(t *testing.T) {
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	s.resolve("mx1.example.jp A", data("192.0.2.1"))
 	s.resolve("customer.jp MX", data("mx.provider.net"))
 	s.resolve("mx.provider.net A", data("192.0.2.25"))
 	s.resolve("relay.example.net A", data("192.0.2.26"))
@@ -120,7 +122,7 @@ func TestSystemResolverAbsoluteNames(t *testing.T) {
 	if addrs, answered := c.ResolveReporter(context.Background(), "relay.example.net"); len(addrs) != 1 || !answered {
 		t.Errorf("ResolveReporter = %v, %v", addrs, answered)
 	}
-	if addrs, answered := c.ResolveHost(context.Background(), "mx1.example.jp"); addrs != nil || !answered {
+	if addrs, answered := c.ResolveHost(context.Background(), "mx9.example.jp"); addrs != nil || !answered {
 		t.Errorf("ResolveHost = %v, %v; want answered without addresses", addrs, answered)
 	}
 
@@ -189,8 +191,8 @@ func TestResolveHostSingleLabel(t *testing.T) {
 // TestResolveReporter checks the lookup of the reporting MTA names of the
 // notices: remembered for the run (a lookup nobody answered too), refused
 // without a query, and not answered, for what is no host name of two labels
-// or more, and bounded to 200 names per Checker. A name over the cap is not
-// answered; one that does not exist is answered without addresses.
+// or more; one that does not exist is answered without addresses. There is
+// no cap on the number of names per Checker.
 func TestResolveReporter(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("mx1.example.jp A", data("192.0.2.25"))
@@ -198,9 +200,6 @@ func TestResolveReporter(t *testing.T) {
 	s.resolve("silent.example.jp A", answerWith(fakeDrop))
 	s.resolve("silent.example.jp AAAA", answerWith(fakeDrop))
 	c := newTestChecker(nil, s.port, "127.0.0.1")
-	if c.maxReporters != 200 {
-		t.Fatalf("maxReporters = %d, want 200", c.maxReporters)
-	}
 	ctx := context.Background()
 	want := []netip.Addr{netip.MustParseAddr("192.0.2.25"), netip.MustParseAddr("2001:db8::25")}
 	for i := 0; i < 2; i++ {
@@ -231,22 +230,17 @@ func TestResolveReporter(t *testing.T) {
 			t.Errorf("silent: ResolveReporter = %v, %v; want not answered", got, answered)
 		}
 	}
-	if q := s.receivedFor("silent.example.jp"); len(q) != 2 {
-		t.Errorf("silent: queries %v", q)
+	if q := s.receivedFor("silent.example.jp"); len(q) != 2*queryAttempts {
+		t.Errorf("silent: queries %v, want A and AAAA with one retransmission each", q)
 	}
-	// Up to the cap (three names used so far), then nothing more is asked.
-	for i := 3; i < 200; i++ {
-		c.ResolveReporter(ctx, fmt.Sprintf("r%d.example.jp", i))
-	}
-	before := len(s.received())
-	if got, answered := c.ResolveReporter(ctx, "over.example.jp"); got != nil || answered {
-		t.Errorf("over the cap: ResolveReporter = %v, %v; want not answered", got, answered)
-	}
-	if q := s.received(); len(q) != before {
-		t.Errorf("a name over the cap was looked up: %v", q[before:])
+	// Many more names: every one is looked up.
+	for i := 3; i < 250; i++ {
+		if _, answered := c.ResolveReporter(ctx, fmt.Sprintf("r%d.example.jp", i)); !answered {
+			t.Fatalf("r%d.example.jp not answered", i)
+		}
 	}
 	if got, answered := c.ResolveReporter(ctx, "mx1.example.jp"); len(got) != 2 || !answered {
-		t.Errorf("a remembered name over the cap: ResolveReporter = %v, %v", got, answered)
+		t.Errorf("a remembered name: ResolveReporter = %v, %v", got, answered)
 	}
 	// A canceled lookup is not answered and not remembered.
 	canceled, cancel := context.WithCancel(ctx)
@@ -257,6 +251,108 @@ func TestResolveReporter(t *testing.T) {
 	}
 	if got, answered := c2.ResolveReporter(ctx, "mx1.example.jp"); len(got) != 2 || !answered {
 		t.Errorf("after the cancellation: ResolveReporter = %v, %v", got, answered)
+	}
+}
+
+// TestResolveReporterStored checks the stored lookups of the reporting
+// MTAs (sending_source_lookups, kind reporter): an answered lookup is
+// stored and used by the next run without a query while it is fresh
+// (CacheFreshAge); an older one is looked up again and replaced, an answer
+// without addresses too; when no resolver answers the stored row stands in
+// whatever its age (left as it is); a StoredOnly Checker uses the stored
+// row as it is and asks nothing; a refused name is neither read nor stored.
+func TestResolveReporterStored(t *testing.T) {
+	db := openTestMasterDB(t)
+	s := startFakeServers(t, "127.0.0.1")[0]
+	s.resolve("mx1.example.jp A", data("192.0.2.25"))
+	s.resolve("mx1.example.jp AAAA", data("2001:db8::25"))
+	start := time.Now().UTC().Truncate(time.Second)
+	ctx := context.Background()
+	checker := func(at time.Time) *Checker {
+		c := newTestChecker(db, s.port, "127.0.0.1")
+		c.now = func() time.Time { return at }
+		return c
+	}
+	row := func() *models.SendingSourceLookup {
+		t.Helper()
+		r, err := models.GetSendingSourceLookup(db, models.SendingSourceKindReporter, "mx1.example.jp")
+		if err != nil {
+			t.Fatalf("stored row: %v", err)
+		}
+		return r
+	}
+	asked := func() int { return len(s.receivedFor("mx1.example.jp")) }
+	text := func(addrs []netip.Addr) string { return fmt.Sprint(addrs) }
+
+	if got, answered := checker(start).ResolveReporter(ctx, "MX1.example.jp."); text(got) != "[192.0.2.25 2001:db8::25]" || !answered {
+		t.Fatalf("first run: %v, %v", got, answered)
+	}
+	if r := row(); !r.FetchedAt.Equal(start) || strings.Join(r.Addresses, " ") != "192.0.2.25 2001:db8::25" {
+		t.Errorf("stored %+v", r)
+	}
+	n := asked()
+	// The next run within the fresh period: the stored addresses, no query.
+	if got, answered := checker(start.Add(CacheFreshAge)).ResolveReporter(ctx, "mx1.example.jp"); text(got) != "[192.0.2.25 2001:db8::25]" || !answered {
+		t.Errorf("fresh: %v, %v", got, answered)
+	}
+	if asked() != n {
+		t.Errorf("a fresh row made queries: %v", s.receivedFor("mx1.example.jp")[n:])
+	}
+	// Older: looked up again, and the row replaced.
+	s.resolve("mx1.example.jp A", data("192.0.2.26"))
+	s.resolve("mx1.example.jp AAAA", answerWith(fakeNoData))
+	later := start.Add(CacheFreshAge + time.Second)
+	if got, answered := checker(later).ResolveReporter(ctx, "mx1.example.jp"); text(got) != "[192.0.2.26]" || !answered {
+		t.Errorf("stale: %v, %v", got, answered)
+	}
+	if asked() == n {
+		t.Error("a stale row was not looked up again")
+	}
+	if r := row(); !r.FetchedAt.Equal(later) || strings.Join(r.Addresses, " ") != "192.0.2.26" {
+		t.Errorf("replaced %+v", r)
+	}
+	// No resolver answers: the stored row stands in, whatever its age, and
+	// stays as it is.
+	s.resolve("mx1.example.jp A", answerWith(fakeDrop))
+	s.resolve("mx1.example.jp AAAA", answerWith(fakeDrop))
+	if got, answered := checker(later.Add(400*24*time.Hour)).ResolveReporter(ctx, "mx1.example.jp"); text(got) != "[192.0.2.26]" || !answered {
+		t.Errorf("no answer: %v, %v; want the stored address", got, answered)
+	}
+	if r := row(); !r.FetchedAt.Equal(later) {
+		t.Errorf("the stand-in was rewritten: %+v", r)
+	}
+	// The check off: the stored row as it is, no query; nothing stored for
+	// a name: not answered.
+	n = len(s.received())
+	off := New(db, Config{StoredOnly: true, Resolvers: []string{"127.0.0.1"}, Port: s.port, Timeout: testTimeout})
+	off.now = func() time.Time { return later.Add(400 * 24 * time.Hour) }
+	if got, answered := off.ResolveReporter(ctx, "mx1.example.jp"); text(got) != "[192.0.2.26]" || !answered {
+		t.Errorf("check off: %v, %v; want the stored address", got, answered)
+	}
+	if got, answered := off.ResolveReporter(ctx, "mx2.example.jp"); got != nil || answered {
+		t.Errorf("check off, nothing stored: %v, %v", got, answered)
+	}
+	if q := s.received(); len(q) != n {
+		t.Errorf("the check off made queries: %v", q[n:])
+	}
+	// An answer without addresses (NXDOMAIN) replaces the row: it is the
+	// answer.
+	s.resolve("mx1.example.jp A", answerWith(fakeNX))
+	s.resolve("mx1.example.jp AAAA", answerWith(fakeNX))
+	gone := later.Add(2 * CacheFreshAge)
+	if got, answered := checker(gone).ResolveReporter(ctx, "mx1.example.jp"); got != nil || !answered {
+		t.Errorf("NXDOMAIN: %v, %v", got, answered)
+	}
+	if r := row(); !r.FetchedAt.Equal(gone) || len(r.Addresses) != 0 {
+		t.Errorf("after NXDOMAIN %+v", r)
+	}
+	// A refused name is neither read nor stored.
+	if got, answered := checker(gone).ResolveReporter(ctx, "192.0.2.26"); got != nil || answered {
+		t.Errorf("IP literal: %v, %v", got, answered)
+	}
+	rows, err := models.ListSendingSourceLookups(db)
+	if err != nil || len(rows) != 1 {
+		t.Errorf("rows %+v, %v; want the one of mx1.example.jp", rows, err)
 	}
 }
 
@@ -325,8 +421,7 @@ func TestResolveHostOSFirst(t *testing.T) {
 // TestResolveHostConcurrent resolves several source host names at the same
 // time, as the grouping does (up to four at once): every name gets its
 // addresses, each is asked once, and the shared state of the Checker (the
-// control queries, the names remembered, the budget of the sending sources)
-// stays consistent (run with -race).
+// control queries, the names remembered) stays consistent (run with -race).
 func TestResolveHostConcurrent(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	const n = 8
@@ -352,8 +447,5 @@ func TestResolveHostConcurrent(t *testing.T) {
 		if q := s.receivedFor(fmt.Sprintf("mx%d.example.jp", i)); len(q) != 2 {
 			t.Errorf("mx%d asked %d times: %v", i, len(q), q)
 		}
-	}
-	if c.sourceSpent <= 0 {
-		t.Error("the lookups were not counted against the budget of the sending sources")
 	}
 }

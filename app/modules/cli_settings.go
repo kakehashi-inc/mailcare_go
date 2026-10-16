@@ -132,7 +132,7 @@ func (c *SettingsShowCmd) Run() error {
 		SettingPublicBaseURL:        notify.PublicBaseURL,
 		"effective_base_url":        EffectiveBaseURL(db, notify),
 		SettingNotifyEnabled:        notify.Enabled,
-		SettingNotifyTime:           notify.Time,
+		SettingNotifyTime:           notify.Times,
 		SettingNotifyInterval:       notify.IntervalDays,
 		SettingNotifyUserIDs:        notify.UserIDs,
 		SettingNotifyLastSent:       rfc3339OrNull(notify.LastSentAt),
@@ -242,7 +242,7 @@ func (c *SettingsShowCmd) Run() error {
 	fmt.Printf("%-22s %v\n", SettingSMTPFrom+":", notify.SMTP.From)
 	fmt.Printf("%-22s %v (effective: %s)\n", SettingPublicBaseURL+":", notify.PublicBaseURL, EffectiveBaseURL(db, notify))
 	fmt.Printf("%-22s %v\n", SettingNotifyEnabled+":", notify.Enabled)
-	fmt.Printf("%-22s %v\n", SettingNotifyTime+":", notify.Time)
+	fmt.Printf("%-22s %v\n", SettingNotifyTime+":", FormatCheckTimes(notify.Times))
 	fmt.Printf("%-22s %v\n", SettingNotifyInterval+":", notify.IntervalDays)
 	fmt.Printf("%-22s %v\n", SettingNotifyUserIDs+":", FormatNotifyUserIDs(notify.UserIDs))
 	fmt.Printf("%-22s %s\n", "notify_last_sent_at:", formatNullTime(notify.LastSentAt))
@@ -707,15 +707,12 @@ func applySetting(db *sql.DB, key, value string, loadKey func() ([]byte, error),
 		in.Enabled = &enabled
 		shown = strconv.FormatBool(enabled)
 	case SettingNotifyTime:
-		norm := DefaultNotifyTime
-		if value != "" {
-			var perr error
-			if norm, perr = ValidateNotifyTime(value); perr != nil {
-				return argErr(perr)
-			}
+		times, perr := ParseNotifyTimes([]string{value})
+		if perr != nil {
+			return argErr(perr)
 		}
-		in.Time = &norm
-		shown = norm
+		in.Times = &times
+		shown = FormatCheckTimes(times)
 	case SettingNotifyInterval:
 		n := DefaultNotifyIntervalDays
 		if value != "" {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,17 @@ import (
 
 	"mailcare/app/modules/dbschema"
 )
+
+// SQLiteDSN returns the data source name of a database file of MailCare
+// (the master database and every index): WAL, foreign keys, the time
+// format of the models, and the busy timeout. The busy timeout is how long
+// a statement waits for a lock another connection holds; a holder always
+// ends its transaction, so the wait is not cut: the largest value SQLite
+// takes (an int of milliseconds).
+func SQLiteDSN(path string) string {
+	return fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite",
+		path, math.MaxInt32)
+}
 
 // Per-mailbox index database (data/mails/<address>.sqlite).
 //
@@ -33,7 +45,7 @@ import (
 //
 // Tables (one model file per table):
 //   messages      app/models/message.go       every fetched mail (headers, body layout, detection outcome)
-//   bounces       app/models/bounce.go        details extracted from a bounce message (1:1 with its message row)
+//   bounces       app/models/bounce.go        details extracted from a bounce message, one row per failed recipient (1:N with its message row)
 //   dmarc_records app/models/dmarc_record.go  failing records of a DMARC aggregate report (1:N with its message row)
 //   groups        app/models/bounce_group.go  bounces and DMARC records bundled by the unit an administrator acts on
 //   agent_reports app/models/agent_report.go  analysis produced by an agent CLI
@@ -51,8 +63,7 @@ func OpenMailIndex(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", SQLiteDSN(path))
 	if err != nil {
 		return nil, err
 	}

@@ -6,23 +6,27 @@ import (
 )
 
 // DNSFailure is a failed DNS lookup reported by a notice (design document
-// "mail classification" 4.4): the name the reporting MTA looked up, the
-// record type and whether the MTA treated the failure as temporary.
+// "mail classification" 4.4): the name the reporting MTA looked up (""
+// when the form names none: the recipient domain is meant), the record type
+// it names (information only: the verification does not depend on it) and
+// whether the MTA treated the failure as temporary.
 type DNSFailure struct {
-	Name      string // lower-cased, without the trailing dot
-	QType     string // MX / A / AAAA; "" for the Sendmail forms, which name no type
-	Temporary bool   // "try again" and the like; false for a plain "host not found"
+	Name      string // lower-cased, without the trailing dot; "" when the form names none
+	QType     string // the record type the notice names (upper case), "" when it names none
+	Temporary bool   // "try again", "lookup did not complete" and the like; false for a definite answer
 }
 
-// DNSOutcome is the result of looking a reported name up again (4.4). The
-// empty value means the name was not verified (checking disabled, outside
-// the conditions, or no resolver answered).
+// DNSOutcome is the result of looking a reported name up again (4.4),
+// whatever record type the notice names: can mail for the name be
+// delivered somewhere (the addresses of its MX targets, or of the name
+// itself)? The empty value means the name was not verified (checking
+// disabled, outside the conditions, or the answers cut short).
 type DNSOutcome string
 
 const (
-	DNSOutcomeExists   DNSOutcome = "exists"    // every answering resolver returned an answer
+	DNSOutcomeExists   DNSOutcome = "exists"    // every answering resolver obtained an address to deliver to
 	DNSOutcomeNotFound DNSOutcome = "not_found" // every answering resolver returned NXDOMAIN
-	DNSOutcomeBroken   DNSOutcome = "broken"    // some answered, others failed or disagreed
+	DNSOutcomeBroken   DNSOutcome = "broken"    // the name exists without an address to deliver to, every resolver failed, or the answers disagree
 )
 
 // verified reports whether the outcome is one of the verification results;
@@ -45,66 +49,146 @@ type DNSVerdict struct {
 }
 
 var (
-	// Postfix: "Name service error for name=example.jp type=MX: Host not found, try again".
+	// Postfix (src/dns/dns_lookup.c and dns_strerror.c): "Name service
+	// error for name=example.jp type=MX: Host not found, try again"; the
+	// reason is the text of the resolver error (Host not found, Host not
+	// found, try again, Non-recoverable error, Host found but no data record
+	// of requested type) or "Malformed or unexpected name server reply".
 	postfixDNSErrorRe = regexp.MustCompile(`(?i)name service error for name=(\S+)\s+type=([a-z0-9]+)\s*:[ \t]*([^\n]*)`)
-	// Sendmail: "Host unknown (Name server: example.jp.: host not found)".
-	sendmailHostUnknownRe = regexp.MustCompile(`(?i)host unknown\s*\(\s*name server:\s*(\S+?)\s*:\s*host not found\s*\)`)
-	// Sendmail: "Deferred: Name server: example.jp.: host name lookup failure".
-	sendmailLookupFailureRe = regexp.MustCompile(`(?i)name server:\s*(\S+?)\s*:\s*host name lookup failure`)
+	// Postfix: "Domain example.jp does not accept mail (nullMX)".
+	postfixNullMXRe = regexp.MustCompile(`(?i)domain (\S+) does not accept mail \(nullmx\)`)
+	// Sendmail (src/err.c): "Name server: example.jp.: host not found" and
+	// the other resolver errors, inside "Host unknown (...)" or after
+	// "Deferred: ".
+	sendmailNameServerRe = regexp.MustCompile(`(?i)name server:\s*(\S+?)\s*:\s*(host not found|host name lookup failure|non-recoverable error|no data known)`)
+	// qmail: "Sorry, I couldn't find any host named example.jp. (#5.1.2)".
+	qmailHostNamedRe = regexp.MustCompile(`(?i)sorry, i couldn't find any host named (\S+?)\.? \(#5\.1\.2\)`)
+	// Exchange / Microsoft 365: "550 5.4.310 DNS domain example.jp does not
+	// exist [Message=InfoDomainNonexistent]".
+	exchangeDomainRe = regexp.MustCompile(`(?i)dns domain (\S+) does not exist`)
+	// Gmail: "DNS Error: 12345 DNS type 'mx' lookup of example.jp responded
+	// with code NXDOMAIN" (also SERVFAIL and the other codes).
+	gmailTypedRe = regexp.MustCompile(`(?i)dns type '([a-z0-9]+)' lookup of (\S+) responded with code ([a-z]+)`)
+
+	// deliveryQTypes are the record types an MTA looks up to deliver mail
+	// (MX, then A and AAAA of the targets or of the name itself). A failed
+	// lookup of another type (e.g. the TXT record an SPF check of the
+	// sender reads, quoted in a rejection) concerns no delivery.
+	deliveryQTypes = map[string]bool{"MX": true, "A": true, "AAAA": true}
 
 	// foldedLineRe joins a header line folded inside a diagnostic.
 	foldedLineRe = regexp.MustCompile(`\r?\n[ \t]+`)
 
-	// Reasons of the Postfix form. "Host found but no data record of
-	// requested type" (the domain exists without that record) is no lookup
-	// failure; it matches neither expression and is not detected.
-	dnsTemporaryReasonRe = regexp.MustCompile(`try again|server failure|temporary failure|timed out`)
-	dnsHostNotFoundRe    = regexp.MustCompile(`host not found`)
+	// Reasons of the Postfix form: the temporary ones ("try again", and
+	// the wordings of other resolver libraries), and the definite ones.
+	dnsTemporaryReasonRe = regexp.MustCompile(`try again|server failure|temporary failure|timed out|malformed or unexpected name server reply`)
+	dnsDefiniteReasonRe  = regexp.MustCompile(`host not found|host found but no data record|non-recoverable error`)
 )
 
-// dnsQTypes are the record types a DNS failure is detected for (the values
-// of dns_checks.qtype).
-var dnsQTypes = map[string]bool{"MX": true, "A": true, "AAAA": true}
+// dnsUnnamedForms are the forms that name no name (the recipient domain is
+// meant), with whether each is temporary, in the order they are looked for:
+// Exim (src/routers/dnslookup.c), qmail, Exchange / Microsoft 365, Gmail,
+// and the null MX reply of Sendmail. A form marked notRemote counts only
+// when the diagnostic is not the reply of a remote server (remoteReply):
+// "DNS query failed" in the reply of another server is about the lookups of
+// that server. Exim's "Unrouteable address" is not among them: Exim also gives
+// it for an unknown local user, so it tells nothing about DNS.
+var dnsUnnamedForms = []struct {
+	re        *regexp.Regexp
+	temporary bool
+	notRemote bool
+}{
+	{regexp.MustCompile(`(?i)all relevant mx records point to non-existent hosts`), false, false},
+	{regexp.MustCompile(`(?i)an mx or srv record indicated no smtp service`), false, false},
+	{regexp.MustCompile(`(?i)host lookup did not complete`), true, false},
+	{regexp.MustCompile(`(?i)missing mx, or all mxs point to missing a records`), true, false},
+	{regexp.MustCompile(`(?i)sorry, i couldn't find any host by that name\.? \(#4\.1\.2\)`), true, false},
+	{regexp.MustCompile(`(?i)cname lookup failed temporarily\.? \(#4\.4\.3\)`), true, false},
+	{regexp.MustCompile(`(?i)smtpsend\.dns\.nonexistentdomain`), false, false},
+	{regexp.MustCompile(`(?i)dns query failed`), true, true},
+	{regexp.MustCompile(`(?i)dns error: domain name not found`), false, false},
+	{regexp.MustCompile(`(?i)dns error: dns server returned answer with no data`), false, false},
+	{regexp.MustCompile(`(?i)dns error: could not contact dns servers`), true, false},
+	{regexp.MustCompile(`(?i)host does not accept mail: mx 0 \.`), false, false},
+}
 
 // ParseDNSFailure detects a failed DNS lookup in a diagnostic (design
-// document "mail classification" 4.4) without using the network: the
-// Postfix "Name service error for name=<name> type=<type>: <reason>" form
-// and the Sendmail "Host unknown (Name server: <name>: host not found)" and
-// "Name server: <name>: host name lookup failure" forms. A form whose name is
-// not a valid host name, a Postfix type other than MX / A / AAAA and a
-// Postfix reason that is no lookup failure are not detected. The Postfix
-// form is looked for first, then the Sendmail forms; the first detected
-// failure wins.
-func ParseDNSFailure(diagnostic string) (DNSFailure, bool) {
+// document "mail classification" 4.4) without using the network. The forms
+// that name the name are looked for first: Postfix ("Name service error for
+// name=<name> type=<type>: <reason>" and the null MX "Domain <name> does not
+// accept mail (nullMX)"), Sendmail ("Name server: <name>: host not found"
+// and the other resolver errors), qmail ("Sorry, I couldn't find any host
+// named <name>. (#5.1.2)"), Exchange ("DNS domain <name> does not exist")
+// and Gmail ("DNS type '<type>' lookup of <name> responded with code
+// <code>"); then the forms without a name (dnsUnnamedForms), which mean the
+// recipient domain (Name ""). A form with a record type counts only for the
+// types of a delivery (deliveryQTypes). A name that is not a valid host name
+// and a Postfix reason that is no lookup failure are not detected. The
+// first detected failure wins. remoteMTA is the remote MTA the notice names
+// for the recipient ("" when none): with one, the diagnostic is the reply of
+// that server.
+func ParseDNSFailure(diagnostic, remoteMTA string) (DNSFailure, bool) {
 	text := foldedLineRe.ReplaceAllString(diagnostic, " ")
 	for _, m := range postfixDNSErrorRe.FindAllStringSubmatch(text, -1) {
 		name, ok := normalizeDNSName(m[1])
+		if !ok {
+			continue
+		}
 		qtype := strings.ToUpper(m[2])
-		if !ok || !dnsQTypes[qtype] {
+		if !deliveryQTypes[qtype] {
 			continue
 		}
 		reason := strings.ToLower(dnsReason(m[3]))
 		switch {
 		case dnsTemporaryReasonRe.MatchString(reason):
 			return DNSFailure{Name: name, QType: qtype, Temporary: true}, true
-		case dnsHostNotFoundRe.MatchString(reason):
+		case dnsDefiniteReasonRe.MatchString(reason):
 			return DNSFailure{Name: name, QType: qtype}, true
 		}
 	}
-	for _, form := range []struct {
-		re        *regexp.Regexp
-		temporary bool
-	}{
-		{sendmailHostUnknownRe, false},
-		{sendmailLookupFailureRe, true},
-	} {
-		for _, m := range form.re.FindAllStringSubmatch(text, -1) {
+	for _, m := range postfixNullMXRe.FindAllStringSubmatch(text, -1) {
+		if name, ok := normalizeDNSName(m[1]); ok {
+			return DNSFailure{Name: name, QType: "MX"}, true
+		}
+	}
+	for _, m := range sendmailNameServerRe.FindAllStringSubmatch(text, -1) {
+		if name, ok := normalizeDNSName(m[1]); ok {
+			return DNSFailure{Name: name, Temporary: strings.EqualFold(m[2], "host name lookup failure")}, true
+		}
+	}
+	for _, re := range []*regexp.Regexp{qmailHostNamedRe, exchangeDomainRe} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
 			if name, ok := normalizeDNSName(m[1]); ok {
-				return DNSFailure{Name: name, Temporary: form.temporary}, true
+				return DNSFailure{Name: name}, true
 			}
 		}
 	}
+	for _, m := range gmailTypedRe.FindAllStringSubmatch(text, -1) {
+		if name, ok := normalizeDNSName(m[2]); ok && deliveryQTypes[strings.ToUpper(m[1])] {
+			code := strings.ToUpper(m[3])
+			return DNSFailure{Name: name, QType: strings.ToUpper(m[1]), Temporary: code != "NXDOMAIN" && code != "NOERROR"}, true
+		}
+	}
+	remote := remoteReply(text, remoteMTA)
+	for _, form := range dnsUnnamedForms {
+		if form.notRemote && remote {
+			continue
+		}
+		if form.re.MatchString(text) {
+			return DNSFailure{Temporary: form.temporary}, true
+		}
+	}
 	return DNSFailure{}, false
+}
+
+// remoteReplyRe finds the wording that quotes the reply of a remote server:
+// Postfix "... said: ...", Exim "SMTP error from remote mail server".
+var remoteReplyRe = regexp.MustCompile(`(?i)\bsaid:|smtp error from remote`)
+
+// remoteReply reports whether a diagnostic is the reply of a remote server:
+// the notice names the remote MTA, or the wording quotes its reply.
+func remoteReply(text, remoteMTA string) bool {
+	return strings.TrimSpace(remoteMTA) != "" || remoteReplyRe.MatchString(text)
 }
 
 // dnsReason cuts the reason of the Postfix form at the end of its phrase, so

@@ -13,7 +13,6 @@ import (
 const (
 	defaultJobLimit = 50
 	maxJobLimit     = 500
-	maxJobPage      = 1000000 // bounds the offset of the history
 )
 
 // requestedBy tags a job with the Web user who asked for it.
@@ -97,22 +96,10 @@ func (c *core) listFinishedJobs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "system.invalidRequest")
 		return
 	}
-	page, perPage := 1, defaultJobLimit
-	for _, p := range []struct {
-		name string
-		dst  *int
-		max  int
-	}{{"page", &page, maxJobPage}, {"per_page", &perPage, maxJobLimit}} {
-		s := q.Get(p.name)
-		if s == "" {
-			continue
-		}
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 || n > p.max {
-			writeError(w, http.StatusBadRequest, "system.invalidRequest")
-			return
-		}
-		*p.dst = n
+	page, perPage, ok := readPage(q, defaultJobLimit, maxJobLimit)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
 	}
 	jobs, total, err := models.ListFinishedJobs(c.db, status, (page-1)*perPage, perPage)
 	if err != nil {

@@ -2,13 +2,18 @@ package workers
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -658,7 +663,7 @@ func TestSecondStartKeepsRunningServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := modules.WriteControlToken(dataDir, 1, "running-server-token"); err != nil {
+	if err := modules.WriteControlToken(context.Background(), dataDir, 1, "running-server-token"); err != nil {
 		t.Fatal(err)
 	}
 	if err := startServer("127.0.0.1", 1, 0, nil, 0); !errors.Is(err, modules.ErrServerRunning) {
@@ -676,7 +681,7 @@ func TestSecondStartKeepsRunningServer(t *testing.T) {
 	}
 	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
-	if err := modules.WriteControlToken(dataDir, port, "running-server-token"); err != nil {
+	if err := modules.WriteControlToken(context.Background(), dataDir, port, "running-server-token"); err != nil {
 		t.Fatal(err)
 	}
 	if err := startServer("127.0.0.1", port, 0, nil, 0); err == nil || !strings.Contains(err.Error(), "failed to listen") {
@@ -744,5 +749,197 @@ func TestProbeSendSlotRefusedOutsideScheduler(t *testing.T) {
 		if rec.Code == http.StatusCreated || rec.Code == http.StatusOK {
 			t.Errorf("control queued %q", target)
 		}
+	}
+}
+
+// Paging reaches every row: any page whose offset fits an int is accepted,
+// one beyond it is refused, and per_page stays within its bound.
+func TestReadPage(t *testing.T) {
+	for _, c := range []struct {
+		query         string
+		page, perPage int
+		ok            bool
+	}{
+		{"", 1, 50, true},
+		{"page=2000001&per_page=500", 2000001, 500, true},
+		{"page=" + strconv.Itoa(math.MaxInt/500+1) + "&per_page=500", math.MaxInt/500 + 1, 500, true},
+		{"page=" + strconv.Itoa(math.MaxInt/500+2) + "&per_page=500", 0, 0, false},
+		{"page=0", 0, 0, false},
+		{"per_page=501", 0, 0, false},
+		{"page=x", 0, 0, false},
+	} {
+		q, _ := url.ParseQuery(c.query)
+		page, perPage, ok := readPage(q, 50, 500)
+		if page != c.page || perPage != c.perPage || ok != c.ok {
+			t.Errorf("%q: %d, %d, %v; want %d, %d, %v", c.query, page, perPage, ok, c.page, c.perPage, c.ok)
+		}
+	}
+}
+
+// A shutdown waits for the requests in flight: serve returns only after the
+// response of a slow handler went out whole, however long it takes.
+func TestServeWaitsForRequestsInFlight(t *testing.T) {
+	started, finished := make(chan struct{}), make(chan struct{})
+	c := &core{srv: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		time.Sleep(500 * time.Millisecond)
+		_, _ = w.Write([]byte("done"))
+		close(finished)
+	})}}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- c.serve([]net.Listener{ln}) }()
+	body := make(chan string, 1)
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String() + "/")
+		if err != nil {
+			body <- "error: " + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		body <- string(b)
+	}()
+	<-started
+	go c.shutdown()
+	if err := <-served; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	default:
+		t.Error("serve returned before the request in flight ended")
+	}
+	if got := <-body; got != "done" {
+		t.Errorf("response %q, want the whole body", got)
+	}
+}
+
+// A shutdown stops the jobs first: a running job is canceled and finished
+// before the context of a request in flight ends, and the shutdown returns
+// once that request has ended.
+func TestShutdownStopsJobsFirst(t *testing.T) {
+	c := newTestCore(t)
+	// An IMAP server that greets and then never answers: the job waits on
+	// it until it is canceled.
+	imapLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer imapLn.Close()
+	loggingIn := make(chan struct{}, 1)
+	go func() {
+		conn, err := imapLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = conn.Write([]byte("* OK ready\r\n"))
+		buf := make([]byte, 512)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				return
+			}
+			select {
+			case loggingIn <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	mb, err := modules.CreateMailbox(c.db, c.key, &modules.MailboxInput{Address: "ops@example.test",
+		ImapHost: "imap.example.test", ImapUsername: "u", ImapPassword: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb.ImapHost, mb.ImapPort, mb.ImapSecurity = "127.0.0.1", imapLn.Addr().(*net.TCPAddr).Port, modules.IMAPSecurityNone
+	if err := models.UpdateMailbox(c.db, mb); err != nil {
+		t.Fatal(err)
+	}
+	c.jm.Start()
+	job, _, err := c.jm.Enqueue(modules.JobKindFetch, mb.ID, "", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-loggingIn:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the job did not reach the IMAP server")
+	}
+
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	c.cancelBase = cancelBase
+	started := make(chan struct{})
+	statusAtEnd := make(chan string, 1)
+	c.srv = &http.Server{
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started)
+			<-r.Context().Done()
+			j, _ := models.GetJobByID(c.db, job.ID)
+			statusAtEnd <- j.Status
+		}),
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- c.serve([]net.Listener{ln}) }()
+	go func() {
+		if resp, err := http.Get("http://" + ln.Addr().String() + "/"); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-started
+	c.shutdown()
+	if status := <-statusAtEnd; status == modules.JobStatusRunning || status == modules.JobStatusQueued {
+		t.Errorf("job %s when the request context ended, want it finished first", status)
+	}
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not return after the shutdown")
+	}
+}
+
+// MailCare cuts no connection that is still communicating: a client that
+// sends its body slowly, longer in total than any former timeout, is
+// waited for, and so is one that pauses before the rest.
+func TestRequestBodyWithoutTimeLimit(t *testing.T) {
+	results := make(chan error, 1)
+	srv := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.ReadAll(r.Body)
+		results <- err
+	}), context.Background())
+	if srv.ReadHeaderTimeout != 0 || srv.ReadTimeout != 0 || srv.WriteTimeout != 0 || srv.IdleTimeout != 0 || srv.MaxHeaderBytes != 0 {
+		t.Fatalf("server limits %+v", srv)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = fmt.Fprintf(conn, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nxx")
+	time.Sleep(1500 * time.Millisecond)
+	_, _ = conn.Write([]byte("xx"))
+	select {
+	case err := <-results:
+		if err != nil {
+			t.Errorf("paused body: %v, want the whole body", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler did not end")
 	}
 }

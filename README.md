@@ -75,7 +75,7 @@ Also available:
    check and the delivery probe).
 5. Configure the rest as needed:
    - "Settings -> General": sync times, cleanup, sending sources and DNS check, AI agent
-   - "Settings -> Notifications": SMTP server, recipients, notification time
+   - "Settings -> Notifications": SMTP server, recipients, notification times
    - "Settings -> Delivery probe": probe address, probe server and send times
    - "Settings -> Users": users and roles
 
@@ -107,6 +107,8 @@ the service with the same `--data-dir` (for example `sudo -u mailcare /opt/mailc
 - After an upgrade that changes the classification, or after changing the sending sources or the DNS check, run
   "Reclassify" once on the Tools page.
   Bounces that become junk can then be deleted from the IMAP server by the next cleanup; check the Junk tab first.
+- While the DNS check is on, every sync also checks again the name lookup failures that could not be verified before;
+  the first sync after an upgrade does this for the older notices as well.
 
 ### 1.5 Security
 

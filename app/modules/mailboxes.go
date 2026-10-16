@@ -650,8 +650,8 @@ func TestMailboxConnection(ctx context.Context, db *sql.DB, key []byte, in *Mail
 	if err := applyMailboxInput(key, mb, &probe); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, IMAPTimeout)
-	defer cancel()
+	// Only the connection is bounded (mailengine.IMAPConnectTimeout); the
+	// commands after it are not.
 	if err := mailengine.TestConnection(ctx, mb, password); err != nil {
 		// The words of the server are the useful part; the Web UI shows them
 		// as the detail of its message.

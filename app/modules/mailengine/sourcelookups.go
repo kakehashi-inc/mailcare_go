@@ -6,7 +6,6 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-	"sync"
 )
 
 // The addresses of the sending sources that a run looks up beyond the
@@ -33,11 +32,10 @@ import (
 // data: the name still matches as text), or when something stands in for
 // it (app/modules falls back to a stored lookup). It is false when the
 // lookup was not answered (SERVFAIL, a timeout, no resolver reachable, only
-// one of the families answered, a limit of the run, a cancellation): an
+// one of the families answered, a cancellation): an
 // address of a sending source may be missing then, so the lookups of the run are
 // incomplete (sourceExtra) like an SPF record that could not be read. The
-// grouping asks for up to maxParallelHostLookups names at once, so an
-// implementation must be safe for concurrent use. The
+// grouping asks for the names one after another (システム仕様 2.2). The
 // implementations live in app/modules/dnscheck (the Checker of the DNS
 // lookup failure verification, and the OS resolver alone while the
 // verification is off) and app/modules (the stored lookups in front of
@@ -79,9 +77,8 @@ func WithSourceHostResolver(r SourceHostResolver) GroupOption {
 // sending_source_ipv6, and the host names of their a and mx terms are compared
 // as text like the source host names, without counting as a configured host
 // name for the backscatter rule. While the record of a domain cannot be
-// evaluated completely, the records of all the domains together take in
-// more address space than one record may (SPFTooMuchSpace), or the lookup
-// of a source host name is not answered (SourceHostResolver), no return notice
+// evaluated completely, or the lookup of a source host name is not
+// answered (SourceHostResolver), no return notice
 // is taken for backscatter in the run (an address of a sending source may be
 // missing, or far more than the sending sources would count; the progress
 // line says that the
@@ -102,17 +99,13 @@ type sourceExtra struct {
 	hosts      []string       // host names of the a and mx terms of the SPF records
 	domains    int            // domains whose SPF record was evaluated
 	incomplete []string       // of those, the ones not evaluated completely
-	tooWide    bool           // the prefixes of all the domains together take in too much (SPFTooMuchSpace)
 }
 
 // complete reports whether the lookup of every source host name was answered
-// and every SPF record was evaluated completely, and the SPF records of all
-// the domains together stay within the bounds of one evaluation
-// (SPFMaxSpaceBits4, SPFMaxSpaceBits6): otherwise an address of a sending
-// source may be missing, or far more addresses than the sending sources have
-// would count as theirs.
+// and every SPF record was evaluated completely: otherwise an address of a
+// sending source may be missing.
 func (e sourceExtra) complete() bool {
-	return len(e.unanswered) == 0 && len(e.incomplete) == 0 && !e.tooWide
+	return len(e.unanswered) == 0 && len(e.incomplete) == 0
 }
 
 // contains reports whether an unmapped address is one of the addresses or
@@ -195,9 +188,6 @@ func (l *sourceLookups) get(ctx context.Context) sourceExtra {
 			e.incomplete = append(e.incomplete, domain)
 		}
 	}
-	// Each record stays within the bounds by itself, while the records of
-	// several domains (a /8 each, say) could still take in more together.
-	e.tooWide = SPFTooMuchSpace(e.prefixes)
 	if ctx.Err() != nil {
 		return e
 	}
@@ -205,32 +195,19 @@ func (l *sourceLookups) get(ctx context.Context) sourceExtra {
 	return e
 }
 
-// maxParallelHostLookups bounds the source host names looked up at the same
-// time (sourceLookups.resolveHosts): a long list of names the resolver leaves
-// unanswered then waits for a quarter of the timeouts, while the resolver
-// bounds the network time of the run (its budget of the sending sources).
-const maxParallelHostLookups = 4
-
 // hostAnswer is the lookup of one source host name.
 type hostAnswer struct {
 	addrs    []netip.Addr
 	answered bool
 }
 
-// resolveHosts looks up the source host names, at most maxParallelHostLookups
-// at a time, and returns the answers in the order of the names.
+// resolveHosts looks up the source host names one after another and
+// returns the answers in the order of the names.
 func (l *sourceLookups) resolveHosts(ctx context.Context) []hostAnswer {
 	out := make([]hostAnswer, len(l.hosts))
-	slots := make(chan struct{}, maxParallelHostLookups)
-	var wg sync.WaitGroup
 	for i, host := range l.hosts {
-		slots <- struct{}{}
-		wg.Go(func() {
-			defer func() { <-slots }()
-			out[i].addrs, out[i].answered = l.hostResolver.ResolveHost(ctx, host)
-		})
+		out[i].addrs, out[i].answered = l.hostResolver.ResolveHost(ctx, host)
 	}
-	wg.Wait()
 	return out
 }
 
@@ -261,9 +238,6 @@ func (l *sourceLookups) reportSummary(progress Progress, backscatter bool) {
 	}
 	if len(e.incomplete) > 0 {
 		missing = append(missing, "SPF not read completely for "+strings.Join(e.incomplete, ", "))
-	}
-	if e.tooWide {
-		missing = append(missing, "SPF ranges too wide in total")
 	}
 	switch {
 	case len(missing) == 0:

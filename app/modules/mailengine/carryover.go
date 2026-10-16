@@ -139,17 +139,23 @@ func (c *carryover) apply(db *sql.DB, recheck RecheckDays) (groups, reports int,
 		return groups, reports, fmt.Errorf("record state change patterns: %w", err)
 	}
 	for key, g := range restored {
-		state := *c.groups[key]
+		old := c.groups[key]
+		state := *old
 		state.GroupKey, state.Actionable, state.Category = key, g.Actionable, g.Category
+		if old.Actionable && !g.Actionable {
+			// The flag was set for an actionable group; a recipient-side
+			// group keeps only the flag of an explicit request.
+			state.NeedsAnalysis = false
+		}
 		if state.State != groupStateOpen && !state.NeedsRecheck {
 			back, err := groupSentBack(db, &state, recheck)
 			if err != nil {
 				return groups, reports, fmt.Errorf("check the re-check of %s: %w", key, err)
 			}
 			if back {
-				state.NeedsRecheck, state.NeedsAnalysis = true, true
+				state.NeedsRecheck, state.NeedsAnalysis = true, g.Actionable
 			}
-		} else {
+		} else if g.Actionable {
 			uncovered, err := models.GroupHasUncoveredPattern(db, key)
 			if err != nil {
 				return groups, reports, fmt.Errorf("check patterns of %s: %w", key, err)

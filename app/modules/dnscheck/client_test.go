@@ -88,6 +88,7 @@ func TestQueryECSOptOut(t *testing.T) {
 
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	mailHost(s, "mx1.example.jp", "192.0.2.1")
 	withAuthority(s)
 	c := newTestChecker(nil, s.port, "127.0.0.1")
 	if got, ok := verify(t, c, "example.jp", "MX", "example.jp"); !ok || got != mailengine.DNSOutcomeExists {

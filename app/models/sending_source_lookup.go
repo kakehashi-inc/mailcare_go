@@ -11,16 +11,20 @@ const (
 	SendingSourceKindSMTPHost   = "smtp_host"   // the SMTP host of a mailbox: its addresses
 	SendingSourceKindSPF        = "spf"         // the domain of a mailbox: what its SPF record lists
 	SendingSourceKindGlobalHost = "global_host" // a host name of sending_source_hosts: its addresses
+	SendingSourceKindReporter   = "reporter"    // the reporting MTA a notice names: its addresses (no source; see below)
 )
 
 // SendingSourceLookup is a row of sending_source_lookups (master database): the
 // last complete lookup of one source of the sending sources (design
 // document "mail classification" 2.6 and 4.4), shared by every mailbox and
-// run. Name is the SMTP host, the domain or the host name of the setting
-// (lower-case, no trailing dot), Addresses the addresses and CIDR prefixes
-// found (canonical text) and Hosts the host names found (the a and mx terms
-// of an SPF record; empty for the other kinds). Both lists are stored one
-// entry per line.
+// run, or (kind reporter) the last answered lookup of the addresses of a
+// reporting MTA a notice names (4.4; only the addresses: whether it is a
+// sending server is judged again against the current settings every
+// time). Name is the SMTP host, the domain, the host name of the setting or
+// the reporting MTA (lower-case, no trailing dot), Addresses the addresses
+// and CIDR prefixes found (canonical text) and Hosts the host names found
+// (the a and mx terms of an SPF record; empty for the other kinds). Both
+// lists are stored one entry per line.
 type SendingSourceLookup struct {
 	ID        int64
 	Kind      string
@@ -33,15 +37,15 @@ type SendingSourceLookup struct {
 const sendingSourceLookupColumns = `id, kind, name, addresses, hosts, fetched_at`
 
 // ReplaceSendingSourceLookup stores the row of a source in place of the one
-// stored before (the same kind and name), unless the new row lists nothing
-// (no address, no host name) while the stored one lists something and was
-// fetched at keepSince or later (a row dated after now included): an empty
-// answer never replaces a recent non-empty one. The zero keepSince replaces
-// any row. The condition is part of the statement (the update of the upsert
-// is conditional), so that a run storing an empty answer cannot replace the
-// row another run stored a moment before. written reports whether the row
-// was stored. FetchedAt is normalized to UTC (the current time when zero).
-func ReplaceSendingSourceLookup(db Execer, s *SendingSourceLookup, keepSince time.Time) (written bool, err error) {
+// stored before (the same kind and name). With keepNonEmpty a new row that
+// lists nothing (no address, no host name) does not replace a stored one
+// that lists something, whatever its age: an empty answer never replaces a
+// non-empty one. The condition is part of the statement (the update of the
+// upsert is conditional), so that a run storing an empty answer cannot
+// replace the row another run stored a moment before. written reports
+// whether the row was stored. FetchedAt is normalized to UTC (the current
+// time when zero).
+func ReplaceSendingSourceLookup(db Execer, s *SendingSourceLookup, keepNonEmpty bool) (written bool, err error) {
 	if s.FetchedAt.IsZero() {
 		s.FetchedAt = time.Now()
 	}
@@ -49,12 +53,10 @@ func ReplaceSendingSourceLookup(db Execer, s *SendingSourceLookup, keepSince tim
 	query := `INSERT INTO sending_source_lookups (kind, name, addresses, hosts, fetched_at) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (kind, name) DO UPDATE SET addresses = excluded.addresses, hosts = excluded.hosts, fetched_at = excluded.fetched_at`
 	args := []any{s.Kind, s.Name, strings.Join(s.Addresses, "\n"), strings.Join(s.Hosts, "\n"), s.FetchedAt}
-	if !keepSince.IsZero() {
+	if keepNonEmpty {
 		query += `
 		WHERE NOT (excluded.addresses = '' AND excluded.hosts = ''
-			AND (sending_source_lookups.addresses <> '' OR sending_source_lookups.hosts <> '')
-			AND sending_source_lookups.fetched_at >= ?)`
-		args = append(args, keepSince.UTC().Round(0))
+			AND (sending_source_lookups.addresses <> '' OR sending_source_lookups.hosts <> ''))`
 	}
 	res, err := db.Exec(query, args...)
 	if err != nil {
@@ -98,21 +100,23 @@ func DeleteSendingSourceLookup(db Execer, id int64) error {
 	return err
 }
 
-// DeleteSendingSourceLookupsOlderThan removes the rows fetched before cutoff and
-// returns how many went (the daily cleanup).
-func DeleteSendingSourceLookupsOlderThan(db Execer, cutoff time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM sending_source_lookups WHERE fetched_at < ?`, cutoff.UTC())
+// DeleteFutureSendingSourceLookups removes the rows dated after now (the
+// clock was set back since they were written: their age is unknown) and
+// returns how many went (the daily cleanup). The time is taken at the
+// statement, so a row a run stores meanwhile is not taken for one.
+func DeleteFutureSendingSourceLookups(db Execer) (int64, error) {
+	res, err := db.Exec(`DELETE FROM sending_source_lookups WHERE fetched_at > ?`, time.Now().UTC())
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
 }
 
-// DeleteSendingSourceLookupsNewerThan removes the rows dated after cutoff (the
-// clock was set back since they were written) and returns how many went
-// (the daily cleanup).
-func DeleteSendingSourceLookupsNewerThan(db Execer, cutoff time.Time) (int64, error) {
-	res, err := db.Exec(`DELETE FROM sending_source_lookups WHERE fetched_at > ?`, cutoff.UTC())
+// DeleteSendingSourceLookupsOlderThan removes the rows of one kind fetched
+// before cutoff and returns how many went (the daily cleanup of the
+// reporting MTAs, which derive from notices).
+func DeleteSendingSourceLookupsOlderThan(db Execer, kind string, cutoff time.Time) (int64, error) {
+	res, err := db.Exec(`DELETE FROM sending_source_lookups WHERE kind = ? AND fetched_at < ?`, kind, cutoff.UTC())
 	if err != nil {
 		return 0, err
 	}

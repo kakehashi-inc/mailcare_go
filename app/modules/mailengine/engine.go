@@ -183,6 +183,10 @@ const (
 	// the receiving side's / a third party's DNS (recipient-side).
 	categoryDNSResolverFailure = "dns_resolver_failure"
 	categoryDNSFailureExternal = "dns_failure_external"
+	// A temporary DNS lookup failure whose name could not be verified
+	// (actionable: either side may be at fault; the next grouping
+	// verifies it again).
+	categoryDNSLookupFailure = "dns_lookup_failure"
 	// DMARC categories (records of aggregate reports that failed DMARC;
 	// all actionable, see CategorizeDMARCRecord).
 	categoryDMARCSPFMissing       = "dmarc_spf_missing"

@@ -1,6 +1,7 @@
 package dnscheck
 
 import (
+	"slices"
 	"testing"
 
 	"mailcare/app/modules/mailengine"
@@ -28,7 +29,9 @@ func answersText(as []answer) string {
 	return s + "]"
 }
 
-// TestVoteCases checks the named cases of the vote by hand.
+// TestVoteCases checks the named cases of the vote by hand. A resolver
+// that fails (an error reply or no reply) is left out while another one
+// answered: one failing resolver never makes the outcome broken.
 func TestVoteCases(t *testing.T) {
 	const (
 		exists   = mailengine.DNSOutcomeExists
@@ -44,39 +47,39 @@ func TestVoteCases(t *testing.T) {
 		{nil, nil, none},
 		{nil, []answer{vD}, none},
 		{nil, []answer{vNX}, none},
-		// Every resolver failed (an error reply or no reply).
-		{[]answer{vF}, nil, none},
-		{[]answer{vF, vN}, nil, none},
-		{[]answer{vF, vF}, []answer{vNX}, none},
-		{[]answer{vF}, []answer{vND}, none}, // the inconclusive rule comes first
-		{[]answer{vF}, []answer{vF}, none},
-		{[]answer{vF}, []answer{vD}, broken}, // an authoritative answer under failing resolvers
-		{[]answer{vN, vF}, []answer{vN, vD}, broken},
-		// Every resolver NXDOMAIN.
+		// No resolver replied at all: nothing is known (inconclusive).
+		{[]answer{vN}, nil, none},
+		{[]answer{vN, vN}, []answer{vD}, none},
+		// Every resolver that replied replied with an error: DNS does not
+		// answer normally for the name.
+		{[]answer{vF}, nil, broken},
+		{[]answer{vF, vN}, nil, broken},
+		{[]answer{vF, vF}, []answer{vNX}, broken},
+		{[]answer{vF}, []answer{vD}, broken},
+		// Every resolver that answered: NXDOMAIN.
 		{[]answer{vNX}, nil, notFound},
 		{[]answer{vNX, vNX, vNX}, []answer{vNX, vN}, notFound},
 		{[]answer{vNX}, []answer{vF}, notFound},
-		{[]answer{vNX}, []answer{vND}, notFound}, // the not_found rule comes before broken
-		{[]answer{vNX, vNX}, []answer{vD}, broken},
-		// Every resolver data.
+		{[]answer{vNX, vF}, nil, notFound}, // one failing resolver is left out
+		{[]answer{vNX, vN, vNX}, []answer{vNX}, notFound},
+		{[]answer{vNX}, []answer{vD}, broken},  // an authoritative server says it exists
+		{[]answer{vNX}, []answer{vND}, broken}, // so does a NODATA of one
+		// Every resolver that answered: an address to deliver to.
 		{[]answer{vD}, nil, exists},
 		{[]answer{vD, vD, vD}, []answer{vD, vD}, exists},
+		{[]answer{vD, vF}, nil, exists}, // one failing resolver is left out
+		{[]answer{vD, vN, vF}, nil, exists},
 		{[]answer{vD}, []answer{vN, vN}, exists}, // unreachable authoritative servers do not vote
+		{[]answer{vD}, []answer{vF}, exists},     // nor does a failing one
+		{[]answer{vD}, []answer{vND}, exists},    // the name exists there
 		{[]answer{vD}, []answer{vD, vNX}, broken},
-		{[]answer{vD}, []answer{vND}, broken},
-		{[]answer{vD}, []answer{vF}, broken},
-		// Mixed resolvers.
+		// The name exists without an address, or the answers disagree.
 		{[]answer{vD, vNX}, nil, broken},
-		{[]answer{vD, vF}, nil, broken},
-		{[]answer{vD, vN}, nil, broken},
+		{[]answer{vD, vND}, nil, broken},
 		{[]answer{vND}, nil, broken},
+		{[]answer{vND, vF}, nil, broken},
 		{[]answer{vND, vND}, []answer{vND}, broken},
 		{[]answer{vNX, vND}, nil, broken},
-		{[]answer{vND, vF}, nil, broken},
-		// NXDOMAIN mixed with failures only: no rule holds.
-		{[]answer{vNX, vF}, nil, none},
-		{[]answer{vNX, vN}, []answer{vNX}, none},
-		{[]answer{vNX, vF}, []answer{vF}, none},
 	} {
 		got, ok := vote(tc.resolvers, tc.auth)
 		if got != tc.want || ok != (tc.want != "") {
@@ -123,20 +126,20 @@ func TestVoteExhaustive(t *testing.T) {
 	}
 }
 
-// referenceVote states the rules over what was seen: byResolver the answers of
-// the resolvers (no reply is a failure), byAuth those of the authoritative servers
-// that were reached.
+// referenceVote states the rules over what was seen: the answers of the
+// resolvers that answered (a failure or no reply is left out; no reply from
+// any resolver and no error reply either is inconclusive), and those of the
+// authoritative servers that answered.
 func referenceVote(resolvers, auth []answer) mailengine.DNSOutcome {
-	byResolver := map[answer]bool{}
+	answering := map[answer]bool{}
 	for _, a := range resolvers {
-		if a == vN {
-			a = vF
+		if a != vN && a != vF {
+			answering[a] = true
 		}
-		byResolver[a] = true
 	}
 	byAuth := map[answer]bool{}
 	for _, a := range auth {
-		if a != vN {
+		if a != vN && a != vF {
 			byAuth[a] = true
 		}
 	}
@@ -144,14 +147,66 @@ func referenceVote(resolvers, auth []answer) mailengine.DNSOutcome {
 	switch {
 	case len(resolvers) == 0:
 		return ""
-	case only(byResolver, vF) && !byAuth[vD]:
+	case len(answering) == 0 && !slices.Contains(resolvers, vF):
 		return ""
-	case only(byResolver, vNX) && !byAuth[vD]:
-		return mailengine.DNSOutcomeNotFound
-	case only(byResolver, vD) && !byAuth[vNX] && !byAuth[vND] && !byAuth[vF]:
-		return mailengine.DNSOutcomeExists
-	case byResolver[vD] || byAuth[vD] || byResolver[vND] || byAuth[vND]:
+	case len(answering) == 0:
 		return mailengine.DNSOutcomeBroken
+	case only(answering, vNX) && !byAuth[vD] && !byAuth[vND]:
+		return mailengine.DNSOutcomeNotFound
+	case only(answering, vD) && !byAuth[vNX]:
+		return mailengine.DNSOutcomeExists
 	}
-	return ""
+	return mailengine.DNSOutcomeBroken
+}
+
+// TestTargetAndAddressAnswers checks how the answers of the lookups of one
+// resolver combine (resolveName): an address of any MX target, or of
+// either family, is data; otherwise no reply at all comes before an error
+// reply (an address may be missing only because a server did not answer:
+// inconclusive rather than broken), an error reply before no data, and a
+// host is NXDOMAIN only when both families said so. A target that does not
+// exist is one without an address.
+func TestTargetAndAddressAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		answers []answer
+		want    answer
+	}{
+		{[]answer{vD}, vD},
+		{[]answer{vN, vD}, vD},
+		{[]answer{vF, vND, vD}, vD},
+		{[]answer{vN, vND}, vN},
+		{[]answer{vND, vN}, vN},
+		{[]answer{vN, vF}, vN},
+		{[]answer{vF, vN}, vN},
+		{[]answer{vF, vND}, vF},
+		{[]answer{vNX, vF}, vF},
+		{[]answer{vNX, vND}, vND},
+		{[]answer{vNX}, vND},
+		{[]answer{vND, vND}, vND},
+	} {
+		if got := targetsAnswer(tc.answers); got != tc.want {
+			t.Errorf("targetsAnswer(%s) = %s, want %s", answersText(tc.answers), answerNames[got], answerNames[tc.want])
+		}
+	}
+	for _, tc := range []struct {
+		answers []answer
+		want    answer
+	}{
+		{[]answer{vD, vNX}, vD},
+		{[]answer{vF, vD}, vD},
+		{[]answer{vN, vD}, vD},
+		{[]answer{vN, vF}, vN},
+		{[]answer{vF, vN}, vN},
+		{[]answer{vN, vNX}, vN},
+		{[]answer{vF, vND}, vF},
+		{[]answer{vNX, vF}, vF},
+		{[]answer{vNX, vNX}, vNX},
+		{[]answer{vNX, vND}, vND},
+		{[]answer{vND, vNX}, vND},
+		{[]answer{vND, vND}, vND},
+	} {
+		if got := addressesAnswer(tc.answers); got != tc.want {
+			t.Errorf("addressesAnswer(%s) = %s, want %s", answersText(tc.answers), answerNames[got], answerNames[tc.want])
+		}
+	}
 }

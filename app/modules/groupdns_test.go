@@ -312,7 +312,9 @@ func TestSendingSourceHostsUnion(t *testing.T) {
 }
 
 // seedDNSChecks stores a result checked just before and one just after the
-// cutoff of the cleanup: the mail retention plus the 24-hour reuse window.
+// cutoff of the cleanup (the mail retention plus the 24-hour reuse window),
+// the same for the stored lookups of reporting MTAs, and the lookup of a
+// sending source older than both.
 func seedDNSChecks(t *testing.T, db *sql.DB) {
 	t.Helper()
 	keep := time.Duration(ResolveMailKeepDays(db)) * 24 * time.Hour
@@ -322,6 +324,15 @@ func seedDNSChecks(t *testing.T, db *sql.DB) {
 		{Name: "new.example.jp", QType: "MX", Outcome: "exists", Detail: "x", CheckedAt: time.Now().Add(-keep + time.Hour)},
 	} {
 		if err := models.InsertDNSCheck(db, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, r := range []*models.SendingSourceLookup{
+		{Kind: models.SendingSourceKindReporter, Name: "old.example.jp", Addresses: []string{"192.0.2.1"}, FetchedAt: time.Now().Add(-keep - 25*time.Hour)},
+		{Kind: models.SendingSourceKindReporter, Name: "window.example.jp", Addresses: []string{"192.0.2.2"}, FetchedAt: time.Now().Add(-keep - 23*time.Hour)},
+		{Kind: models.SendingSourceKindSMTPHost, Name: "old.example.jp", Addresses: []string{"192.0.2.3"}, FetchedAt: time.Now().Add(-3 * keep)},
+	} {
+		if _, err := models.ReplaceSendingSourceLookup(db, r, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -342,6 +353,15 @@ func checkPrunedDNSChecks(t *testing.T, db *sql.DB) {
 			t.Errorf("%s was removed: %v", name, err)
 		}
 	}
+	// The reporting MTAs go by the same cutoff; a sending source never by age.
+	if _, err := models.GetSendingSourceLookup(db, models.SendingSourceKindReporter, "old.example.jp"); err == nil {
+		t.Error("the reporting MTA past the mail retention and the reuse window was kept")
+	}
+	for kind, name := range map[string]string{models.SendingSourceKindReporter: "window.example.jp", models.SendingSourceKindSMTPHost: "old.example.jp"} {
+		if _, err := models.GetSendingSourceLookup(db, kind, name); err != nil {
+			t.Errorf("%s %s was removed: %v", kind, name, err)
+		}
+	}
 }
 
 func TestPruneDNSChecksKeepsTheMailRetention(t *testing.T) {
@@ -353,8 +373,11 @@ func TestPruneDNSChecksKeepsTheMailRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkPrunedDNSChecks(t, db)
-	want := "removed 1 dns check result(s) older than the mail retention (180 days) and the 24-hour reuse window"
-	if len(lines) != 1 || lines[0] != want {
+	want := []string{
+		"removed 1 dns check result(s) older than the mail retention (180 days) and the 24-hour reuse window",
+		"removed 1 stored reporting MTA lookup(s) older than the mail retention (180 days) and the 24-hour reuse window",
+	}
+	if !reflect.DeepEqual(lines, want) {
 		t.Errorf("progress = %q, want %q", lines, want)
 	}
 }
@@ -533,8 +556,9 @@ func regroupRules(t *testing.T, jm *JobManager, mb *models.Mailbox, mailsRoot st
 // The looked-up addresses decide the backscatter rule with the DNS check on:
 // the SPF record of the domain of the mailbox lists the hop of mail from the sending sources
 // (the notice about it stays a bounce) and its host names match as text; a
-// complete lookup is stored, used without asking for an hour and stands in
-// for a failed one for 14 days, an older row or none leaves the record
+// complete lookup is stored, used without asking while fresh
+// (dnscheck.CacheFreshAge) and stands in
+// for a failed one whatever its age; without a row the record stays
 // incomplete, and then no return notice is taken for backscatter in the
 // run.
 func TestSPFDecidesTheBackscatterRule(t *testing.T) {
@@ -563,20 +587,18 @@ func TestSPFDecidesTheBackscatterRule(t *testing.T) {
 		name   string
 		spf    dnscheck.SPFResult
 		age    time.Duration // ages the stored row first (0: as it is; -1: deleted)
-		lookup bool          // the record is evaluated (not the stored row of the last hour)
+		lookup bool          // the record is evaluated (not the stored row of the fresh period)
 		rules  map[string]int
 	}{
 		{"complete, listing the hop", dnscheck.SPFResult{Prefixes: []netip.Prefix{hop}, Complete: true}, 0, true,
 			map[string]int{"dsn_report": 1, "backscatter": 1}},
-		{"stored 59 minutes ago: used without asking", dnscheck.SPFResult{}, 59 * time.Minute, false,
+		{"stored a minute before the end of the fresh period: used without asking", dnscheck.SPFResult{}, dnscheck.CacheFreshAge - time.Minute, false,
 			map[string]int{"dsn_report": 1, "backscatter": 1}},
-		{"incomplete, a row 13 days old stands in", dnscheck.SPFResult{}, 13 * 24 * time.Hour, true,
+		{"incomplete, a year-old row stands in", dnscheck.SPFResult{}, 365 * 24 * time.Hour, true,
 			map[string]int{"dsn_report": 1, "backscatter": 1}},
-		{"incomplete, the stored row 15 days old", dnscheck.SPFResult{}, 15 * 24 * time.Hour, true,
-			map[string]int{"dsn_report": 2}},
 		{"incomplete, no stored row", dnscheck.SPFResult{}, -1, true, map[string]int{"dsn_report": 2}},
 		{"complete, nothing listed", dnscheck.SPFResult{Complete: true}, 0, true, map[string]int{"backscatter": 2}},
-		{"complete, the host name of an mx term", dnscheck.SPFResult{Hosts: []string{"mx1.example.jp"}, Complete: true}, 61 * time.Minute, true,
+		{"complete, the host name of an mx term", dnscheck.SPFResult{Hosts: []string{"mx1.example.jp"}, Complete: true}, dnscheck.CacheFreshAge + time.Minute, true,
 			map[string]int{"dsn_report": 1, "backscatter": 1}},
 	} {
 		spf["example.jp"] = step.spf
@@ -636,7 +658,7 @@ func TestSourceLookupsWithoutDNSCheck(t *testing.T) {
 	}
 	// A stored SPF row is not used either.
 	if _, err := models.ReplaceSendingSourceLookup(db, &models.SendingSourceLookup{Kind: models.SendingSourceKindSPF, Name: "example.jp",
-		Addresses: []string{"198.51.100.0/24"}}, time.Time{}); err != nil {
+		Addresses: []string{"198.51.100.0/24"}}, false); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]int{"dsn_report": 1, "backscatter": 1}
@@ -647,23 +669,30 @@ func TestSourceLookupsWithoutDNSCheck(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(row.Addresses, []string{"192.0.2.20"}) {
 		t.Errorf("stored host lookup %+v (err %v)", row, err)
 	}
-	// The OS resolver does not answer now: the stored lookup (two hours
-	// old, so asked again) stands in.
+	// The OS resolver does not answer now: the stored lookup (no longer
+	// fresh, so asked again) stands in.
 	delete(hosts, "smtp.example.jp")
-	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-2*time.Hour)); err != nil {
+	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-dnscheck.CacheFreshAge-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if rules, progress := regroupRules(t, jm, mb, mailsRoot); !reflect.DeepEqual(rules, want) {
 		t.Errorf("host not answered, fresh row: rules %v, want %v\n%s", rules, want, progress)
 	}
-	// Without a row of at most 14 days an address of a sending source may be missing:
-	// the run takes no return notice for backscatter.
-	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-15*24*time.Hour)); err != nil {
+	// However old the row, it stands in.
+	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ? WHERE kind = 'smtp_host'`, time.Now().UTC().Add(-3*365*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if rules, progress := regroupRules(t, jm, mb, mailsRoot); !reflect.DeepEqual(rules, want) {
+		t.Errorf("host not answered, old row: rules %v, want %v\n%s", rules, want, progress)
+	}
+	// Without a row an address of a sending source may be missing: the run
+	// takes no return notice for backscatter.
+	if _, err := db.Exec(`DELETE FROM sending_source_lookups WHERE kind = 'smtp_host'`); err != nil {
 		t.Fatal(err)
 	}
 	if rules, progress := regroupRules(t, jm, mb, mailsRoot); !reflect.DeepEqual(rules, map[string]int{"dsn_report": 2}) ||
 		!strings.Contains(progress, "backscatter detection was skipped for this run: no answer for the addresses of smtp.example.jp") {
-		t.Errorf("host not answered, old row: rules %v\n%s", rules, progress)
+		t.Errorf("host not answered, no row: rules %v\n%s", rules, progress)
 	}
 	// Answered without addresses (NXDOMAIN): the host adds no address, both
 	// notices look foreign (the host name is in no header), which a host
@@ -675,13 +704,13 @@ func TestSourceLookupsWithoutDNSCheck(t *testing.T) {
 	if len(f.spfCalls) != 0 {
 		t.Errorf("SPF read with the check off: %v", f.spfCalls)
 	}
-	if len(f.hostCalls) != 4 {
+	if len(f.hostCalls) != 5 {
 		t.Errorf("host lookups %v, want one per run", f.hostCalls)
 	}
 }
 
-// A source host name whose lookup is not answered, with no stored row of at
-// most 14 days to stand in, stops the backscatter rule for the run with the
+// A source host name whose lookup is not answered, with no stored row to
+// stand in, stops the backscatter rule for the run with the
 // DNS check on (the Checker) as with it off (the OS resolver): the return
 // notice of forged mail stays a bounce, and the progress names the host. A
 // host answered without addresses (NXDOMAIN) does not.
@@ -733,9 +762,10 @@ func sendingSourceRows(t *testing.T, db *sql.DB) []*models.SendingSourceLookup {
 
 // With the check off a lookup failure is filed by the outcome stored for it
 // (the reuse rule) without any query: none stored, it stays unverified (a
-// delay warning is a delivery delay, and the rule name says that nothing was
-// verified); once an outcome is stored, the reclassify files it as verified
-// (nothing configured: the reporting MTA counts as a sending server).
+// delay warning is a name lookup failure not verified yet, and the rule
+// name says that nothing was verified); once an outcome is stored, the
+// reclassify files it as verified (nothing configured: the reporting MTA
+// counts as a sending server).
 func TestReindexJobWithoutDNSCheckUsesStoredOutcomes(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
@@ -770,14 +800,14 @@ func TestReindexJobWithoutDNSCheckUsesStoredOutcomes(t *testing.T) {
 			t.Errorf("%s: progress lacks %q:\n%s", kind, wantProgress, strings.Join(lines, "\n"))
 		}
 	}
-	run(JobKindReindex, CategoryDeliveryDelay, "dns_unverified_delay", "dns: 1 notice(s): 0 verified, 0 reused from stored results, "+
-		"0 over budget (run again), 0 not applicable, 0 inconclusive, 0 too old for a live check, 1 not checked (the DNS check is off)")
-	if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "infoseek.jp", QType: "MX", Outcome: "exists", Detail: "stored",
+	run(JobKindReindex, CategoryDNSLookupFailure, "dns_unverified_temporary", "dns: 1 notice(s): 0 verified, 0 reused from stored results, "+
+		"0 not applicable, 0 inconclusive, 1 not checked (the DNS check is off)")
+	if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "infoseek.jp", QType: dnscheck.VerifyKind, Outcome: "exists", Detail: "stored",
 		CheckedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	run(JobKindReclassify, CategoryDNSResolverFailure, "dns_resolver_failure", "dns: 1 notice(s): 0 verified, 1 reused from stored results, "+
-		"0 over budget (run again), 0 not applicable, 0 inconclusive, 0 too old for a live check")
+		"0 not applicable, 0 inconclusive")
 	for _, cfg := range b.checkers {
 		if !reflect.DeepEqual(cfg, dnscheck.Config{StoredOnly: true}) {
 			t.Errorf("a Checker that may query was made with the check off: %+v", cfg)
@@ -826,7 +856,7 @@ func TestSendingSourcesActivatePerMailbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	installFakeLookups(t, map[string][]netip.Addr{"mx1.example.jp": nil, "smtp-c.example.jp": nil, "relay.example.jp": nil}, nil)
-	if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "infoseek.jp", QType: "MX", Outcome: "exists", Detail: "stored",
+	if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "infoseek.jp", QType: dnscheck.VerifyKind, Outcome: "exists", Detail: "stored",
 		CheckedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -871,8 +901,7 @@ func TestSendingSourcesActivatePerMailbox(t *testing.T) {
 			}
 			dns[mta] = rule
 		}
-		if !strings.Contains(progress, "dns: 2 notice(s): 0 verified, 2 reused from stored results, 0 over budget (run again), "+
-			"0 not applicable, 0 inconclusive, 0 too old for a live check") {
+		if !strings.Contains(progress, "dns: 2 notice(s): 0 verified, 2 reused from stored results, 0 not applicable, 0 inconclusive") {
 			t.Errorf("%s: progress lacks the stored outcomes:\n%s", name, progress)
 		}
 		return rules["backscatter"], dns
@@ -897,5 +926,67 @@ func TestSendingSourcesActivatePerMailbox(t *testing.T) {
 					step.globalHosts, name, backscatter, dns, step.backscatter[name], step.dns[name])
 			}
 		}
+	}
+}
+
+// TestStoredReporterJudgedAgainstSettings: a stored lookup of a reporting
+// MTA holds its addresses only; whether it is a sending server is judged
+// again against the current settings in every run. With the check off the
+// stored row is used as it is (no query): its address in the sending
+// sources makes the verified failure one of a sending server, the same
+// address outside them an external one; the row stays untouched.
+func TestStoredReporterJudgedAgainstSettings(t *testing.T) {
+	db := newTestDB(t)
+	jm, key := newTestJobManager(t, db)
+	if err := SetAgentEnabled(db, false); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	if err := SaveDNSCheck(db, &off, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	installFakeLookups(t, map[string][]netip.Addr{}, nil)
+	if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "infoseek.jp", QType: dnscheck.VerifyKind, Outcome: "exists", Detail: "stored",
+		CheckedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	fetched := time.Now().Add(-30 * 24 * time.Hour).UTC().Truncate(time.Second)
+	if _, err := models.ReplaceSendingSourceLookup(db, &models.SendingSourceLookup{Kind: models.SendingSourceKindReporter, Name: "relay.outside.example",
+		Addresses: []string{"192.0.2.77"}, FetchedAt: fetched}, false); err != nil {
+		t.Fatal(err)
+	}
+	delayed, err := os.ReadFile(filepath.Join("mailengine", "testdata", "postfix_delayed_dns.eml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := strings.Replace(string(delayed), "Reporting-MTA: dns; mx1.example.jp", "Reporting-MTA: dns; relay.outside.example", 1)
+	mb, mailsRoot := seedMailbox(t, db, key, "ops@example.jp", nil)
+	addRawMessage(t, mailsRoot, mb.Address, 0, []byte(raw))
+	judge := func(ipv4 []string) string {
+		t.Helper()
+		if err := SaveSendingSourceIPv4(db, ipv4); err != nil {
+			t.Fatal(err)
+		}
+		regroupRules(t, jm, mb, mailsRoot)
+		idx, err := mailengine.OpenIndex(context.Background(), mailsRoot, mb.Address, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer idx.Close()
+		var rule string
+		if err := idx.QueryRow(`SELECT category_rule FROM bounces`).Scan(&rule); err != nil {
+			t.Fatal(err)
+		}
+		return rule
+	}
+	if got := judge([]string{"192.0.2.0/24"}); got != "dns_resolver_failure" {
+		t.Errorf("the stored address in the sending sources: rule %s, want dns_resolver_failure", got)
+	}
+	if got := judge([]string{"198.51.100.0/24"}); got != "dns_failure_external" {
+		t.Errorf("the stored address outside the sending sources: rule %s, want dns_failure_external", got)
+	}
+	row, err := models.GetSendingSourceLookup(db, models.SendingSourceKindReporter, "relay.outside.example")
+	if err != nil || !row.FetchedAt.Equal(fetched) || !reflect.DeepEqual(row.Addresses, []string{"192.0.2.77"}) {
+		t.Errorf("stored row %+v, %v; want it untouched", row, err)
 	}
 }

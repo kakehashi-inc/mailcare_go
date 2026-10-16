@@ -9,7 +9,11 @@ import (
 )
 
 // GroupMailbox is the grouping phase (design 5.4): it classifies the
-// messages the phase has not processed yet (messages.classified = 0),
+// messages the phase has not processed yet (messages.classified = 0) and
+// the notices whose DNS lookup failure was not verified when they were
+// grouped (a category rule starting with dnsUnverifiedRulePrefix: the DNS
+// check was off, or the answers were cut short), so that every grouping
+// verifies those again (design document "mail classification" 4.4). It
 // extracts the bounce details and the failing records of DMARC reports,
 // categorizes them and files them into groups. Every message is parsed
 // again from its .eml (the index holds no parsed copy); the writes of one
@@ -55,6 +59,18 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, rec
 	msgs, err := models.ListUnclassifiedMessages(db)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
+	}
+	// The notices an earlier grouping left unverified are verified again
+	// while the DNS check may query (not with stored outcomes alone).
+	if !full && cfg.verifiesLive() {
+		again, err := models.ListMessagesByBounceRulePrefix(db, dnsUnverifiedRulePrefix)
+		if err != nil {
+			return nil, fmt.Errorf("list unverified notices: %w", err)
+		}
+		if len(again) > 0 {
+			report(progress, fmt.Sprintf("verifying again %d notice(s) whose DNS lookup failure was not verified", len(again)))
+			msgs = append(msgs, again...)
+		}
 	}
 	report(progress, fmt.Sprintf("grouping %d messages", len(msgs)))
 	result := &GroupResult{GroupsTouched: []string{}}
@@ -109,6 +125,11 @@ func GroupMailbox(ctx context.Context, mailsRoot, address string, full bool, rec
 	return result, nil
 }
 
+// dnsUnverifiedRulePrefix starts the names of the category rules of a DNS
+// lookup failure that was not verified (category.go): GroupMailbox groups
+// their notices again on every run.
+const dnsUnverifiedRulePrefix = "dns_unverified_"
+
 // noticeJunkCounts counts the messages of one GroupMailbox or Reindex run
 // that the junk rules about delivery-failure notices took (the backscatter
 // rule and the fake notices F1 and F2), for the progress line of the run:
@@ -144,9 +165,10 @@ func (c *noticeJunkCounts) reportSummary(progress Progress) {
 // groupMessage runs classification, extraction, categorization and grouping
 // for one index row and marks it classified (design document "mail classification" 2-4, design 5.4). Every write
 // of the message happens in one transaction: the group rows (UpsertGroup),
-// the bounces row (only for failed / delayed notices; auto-replies, daemon
-// mail without failure evidence, junk and ordinary mail get none; it records
-// where the diagnostic was found, the category rule and the pattern key) and
+// the bounces rows (only for failed / delayed notices, one per recipient
+// block; auto-replies, daemon mail without failure evidence, junk and
+// ordinary mail get none; each records where the diagnostic was found, the
+// category rule and the pattern key) and
 // the dmarc_records rows (the failing records of a DMARC report, each with
 // its group, category rule and pattern key), the counters and the analysis
 // flag of every group touched (groupTracker.recount: set when the pattern of
@@ -183,30 +205,33 @@ func groupMessage(ctx context.Context, db *sql.DB, msg *models.Message, pm *Pars
 }
 
 // messageGrouping is what the grouping step decided for one message before
-// anything is written: its classification, the bounce details with their
-// group (failed / delayed notices) and the failing records of a DMARC
-// report with their distinct groups.
+// anything is written: its classification, the bounce details of every
+// recipient block with their groups (failed / delayed notices; groups[i] is
+// the group of bounces[i]) and the failing records of a DMARC report with
+// their distinct groups.
 type messageGrouping struct {
 	cls          Classification
-	bounce       *models.Bounce
-	group        *models.BounceGroup
+	bounces      []*models.Bounce
+	groups       []*models.BounceGroup
 	records      []*models.DMARCRecord
 	recordGroups []*reportGroup
 }
 
 // planGrouping classifies a message (with the sending sources of the
 // run, which the backscatter rule needs: classifyWithSources), extracts the bounce
-// details of a failed or delayed notice, verifies the DNS lookup failure
-// its diagnostic reports (dnsVerification.verdict; only these notices reach
-// the verifier, never junk, DMARC reports or other mail) and categorizes
-// it, and categorizes the failing records of a DMARC report. It does not
-// touch the database.
+// details of every recipient block of a failed or delayed notice, verifies
+// the DNS lookup failure the diagnostic of each reports
+// (dnsVerification.verdict; only these notices reach the verifier, never
+// junk, DMARC reports or other mail) and categorizes each, and categorizes
+// the failing records of a DMARC report. It does not touch the database.
 func planGrouping(ctx context.Context, msg *models.Message, pm *ParsedMessage, cfg groupConfig, exclude ...string) *messageGrouping {
 	plan := &messageGrouping{cls: classifyWithSources(ctx, pm, mailboxOf(exclude), cfg)}
 	if plan.cls.IsBounce && isGroupedKind(plan.cls.Kind) {
-		plan.bounce = ExtractBounce(pm, plan.cls.Kind, append([]string{pm.FromAddress}, exclude...)...)
-		verdict := cfg.dns.verdict(ctx, plan.bounce, pm, noticeTime(msg))
-		plan.group = groupForBounceWith(plan.cls.Kind, plan.bounce, verdict)
+		plan.bounces = ExtractBounces(pm, plan.cls.Kind, append([]string{pm.FromAddress}, exclude...)...)
+		for _, b := range plan.bounces {
+			verdict := cfg.dns.verdict(ctx, b, pm, noticeTime(msg))
+			plan.groups = append(plan.groups, groupForBounceWith(BounceKind(b, plan.cls.Kind), b, verdict))
+		}
 	}
 	if plan.cls.Kind == bounceKindReport {
 		records, groups := dmarcRecordsFor(pm.DMARC)
@@ -245,41 +270,74 @@ func classifyWithSources(ctx context.Context, pm *ParsedMessage, mailbox string,
 
 // groupMessageIn writes what planGrouping decided over an Execer (a
 // transaction in production; the tests also drive it with a plain database
-// or a failing wrapper to check the write order).
+// or a failing wrapper to check the write order). A message grouped again
+// (a notice whose DNS lookup failure is verified again) leaves the groups
+// it was in: their counters are refreshed, and a group left without members
+// is removed.
 func groupMessageIn(db models.Execer, msg *models.Message, plan *messageGrouping, tracker *groupTracker) error {
-	cls, bounce, group, records, recordGroups := plan.cls, plan.bounce, plan.group, plan.records, plan.recordGroups
+	cls, bounces, groups, records, recordGroups := plan.cls, plan.bounces, plan.groups, plan.records, plan.recordGroups
 	groupKey := ""
-	if group != nil {
-		groupKey = group.GroupKey
+	if len(groups) > 0 && groups[0] != nil {
+		groupKey = groups[0].GroupKey
+	}
+	previous, err := models.ListBounceGroupKeys(db, msg.ID)
+	if err != nil {
+		return err
 	}
 	// 1. the groups (descriptive columns; the counters follow the members).
-	if err := tracker.upsert(db, group); err != nil {
-		return err
+	for _, g := range groups {
+		if err := tracker.upsert(db, g); err != nil {
+			return err
+		}
 	}
 	for _, rg := range recordGroups {
 		if err := tracker.upsert(db, rg.group); err != nil {
 			return err
 		}
 	}
-	// 2. the bounce details and the DMARC records, or the removal of stale
+	// 2. the bounce details and the DMARC records, replacing the stale
 	// ones.
-	if bounce != nil {
-		bounce.ID = msg.ID
-		bounce.GroupKey = groupKey
-		if err := models.UpsertBounce(db, bounce); err != nil {
-			return err
+	for i, b := range bounces {
+		b.GroupKey = ""
+		if groups[i] != nil {
+			b.GroupKey = groups[i].GroupKey
 		}
-	} else if err := models.DeleteBounce(db, msg.ID); err != nil {
+	}
+	if err := models.ReplaceBounces(db, msg.ID, bounces); err != nil {
 		return err
 	}
 	if err := models.ReplaceDMARCRecords(db, msg.ID, records); err != nil {
 		return err
 	}
 	// 3. the counters and the analysis flag of every group touched, once
-	// per group however many records of the report it received.
-	if bounce != nil {
-		member := &models.GroupBounce{Bounce: *bounce, MessageKey: msg.MessageKey, Date: msg.Date.UTC()}
-		if err := tracker.recount(db, group, member); err != nil {
+	// per group however many recipient blocks or records it received.
+	var order []string
+	members := map[string][]*models.GroupBounce{}
+	groupOf := map[string]*models.BounceGroup{}
+	for i, b := range bounces {
+		g := groups[i]
+		if g == nil {
+			continue
+		}
+		if _, ok := members[g.GroupKey]; !ok {
+			order = append(order, g.GroupKey)
+			groupOf[g.GroupKey] = g
+		}
+		members[g.GroupKey] = append(members[g.GroupKey], &models.GroupBounce{Bounce: *b, MessageKey: msg.MessageKey, Date: msg.Date.UTC()})
+	}
+	for _, key := range order {
+		if err := tracker.recount(db, groupOf[key], members[key]...); err != nil {
+			return err
+		}
+	}
+	for _, key := range previous {
+		if _, still := members[key]; still {
+			continue
+		}
+		if err := models.RefreshGroupCounters(db, key); err != nil {
+			return err
+		}
+		if err := models.DeleteGroupIfEmpty(db, key); err != nil {
 			return err
 		}
 	}
@@ -287,7 +345,7 @@ func groupMessageIn(db models.Execer, msg *models.Message, plan *messageGrouping
 		members := make([]*models.GroupBounce, 0, len(rg.records))
 		for _, r := range rg.records {
 			members = append(members, &models.GroupBounce{
-				Bounce:     models.Bounce{ID: msg.ID, GroupKey: r.GroupKey, PatternKey: r.PatternKey},
+				Bounce:     models.Bounce{MessageID: msg.ID, GroupKey: r.GroupKey, PatternKey: r.PatternKey},
 				MessageKey: msg.MessageKey, Date: msg.Date.UTC(), DMARC: r,
 			})
 		}

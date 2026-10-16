@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -23,20 +26,32 @@ import (
 //     template, remote MTA and kind of diagnostic source, see
 //     mailengine.PatternKey) with their counts, so that nothing needs to be
 //     read to learn that the other notices look the same;
-//   - one sample notice per pattern (the newest, at most MaxEvidenceSamples),
-//     each with the delivery-status fields, the headers of the returned
-//     message that matter for the analysis, and an excerpt of the body
-//     section the diagnostic was found in (bounces.diagnostic_source). The
-//     text and HTML bodies of a notice can differ; only the section that
-//     holds the diagnostic is shown, the other body is named as not used.
+//   - one sample notice per pattern (the newest), each with the
+//     delivery-status fields, the headers of the returned message that
+//     matter for the analysis, and an excerpt of the body section the
+//     diagnostic was found in (bounces.diagnostic_source). The text and
+//     HTML bodies of a notice can differ; only the section that holds the
+//     diagnostic is shown, the other body is named as not used.
 //
-// The sample blocks go into the prompt; the same evidence, untruncated,
-// goes into evidence/<message_key>.txt in the workspace (for a DMARC record
-// the same capped block as in the prompt, in
-// evidence/<message_key>-dmarc-<record id>.txt, see evidenceFileName), which
-// the agent may read only under the conditions the prompt names (a
-// [TRUNCATED] excerpt, a value marked (not found), a contradiction with the
-// category). Every value
+// The members are counted per notice (a notice that reports several failed
+// recipients has a bounces row per recipient: it counts once among the
+// messages and with each of its recipients) and per record of a DMARC
+// report. Every pattern gets its sample; the blocks of the first
+// MaxEvidenceSamples (Sample.Inline) go into the prompt, which names the
+// evidence file of every other one. The evidence of each sample goes into
+// evidence/<message_key>.txt in the workspace
+// (evidence/<message_key>-r<n>.txt for the n-th further failed recipient
+// of a notice; for a DMARC record the same capped block as in the prompt,
+// in evidence/<message_key>-dmarc-<record id>.txt, see evidenceFileName):
+// the block of the prompt, with every DNS evidence line. What a notice
+// holds as a whole (every delivery-status block, the whole body sections
+// its samples use) goes once into evidence/<message_key>-notice.txt,
+// which the sample files name, so a sample file stays as small as its
+// block however many recipients the notice reports. The files are written
+// as the samples are made (EvidenceInput.Dir), and every notice is read
+// and parsed once. The agent may read them only under the conditions the
+// prompt names (a [TRUNCATED] excerpt, a value marked (not found), a
+// contradiction with the category, a sample not shown in the prompt). Every value
 // taken from a notice is folded onto one line, and every body line is
 // prefixed with "| ", so that text from a notice can never open a line or a
 // section of the prompt.
@@ -77,6 +92,9 @@ type Pattern struct {
 	newestAfter *models.GroupBounce
 	recipients  map[string]bool
 	sources     map[string]bool
+	// units, before and after hold the notices counted (noticeKey), so
+	// that a notice with several failed recipients counts once.
+	units, before, after map[string]bool
 }
 
 // Sample is the evidence of one sample notice.
@@ -87,18 +105,29 @@ type Sample struct {
 	// FileName is the evidence file relative to the workspace
 	// ("evidence/<key>.txt", slash-separated; see evidenceFileName).
 	FileName string
-	Prompt   string // the block for the EVIDENCE section of the prompt
-	File     string // the content of the evidence file
+	// NoticeFile is the file of the whole notice of the sample (every
+	// delivery-status block, every body section the samples of the notice
+	// use), shared by the samples of the notice
+	// ("evidence/<message_key>-notice.txt"); "" for a DMARC record and for
+	// a notice that could not be read.
+	NoticeFile string
+	Prompt     string // the block for the EVIDENCE section of the prompt
 	// DNS is true when the block reports a failed DNS lookup (the prompt
 	// then explains how to read the verification).
 	DNS bool
+	// Inline is true for the samples whose block the EVIDENCE section shows
+	// (the first MaxEvidenceSamples in sampling order); the others are only
+	// in their evidence files.
+	Inline bool
+
+	member *models.GroupBounce // the member the sample shows
 }
 
 // Evidence is what BuildEvidence prepares for one analysis run.
 type Evidence struct {
 	Patterns []*Pattern // most frequent first
-	Samples  []*Sample  // in pattern order
-	Messages int        // members of the group (bounces or DMARC records)
+	Samples  []*Sample  // in sampling order
+	Messages int        // members of the group: notices (noticeKey) or DMARC records
 	// Update is true when the run updates a previous report: some patterns
 	// are covered by it, the others (New) appeared since, and only those
 	// get samples.
@@ -106,10 +135,15 @@ type Evidence struct {
 	// Recheck is true when the run re-checks a decision: the patterns carry
 	// their counts before and after it, and the samples come from after it.
 	Recheck bool
+	// Dir is the workspace the evidence files were written to.
+	Dir string
 }
 
 // EvidenceInput is everything BuildEvidence needs.
 type EvidenceInput struct {
+	// Dir is the workspace: the evidence files are written into its
+	// evidence directory as the samples are made.
+	Dir       string
 	MailsRoot string
 	Address   string
 	Group     *models.BounceGroup
@@ -137,11 +171,12 @@ type DNSCheckResult struct {
 }
 
 // DNSCheckFunc returns the stored verification a notice received at
-// noticeTime uses for a name and record type, as mailengine.ParseDNSFailure
-// reports them (qtype "" for the forms that name no type); ok = false when
-// there is none. The caller supplies it because the verifications live in
-// the master database, which this package does not open.
-type DNSCheckFunc func(name, qtype string, noticeTime time.Time) (res DNSCheckResult, ok bool)
+// noticeTime uses for a name (the one mailengine.ParseDNSFailure reports,
+// or the recipient domain for a form that names none; the record type does
+// not matter); ok = false when there is none. The caller supplies it
+// because the verifications live in the master database, which this
+// package does not open.
+type DNSCheckFunc func(name string, noticeTime time.Time) (res DNSCheckResult, ok bool)
 
 // readRawMessage reads the original notice of a message key. A variable so
 // that tests can supply the notices.
@@ -149,23 +184,32 @@ var readRawMessage = func(mailsRoot, address, key string) ([]byte, error) {
 	return os.ReadFile(mailengine.MessageFilePath(mailsRoot, address, key, "eml"))
 }
 
-// BuildEvidence groups the bounces into patterns and prepares the sample
-// notices.
-func BuildEvidence(in EvidenceInput) *Evidence {
-	ev := &Evidence{Messages: len(in.Bounces)}
+// BuildEvidence groups the bounces into patterns, prepares the sample
+// notices and writes their evidence files into the workspace (in.Dir). An
+// error is one of writing the files.
+func BuildEvidence(in EvidenceInput) (*Evidence, error) {
+	ev := &Evidence{Dir: in.Dir}
 	byKey := map[string]*Pattern{}
+	units := map[string]bool{}
 	for _, b := range in.Bounces {
+		unit := noticeKey(b)
+		if countOnce(units, unit) {
+			ev.Messages++
+		}
 		p := byKey[b.PatternKey]
 		if p == nil {
 			p = &Pattern{
 				Key: b.PatternKey, StatusCode: b.StatusCode, DiagnosticTemplate: b.DiagnosticTemplate,
 				RemoteMTA: b.RemoteMTA, SourceKind: mailengine.SourceKind(b.DiagnosticSource),
 				FirstSeen: b.Date, LastSeen: b.Date, newest: b, recipients: map[string]bool{}, sources: map[string]bool{},
+				units: map[string]bool{}, before: map[string]bool{}, after: map[string]bool{},
 			}
 			byKey[b.PatternKey] = p
 			ev.Patterns = append(ev.Patterns, p)
 		}
-		p.Messages++
+		if countOnce(p.units, unit) {
+			p.Messages++
+		}
 		if b.Recipient != "" {
 			p.recipients[strings.ToLower(b.Recipient)] = true
 		}
@@ -182,12 +226,16 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 			continue
 		}
 		if !b.Date.After(in.Decided) {
-			p.Before++
+			if countOnce(p.before, unit) {
+				p.Before++
+			}
 			continue
 		}
-		p.After++
-		if mailengine.SentAt(b).After(in.Decided) {
-			p.SentAfter++
+		if countOnce(p.after, unit) {
+			p.After++
+			if mailengine.SentAt(b).After(in.Decided) {
+				p.SentAfter++
+			}
 		}
 		if p.newestAfter == nil {
 			// The members come newest first.
@@ -225,9 +273,6 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 		}
 	}
 	for _, p := range samplingOrder(ev) {
-		if len(ev.Samples) >= MaxEvidenceSamples {
-			break
-		}
 		if ev.Update && !p.New {
 			continue
 		}
@@ -237,16 +282,144 @@ func BuildEvidence(in EvidenceInput) *Evidence {
 		}
 		s := &Sample{
 			ID: fmt.Sprintf("S%d", len(ev.Samples)+1), Pattern: p, MessageKey: member.MessageKey,
-			FileName: evidenceFileName(member),
+			FileName: evidenceFileName(member), Inline: len(ev.Samples) < MaxEvidenceSamples, member: member,
 		}
-		buildSample(s, in, member)
 		p.Sample = s
 		ev.Samples = append(ev.Samples, s)
 	}
-	return ev
+	return ev, writeSamples(in, ev)
 }
 
-// samplingOrder is the order in which the patterns get the sample slots.
+// writeSamples makes the samples and writes their evidence files: a DMARC
+// record alone, the samples of a notice together, so that the notice is
+// read and parsed once and its notice file written once.
+func writeSamples(in EvidenceInput, ev *Evidence) error {
+	if err := os.MkdirAll(filepath.Join(in.Dir, EvidenceDirName), 0o700); err != nil {
+		return err
+	}
+	var keys []string
+	byNotice := map[string][]*Sample{}
+	for _, s := range ev.Samples {
+		if s.member.DMARC != nil {
+			if err := writeEvidenceFile(in.Dir, s.FileName, func(w io.Writer) { buildDMARCSample(s, in, s.member, w) }); err != nil {
+				return err
+			}
+			continue
+		}
+		if byNotice[s.MessageKey] == nil {
+			keys = append(keys, s.MessageKey)
+		}
+		byNotice[s.MessageKey] = append(byNotice[s.MessageKey], s)
+	}
+	for _, key := range keys {
+		if err := writeNotice(in, key, byNotice[key]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeEvidenceFile creates a file of the workspace (name relative to it,
+// slash-separated) and streams its content to it.
+func writeEvidenceFile(dir, name string, fill func(w io.Writer)) error {
+	f, err := os.OpenFile(filepath.Join(dir, filepath.FromSlash(name)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriter(f)
+	fill(w)
+	if err := w.Flush(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// noticeFileName is the notice file of a message key (Sample.NoticeFile).
+func noticeFileName(key string) string {
+	return EvidenceDirName + "/" + key + "-notice.txt"
+}
+
+// bodySection names one body section of a notice.
+type bodySection struct {
+	kind string
+	n    int
+}
+
+// writeNotice reads and parses a notice once, writes the file of each of
+// its samples and then its notice file: every delivery-status block and
+// every body section the samples use, whole.
+func writeNotice(in EvidenceInput, key string, samples []*Sample) error {
+	var pm *mailengine.ParsedMessage
+	if raw, err := readRawMessage(in.MailsRoot, in.Address, key); err == nil {
+		pm = mailengine.ParseMessage(raw)
+	}
+	noticeFile := ""
+	if pm != nil {
+		noticeFile = noticeFileName(key)
+	}
+	var sections []bodySection
+	seen := map[bodySection]bool{}
+	for _, s := range samples {
+		s.NoticeFile = noticeFile
+		var sec bodySection
+		if err := writeEvidenceFile(in.Dir, s.FileName, func(w io.Writer) { sec = buildSample(s, in, s.member, pm, w) }); err != nil {
+			return err
+		}
+		if sec.kind != "" && !seen[sec] {
+			seen[sec] = true
+			sections = append(sections, sec)
+		}
+	}
+	if pm == nil {
+		return nil
+	}
+	return writeEvidenceFile(in.Dir, noticeFile, func(w io.Writer) {
+		fmt.Fprintf(w, "Notice %s: every delivery-status block and the body sections its samples use\n", key)
+		writeDeliveryStatusBlocks(w, pm.DeliveryStatus)
+		for _, sec := range sections {
+			text, _ := pm.SectionText(sec.kind, sec.n)
+			lines := cleanBodyLines(text)
+			fmt.Fprintf(w, "Body %s (complete, %d lines):\n", mailengine.SectionRef(sec.kind, sec.n), len(lines))
+			shown := lines
+			if len(shown) > maxEvidenceFileLines {
+				shown = shown[:maxEvidenceFileLines]
+			}
+			for _, l := range shown {
+				_, _ = io.WriteString(w, "| "+truncateLine(l, maxEvidenceLineRunes)+"\n")
+			}
+			if len(shown) < len(lines) {
+				fmt.Fprintf(w, "[TRUNCATED: %d more lines not included]\n", len(lines)-len(shown))
+			}
+		}
+	})
+}
+
+// noticeKey identifies the notice of a bounce among the members (every
+// failed recipient of a notice has a separate row, and the notice counts
+// once); "" for a DMARC record, which counts alone.
+func noticeKey(b *models.GroupBounce) string {
+	if b.DMARC != nil {
+		return ""
+	}
+	return b.MessageKey
+}
+
+// countOnce reports whether a member of the given notice is to be counted
+// (the first of its notice in seen, or a member without one) and records it.
+func countOnce(seen map[string]bool, key string) bool {
+	if key == "" {
+		return true
+	}
+	if seen[key] {
+		return false
+	}
+	seen[key] = true
+	return true
+}
+
+// samplingOrder is the order in which the patterns get the samples shown in
+// the prompt.
 // Normally the list order (most frequent first). When a decision is
 // re-checked, what arrived after it comes first: the patterns that appeared
 // only after it, then the ones that continued after it (each by their
@@ -275,14 +448,31 @@ func samplingOrder(ev *Evidence) []*Pattern {
 }
 
 // evidenceFileName is the evidence file of a sample, relative to the
-// workspace: evidence/<message_key>.txt for a bounce (one per message), and
-// evidence/<message_key>-dmarc-<record id>.txt for a DMARC record (a report
-// mail can hold samples of several patterns of the same group).
+// workspace: evidence/<message_key>.txt for a bounce of the first failed
+// recipient of a notice, evidence/<message_key>-r<n>.txt for the n-th
+// further one (the failed recipients of a notice can belong to different
+// patterns of the same group), and evidence/<message_key>-dmarc-<record
+// id>.txt for a DMARC record (a report mail can hold samples of several
+// patterns of the same group).
 func evidenceFileName(b *models.GroupBounce) string {
 	if b.DMARC != nil {
 		return fmt.Sprintf("%s/%s-dmarc-%d.txt", EvidenceDirName, b.MessageKey, b.DMARC.ID)
 	}
+	if b.RecipientIndex > 0 {
+		return fmt.Sprintf("%s/%s-r%d.txt", EvidenceDirName, b.MessageKey, b.RecipientIndex)
+	}
 	return EvidenceDirName + "/" + b.MessageKey + ".txt"
+}
+
+// inlineSamples returns the samples whose block the EVIDENCE section shows.
+func (ev *Evidence) inlineSamples() []*Sample {
+	var out []*Sample
+	for _, s := range ev.Samples {
+		if s.Inline {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // PatternKeys returns the keys of every pattern (what a completed report
@@ -306,64 +496,48 @@ func (ev *Evidence) hasDNS() bool {
 	return false
 }
 
-// buildSample reads the notice of a sample and renders its prompt block and
-// its evidence file.
-func buildSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
-	if b.DMARC != nil {
-		buildDMARCSample(s, in, b)
-		return
+// buildSample renders the prompt block of a sample (s.Prompt) and writes
+// its evidence file to w: the same block, with every DNS evidence line, and
+// the names of what the notice file holds (pm nil: the notice could not be
+// read). It returns the body section the sample uses (kind "" for none).
+func buildSample(s *Sample, in EvidenceInput, b *models.GroupBounce, pm *mailengine.ParsedMessage, w io.Writer) bodySection {
+	var prompt strings.Builder
+	both := func(text string) {
+		prompt.WriteString(text)
+		_, _ = io.WriteString(w, text)
 	}
-	var head strings.Builder
-	head.WriteString(fmt.Sprintf("[%s] pattern %s, message %s, %s\n", s.ID, s.Pattern.ID, b.MessageKey, formatTime(models.NullTime(b.Date))))
-	head.WriteString("Classification: category " + orPlaceholder(foldLine(in.Group.Category), "(not classified)") +
+	defer func() { s.Prompt = prompt.String() }()
+	both(fmt.Sprintf("[%s] pattern %s, message %s, %s\n", s.ID, s.Pattern.ID, b.MessageKey, formatTime(models.NullTime(b.Date))))
+	both("Classification: category " + orPlaceholder(foldLine(in.Group.Category), "(not classified)") +
 		", rule " + orPlaceholder(foldLine(b.CategoryRule), "(not recorded)") + "\n")
-	head.WriteString("Diagnostic: " + orNotFound(sanitize(foldLine(b.Diagnostic))) + "\n")
-	head.WriteString("Diagnostic source: " + describeSource(b.DiagnosticSource) + "\n")
+	both("Diagnostic: " + orNotFound(sanitize(foldLine(b.Diagnostic))) + "\n")
+	both("Diagnostic source: " + describeSource(b.DiagnosticSource) + "\n")
 	// The DNS block comes from the index, so it is shown even when the
 	// notice file cannot be read.
 	dnsPrompt, dnsFile := dnsFailureEvidence(in.DNSCheck, b, s.FileName)
 	s.DNS = dnsPrompt != ""
+	prompt.WriteString(dnsPrompt)
+	_, _ = io.WriteString(w, dnsFile)
 
-	raw, err := readRawMessage(in.MailsRoot, in.Address, b.MessageKey)
-	if err != nil {
-		note := "Notice: (not found: the notice file could not be read)\n"
-		s.Prompt = head.String() + dnsPrompt + note
-		s.File = head.String() + dnsFile + note
-		return
+	if pm == nil {
+		both("Notice: (not found: the notice file could not be read)\n")
+		return bodySection{}
 	}
-	pm := mailengine.ParseMessage(raw)
-	var prompt, file strings.Builder
-	prompt.WriteString(head.String() + dnsPrompt)
-	file.WriteString(head.String() + dnsFile)
-	notice := "Notice: From: " + orNotFound(sanitize(foldLine(formatFrom(pm)))) + "; Subject: " + orNotFound(sanitize(foldLine(pm.Subject))) + "\n"
-	prompt.WriteString(notice)
-	file.WriteString(notice)
-
-	dsnLine, dsnFull := deliveryStatusEvidence(pm.DeliveryStatus, b.Recipient)
-	prompt.WriteString(dsnLine)
-	file.WriteString(dsnFull)
-	returned := returnedMessageEvidence(pm.OriginalMessage)
-	prompt.WriteString(returned)
-	file.WriteString(returned)
+	both("Notice: From: " + orNotFound(sanitize(foldLine(formatFrom(pm)))) + "; Subject: " + orNotFound(sanitize(foldLine(pm.Subject))) + "\n")
+	both(deliveryStatusEvidence(pm.DeliveryStatus, b.Recipient, s.NoticeFile))
+	both(returnedMessageEvidence(pm.OriginalMessage))
 
 	kind, n, note := bodyForSample(pm, b)
+	both(note)
 	if kind == "" {
-		prompt.WriteString(note)
-		file.WriteString(note)
-		s.Prompt, s.File = prompt.String(), file.String()
-		return
+		return bodySection{}
 	}
-	prompt.WriteString(note)
-	file.WriteString(note)
 	text, _ := pm.SectionText(kind, n)
 	lines := cleanBodyLines(text)
 	ref := mailengine.SectionRef(kind, n)
 	if len(lines) == 0 {
-		empty := fmt.Sprintf("Excerpt (%s): (empty)\n", ref)
-		prompt.WriteString(empty)
-		file.WriteString(empty)
-		s.Prompt, s.File = prompt.String(), file.String()
-		return
+		both(fmt.Sprintf("Excerpt (%s): (empty)\n", ref))
+		return bodySection{kind, n}
 	}
 	// When the diagnostic comes from the delivery-status part the body only
 	// supports it, so a shorter excerpt is enough.
@@ -372,35 +546,25 @@ func buildSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
 		maxLines = MaxExcerptLines / 2
 	}
 	from, to := excerptWindow(lines, anchorLine(lines, b), maxLines)
-	prompt.WriteString(fmt.Sprintf("Excerpt (%s, lines %d-%d of %d):\n", ref, from+1, to, len(lines)))
+	both(fmt.Sprintf("Excerpt (%s, lines %d-%d of %d):\n", ref, from+1, to, len(lines)))
 	if from > 0 {
-		prompt.WriteString(fmt.Sprintf("[TRUNCATED: %d lines before this excerpt are in %s]\n", from, s.FileName))
+		both(fmt.Sprintf("[TRUNCATED: %d lines before this excerpt are in %s]\n", from, s.NoticeFile))
 	}
 	for _, l := range lines[from:to] {
-		prompt.WriteString("| " + truncateLine(l, maxExcerptLineRunes) + "\n")
+		both("| " + truncateLine(l, maxExcerptLineRunes) + "\n")
 	}
 	if to < len(lines) {
-		prompt.WriteString(fmt.Sprintf("[TRUNCATED: continues in %s (%d more lines)]\n", s.FileName, len(lines)-to))
+		both(fmt.Sprintf("[TRUNCATED: continues in %s (%d more lines)]\n", s.NoticeFile, len(lines)-to))
 	}
-	file.WriteString(fmt.Sprintf("Body %s (complete, %d lines):\n", ref, len(lines)))
-	shown := lines
-	if len(shown) > maxEvidenceFileLines {
-		shown = shown[:maxEvidenceFileLines]
-	}
-	for _, l := range shown {
-		file.WriteString("| " + truncateLine(l, maxEvidenceLineRunes) + "\n")
-	}
-	if len(shown) < len(lines) {
-		file.WriteString(fmt.Sprintf("[TRUNCATED: %d more lines not included]\n", len(lines)-len(shown)))
-	}
-	s.Prompt, s.File = prompt.String(), file.String()
+	_, _ = io.WriteString(w, fmt.Sprintf("Body %s (complete, %d lines): in %s\n", ref, len(lines), s.NoticeFile))
+	return bodySection{kind, n}
 }
 
 // buildDMARCSample renders a sample that is a failing record of a DMARC
 // aggregate report: the report (who reported, the period, the published
 // policy) and every field of the record. The report mail has no body worth
 // reading, so the prompt block and the evidence file are the same.
-func buildDMARCSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
+func buildDMARCSample(s *Sample, in EvidenceInput, b *models.GroupBounce, w io.Writer) {
 	r := b.DMARC
 	// Every value comes from the report, which anybody can send: folded
 	// onto one line, neutralized and capped like a notice line.
@@ -418,7 +582,7 @@ func buildDMARCSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
 	out.WriteString("Policy evaluated (aligned results): dkim " + v(r.DKIMResult) + "; spf " + v(r.SPFResult) + "\n")
 	out.WriteString("Auth results: DKIM " + v(r.DKIMAuth) + "; SPF " + v(r.SPFAuth) + "\n")
 	s.Prompt = out.String()
-	s.File = out.String()
+	_, _ = io.WriteString(w, s.Prompt)
 }
 
 // dnsFailureEvidence renders the failed DNS lookup the diagnostic of a
@@ -431,24 +595,31 @@ func buildDMARCSample(s *Sample, in EvidenceInput, b *models.GroupBounce) {
 // they returned, which whoever runs a DNS server can fill with any text, so
 // every line is folded and prefixed with "| " like the body of a notice.
 func dnsFailureEvidence(check DNSCheckFunc, b *models.GroupBounce, fileName string) (prompt, file string) {
-	f, found := mailengine.ParseDNSFailure(b.Diagnostic)
+	f, found := mailengine.ParseDNSFailure(b.Diagnostic, b.RemoteMTA)
 	if !found {
 		return "", ""
 	}
+	name := f.Name
+	nameNote := ""
+	if name == "" {
+		name = strings.ToLower(strings.TrimSpace(b.RecipientDomain))
+		nameNote = " (the recipient domain: the notice names no name)"
+	}
 	qtype := f.QType
 	if qtype == "" {
-		qtype = "(not named by the notice; MailCare looks such names up as MX)"
+		qtype = "(not named by the notice)"
 	}
-	wording := `permanent ("Host not found" without "try again": the resolver of the reporting MTA typically got NXDOMAIN, an answer that the name does not exist)`
+	wording := `permanent (a definite answer: the resolver of the reporting MTA typically got NXDOMAIN, or the name exists without the records it needed)`
 	if f.Temporary {
-		wording = `temporary ("try again", "lookup failure" or the like: the resolver of the reporting MTA got no usable answer, typically SERVFAIL or a timeout)`
+		wording = `temporary ("try again", "lookup did not complete" or the like: the resolver of the reporting MTA got no usable answer, typically SERVFAIL or a timeout)`
 	}
-	facts := "DNS lookup failure (parsed from the diagnostic): name " + f.Name + "; record type " + qtype +
+	facts := "DNS lookup failure (parsed from the diagnostic): name " + orNotFound(sanitize(foldLine(name))) + nameNote +
+		"; record type " + qtype + " (information only: MailCare verifies the name whatever the type)" +
 		"; wording " + wording + "; reporting MTA " + orNotFound(sanitize(foldLine(b.ReportingMTA))) + "\n"
 	var res DNSCheckResult
 	ok := false
-	if check != nil {
-		res, ok = check(f.Name, f.QType, noticeTime(b))
+	if check != nil && name != "" {
+		res, ok = check(name, noticeTime(b))
 	}
 	if !ok {
 		none := facts + "DNS verification: (not found: this name was not verified by MailCare)\n"
@@ -461,6 +632,7 @@ func dnsFailureEvidence(check DNSCheckFunc, b *models.GroupBounce, fileName stri
 	head := facts + "DNS verification by MailCare: outcome " + orNotFound(truncateLine(sanitize(foldLine(res.Outcome)), maxDNSOutcomeRunes)) +
 		"; checked " + orNotFound(formatTime(models.NullTime(res.CheckedAt))) +
 		"; notice received " + orNotFound(formatTime(models.NullTime(noticeTime(b)))) +
+		lateCheckNote(res.CheckedAt, noticeTime(b)) +
 		"; authoritative servers asked " + authoritative + "\n"
 	lines := dnsDetailLines(res.Detail)
 	if len(lines) == 0 {
@@ -481,19 +653,34 @@ func dnsFailureEvidence(check DNSCheckFunc, b *models.GroupBounce, fileName stri
 	if len(shown) < len(lines) {
 		p.WriteString(fmt.Sprintf("[TRUNCATED: continues in %s (%d more lines)]\n", fileName, len(lines)-len(shown)))
 	}
-	all := lines
-	if len(all) > maxEvidenceFileLines {
-		all = all[:maxEvidenceFileLines]
-	}
+	// The evidence file has every line whole: MailCare wrote them, one per
+	// resolver and name server asked, each from one DNS message (at most
+	// 65535 octets, RFC 1035 4.2.2).
 	fl.WriteString(head)
 	fl.WriteString(fmt.Sprintf("Verification evidence (complete, %d lines; %s):\n", len(lines), origin))
-	for _, l := range all {
-		fl.WriteString("| " + truncateLine(l, maxEvidenceLineRunes) + "\n")
-	}
-	if len(all) < len(lines) {
-		fl.WriteString(fmt.Sprintf("[TRUNCATED: %d more lines not included]\n", len(lines)-len(all)))
+	for _, l := range lines {
+		fl.WriteString("| " + l + "\n")
 	}
 	return p.String(), fl.String()
+}
+
+// lateCheckNote says how long after the notice the verification ran when
+// that is more than mailengine.DNSLateCheckAfter ("" otherwise): the DNS of
+// the name may have changed since the failure.
+func lateCheckNote(checkedAt, noticeAt time.Time) string {
+	if checkedAt.IsZero() || noticeAt.IsZero() {
+		return ""
+	}
+	late := checkedAt.Sub(noticeAt)
+	if late <= mailengine.DNSLateCheckAfter {
+		return ""
+	}
+	days := int(late / (24 * time.Hour))
+	unit := "days"
+	if days == 1 {
+		unit = "day"
+	}
+	return fmt.Sprintf("; checked %d %s after the notice (later than the failure: the DNS of the name may have changed since)", days, unit)
 }
 
 // dnsDetailLines splits the stored evidence of a verification into lines,
@@ -520,16 +707,24 @@ func noticeTime(b *models.GroupBounce) time.Time {
 	return b.Date
 }
 
+// Limits of the evidence, for the size of what the agent reads (see the
+// limits in agent.go); each cut is marked with what it left out.
 const (
 	// maxDNSEvidenceLines caps the evidence lines of a DNS verification in
-	// the prompt (the evidence file has them all); maxDNSOutcomeRunes caps
-	// its outcome.
+	// the prompt (the evidence file has them all, marked [TRUNCATED] in
+	// the prompt); maxDNSOutcomeRunes caps its outcome (one word when it
+	// is valid).
 	maxDNSEvidenceLines = 12
 	maxDNSOutcomeRunes  = 40
-	// maxExcerptLineRunes caps one line of a prompt excerpt.
+	// maxExcerptLineRunes caps one line of a prompt excerpt (the evidence
+	// file has the line whole).
 	maxExcerptLineRunes = 300
 	// maxEvidenceFileLines and maxEvidenceLineRunes cap the body of an
-	// evidence file.
+	// evidence file: a file the agent reads goes whole into its context,
+	// and a notice body can run to megabytes (a returned attachment as
+	// text). The diagnostic and its surroundings are in the first lines;
+	// what is cut is counted ("[TRUNCATED: N more lines not included]").
+	// No standard defines these values; they are the owner's.
 	maxEvidenceFileLines = 2000
 	maxEvidenceLineRunes = 2000
 )
@@ -598,19 +793,19 @@ func bodyForSample(pm *mailengine.ParsedMessage, b *models.GroupBounce) (kind st
 		mailengine.SectionRef(kind, n), other(kind))
 }
 
-// deliveryStatusEvidence renders the delivery-status part: one line for the
-// prompt (the per-recipient block of the bounce's recipient, else the
-// first) and every field of every block for the evidence file.
-func deliveryStatusEvidence(ds *mailengine.DeliveryStatus, recipient string) (line, full string) {
+// deliveryStatusEvidence renders the delivery-status part for a sample: one
+// line with the per-recipient block of the bounce's recipient (else the
+// first), naming the notice file that holds every block.
+func deliveryStatusEvidence(ds *mailengine.DeliveryStatus, recipient, noticeFile string) string {
 	if ds == nil {
-		none := "Delivery status: (not found: the notice has no delivery-status part)\n"
-		return none, none
+		return "Delivery status: (not found: the notice has no delivery-status part)\n"
 	}
 	var pick *mailengine.DeliveryStatusRecipient
+	picked := 0
 	for i := range ds.Recipients {
 		r := &ds.Recipients[i]
 		if strings.EqualFold(r.FinalRecipient, recipient) || strings.EqualFold(r.OriginalRecipient, recipient) {
-			pick = r
+			pick, picked = r, i
 			break
 		}
 	}
@@ -623,23 +818,29 @@ func deliveryStatusEvidence(ds *mailengine.DeliveryStatus, recipient string) (li
 	} else {
 		fields = append(fields, "per-recipient fields: (not found)")
 	}
-	line = "Delivery status: " + strings.Join(fields, "; ")
+	line := "Delivery status: " + strings.Join(fields, "; ")
 	if len(ds.Recipients) > 1 {
-		line += fmt.Sprintf(" (1 of %d recipient blocks)", len(ds.Recipients))
+		line += fmt.Sprintf(" (recipient block %d of %d; every block is in %s)", picked+1, len(ds.Recipients), noticeFile)
 	}
-	line += "\n"
+	return line + "\n"
+}
 
-	var b strings.Builder
-	b.WriteString("Delivery status (every field):\n")
-	b.WriteString("  Reporting-MTA: " + orNotFound(sanitize(foldLine(ds.ReportingMTA))) + "\n")
-	b.WriteString("  Arrival-Date: " + orNotFound(sanitize(foldLine(ds.ArrivalDate))) + "\n")
+// writeDeliveryStatusBlocks writes every field of every block of the
+// delivery-status part (the notice file).
+func writeDeliveryStatusBlocks(w io.Writer, ds *mailengine.DeliveryStatus) {
+	if ds == nil {
+		_, _ = io.WriteString(w, "Delivery status: (not found: the notice has no delivery-status part)\n")
+		return
+	}
+	_, _ = io.WriteString(w, "Delivery status (every field):\n")
+	_, _ = io.WriteString(w, "  Reporting-MTA: "+orNotFound(sanitize(foldLine(ds.ReportingMTA)))+"\n")
+	_, _ = io.WriteString(w, "  Arrival-Date: "+orNotFound(sanitize(foldLine(ds.ArrivalDate)))+"\n")
 	for i := range ds.Recipients {
-		b.WriteString(fmt.Sprintf("  Recipient block %d:\n", i+1))
+		fmt.Fprintf(w, "  Recipient block %d:\n", i+1)
 		for _, f := range recipientFields(&ds.Recipients[i]) {
-			b.WriteString("    " + f + "\n")
+			_, _ = io.WriteString(w, "    "+f+"\n")
 		}
 	}
-	return line, b.String()
 }
 
 func recipientFields(r *mailengine.DeliveryStatusRecipient) []string {

@@ -14,39 +14,55 @@ import (
 	"mailcare/app/modules/wording"
 )
 
+// notifyKeys returns the occurrences NotifyDue fires at now and records
+// them in fired, as the scheduler does.
+func notifyKeys(last, now time.Time, s *NotificationSettings, fired map[string]string) []string {
+	var out []string
+	for _, d := range NotifyDue(last, now, s, fired) {
+		fired[d.time] = d.minute
+		out = append(out, d.minute)
+	}
+	return out
+}
+
 func TestNotifyDueAndNextNotifyAt(t *testing.T) {
-	s := &NotificationSettings{Enabled: true, Time: "09:00", IntervalDays: 1}
-	tick := func(last, now time.Time, fired string) (string, bool) { return NotifyDue(last, now, s, fired) }
+	s := &NotificationSettings{Enabled: true, Times: []string{"09:00"}, IntervalDays: 1}
+	tick := func(last, now time.Time, fired map[string]string) (string, bool) {
+		keys := notifyKeys(last, now, s, fired)
+		if len(keys) == 0 {
+			return "", false
+		}
+		return keys[0], true
+	}
+	none := func() map[string]string { return map[string]string{} }
 
 	// Disabled: never due.
 	s.Enabled = false
-	if _, due := tick(localDate(2026, 9, 17, 8, 59, 50), localDate(2026, 9, 17, 9, 0, 10), ""); due {
+	if _, due := tick(localDate(2026, 9, 17, 8, 59, 50), localDate(2026, 9, 17, 9, 0, 10), none()); due {
 		t.Errorf("due while disabled")
 	}
 	s.Enabled = true
 	// Before the time: not due. First arrival with no last sent: due.
-	if _, due := tick(localDate(2026, 9, 17, 8, 59, 20), localDate(2026, 9, 17, 8, 59, 50), ""); due {
+	if _, due := tick(localDate(2026, 9, 17, 8, 59, 20), localDate(2026, 9, 17, 8, 59, 50), none()); due {
 		t.Errorf("due before the notify time")
 	}
-	key, due := tick(localDate(2026, 9, 17, 8, 59, 50), localDate(2026, 9, 17, 9, 0, 10), "")
+	fired := none()
+	key, due := tick(localDate(2026, 9, 17, 8, 59, 50), localDate(2026, 9, 17, 9, 0, 10), fired)
 	if !due || key != "2026-09-17 09:00" {
 		t.Errorf("first arrival: %q %v", key, due)
 	}
 	// The same minute never fires twice, even when the ticks straddle it.
-	if _, due := tick(localDate(2026, 9, 17, 8, 59, 50), localDate(2026, 9, 17, 9, 0, 40), key); due {
+	if _, due := tick(localDate(2026, 9, 17, 8, 59, 50), localDate(2026, 9, 17, 9, 0, 40), fired); due {
 		t.Errorf("fired twice within the minute")
 	}
 	// A restart later that day does not fire retroactively (the occurrence
 	// lies before the first tick).
-	if _, due := tick(localDate(2026, 9, 17, 12, 0, 0), localDate(2026, 9, 17, 12, 0, 30), ""); due {
+	if _, due := tick(localDate(2026, 9, 17, 12, 0, 0), localDate(2026, 9, 17, 12, 0, 30), none()); due {
 		t.Errorf("fired retroactively")
 	}
-	// Interval 1: sent today at 09:00 -> tomorrow is due, a later tick today is not.
-	s.LastSentAt = sql.NullTime{Time: localDate(2026, 9, 17, 9, 0, 5).UTC(), Valid: true}
-	if _, due := tick(localDate(2026, 9, 17, 8, 59, 50), localDate(2026, 9, 17, 9, 0, 10), ""); due {
-		t.Errorf("due on the day it was sent")
-	}
-	if key, due := tick(localDate(2026, 9, 18, 8, 59, 50), localDate(2026, 9, 18, 9, 0, 10), ""); !due || key != "2026-09-18 09:00" {
+	// Interval 1: sent on the 16th -> the 17th and the 18th are due.
+	s.LastSentAt = sql.NullTime{Time: localDate(2026, 9, 16, 9, 0, 5).UTC(), Valid: true}
+	if key, due := tick(localDate(2026, 9, 18, 8, 59, 50), localDate(2026, 9, 18, 9, 0, 10), none()); !due || key != "2026-09-18 09:00" {
 		t.Errorf("next day with interval 1: %q %v", key, due)
 	}
 	// Interval 3: days 1 and 2 are skipped, day 3 fires. A mail sent late
@@ -54,22 +70,22 @@ func TestNotifyDueAndNextNotifyAt(t *testing.T) {
 	s.IntervalDays = 3
 	s.LastSentAt = sql.NullTime{Time: localDate(2026, 9, 17, 23, 30, 0).UTC(), Valid: true}
 	for _, day := range []int{18, 19} {
-		if _, due := tick(localDate(2026, 9, day, 8, 59, 50), localDate(2026, 9, day, 9, 0, 10), ""); due {
+		if _, due := tick(localDate(2026, 9, day, 8, 59, 50), localDate(2026, 9, day, 9, 0, 10), none()); due {
 			t.Errorf("due on day %d with interval 3", day)
 		}
 	}
-	if _, due := tick(localDate(2026, 9, 20, 8, 59, 50), localDate(2026, 9, 20, 9, 0, 10), ""); !due {
+	if _, due := tick(localDate(2026, 9, 20, 8, 59, 50), localDate(2026, 9, 20, 9, 0, 10), none()); !due {
 		t.Errorf("not due on day 3 with interval 3")
 	}
 	// A tick spanning midnight still catches yesterday's occurrence.
-	s.Time = "23:59"
+	s.Times = []string{"23:59"}
 	s.LastSentAt = sql.NullTime{}
-	if key, due := tick(localDate(2026, 9, 20, 23, 58, 50), localDate(2026, 9, 21, 0, 0, 10), ""); !due || key != "2026-09-20 23:59" {
+	if key, due := tick(localDate(2026, 9, 20, 23, 58, 50), localDate(2026, 9, 21, 0, 0, 10), none()); !due || key != "2026-09-20 23:59" {
 		t.Errorf("midnight span: %q %v", key, due)
 	}
 
 	// NextNotifyAt.
-	s = &NotificationSettings{Enabled: false, Time: "09:00", IntervalDays: 1}
+	s = &NotificationSettings{Enabled: false, Times: []string{"09:00"}, IntervalDays: 1}
 	if _, ok := NextNotifyAt(localDate(2026, 9, 17, 8, 0, 0), s); ok {
 		t.Errorf("next while disabled")
 	}
@@ -87,6 +103,68 @@ func TestNotifyDueAndNextNotifyAt(t *testing.T) {
 	}
 	if next, _ := NextNotifyAt(localDate(2026, 9, 25, 10, 0, 0), s); !next.Equal(localDate(2026, 9, 26, 9, 0, 0)) {
 		t.Errorf("next long after the last mail = %v", next)
+	}
+}
+
+// TestNotifyTwoTimesADay: with two times every listed time of a
+// notification day fires once, also the second one on the day the first one
+// sent the mail; every time has a separate guard; with an interval of 2 days
+// both times fire on every other day.
+func TestNotifyTwoTimesADay(t *testing.T) {
+	s := &NotificationSettings{Enabled: true, Times: []string{"09:00", "18:00"}, IntervalDays: 1}
+	fired := map[string]string{}
+	at := func(day, h, m int) time.Time { return localDate(2026, 9, day, h, m, 0) }
+	// Ticks every 30 seconds over two days, recording a mail whenever a
+	// notification fires (as SendNotification does).
+	run := func(from, to time.Time) []string {
+		var sent []string
+		for now := from.Add(30 * time.Second); !now.After(to); now = now.Add(30 * time.Second) {
+			if keys := notifyKeys(now.Add(-30*time.Second), now, s, fired); len(keys) > 0 {
+				sent = append(sent, keys...)
+				s.LastSentAt = sql.NullTime{Time: now.UTC(), Valid: true}
+			}
+		}
+		return sent
+	}
+	got := run(at(17, 0, 0), at(19, 0, 0))
+	want := []string{"2026-09-17 09:00", "2026-09-17 18:00", "2026-09-18 09:00", "2026-09-18 18:00"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("interval 1: sent at %v, want %v", got, want)
+	}
+	// The guard is per time: the 18:00 of a day does not hide its 09:00.
+	if fired["09:00"] != "2026-09-18 09:00" || fired["18:00"] != "2026-09-18 18:00" {
+		t.Errorf("guards %v", fired)
+	}
+	if keys := notifyKeys(at(18, 17, 59), at(18, 18, 1), s, fired); len(keys) != 0 {
+		t.Errorf("18:00 fired twice: %v", keys)
+	}
+	// Interval 2: the 19th is skipped, the 20th sends at both times.
+	s.IntervalDays = 2
+	got = run(at(19, 0, 0), at(21, 0, 0))
+	want = []string{"2026-09-20 09:00", "2026-09-20 18:00"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("interval 2: sent at %v, want %v", got, want)
+	}
+	// One tick covering both times (the server was asleep in between)
+	// fires both at once.
+	s.LastSentAt = sql.NullTime{}
+	fired = map[string]string{}
+	if keys := notifyKeys(at(22, 8, 0), at(22, 19, 0), s, fired); strings.Join(keys, ",") != "2026-09-22 09:00,2026-09-22 18:00" {
+		t.Errorf("one long tick: %v", keys)
+	}
+
+	// next_send_at: the next listed time of a notification day.
+	s = &NotificationSettings{Enabled: true, Times: []string{"09:00", "18:00"}, IntervalDays: 2,
+		LastSentAt: sql.NullTime{Time: at(17, 9, 0).UTC(), Valid: true}}
+	for _, c := range []struct{ now, want time.Time }{
+		{at(17, 10, 0), at(17, 18, 0)}, // the second time of the day the mail went out
+		{at(17, 18, 0), at(19, 9, 0)},  // the 18th is no notification day
+		{at(19, 9, 30), at(19, 18, 0)},
+		{at(25, 20, 0), at(26, 9, 0)},
+	} {
+		if next, ok := NextNotifyAt(c.now, s); !ok || !next.Equal(c.want) {
+			t.Errorf("next after %v = %v %v, want %v", c.now, next, ok, c.want)
+		}
 	}
 }
 
@@ -108,7 +186,7 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.SMTP.Port != DefaultSMTPPort || s.SMTP.Security != DefaultSMTPSecurity || s.Enabled || s.Time != DefaultNotifyTime ||
+	if s.SMTP.Port != DefaultSMTPPort || s.SMTP.Security != DefaultSMTPSecurity || s.Enabled || FormatCheckTimes(s.Times) != DefaultNotifyTimes ||
 		s.IntervalDays != DefaultNotifyIntervalDays || len(s.UserIDs) != 0 || s.SMTPPasswordSet || s.LastSentAt.Valid {
 		t.Errorf("defaults: %+v", s)
 	}
@@ -125,8 +203,8 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 		"from":     {SMTPFrom: str("not an address")},
 		"url":      {PublicBaseURL: str("mailcare.example.com")},
 		"urlq":     {PublicBaseURL: str("https://x.test/?a=1")},
-		"time":     {Time: str("25:00")},
-		"times":    {Time: str("09:00,10:00")},
+		"time":     {Times: &[]string{"25:00"}},
+		"times":    {Times: &[]string{"09:00,9"}},
 		"interval": {IntervalDays: num(8)},
 		"user":     {UserIDs: ids(admin.ID, 999)},
 		"host":     {SMTPHost: str("smtp host")},
@@ -139,7 +217,7 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 	on := true
 	in := &NotificationInput{SMTPHost: str(" smtp.example.test "), SMTPPort: num(2525), SMTPSecurity: str("NONE"),
 		SMTPUsername: str("bounce"), SMTPPassword: str("s3cret"), SMTPFrom: str("MailCare@Example.test"),
-		PublicBaseURL: str("https://mailcare.example.test/"), Enabled: &on, Time: str("7:30"), IntervalDays: num(3),
+		PublicBaseURL: str("https://mailcare.example.test/"), Enabled: &on, Times: &[]string{"18:00", "7:30, 07:30"}, IntervalDays: num(3),
 		UserIDs: ids(admin.ID, admin.ID)}
 	if err := SaveNotificationSettings(db, key, in); err != nil {
 		t.Fatal(err)
@@ -153,7 +231,7 @@ func TestNotificationSettingsSaveAndResolve(t *testing.T) {
 	}
 	if s.SMTP.Host != "smtp.example.test" || s.SMTP.Port != 2525 || s.SMTP.Security != IMAPSecurityNone || s.SMTP.Username != "bounce" ||
 		s.SMTP.Password != "s3cret" || !s.SMTPPasswordSet || s.SMTP.From != "mailcare@example.test" ||
-		s.PublicBaseURL != "https://mailcare.example.test" || !s.Enabled || s.Time != "07:30" || s.IntervalDays != 3 ||
+		s.PublicBaseURL != "https://mailcare.example.test" || !s.Enabled || FormatCheckTimes(s.Times) != "07:30,18:00" || s.IntervalDays != 3 ||
 		len(s.UserIDs) != 1 || s.UserIDs[0] != admin.ID {
 		t.Errorf("resolved: %+v", s)
 	}
@@ -263,6 +341,8 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 		{SettingSMTPFrom, "MailCare@Example.test", "mailcare@example.test"},
 		{SettingPublicBaseURL, "https://mailcare.example.test/", "https://mailcare.example.test"},
 		{SettingNotifyEnabled, "yes", "true"},
+		{SettingNotifyTime, "", DefaultNotifyTimes},
+		{SettingNotifyTime, "18:00, 7:05,07:05", "07:05,18:00"},
 		{SettingNotifyTime, "7:05", "07:05"},
 		{SettingNotifyInterval, "2", "2"},
 		{SettingNotifyUserIDs, "1, 1", "1"},
@@ -295,7 +375,7 @@ func TestApplySettingValidatesKeys(t *testing.T) {
 	}
 	if s.SMTP.Host != "smtp.example.test" || s.SMTP.Port != 465 || s.SMTP.Security != IMAPSecuritySSL || s.SMTP.Username != "bounce" ||
 		s.SMTP.Password != "s3cret" || s.SMTP.From != "mailcare@example.test" || s.PublicBaseURL != "https://mailcare.example.test" ||
-		!s.Enabled || s.Time != "07:05" || s.IntervalDays != 2 || len(s.UserIDs) != 1 || s.UserIDs[0] != admin.ID {
+		!s.Enabled || FormatCheckTimes(s.Times) != "07:05" || s.IntervalDays != 2 || len(s.UserIDs) != 1 || s.UserIDs[0] != admin.ID {
 		t.Errorf("resolved after CLI: %+v", s)
 	}
 	// With a password stored, a connection key cannot change without the
@@ -703,7 +783,7 @@ func TestSchedulerQueuesNotifyJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := SaveNotificationSettings(db, nil, &NotificationInput{
-		Enabled: &on, Time: str("09:00"), SMTPHost: str("smtp.example.test"), SMTPFrom: str("mailcare@example.test"),
+		Enabled: &on, Times: &[]string{"09:00"}, SMTPHost: str("smtp.example.test"), SMTPFrom: str("mailcare@example.test"),
 		UserIDs: &[]int64{admin.ID},
 	}); err != nil {
 		t.Fatal(err)

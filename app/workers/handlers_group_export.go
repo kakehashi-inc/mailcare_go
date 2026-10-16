@@ -21,11 +21,6 @@ import (
 	"mailcare/app/modules/pdfreport"
 )
 
-// groupExportWriteTimeout replaces the server's WriteTimeout for a group
-// export: the archive carries every member mail, which can take longer to
-// send than an ordinary response.
-const groupExportWriteTimeout = 30 * time.Minute
-
 // Names inside the archive of a group export (at its top level: the archive
 // has no folder).
 const (
@@ -164,9 +159,8 @@ func (c *core) handleExportGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The archive has no time limit.
 	name := groupOutputName(g.GroupKey, now, loc)
-	// A controller that cannot change the deadline keeps the server's.
-	_ = http.NewResponseController(w).SetWriteDeadline(now.Add(groupExportWriteTimeout))
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.zip"`)
 	w.Header().Set("Cache-Control", "private, no-store")
@@ -214,9 +208,9 @@ func (c *core) buildGroupExport(idx *sql.DB, mb *models.Mailbox, g *models.Bounc
 	if err != nil {
 		return nil, nil, err
 	}
-	bounceOf := make(map[int64]*models.Bounce, len(bounces))
+	bouncesOf := make(map[int64][]BounceRecordDTO, len(bounces))
 	for _, b := range bounces {
-		bounceOf[b.ID] = b
+		bouncesOf[b.MessageID] = append(bouncesOf[b.MessageID], *toBounceRecordDTO(b))
 	}
 	records, err := models.ListDMARCRecordsByGroup(idx, g.GroupKey)
 	if err != nil {
@@ -256,8 +250,15 @@ func (c *core) buildGroupExport(idx *sql.DB, mb *models.Mailbox, g *models.Bounc
 		if dmarc == nil {
 			dmarc = []DMARCRecordDTO{}
 		}
+		rows := bouncesOf[m.ID]
+		var first *BounceRecordDTO
+		if len(rows) > 0 {
+			first = &rows[0]
+		} else {
+			rows = []BounceRecordDTO{}
+		}
 		export.Messages = append(export.Messages, GroupExportMessageDTO{
-			Message: toMessageDTO(m), Bounce: toBounceRecordDTO(bounceOf[m.ID]), DMARCRecords: dmarc, Files: files,
+			Message: toMessageDTO(m), Bounce: first, Bounces: rows, DMARCRecords: dmarc, Files: files,
 		})
 		plans = append(plans, p)
 	}

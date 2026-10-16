@@ -36,6 +36,7 @@ const (
 	fakeWrongID                       // over UDP first an NXDOMAIN reply with another ID, then the data
 	fakeWrongQuestion                 // over UDP first an NXDOMAIN reply to another question, then the data
 	fakeNotAuth                       // the data without the authoritative flag
+	fakeDropOnce                      // over UDP no reply to the first question, the data to the next
 )
 
 // fakeAnswer is the answer to one question: values are host names (MX in
@@ -68,6 +69,9 @@ type fakeServer struct {
 	raw           [][]byte              // the messages of those questions, as received
 	conns         []net.Conn
 	hook          func(query string) // runs for every question received, before the reply
+	delay         time.Duration      // UDP replies are sent this long after the question (0: at once)
+	pending, peak int                // delayed questions not answered yet, and their most at once
+	seen          map[string]int     // questions received per "role name TYPE proto"
 }
 
 // controlAddress is the answer of the fake resolvers to the control query.
@@ -183,6 +187,23 @@ func (s *fakeServer) authority(key string, a fakeAnswer) {
 	}
 }
 
+// slow makes the server send every UDP reply d after the question, without
+// holding up the other questions.
+// mostAtOnce returns the most delayed questions that waited for their reply
+// at the same time (1: every question came after the reply to the one
+// before).
+func (s *fakeServer) mostAtOnce() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peak
+}
+
+func (s *fakeServer) slow(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delay = d
+}
+
 // onQuery sets the hook run for every question received (in the format of
 // received), before the server replies.
 func (s *fakeServer) onQuery(fn func(query string)) {
@@ -223,7 +244,26 @@ func (s *fakeServer) serveUDP() {
 		if err != nil {
 			return
 		}
-		for _, r := range s.handle(buf[:n], false) {
+		replies := s.handle(buf[:n], false)
+		s.mu.Lock()
+		delay := s.delay
+		s.mu.Unlock()
+		if delay > 0 {
+			s.mu.Lock()
+			s.pending++
+			s.peak = max(s.peak, s.pending)
+			s.mu.Unlock()
+			time.AfterFunc(delay, func() {
+				s.mu.Lock()
+				s.pending--
+				s.mu.Unlock()
+				for _, r := range replies {
+					_, _ = s.udp.WriteTo(r, addr)
+				}
+			})
+			continue
+		}
+		for _, r := range replies {
 			_, _ = s.udp.WriteTo(r, addr)
 		}
 	}
@@ -294,6 +334,11 @@ func (s *fakeServer) handle(req []byte, tcp bool) [][]byte {
 	s.raw = append(s.raw, append([]byte(nil), req...))
 	a := s.answerFor(rd, name, q.Type)
 	hook := s.hook
+	if s.seen == nil {
+		s.seen = map[string]int{}
+	}
+	s.seen[query]++
+	first := s.seen[query] == 1
 	s.mu.Unlock()
 	if hook != nil {
 		hook(query)
@@ -303,6 +348,10 @@ func (s *fakeServer) handle(req []byte, tcp bool) [][]byte {
 	switch a.mode {
 	case fakeDrop:
 		return nil
+	case fakeDropOnce:
+		if !tcp && first {
+			return nil
+		}
 	case fakeNX:
 		r.rcode = dnsmessage.RCodeNameError
 		return [][]byte{r.pack()}

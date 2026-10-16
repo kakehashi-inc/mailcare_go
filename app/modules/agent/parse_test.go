@@ -138,8 +138,7 @@ func TestValidateOutput(t *testing.T) {
 	}{
 		{"one placeholder line left", ReportBegin + "\n" + sampleReport + "\n2. <next action>\n" + ReportEnd, "template placeholder \"2. <next action>\""},
 		{"placeholder with parenthesis list", ReportBegin + "\n" + sampleReport + "\n3) <who should act: admin>\n" + ReportEnd, "template placeholder"},
-		{"headings only", ReportBegin + "\n## 原因の分析\n## 影響範囲\n## 推奨する対応\n## 対応すべき担当\n" + ReportEnd, "too short (0 runes"},
-		{"too short", ReportBegin + "\n## 原因の分析\n不明。\n## 推奨する対応\n1. なし\n" + ReportEnd, "too short"},
+		{"headings only", ReportBegin + "\n## 原因の分析\n## 影響範囲\n## 推奨する対応\n## 対応すべき担当\n" + ReportEnd, "report body is empty"},
 	}
 	for _, c := range cases {
 		out := ParseOutput(c.raw)
@@ -150,6 +149,10 @@ func TestValidateOutput(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: want error containing %q, got %v", c.name, c.want, err)
 		}
+	}
+	// A short report is a report: no length is asked for.
+	if err := ValidateOutput(ParseOutput(ReportBegin + "\n## 原因の分析\n宛先なし。\n" + ReportEnd)); err != nil {
+		t.Errorf("short report: %v", err)
 	}
 	// A placeholder summary that slipped through (ParseOutput drops template
 	// META blocks, so this is only reachable by hand) is rejected too.

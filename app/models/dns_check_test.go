@@ -96,6 +96,31 @@ func TestDNSCheckFindEarliest(t *testing.T) {
 	}
 }
 
+// TestDNSCheckLatest checks the stand-in of a live verification: the
+// latest outcome of the name and type, whatever its age and kind (the later
+// id first at the same time), nothing for another name or type.
+func TestDNSCheckLatest(t *testing.T) {
+	db := openTestMasterDB(t)
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	for _, r := range []*DNSCheck{
+		{Name: "example.jp", QType: "NAME", Outcome: "exists", Detail: "old direct", Direct: true, CheckedAt: base.Add(-400 * 24 * time.Hour)},
+		{Name: "example.jp", QType: "NAME", Outcome: "broken", Detail: "first", CheckedAt: base},
+		{Name: "example.jp", QType: "NAME", Outcome: "not_found", Detail: "second", CheckedAt: base},
+		{Name: "example.jp", QType: "NAME", Outcome: "exists", Detail: "earlier", CheckedAt: base.Add(-time.Hour)},
+		{Name: "example.jp", QType: "MX", Outcome: "exists", Detail: "other type", CheckedAt: base.Add(time.Hour)},
+	} {
+		if err := InsertDNSCheck(db, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := LatestDNSCheck(db, "example.jp", "NAME"); err != nil || got.Detail != "second" || !got.CheckedAt.Equal(base) {
+		t.Errorf("latest = %+v, %v; want the second row at %v", got, err, base)
+	}
+	if _, err := LatestDNSCheck(db, "other.example.jp", "NAME"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("other name: %v, want sql.ErrNoRows", err)
+	}
+}
+
 // TestDNSCheckInsertDefaultsTime checks that a zero CheckedAt becomes the
 // current time in UTC.
 func TestDNSCheckInsertDefaultsTime(t *testing.T) {

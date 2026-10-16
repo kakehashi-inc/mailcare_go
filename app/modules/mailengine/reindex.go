@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"mailcare/app/models"
+	"mailcare/app/modules/fileinuse"
 )
 
 // OpenIndex opens the per-mailbox index, applying its pending migrations
@@ -55,7 +56,7 @@ func OpenIndex(ctx context.Context, mailsRoot, address string, progress Progress
 // written over the files of the same name; nothing is deleted.
 //
 // The new index is built as <address>.sqlite.rebuild and swapped in only at
-// the end (the swap retries for a few seconds when a file is still open,
+// the end (the swap waits while a reader still has the old index open,
 // see swapIndexFiles); on failure or cancellation the build file (with its
 // SQLite side files) is removed and the previous index stays as it was. A
 // raw file that cannot be indexed is reported and counted in Skipped.
@@ -115,9 +116,9 @@ func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays
 		msg, pm, err := storeWithFreeUID(db, dir, raw, src)
 		if err != nil {
 			if isUniqueViolation(err) {
-				// Only a synthetic identity can collide (a carried one was
-				// unique in the previous index); after the retries the raw
-				// file is left out of the index and counted as skipped.
+				// A colliding synthetic identity was moved to a free UID
+				// (storeWithFreeUID); any other UNIQUE violation leaves the
+				// raw file out of the index, counted as skipped.
 				report(progress, fmt.Sprintf("error: skipping %s: %v", key, err))
 				result.Skipped++
 				continue
@@ -160,7 +161,7 @@ func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays
 	if err := db.Close(); err != nil {
 		return nil, fmt.Errorf("close index: %w", err)
 	}
-	if err := swapIndexFiles(buildPath, indexPath); err != nil {
+	if err := swapIndexFiles(ctx, progress, buildPath, indexPath); err != nil {
 		return nil, err
 	}
 	swapped = true
@@ -172,19 +173,15 @@ func Reindex(ctx context.Context, mailsRoot, address string, recheck RecheckDays
 	return result, nil
 }
 
-// maxSyntheticUIDRetries bounds how many consecutive UIDs storeWithFreeUID
-// tries for a raw file whose synthetic identity collides with an indexed
-// row (a variable so that the tests can lower it).
-var maxSyntheticUIDRetries = 1000
-
 // storeWithFreeUID stores a raw message for the rebuilt index. A synthetic
 // identity (UIDVALIDITY 0, the UID hashed from the key by sourceForKey) can
-// collide with the identity of another raw file; the UNIQUE violation is
-// then retried with the next UID, up to maxSyntheticUIDRetries times, before
-// the error is returned. A carried identity is stored as it is.
+// collide with the identity of another raw file; the UNIQUE violation of
+// the identity is then retried with the next UID until one is free (every
+// retry passes one stored row, so the retries end). A carried identity is
+// stored as it is.
 func storeWithFreeUID(db *sql.DB, dir string, raw []byte, src Source) (*models.Message, *ParsedMessage, error) {
 	msg, pm, err := storeMessage(db, dir, raw, src, storeOptions{writeEML: false})
-	for attempt := 0; err != nil && isUniqueViolation(err) && src.UIDValidity == 0 && attempt < maxSyntheticUIDRetries; attempt++ {
+	for err != nil && isIdentityViolation(err) && src.UIDValidity == 0 {
 		src.UID++
 		if src.UID == 0 {
 			src.UID = 1
@@ -194,43 +191,36 @@ func storeWithFreeUID(db *sql.DB, dir string, raw []byte, src Source) (*models.M
 	return msg, pm, err
 }
 
-// File operations on the index are retried for a while: on Windows a
-// reader that still holds the old index open makes its removal or the
-// rename of the new one fail transiently (variables so that the tests can
-// shorten the wait).
-var (
-	fileRetryInterval = 100 * time.Millisecond
-	fileRetryTimeout  = 5 * time.Second
-)
+// isIdentityViolation reports whether err is the UNIQUE violation of the
+// IMAP identity of a message (folder, uidvalidity, uid), not of its key.
+func isIdentityViolation(err error) bool {
+	return isUniqueViolation(err) && strings.Contains(err.Error(), "messages.uid")
+}
 
-// retryFileOp calls op until it succeeds, retrying every fileRetryInterval
-// for up to fileRetryTimeout; the last error is returned when it never
-// succeeds.
-func retryFileOp(op func() error) error {
-	deadline := time.Now().Add(fileRetryTimeout)
-	for {
-		err := op()
-		if err == nil || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(fileRetryInterval)
-	}
+// retryFileOp calls op until it succeeds, waiting while another process
+// has the file open (fileinuse.Retry: on Windows a reader that still holds
+// the old index; reported once); any other failure, and the end of ctx,
+// ends it at once.
+func retryFileOp(ctx context.Context, progress Progress, op func() error) error {
+	return fileinuse.Retry(ctx, op, func(err error) {
+		report(progress, fmt.Sprintf("waiting for the index file to be released: %v", err))
+	})
 }
 
 // swapIndexFiles replaces the index at dst with the freshly built one at src
 // (including a WAL side file that may still exist after Close). Every step
-// is retried for a few seconds (retryFileOp) because a reader that has the
-// old index open can make the removal or the rename fail on Windows.
-func swapIndexFiles(src, dst string) error {
-	if err := retryFileOp(func() error { return removeIndexFiles(dst) }); err != nil {
+// waits while a reader has the old index open (retryFileOp: on Windows the
+// removal or the rename fails until the reader closes it).
+func swapIndexFiles(ctx context.Context, progress Progress, src, dst string) error {
+	if err := retryFileOp(ctx, progress, func() error { return removeIndexFiles(dst) }); err != nil {
 		return fmt.Errorf("remove old index: %w", err)
 	}
-	if err := retryFileOp(func() error { return os.Rename(src, dst) }); err != nil {
+	if err := retryFileOp(ctx, progress, func() error { return os.Rename(src, dst) }); err != nil {
 		return fmt.Errorf("install rebuilt index: %w", err)
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if _, err := os.Stat(src + suffix); err == nil {
-			if err := retryFileOp(func() error { return os.Rename(src+suffix, dst+suffix) }); err != nil {
+			if err := retryFileOp(ctx, progress, func() error { return os.Rename(src+suffix, dst+suffix) }); err != nil {
 				return fmt.Errorf("install rebuilt index%s: %w", suffix, err)
 			}
 		}

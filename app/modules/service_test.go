@@ -2,6 +2,7 @@ package modules
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -370,10 +371,10 @@ func TestServiceStartFlagsDistinguishZeroFromOmitted(t *testing.T) {
 // step, and removed only by the server that wrote it.
 func TestControlTokenFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteControlToken(dir, 9790, "first"); err != nil {
+	if err := WriteControlToken(context.Background(), dir, 9790, "first"); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteControlToken(dir, 9791, "second"); err != nil {
+	if err := WriteControlToken(context.Background(), dir, 9791, "second"); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(dir, ControlTokenFile))
@@ -424,7 +425,7 @@ func TestControlTokenSentAndRefused(t *testing.T) {
 	t.Cleanup(func() { SetDataDir("") })
 	var got string
 	port := refusingServer(t, dir, &got)
-	if err := WriteControlToken(dir, port, "cli-token"); err != nil {
+	if err := WriteControlToken(context.Background(), dir, port, "cli-token"); err != nil {
 		t.Fatal(err)
 	}
 	st := LocalServer(port)
@@ -458,21 +459,35 @@ func TestControlTokenSentAndRefused(t *testing.T) {
 	}
 }
 
-// The server lock admits one holder per data directory; it is free again
-// once released.
+// The server lock admits one holder per data directory; the release (a
+// clean shutdown) removes the file and frees the lock; a file left behind
+// (a crash) does not block the next start.
 func TestServerLock(t *testing.T) {
 	dir := t.TempDir()
+	path := filepath.Join(dir, ServerLockFile)
 	release, err := AcquireServerLock(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("lock file while held: %v", err)
 	}
 	if _, err := AcquireServerLock(dir); !errors.Is(err, ErrServerRunning) {
 		t.Errorf("second lock: %v", err)
 	}
 	release()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("lock file after the release: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	release2, err := AcquireServerLock(dir)
 	if err != nil {
-		t.Fatalf("after release: %v", err)
+		t.Fatalf("over a left file: %v", err)
 	}
 	release2()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("lock file after the second release: %v", err)
+	}
 }

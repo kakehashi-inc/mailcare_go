@@ -26,12 +26,12 @@ import (
 //
 // Success is decided by whether a usable REPORT block was extracted from the
 // transcript after the echoed prompt is removed (see StripPromptEcho and
-// ValidateOutput: no template placeholders, not too short, no placeholder
+// ValidateOutput: no template placeholders, not empty, no placeholder
 // summary). The CLI exit code is not a reliable signal (codex exits non-zero on
-// fine runs), so it is ignored. A launch failure (CLI missing), a timeout, a
+// fine runs), so it is ignored. A launch failure (CLI missing), a
 // cancellation, a usage/rate limit ("usage limit reached (retry after ...)"),
-// a missing REPORT block or an unusable report (template placeholders, too
-// short, or secret-like content: see ValidateOutput) fail the run and the
+// a missing REPORT block or an unusable report (template placeholders, an
+// empty body, or secret-like content: see ValidateOutput) fail the run and the
 // reason is stored on the report. A failed run writes no REPORT.md and
 // leaves the previous completed report row (and the directory of that run)
 // untouched; its RESULT.log keeps the full transcript. A failure by a usage
@@ -178,12 +178,17 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		}
 		previous = reportBefore(reports, recheck.DecidedAt)
 	}
-	ev := BuildEvidence(evIn)
-	if err := writeEvidenceFiles(dir, ev); err != nil {
+	evIn.Dir = dir
+	ev, err := BuildEvidence(evIn)
+	if err != nil {
 		return fail(fmt.Errorf("write evidence: %w", err))
 	}
 	if !ev.Update && !ev.Recheck {
 		previous = nil
+	}
+	patterns := PatternsFile(ev, stats, ev.Update && previous != nil, IsDMARCCategory(group.Category))
+	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(PatternsFileName)), []byte(patterns), 0o600); err != nil {
+		return fail(fmt.Errorf("write evidence: %w", err))
 	}
 
 	// 3. Prompt. It goes in on stdin and is written to PROMPT.md after the
@@ -215,9 +220,9 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 
 	// 4. Run the CLI.
 	progress(runLine(provider, in.Model, in.ReasoningEffort, ev))
-	runCtx, cancel := context.WithTimeout(ctx, Timeout)
-	defer cancel()
-	out, runErr := runProvider(runCtx, provider, in.Model, in.ReasoningEffort, dir, promptText, promptFile)
+	// The run has no time limit: only the job's context (a shutdown of the
+	// server) stops it.
+	out, runErr := runAgent(ctx, provider, in.Model, in.ReasoningEffort, dir, promptText, promptFile)
 	if !promptWritten {
 		if err := writePrompt(); err != nil {
 			progress("warning: could not write " + PromptFileName + ": " + err.Error())
@@ -250,8 +255,6 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		switch {
 		case launchErr:
 			failure = fmt.Errorf("%s could not run: %v", provider.Label(), runErr)
-		case errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
-			failure = fmt.Errorf("%s timed out after %s", provider.Label(), Timeout)
 		case ctx.Err() != nil:
 			failure = fmt.Errorf("%s: %v", canceledPrefix, ctx.Err())
 		case limit.Limited:
@@ -259,7 +262,7 @@ func AnalyzeGroup(ctx context.Context, in AnalyzeInput, progress func(string)) (
 		case !parsed.ReportParsed:
 			failure = fmt.Errorf("%s produced no report", provider.Label())
 		default:
-			// A REPORT block that still carries placeholders, is too short,
+			// A REPORT block that still carries placeholders, is empty,
 			// comes with a placeholder summary or contains secret-like content
 			// must not replace a good report.
 			failure = fmt.Errorf("%s produced an unusable report: %v", provider.Label(), invalid)
@@ -328,23 +331,6 @@ func previousCoverage(db *sql.DB, groupKey string) (*models.AgentReport, map[str
 	return prev, covered, nil
 }
 
-// writeEvidenceFiles writes the evidence file of every sample into the
-// workspace.
-func writeEvidenceFiles(dir string, ev *Evidence) error {
-	if len(ev.Samples) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Join(dir, EvidenceDirName), 0o700); err != nil {
-		return err
-	}
-	for _, s := range ev.Samples {
-		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(s.FileName)), []byte(s.File), 0o600); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // usesPromptFile reports whether a launch argv reads the prompt from
 // {prompt_file}.
 func usesPromptFile(argv []string) bool {
@@ -369,7 +355,8 @@ func runLine(p Provider, model, reasoning string, ev *Evidence) string {
 	if len(opts) > 0 {
 		line += " (" + strings.Join(opts, ", ") + ")"
 	}
-	return fmt.Sprintf("%s on %d messages in %d patterns, %d samples", line, ev.Messages, len(ev.Patterns), len(ev.Samples))
+	return fmt.Sprintf("%s on %d messages in %d patterns, %d samples (%d in the prompt)", line, ev.Messages, len(ev.Patterns),
+		len(ev.Samples), len(ev.inlineSamples()))
 }
 
 // usageLine renders what the CLI reported about the run ("" when nothing).

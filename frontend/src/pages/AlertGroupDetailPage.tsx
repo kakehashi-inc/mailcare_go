@@ -28,7 +28,7 @@ import {
 } from '../components/domain/StatusBadges';
 import { Alert } from '../components/ui/Alert';
 import { Badge } from '../components/ui/Badge';
-import { AnchorButton, Button } from '../components/ui/Button';
+import { AnchorButton, Button, LinkButton } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { CopyButton } from '../components/ui/CopyButton';
@@ -299,6 +299,7 @@ export function AlertGroupDetailPage() {
     }
 
     const { stats, report, reports, messages } = detail.data;
+    const messagesTotal = Math.max(detail.data.messages_total ?? messages.length, messages.length);
     const stateHistory = detail.data.history ?? [];
     // A group sent back for a re-check offers every state (the new decision); otherwise the other states.
     const nextStates = group.needs_recheck ? STATES : STATES.filter(s => s !== group.state);
@@ -373,7 +374,7 @@ export function AlertGroupDetailPage() {
                             {group.report_confidence === 'low' && <NeedsReviewBadge />}
                             <ResponsibleBadge responsible={group.responsible} />
                             {group.report_unanalyzable && group.report_status !== 'running' && <UnanalyzableBadge />}
-                            {group.actionable && group.needs_analysis && group.report_status !== 'running' && (
+                            {group.needs_analysis && group.report_status !== 'running' && (
                                 <Badge tone='warning' icon='pending_actions'>
                                     {t('field.group.needsAnalysis')}
                                 </Badge>
@@ -581,12 +582,25 @@ export function AlertGroupDetailPage() {
                     </Card>
 
                     <section>
-                        <CardHeader title={t('page.groupDetail.messagesTitle', { count: messages.length })} />
+                        <CardHeader
+                            title={t('page.groupDetail.messagesTitle', { count: messagesTotal })}
+                            actions={
+                                messagesTotal > messages.length && (
+                                    <LinkButton
+                                        to={`/mails/${id}?group=${encodeURIComponent(groupKey)}`}
+                                        size='sm'
+                                        icon='list'
+                                    >
+                                        {t('common.showMore', { count: messagesTotal - messages.length })}
+                                    </LinkButton>
+                                )
+                            }
+                        />
                         <Table
                             columns={messageColumns}
                             rows={messages}
                             rowKey={m => m.message_key}
-                            caption={t('page.groupDetail.messagesTitle', { count: messages.length })}
+                            caption={t('page.groupDetail.messagesTitle', { count: messagesTotal })}
                             onRowClick={m => navigate(`/mails/${id}/${encodeURIComponent(m.message_key)}`)}
                             rowAriaLabel={m =>
                                 t('action.mail.openFor', { subject: m.subject || t('field.mail.subjectNone') })

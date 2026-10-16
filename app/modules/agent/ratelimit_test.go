@@ -120,7 +120,6 @@ func TestFailureSettles(t *testing.T) {
 		"analysis canceled: context canceled":              false,
 		CanceledMessage("interrupted by a server restart"): false,
 		"Codex produced no report":                         true,
-		"Codex timed out after 30m0s":                      true,
 		"Codex could not run: exec: not found":             true,
 	} {
 		if got := FailureSettles(msg); got != want {

@@ -68,22 +68,10 @@ func (c *core) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	page, perPage := 1, defaultPerPage
-	if s := q.Get("page"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 {
-			writeError(w, http.StatusBadRequest, "system.invalidRequest")
-			return
-		}
-		page = n
-	}
-	if s := q.Get("per_page"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 || n > maxPerPage {
-			writeError(w, http.StatusBadRequest, "system.invalidRequest")
-			return
-		}
-		perPage = n
+	page, perPage, ok := readPage(q, defaultPerPage, maxPerPage)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
 	}
 	kind := q.Get("kind")
 	switch kind {
@@ -126,27 +114,28 @@ func (c *core) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer idx.Close()
-	var bounce *models.Bounce
-	responsible := ""
+	// One bounce per recipient block; "bounce" is the first of them.
+	bounces := []*BounceDTO{}
 	if m.IsBounce {
-		b, err := models.GetBounceByMessageID(idx, m.ID)
-		if err != nil && err != sql.ErrNoRows {
+		rows, err := models.ListBouncesByMessage(idx, m.ID)
+		if err != nil {
 			writeInternalError(w, "failed to load bounce details", err)
 			return
 		}
-		bounce = b
-		// The responsible party belongs to the group the bounce was
-		// bundled into.
-		if bounce != nil && bounce.GroupKey != "" {
-			g, err := models.GetGroup(idx, bounce.GroupKey)
-			if err != nil && err != sql.ErrNoRows {
-				writeInternalError(w, "failed to load the bounce group", err)
-				return
-			}
-			if g != nil {
-				responsible = g.Responsible
-			}
+		// The responsible party belongs to the group the recipient block
+		// was bundled into; the groups of every block are read at once.
+		responsibles, err := models.GroupResponsiblesOfMessage(idx, m.ID)
+		if err != nil {
+			writeInternalError(w, "failed to load the bounce group", err)
+			return
 		}
+		for _, b := range rows {
+			bounces = append(bounces, toBounceDTO(b, responsibles[b.GroupKey]))
+		}
+	}
+	var bounce *BounceDTO
+	if len(bounces) > 0 {
+		bounce = bounces[0]
 	}
 	// The decoded text sections (<key>-1.txt, <key>-2.txt, ...), as many as
 	// the index counted; a message without text answers an empty list.
@@ -173,7 +162,7 @@ func (c *core) handleGetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message": toMessageDTO(m), "bounce": toBounceDTO(bounce, responsible), "text_sections": sections, "headers": headers,
+		"message": toMessageDTO(m), "bounce": bounce, "bounces": bounces, "text_sections": sections, "headers": headers,
 	})
 }
 

@@ -44,24 +44,21 @@ import (
 //     delayed and once when it becomes a failure (or when the SMTP server
 //     refused it); one that went straight to failure only as a failure
 //     (notifyProbeAlerts).
-//   - A probe mail whose arrival is recorded is deleted from the probe
-//     server at once (the probe mailbox would fill up otherwise). One left
-//     there (the deletion failed, it arrived after it was resolved) is
-//     looked for while its closed record is not marked deleted: by every
-//     check when the record was sent in the last day, after that only by
-//     the daily sweep (and while the last deletion failed), up to
-//     ProbeSearchMaxDays. A verified probe mail (the subject and the probe
-//     header carry the same token, the token is recorded and the sender is
-//     the recorded address) is deleted whenever it is found; a copy that
-//     arrives after its record was marked deleted is found by the daily
-//     sweep below once it carries the current identifier and is a day old.
+//   - Every check lists the probe mails of the probe mailbox once (the
+//     subjects that carry ProbeSubjectMark, every identifier, the whole
+//     folder; mailengine.CheckProbeServer) and decides both the arrivals
+//     and the deletions from that one listing (sortProbeMessages).
+//   - A verified probe mail (the subject and the probe header carry the
+//     same token, the token is recorded and the sender is the recorded
+//     address) is an arrival when its record is waiting, and is deleted
+//     from the probe server at once, whatever its record (the probe mailbox
+//     would fill up otherwise); one left there (the deletion failed, it
+//     arrived after it was resolved) goes with the next check.
 //   - Any other probe mail (no record, or a closed record with another
 //     sender) is deleted when it carries the current identifier, arrived
-//     ProbeLeftoverMinAge ago or earlier and its token is no open record
-//     (sortProbeMessages). The daily sweep looks for such mails (the oldest
-//     ProbeCleanupScanMax candidates read, at most ProbeCleanupMax deleted).
-//     Other mail of the probe mailbox is never touched
-//     (mailengine.CheckProbeServer).
+//     ProbeLeftoverMinAge ago or earlier and its token is no open record.
+//     A probe mail of another identifier without a record, and any other
+//     mail of the probe mailbox, is never touched.
 //
 // The probe settings live in the settings table (SettingProbe*), the SMTP
 // connection of a mailbox in its detail_info (smtp_host and the rest), the
@@ -118,9 +115,6 @@ type ProbeSettings struct {
 	CheckFailures        int
 	FailingSince         sql.NullTime
 	UnreadableNotifiedAt sql.NullTime
-	// WideSweepAt is when the cleanup last searched ProbeSearchMaxDays back
-	// (and for unrecorded probe mails).
-	WideSweepAt sql.NullTime
 	// SubjectTag is the identifier at the start of the subject of the probe
 	// mails ("[<identifier>:<token>]").
 	SubjectTag string
@@ -194,7 +188,6 @@ func ResolveProbeSettings(db *sql.DB, key []byte) (*ProbeSettings, error) {
 	if validateProbeSubjectTag(s.SubjectTag) != nil {
 		s.SubjectTag = DefaultProbeSubjectTag
 	}
-	s.WideSweepAt = settingTime(db, SettingProbeWideSweepAt)
 	return s, nil
 }
 
@@ -627,8 +620,6 @@ func TestProbeServer(ctx context.Context, db *sql.DB, key []byte, in *ProbeTestI
 	default:
 		password = saved.Password
 	}
-	ctx, cancel := context.WithTimeout(ctx, IMAPTimeout)
-	defer cancel()
 	if err := mailengine.TestConnection(ctx, &conn, password); err != nil {
 		return wording.New("result.mailbox.testFailed", err.Error()).With("detail", err.Error())
 	}
@@ -1154,7 +1145,8 @@ type ProbeCheckResult struct {
 	// sender is not the recorded address (left on the server).
 	Mismatched int
 	// Unrecorded counts the probe mails deleted under the rule for the
-	// unrecorded ones (current identifier, a day old, no open record).
+	// unrecorded ones (current identifier, ProbeLeftoverMinAge old, no open
+	// record).
 	Unrecorded int
 	// DeleteError is why the verified probe mails could not be deleted
 	// from the probe server ("" when they were, or none had to be).
@@ -1176,55 +1168,6 @@ func probeRetryAfter(failures int, failure time.Duration) time.Duration {
 		d *= 2
 	}
 	return min(d, limit)
-}
-
-// probeSearchPlan says what a check asks the probe server for (the
-// system design document (Documents) 7.6) and whether it is the daily
-// sweep:
-//
-//  1. the tokens of the open probe mails, arrived since a day before the
-//     oldest of them was sent (never more than ProbeSearchMaxDays back);
-//  2. for the cleanup, the tokens of the closed probe mails not deleted from
-//     the probe server yet: of those sent in the last day, arrived in the
-//     last two days, or, on the daily sweep and while the last deletion
-//     failed, of those sent in the last ProbeSearchMaxDays since then;
-//  3. on the daily sweep only, the unrecorded probe mails of the current
-//     identifier: subjects with "[<identifier>:" that arrived before the
-//     previous day, the oldest ProbeCleanupScanMax of them.
-func probeSearchPlan(db *sql.DB, settings *ProbeSettings, open []*models.ProbeMail, now time.Time) (
-	lists []mailengine.ProbeTokens, cand mailengine.ProbeCandidates, sweep bool, err error) {
-	floor := now.AddDate(0, 0, -ProbeSearchMaxDays)
-	arrivals := mailengine.ProbeTokens{Since: now}
-	openTokens := map[string]bool{}
-	for _, p := range open {
-		arrivals.Tokens = append(arrivals.Tokens, p.Token)
-		openTokens[p.Token] = true
-		if at := p.SentAt.Add(-24 * time.Hour); at.Before(arrivals.Since) {
-			arrivals.Since = at
-		}
-	}
-	if arrivals.Since.Before(floor) {
-		arrivals.Since = floor
-	}
-	sweep = !settings.WideSweepAt.Valid || now.Sub(settings.WideSweepAt.Time) >= 24*time.Hour
-	sentSince := now.Add(-24 * time.Hour)
-	cleanup := mailengine.ProbeTokens{Since: now.Add(-48 * time.Hour)}
-	if sweep || settings.LastDeleteError != "" {
-		sentSince, cleanup.Since = floor, floor
-	}
-	closed, err := models.ListUndeletedClosedProbeTokens(db, sentSince)
-	if err != nil {
-		return nil, mailengine.ProbeCandidates{}, sweep, err
-	}
-	for _, t := range closed {
-		if !openTokens[t] {
-			cleanup.Tokens = append(cleanup.Tokens, t)
-		}
-	}
-	if sweep {
-		cand = mailengine.ProbeCandidates{Prefix: "[" + settings.SubjectTag + ":", Before: now.Add(-24 * time.Hour), Max: ProbeCleanupScanMax}
-	}
-	return []mailengine.ProbeTokens{arrivals, cleanup}, cand, sweep, nil
 }
 
 // errProbeRecord marks an error of recording what a check found (the
@@ -1254,12 +1197,12 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 	res = &ProbeCheckResult{}
 	now := time.Now()
 	var settings *ProbeSettings
-	serverErr, sweep := false, false
+	serverErr := false
 	defer func() {
 		if settings != nil && settings.Configured() {
 			notifyProbeAlerts(ctx, db, key, baseURL, progress)
 		}
-		recordProbeCheck(ctx, db, key, baseURL, settings, res, err, serverErr, sweep, now, progress)
+		recordProbeCheck(ctx, db, key, baseURL, settings, res, err, serverErr, now, progress)
 	}()
 	closeStaleOpenProbes(db)
 	settings, err = ResolveProbeSettings(db, key)
@@ -1286,11 +1229,6 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 	}
 	progress(fmt.Sprintf("looking for %d probe mails on %s", len(open), settings.Conn.ImapHost))
 	res.Checked = len(waiting)
-	lists, cand, isSweep, err := probeSearchPlan(db, settings, open, now)
-	if err != nil {
-		return res, err
-	}
-	sweep = isSweep
 	var sorted probeSort
 	// The arrivals are recorded before anything is deleted from the server:
 	// a message is removed only once its arrival is in the database.
@@ -1310,12 +1248,10 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 		}
 		return sorted.remove, nil
 	}
-	ictx, cancel := context.WithTimeout(ctx, ProbeIMAPTimeout)
-	deleted, err := mailengine.CheckProbeServer(ictx, &settings.Conn, settings.Password, ProbeHeader, lists, cand, record)
-	cancel()
+	// One listing of the probe mails decides the arrivals and the deletions.
+	deleted, err := mailengine.CheckProbeServer(ctx, &settings.Conn, settings.Password, ProbeHeader, ProbeSubjectMark, record)
 	// What was deleted counts, also the batches deleted before a failed
-	// one; the records it empties are marked (the cleanup does not look
-	// for them any more).
+	// one; the records it empties are marked deleted.
 	gone, unrecorded := sorted.deletedOf(deleted)
 	res.Deleted, res.Unrecorded = len(deleted), unrecorded
 	if len(gone) > 0 {
@@ -1346,16 +1282,15 @@ func CheckProbes(ctx context.Context, db *sql.DB, key []byte, baseURL string, pr
 // recordProbeCheck saves the outcome of an arrival check in one settings
 // write. A check with nothing to look for (skipped) clears the next check
 // and ends a run of failed checks. A check that read the probe server
-// records its time and ends the run, and keeps the deletion error and, for
-// the daily sweep (probeSearchPlan), its time; those two are kept also when
-// the settings changed during the check. A check the probe server failed
+// records its time and ends the run, and keeps the deletion error (also
+// when the settings changed during the check). A check the probe server failed
 // (serverErr) records its time and error, counts the run (probeRetryAfter
 // decides the next check; notifyProbeUnreadable mails once about a server
 // unreadable for the failure threshold). Any other error (the database, the
 // settings) records the error and retries after ProbeCheckRetryInterval
 // without touching the run; a canceled job only keeps a check pending.
 func recordProbeCheck(ctx context.Context, db *sql.DB, key []byte, baseURL string, settings *ProbeSettings,
-	res *ProbeCheckResult, checkErr error, serverErr, sweep bool, now time.Time, progress func(string)) {
+	res *ProbeCheckResult, checkErr error, serverErr bool, now time.Time, progress func(string)) {
 	canceled := checkErr != nil && (errors.Is(checkErr, context.Canceled) || ctx.Err() != nil)
 	failures, failingSince, notified := 1, now, false
 	if settings != nil {
@@ -1379,12 +1314,11 @@ func recordProbeCheck(ctx context.Context, db *sql.DB, key []byte, baseURL strin
 	if err := UpdateSettings(db, func(u *SettingsUpdate) error {
 		u.setTime(SettingProbeNextCheckAt, res.NextAt)
 		if checkErr == nil && res.Skipped == "" {
-			// What the cleanup did on the server read (the next check
-			// retries a failed deletion; the sweep runs once a day).
+			// What the deletion on the server read did (the next check
+			// retries a failed one). The time of the daily sweep of older
+			// versions goes.
 			u.set(SettingProbeLastDeleteError, res.DeleteError, res.DeleteError == "")
-			if sweep {
-				u.setTime(SettingProbeWideSweepAt, now)
-			}
+			u.set(SettingProbeWideSweepAt, "", true)
 		}
 		// The settings may have changed while the check ran (the probe
 		// switched, another connection, another check's run): the run of
@@ -1542,8 +1476,7 @@ type probeSort struct {
 // current identifier, arrived ProbeLeftoverMinAge ago or earlier (another
 // MailCare sharing the probe server may still be looking for it) and its
 // token is no open recorded probe mail (no sender check: an unrecorded mail
-// has none to compare), at most ProbeCleanupMax of them (found is in UID
-// order: the oldest first). A recorded token with another sender is
+// has none to compare). A recorded token with another sender is
 // reported (mismatched) when no verified copy of it was found. Every other
 // message stays on the server.
 func sortProbeMessages(found []mailengine.ProbeMessage, recorded map[string]*models.ProbeMail, tag string, now time.Time) probeSort {
@@ -1567,7 +1500,7 @@ func sortProbeMessages(found []mailengine.ProbeMessage, recorded map[string]*mod
 			out.mismatched[m.Token] = m.From
 		}
 		old := !m.ReceivedAt.IsZero() && now.Sub(m.ReceivedAt) >= ProbeLeftoverMinAge
-		if m.Identifier == tag && old && (!ok || !models.ProbeStatusOpen(p.Status)) && len(out.unrecorded) < ProbeCleanupMax {
+		if m.Identifier == tag && old && (!ok || !models.ProbeStatusOpen(p.Status)) {
 			out.remove[m.UID] = true
 			out.unrecorded[m.UID] = true
 		}
@@ -1626,10 +1559,6 @@ func ResolveProbe(db *sql.DB, id int64, by, reason, note string) (*models.ProbeM
 		return nil, wording.New("validation.probe.reasonRequired", "choose why the probe mail is resolved")
 	}
 	note = strings.TrimSpace(note)
-	if len([]rune(note)) > MaxProbeNoteLength {
-		return nil, wording.New("validation.group.stateNoteTooLong", fmt.Sprintf("note must be %d characters or fewer", MaxProbeNoteLength)).
-			With("max", MaxProbeNoteLength)
-	}
 	ok, err := models.ResolveProbeMail(db, p.ID, by, reason, note, time.Now())
 	if err != nil {
 		return nil, err

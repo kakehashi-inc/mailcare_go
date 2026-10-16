@@ -8,13 +8,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registered as "sqlite"
+
+	"mailcare/app/modules/filelock"
 )
 
 // TestMain wires in the files the binary embeds (embed.go), read from the
@@ -119,84 +120,83 @@ func TestApplyLockedConcurrent(t *testing.T) {
 	}
 }
 
-// writeLock writes a lock file as another holder would, dated at.
-func writeLock(t *testing.T, path string, at time.Time, content string) {
+// holdLock takes the lock of path as another process would (another open
+// file) and returns its release.
+func holdLock(t *testing.T, path string) func() {
 	t.Helper()
-	if content == "" {
-		content = fmt.Sprintf("12345 %s othertoken\n", at.UTC().Format(time.RFC3339Nano))
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(path, at, at); err != nil {
+	if err := filelock.TryLock(f); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// TestApplyLockedTakesOverStaleLock: a lock file older than two minutes
-// (its holder died) is taken over, by the time written in it or, when that
-// cannot be read, by its modification time, and is gone afterwards.
-func TestApplyLockedTakesOverStaleLock(t *testing.T) {
-	old := time.Now().Add(-3 * time.Minute)
-	for name, content := range map[string]string{"dated": "", "unreadable": "garbage"} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "mailcare.db")
-			writeLock(t, path+LockSuffix, old, content)
-			start := time.Now()
-			if _, err := ApplyLocked(context.Background(), openAt(t, path), Master(), path); err != nil {
-				t.Fatal(err)
-			}
-			if d := time.Since(start); d > 10*time.Second {
-				t.Errorf("took %v: the stale lock was waited for", d)
-			}
-			lockGone(t, path)
-			matches, _ := filepath.Glob(path + LockSuffix + ".stale-*")
-			if len(matches) != 0 {
-				t.Errorf("files left behind: %v", matches)
-			}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			_ = filelock.Unlock(f)
+			f.Close()
 		})
 	}
+	t.Cleanup(release)
+	return release
 }
 
-// TestApplyLockedWaitsForHolder: a fresh lock of another holder is waited
-// for: applied as soon as it is removed, refused (and left alone) when it
-// stays for lockWait; a database that is up to date takes no lock at all.
+// TestApplyLockedLeftLockFile: a lock file left behind by a process that
+// ended (no lock is held on it) is no obstacle: it is locked at once, and
+// removed afterwards.
+func TestApplyLockedLeftLockFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mailcare.db")
+	if err := os.WriteFile(path+LockSuffix, []byte("12345 2020-01-01T00:00:00Z token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if _, err := ApplyLocked(context.Background(), openAt(t, path), Master(), path); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("took %v: the left file was waited for", d)
+	}
+	lockGone(t, path)
+}
+
+// TestApplyLockedWaitsForHolder: a lock held by another process is waited
+// for as long as it is held (here far longer than any former limit of the
+// wait would allow relative to the poll), applied as soon as it is
+// released; a canceled wait ends at once; a database that is up to date
+// takes no lock at all.
 func TestApplyLockedWaitsForHolder(t *testing.T) {
-	saved := lockWait
-	t.Cleanup(func() { lockWait = saved })
+	saved := lockPoll
+	t.Cleanup(func() { lockPoll = saved })
+	lockPoll = 5 * time.Millisecond
 
 	path := filepath.Join(t.TempDir(), "mailcare.db")
-	lock := path + LockSuffix
-	writeLock(t, lock, time.Now(), "")
-	lockWait = 300 * time.Millisecond
-	_, err := ApplyLocked(context.Background(), openAt(t, path), Master(), path)
-	if err == nil || !strings.Contains(err.Error(), "another process") {
-		t.Errorf("held lock: %v; want refused", err)
-	}
-	if _, err := os.Stat(lock); err != nil {
-		t.Errorf("the lock of the other holder was removed: %v", err)
+	release := holdLock(t, path+LockSuffix)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	if _, err := ApplyLocked(ctx, openAt(t, path), Master(), path); !errors.Is(err, context.Canceled) {
+		t.Errorf("held lock, canceled wait: %v", err)
 	}
 
-	lockWait = 10 * time.Second
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		_ = os.Remove(lock)
-	}()
+	time.AfterFunc(time.Second, release)
 	db := openAt(t, path)
+	start := time.Now()
 	if applied, err := ApplyLocked(context.Background(), db, Master(), path); err != nil || len(applied) == 0 {
 		t.Fatalf("after the release: %v, %v", applied, err)
 	}
+	if d := time.Since(start); d < 900*time.Millisecond {
+		t.Errorf("applied after %v while the lock was held for a second", d)
+	}
 	lockGone(t, path)
 
-	writeLock(t, lock, time.Now(), "")
-	lockWait = 0
+	holdLock(t, path+LockSuffix)
 	if applied, err := ApplyLocked(context.Background(), db, Master(), path); err != nil || len(applied) != 0 {
 		t.Errorf("up to date: %v, %v; want nothing applied and no wait", applied, err)
 	}
 }
 
 // TestApplyLockedReleasesOnFailure: a migration that fails still removes
-// the lock file.
+// the lock file and releases the lock.
 func TestApplyLockedReleasesOnFailure(t *testing.T) {
 	broken := fstest.MapFS{"0001_broken.sql": {Data: []byte("-- +goose Up\nCREATE TABLE (;\n-- +goose Down\n")}}
 	path := filepath.Join(t.TempDir(), "mailcare.db")
@@ -206,58 +206,37 @@ func TestApplyLockedReleasesOnFailure(t *testing.T) {
 	lockGone(t, path)
 }
 
-// TestLockDefaults checks the bounds of the specification: another holder
-// is waited for 30 seconds, and a lock older than 2 minutes is stale.
-func TestLockDefaults(t *testing.T) {
-	if lockWait != 30*time.Second || lockStale != 2*time.Minute {
-		t.Errorf("lockWait %v, lockStale %v; want 30s and 2m", lockWait, lockStale)
+// TestAcquireLockRetriesRemovedFile: a waiter whose open file was removed
+// by the holder before the release locks the new file at the path, so two
+// holders never run at once.
+func TestAcquireLockRetriesRemovedFile(t *testing.T) {
+	saved := lockPoll
+	t.Cleanup(func() { lockPoll = saved })
+	lockPoll = 5 * time.Millisecond
+	path := filepath.Join(t.TempDir(), "x"+LockSuffix)
+	var mu sync.Mutex
+	holders, most := 0, 0
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Go(func() {
+			release, err := acquireLock(context.Background(), path)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			holders++
+			most = max(most, holders)
+			mu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+			mu.Lock()
+			holders--
+			mu.Unlock()
+			release()
+		})
 	}
-}
-
-// TestApplyLockedStaleBoundary: a lock written 90 seconds ago is still the
-// other holder's (waited for, then refused), and one written 150 seconds ago
-// is stale (taken over at once).
-func TestApplyLockedStaleBoundary(t *testing.T) {
-	saved := lockWait
-	t.Cleanup(func() { lockWait = saved })
-	lockWait = 300 * time.Millisecond
-
-	path := filepath.Join(t.TempDir(), "mailcare.db")
-	writeLock(t, path+LockSuffix, time.Now().Add(-90*time.Second), "")
-	if _, err := ApplyLocked(context.Background(), openAt(t, path), Master(), path); err == nil || !strings.Contains(err.Error(), "another process") {
-		t.Errorf("lock 90 seconds old: %v; want refused", err)
-	}
-
-	path = filepath.Join(t.TempDir(), "mailcare.db")
-	writeLock(t, path+LockSuffix, time.Now().Add(-150*time.Second), "")
-	if _, err := ApplyLocked(context.Background(), openAt(t, path), Master(), path); err != nil {
-		t.Errorf("lock 150 seconds old: %v; want taken over", err)
-	}
-	lockGone(t, path)
-}
-
-// TestReleaseLockKeepsOtherHolder: releasing removes the lock file only
-// while it holds the token of the release (a holder that took a stale lock
-// over keeps it), and the time of a lock is read only from a line of three
-// fields.
-func TestReleaseLockKeepsOtherHolder(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "mailcare.db") + LockSuffix
-	writeLock(t, path, time.Now(), "")
-	releaseLock(path, "releasetoken")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("the lock of another holder was removed: %v", err)
-	}
-	releaseLock(path, "othertoken")
-	lockGone(t, strings.TrimSuffix(path, LockSuffix))
-
-	at := time.Now().UTC().Format(time.RFC3339Nano)
-	for content, want := range map[string]bool{
-		"12345 " + at + " token":       true,
-		"12345 " + at:                  false,
-		"12345 " + at + " token extra": false,
-	} {
-		if _, ok := lockTime([]byte(content)); ok != want {
-			t.Errorf("lockTime(%q) ok = %v, want %v", content, ok, want)
-		}
+	wg.Wait()
+	if most != 1 {
+		t.Errorf("%d holders at once", most)
 	}
 }

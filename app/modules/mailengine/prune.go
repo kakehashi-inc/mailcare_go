@@ -18,8 +18,8 @@ import (
 // INTERNALDATE, else the fetch time) is older than now - keep. For every
 // such message the body section files (<key>-1.txt ... <key>-<text_count>.txt
 // and <key>-1.html ... <key>-<html_count>.html) and then the raw file
-// (<key>.eml) are deleted, and then the index row (its bounces row and its
-// dmarc_records rows go with it by cascade). The groups that lost members
+// (<key>.eml) are deleted, and then the index row (its bounces rows, one
+// per failed recipient, and its dmarc_records rows go with it by cascade). The groups that lost members
 // are recounted
 // (RefreshGroupCounters, which never flags a group for analysis when its
 // count shrinks) and the groups left without messages are deleted together

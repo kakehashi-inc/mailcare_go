@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MAX_PROBE_NOTE_LENGTH } from '../../constants';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { PROBE_RESOLVE_REASONS } from '../../types';
 import { Button } from '../ui/Button';
@@ -91,7 +90,6 @@ export function ProbeResolveDialog({ open, subject, busy = false, onConfirm, onC
                         value={note}
                         onChange={e => setNote(e.target.value)}
                         rows={3}
-                        maxLength={MAX_PROBE_NOTE_LENGTH}
                         disabled={busy}
                     />
                     {/* Same order as ConfirmDialog: confirm left, cancel right; stacked, cancel at the bottom. */}

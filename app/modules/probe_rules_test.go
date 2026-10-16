@@ -731,7 +731,7 @@ func TestProbeCheckIgnoresRunAfterSettingsMoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := &ProbeCheckResult{}
-	recordProbeCheck(context.Background(), db, key, "", before, res, errors.New("probe server: refused"), true, false, time.Now(), func(string) {})
+	recordProbeCheck(context.Background(), db, key, "", before, res, errors.New("probe server: refused"), true, time.Now(), func(string) {})
 	s, _ := ResolveProbeSettings(db, nil)
 	if s.CheckFailures != 0 || s.FailingSince.Valid || s.LastCheckError != "" || !s.NextCheckAt.Valid {
 		t.Errorf("run recorded against the new connection: %+v", s)
@@ -780,6 +780,7 @@ func startProbeIMAPLog(t *testing.T) (*probeIMAP, *probeLog) {
 		},
 		InsecureAuth: true,
 		Caps:         imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}},
+		Logger:       quietIMAPLog{},
 		DebugWriter:  log,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -793,21 +794,24 @@ func startProbeIMAPLog(t *testing.T) (*probeIMAP, *probeLog) {
 	return &probeIMAP{user: user, host: host, port: port}, log
 }
 
-// The tokens are searched with one SEARCH per 50 (SUBJECT and SINCE only,
-// never a header criterion), and every one is found.
-func TestProbeTokenSearchBatches(t *testing.T) {
-	for _, n := range []int{0, 1, 50, 51} {
+// A check lists the probe mailbox once: one UID SEARCH by the subject mark
+// (SUBJECT only, no SINCE, no header criterion), which finds the probe
+// mails of every identifier, however many there are; other mail is not
+// listed.
+func TestProbeServerOneListing(t *testing.T) {
+	for _, n := range []int{0, 1, 120} {
 		srv, log := startProbeIMAPLog(t)
-		var tokens []string
 		for i := range n {
-			tok := fmt.Sprintf("abcdef%010x", i)
-			tokens = append(tokens, tok)
-			srv.deliver(t, probeRaw("a@example.test", "", tok), time.Now())
+			tag := DefaultProbeSubjectTag
+			if i%2 == 1 {
+				tag = "OLD"
+			}
+			srv.deliver(t, probeRawTag(tag, "a@example.test", "", fmt.Sprintf("abcdef%010x", i)), time.Now())
 		}
+		srv.deliver(t, "From: x@example.test\r\nTo: probe@example.test\r\nSubject: hello\r\n\r\nx\r\n", time.Now())
 		conn := &models.Mailbox{ImapHost: srv.host, ImapPort: srv.port, ImapSecurity: IMAPSecurityNone, ImapUsername: "probe", Folder: "INBOX"}
 		seen := map[string]bool{}
-		_, err := mailengine.CheckProbeServer(context.Background(), conn, "probe-secret", ProbeHeader,
-			[]mailengine.ProbeTokens{{Tokens: tokens, Since: time.Now().Add(-48 * time.Hour)}}, mailengine.ProbeCandidates{},
+		_, err := mailengine.CheckProbeServer(context.Background(), conn, "probe-secret", ProbeHeader, ProbeSubjectMark,
 			func(found []mailengine.ProbeMessage) (map[uint32]bool, error) {
 				for _, m := range found {
 					seen[m.Token] = true
@@ -815,23 +819,21 @@ func TestProbeTokenSearchBatches(t *testing.T) {
 				return nil, nil
 			})
 		searches := log.searches()
-		subjects := strings.Count(strings.Join(searches, "\n"), "SUBJECT")
-		if err != nil || len(searches) != (n+49)/50 || subjects != n || len(seen) != n {
-			t.Errorf("n=%d: %v, %d searches, %d SUBJECT keys, found %d", n, err, len(searches), subjects, len(seen))
+		if err != nil || len(searches) != 1 || len(seen) != n {
+			t.Errorf("n=%d: %v, searches %q, found %d", n, err, searches, len(seen))
+			continue
 		}
-		for _, line := range searches {
-			if strings.Contains(line, "HEADER") || !strings.Contains(line, "SINCE") {
-				t.Errorf("n=%d: %s", n, line)
-			}
+		if line := searches[0]; !strings.Contains(line, `SUBJECT "] Probe "`) || strings.Contains(line, "SINCE") ||
+			strings.Contains(line, "BEFORE") || strings.Contains(line, "HEADER") {
+			t.Errorf("n=%d: %s", n, line)
 		}
 	}
 }
 
 // A flood of mails made to look like probe mails ([MC:<random>] with a
-// matching header) never hides a real arrival; a normal check searches the
-// recorded tokens only, and the once-a-day sweep deletes at most
-// ProbeCleanupMax of the unrecorded ones (a day old) per sweep, the oldest
-// first, so the flood drains over several sweeps.
+// matching header) never hides a real arrival, and every check deletes the
+// ones a day old (ProbeLeftoverMinAge) from its one listing, however many
+// there are.
 func TestProbeForgedFloodDrained(t *testing.T) {
 	db, key, _, _ := setupProbe(t)
 	srv, log := startProbeIMAPLog(t)
@@ -840,68 +842,53 @@ func TestProbeForgedFloodDrained(t *testing.T) {
 	if err := SaveProbeSettings(db, key, &ProbeInput{IMAPPort: num(srv.port), IMAPPassword: str("probe-secret")}); err != nil {
 		t.Fatal(err)
 	}
-	extra := 30
-	for i := range ProbeCleanupMax + extra {
-		srv.deliver(t, probeRaw("spam@example.test", "", fmt.Sprintf("eeeeeeee%08x", i)), time.Now().AddDate(0, 0, -2))
+	flood, extra := 530, 30
+	leftover := time.Now().Add(-ProbeLeftoverMinAge - time.Hour)
+	for i := range flood {
+		srv.deliver(t, probeRaw("spam@example.test", "", fmt.Sprintf("eeeeeeee%08x", i)), leftover)
 	}
 	p := addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(1), SentAt: time.Now().Add(-2 * time.Minute),
 		Status: models.ProbeStatusPending})
 	srv.deliver(t, probeRaw("a@example.test", "", p.Token), time.Now().Add(-time.Minute))
 	ctx := context.Background()
 	res, err := CheckProbes(ctx, db, key, "", func(string) {})
-	if err != nil || res.Arrived != 1 || res.Deleted != ProbeCleanupMax+1 || srv.count(t) != uint32(extra) {
-		t.Fatalf("wide check: %+v %v, %d left", res, err, srv.count(t))
+	if err != nil || res.Arrived != 1 || res.Deleted != flood+1 || res.Unrecorded != flood || srv.count(t) != 0 {
+		t.Fatalf("first check: %+v %v, %d left", res, err, srv.count(t))
 	}
-	sweep := 0
-	for _, line := range log.searches() {
-		if strings.Contains(line, "[MC:") {
-			sweep++
-			if !strings.Contains(line, "BEFORE") || strings.Contains(line, "SINCE") || strings.Contains(line, "HEADER") {
-				t.Errorf("sweep search: %s", line)
-			}
-		}
+	if searches := log.searches(); len(searches) != 1 {
+		t.Errorf("first check searched %d times: %q", len(searches), searches)
 	}
-	if sweep != 1 {
-		t.Errorf("sweep searches: %d", sweep)
+	// The next check deletes what came meanwhile: the old forged mails and
+	// the new arrival; a forged mail younger than a day stays.
+	for i := range extra {
+		srv.deliver(t, probeRaw("spam@example.test", "", fmt.Sprintf("dddddddd%08x", i)), leftover)
 	}
-	// A normal check (the sweep ran today) asks for the recorded tokens only.
+	srv.deliver(t, probeRaw("spam@example.test", "", "cccccccc00000001"), time.Now())
 	q := addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(2), SentAt: time.Now().Add(-time.Minute),
 		Status: models.ProbeStatusPending})
 	srv.deliver(t, probeRaw("a@example.test", "", q.Token), time.Now())
-	if res, err := CheckProbes(ctx, db, key, "", func(string) {}); err != nil || res.Arrived != 1 || srv.count(t) != uint32(extra) {
-		t.Fatalf("normal check: %+v %v, %d left", res, err, srv.count(t))
+	if res, err := CheckProbes(ctx, db, key, "", func(string) {}); err != nil || res.Arrived != 1 || res.Deleted != extra+1 ||
+		srv.count(t) != 1 {
+		t.Fatalf("second check: %+v %v, %d left", res, err, srv.count(t))
 	}
-	for _, line := range log.searches() {
-		if strings.Contains(line, "[MC:") {
-			t.Errorf("a normal check searched for unrecorded mails: %s", line)
-		}
-	}
-	// The next day's sweep drains the rest.
-	if err := UpdateSettings(db, func(u *SettingsUpdate) error {
-		u.setTime(SettingProbeWideSweepAt, time.Now().Add(-25*time.Hour))
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(3), SentAt: time.Now(), Status: models.ProbeStatusPending})
-	if res, err := CheckProbes(ctx, db, key, "", func(string) {}); err != nil || res.Deleted != extra || srv.count(t) != 0 {
-		t.Errorf("next sweep: %+v %v, %d left", res, err, srv.count(t))
+	if searches := log.searches(); len(searches) != 1 {
+		t.Errorf("second check searched %d times: %q", len(searches), searches)
 	}
 }
 
-// The once-a-day cleanup of unrecorded probe mails deletes only confirmed
+// A check deletes, of the unrecorded probe mails, only confirmed
 // ones (subject "[<current identifier>:<n>]", the probe header holding n
-// alone) that arrived a day ago or earlier; a recorded mail of an earlier
+// alone) that arrived ProbeLeftoverMinAge ago or earlier; a recorded mail of an earlier
 // identifier is cleaned as a recorded one.
 func TestProbeUnrecordedCleanup(t *testing.T) {
 	db, key, srv, _ := setupProbe(t)
-	old := time.Now().AddDate(0, 0, -2)
+	old := time.Now().Add(-ProbeLeftoverMinAge - 24*time.Hour)
 	raw := func(subject, header string) string {
 		h := ""
 		if header != "" {
 			h = ProbeHeader + ": " + header + "\r\n"
 		}
-		return "From: x@example.test\r\nTo: probe@example.test\r\nSubject: " + subject + "\r\n" + h + "\r\nx\r\n"
+		return "From: x@example.test\r\nTo: probe@example.test\r\nSubject: " + subject + " 2026-10-15 07:00 x@example.test\r\n" + h + "\r\nx\r\n"
 	}
 	srv.deliver(t, raw("[MC:1111111111111111] Probe", "1111111111111111"), old)                   // deleted
 	srv.deliver(t, raw("[MC:2222222222222222] Probe", "2222222222222222"), time.Now())            // too young
@@ -921,9 +908,6 @@ func TestProbeUnrecordedCleanup(t *testing.T) {
 	}
 	if p, _ := models.GetProbeMail(db, rec.ID); !p.DeletedAt.Valid {
 		t.Error("the deletion of the recorded mail was not recorded")
-	}
-	if tokens, _ := models.ListUndeletedClosedProbeTokens(db, time.Now().AddDate(0, 0, -1)); len(tokens) != 0 {
-		t.Errorf("a deleted mail is still looked for: %v", tokens)
 	}
 }
 
@@ -1008,11 +992,11 @@ func TestProbeEncodedSubject(t *testing.T) {
 	}
 }
 
-// After a failed deletion the next check looks for the recorded leftovers
-// of ProbeSearchMaxDays, but the sweep for unrecorded probe mails waits for
-// its day (and its time stays); a normal check looks for the leftovers sent
-// in the last day, arrived in the last two days.
-func TestProbeCleanupSearchWindows(t *testing.T) {
+// A recorded probe mail left on the probe server (an earlier deletion
+// failed), whatever the age of its record, goes with the next check, which
+// clears the deletion error and the time of the daily sweep of older
+// versions; every check lists the probe mailbox once.
+func TestProbeCheckDeletesRecordedLeftovers(t *testing.T) {
 	db, key, _, _ := setupProbe(t)
 	srv, log := startProbeIMAPLog(t)
 	str := func(v string) *string { return &v }
@@ -1020,9 +1004,8 @@ func TestProbeCleanupSearchWindows(t *testing.T) {
 	if err := SaveProbeSettings(db, key, &ProbeInput{IMAPPort: num(srv.port), IMAPPassword: str("probe-secret")}); err != nil {
 		t.Fatal(err)
 	}
-	sweptAt := time.Now().Add(-time.Hour)
 	if err := UpdateSettings(db, func(u *SettingsUpdate) error {
-		u.setTime(SettingProbeWideSweepAt, sweptAt)
+		u.setTime(SettingProbeWideSweepAt, time.Now().Add(-time.Hour))
 		u.set(SettingProbeLastDeleteError, "boom", false)
 		return nil
 	}); err != nil {
@@ -1030,62 +1013,52 @@ func TestProbeCleanupSearchWindows(t *testing.T) {
 	}
 	recent := addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(2), SentAt: time.Now().Add(-2 * time.Hour),
 		Status: models.ProbeStatusResolved})
-	older := addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(3), SentAt: time.Now().AddDate(0, 0, -3),
+	older := addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(3), SentAt: time.Now().AddDate(0, 0, -30),
 		Status: models.ProbeStatusResolved})
+	srv.deliver(t, probeRaw("a@example.test", "", recent.Token), time.Now().Add(-time.Hour))
+	srv.deliver(t, probeRaw("a@example.test", "", older.Token), time.Now().AddDate(0, 0, -29))
 	addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(1), SentAt: time.Now(), Status: models.ProbeStatusPending})
-	if _, err := CheckProbes(context.Background(), db, key, "", func(string) {}); err != nil {
-		t.Fatal(err)
+	res, err := CheckProbes(context.Background(), db, key, "", func(string) {})
+	if err != nil || res.Deleted != 2 || res.Unrecorded != 0 || srv.count(t) != 0 {
+		t.Errorf("check: %+v %v, %d left", res, err, srv.count(t))
 	}
-	searches := strings.Join(log.searches(), "\n")
-	wideSince := `SINCE "` + time.Now().AddDate(0, 0, -ProbeSearchMaxDays).Format("2-Jan-2006") + `"`
-	if strings.Contains(searches, "[MC:") || !strings.Contains(searches, older.Token) || !strings.Contains(searches, wideSince) {
-		t.Errorf("check after a failed deletion:\n%s", searches)
+	if searches := log.searches(); len(searches) != 1 {
+		t.Errorf("%d searches: %q", len(searches), searches)
+	}
+	for _, p := range []*models.ProbeMail{recent, older} {
+		if got, _ := models.GetProbeMail(db, p.ID); !got.DeletedAt.Valid {
+			t.Errorf("deletion of %s not recorded", p.Token)
+		}
 	}
 	s, _ := ResolveProbeSettings(db, nil)
-	if s.LastDeleteError != "" || !s.WideSweepAt.Valid || s.WideSweepAt.Time.Sub(sweptAt).Abs() > time.Second {
-		t.Errorf("delete error %q, sweep at %v (was %v)", s.LastDeleteError, s.WideSweepAt, sweptAt)
+	if s.LastDeleteError != "" {
+		t.Errorf("delete error %q stayed", s.LastDeleteError)
 	}
-	addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(4), SentAt: time.Now(), Status: models.ProbeStatusPending})
-	if _, err := CheckProbes(context.Background(), db, key, "", func(string) {}); err != nil {
-		t.Fatal(err)
-	}
-	searches = strings.Join(log.searches(), "\n")
-	normalSince := `SINCE "` + time.Now().Add(-48*time.Hour).Format("2-Jan-2006") + `"`
-	if strings.Contains(searches, "[MC:") || strings.Contains(searches, older.Token) || !strings.Contains(searches, recent.Token) ||
-		!strings.Contains(searches, normalSince) {
-		t.Errorf("normal check:\n%s", searches)
+	if _, found, _ := models.GetSettingStrict(db, SettingProbeWideSweepAt); found {
+		t.Error("the time of the daily sweep of older versions stayed")
 	}
 }
 
 // Mails that look like probe mails but cannot be deleted (no probe header)
-// do not hold back the unrecorded probe mails behind them: a sweep reads up
-// to ProbeCleanupScanMax candidates, the oldest first, and deletes at most
-// ProbeCleanupMax of them; the rest go on the next day's sweep.
+// do not hold back the unrecorded probe mails: one check deletes every
+// unrecorded probe mail a day old at once.
 func TestProbeSweepWindowNotStuck(t *testing.T) {
 	db, key, srv, _ := setupProbe(t)
-	old := time.Now().AddDate(0, 0, -3)
-	for i := range ProbeCleanupMax {
-		srv.deliver(t, fmt.Sprintf("From: x@example.test\r\nTo: probe@example.test\r\nSubject: [MC:%016x] Probe\r\n\r\nx\r\n", i), old)
+	old := time.Now().Add(-ProbeLeftoverMinAge - 24*time.Hour)
+	stuck, unrecorded := 600, 700
+	for i := range stuck {
+		srv.deliver(t, fmt.Sprintf("From: x@example.test\r\nTo: probe@example.test\r\nSubject: [MC:%016x] Probe 2026-10-15 07:00 x@example.test\r\n\r\nx\r\n", i), old)
 	}
-	extra := 100
-	for i := range ProbeCleanupMax + extra {
+	for i := range unrecorded {
 		srv.deliver(t, probeRaw("b@example.test", "", fmt.Sprintf("ffff%012x", i)), old)
 	}
-	for day, want := range []int{ProbeCleanupMax, extra} {
-		if err := UpdateSettings(db, func(u *SettingsUpdate) error {
-			u.setTime(SettingProbeWideSweepAt, time.Now().Add(-25*time.Hour))
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(day + 1), SentAt: time.Now(), Status: models.ProbeStatusPending})
-		res, err := CheckProbes(context.Background(), db, key, "", func(string) {})
-		if err != nil || res.Unrecorded != want || res.Deleted != want {
-			t.Errorf("day %d: %+v %v, %d left", day, res, err, srv.count(t))
-		}
+	addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(1), SentAt: time.Now(), Status: models.ProbeStatusPending})
+	res, err := CheckProbes(context.Background(), db, key, "", func(string) {})
+	if err != nil || res.Unrecorded != unrecorded || res.Deleted != unrecorded {
+		t.Errorf("sweep: %+v %v, %d left", res, err, srv.count(t))
 	}
-	if left := srv.count(t); left != uint32(ProbeCleanupMax) {
-		t.Errorf("%d left, want the %d without a probe header", left, ProbeCleanupMax)
+	if left := srv.count(t); left != uint32(stuck) {
+		t.Errorf("%d left, want the %d without a probe header", left, stuck)
 	}
 }
 
@@ -1093,7 +1066,7 @@ func TestProbeSweepWindowNotStuck(t *testing.T) {
 // deleted by the sweep of "MC".
 func TestProbeSweepIdentifierCase(t *testing.T) {
 	db, key, srv, _ := setupProbe(t)
-	srv.deliver(t, probeRawTag("mc", "b@example.test", "", "ffffffffffffffff"), time.Now().AddDate(0, 0, -3))
+	srv.deliver(t, probeRawTag("mc", "b@example.test", "", "ffffffffffffffff"), time.Now().Add(-ProbeLeftoverMinAge-24*time.Hour))
 	addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(1), SentAt: time.Now(), Status: models.ProbeStatusPending})
 	res, err := CheckProbes(context.Background(), db, key, "", func(string) {})
 	if err != nil || res.Deleted != 0 || srv.count(t) != 1 {
@@ -1105,7 +1078,7 @@ func TestProbeSweepIdentifierCase(t *testing.T) {
 // (and is reported); the sweep deletes only copies of closed ones.
 func TestProbeSweepKeepsOpenRecords(t *testing.T) {
 	db, key, srv, _ := setupProbe(t)
-	old := time.Now().AddDate(0, 0, -3)
+	old := time.Now().Add(-ProbeLeftoverMinAge - 24*time.Hour)
 	p := addProbeMail(t, db, key, "a@example.test", &models.ProbeMail{Token: probeToken(1), SentAt: old.Add(-time.Hour),
 		Status: models.ProbeStatusFailure, Level: models.ProbeLevelFailure})
 	srv.deliver(t, probeRaw("other@example.test", "", p.Token), old)
@@ -1115,9 +1088,8 @@ func TestProbeSweepKeepsOpenRecords(t *testing.T) {
 	}
 }
 
-// A check that read the probe server keeps the deletion error and the time
-// of its daily sweep also when the settings changed meanwhile; only the run
-// of failed checks is left alone.
+// A check that read the probe server keeps the deletion error also when the
+// settings changed meanwhile; only the run of failed checks is left alone.
 func TestProbeCleanupStateKeptAfterSettingsMoved(t *testing.T) {
 	db, key, _, _ := setupProbe(t)
 	before, _ := ResolveProbeSettings(db, key)
@@ -1132,9 +1104,9 @@ func TestProbeCleanupStateKeptAfterSettingsMoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := &ProbeCheckResult{DeleteError: "boom"}
-	recordProbeCheck(context.Background(), db, key, "", before, res, nil, false, true, time.Now(), func(string) {})
+	recordProbeCheck(context.Background(), db, key, "", before, res, nil, false, time.Now(), func(string) {})
 	s, _ := ResolveProbeSettings(db, nil)
-	if s.LastDeleteError != "boom" || !s.WideSweepAt.Valid || s.CheckFailures != 2 || s.LastCheckAt.Valid {
+	if s.LastDeleteError != "boom" || s.CheckFailures != 2 || s.LastCheckAt.Valid {
 		t.Errorf("after the settings moved: %+v", s)
 	}
 }

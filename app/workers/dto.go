@@ -377,6 +377,9 @@ type BounceDTO struct {
 	OriginalFrom       string  `json:"original_from"`
 	OriginalDate       *string `json:"original_date"`
 	Responsible        string  `json:"responsible"`
+	// GroupKey is the group the recipient block was filed into ("" when
+	// none).
+	GroupKey string `json:"group_key"`
 }
 
 // toBounceDTO converts a bounce; responsible is taken from its group (the
@@ -390,7 +393,7 @@ func toBounceDTO(b *models.Bounce, responsible string) *BounceDTO {
 		StatusCode: b.StatusCode, SMTPCode: b.SMTPCode, Diagnostic: b.Diagnostic, DiagnosticTemplate: b.DiagnosticTemplate,
 		RemoteMTA: b.RemoteMTA, RemoteIP: b.RemoteIP, ReportingMTA: b.ReportingMTA, OriginalMessageID: b.OriginalMessageID,
 		OriginalSubject: b.OriginalSubject, OriginalFrom: b.OriginalFrom, OriginalDate: nullTimeString(b.OriginalDate),
-		Responsible: responsible,
+		Responsible: responsible, GroupKey: b.GroupKey,
 	}
 }
 
@@ -497,20 +500,24 @@ type GroupExportMailboxDTO struct {
 }
 
 // GroupExportMessageDTO is one member message of an exported group: its
-// messages row, its bounces row (null for a DMARC report mail), the
-// dmarc_records rows of the group it carries (empty for a bounce) and the
-// paths of its files inside the archive (the raw .eml, the decoded header
-// list and the body sections that exist).
+// messages row, its bounces rows of the group (one per recipient block
+// filed into it; Bounce is the first of them, null for a DMARC report
+// mail), the dmarc_records rows of the group it carries (empty for a
+// bounce) and the paths of its files inside the archive (the raw .eml, the
+// decoded header list and the body sections that exist).
 type GroupExportMessageDTO struct {
-	Message      MessageDTO       `json:"message"`
-	Bounce       *BounceRecordDTO `json:"bounce"`
-	DMARCRecords []DMARCRecordDTO `json:"dmarc_records"`
-	Files        []string         `json:"files"`
+	Message      MessageDTO        `json:"message"`
+	Bounce       *BounceRecordDTO  `json:"bounce"`
+	Bounces      []BounceRecordDTO `json:"bounces"`
+	DMARCRecords []DMARCRecordDTO  `json:"dmarc_records"`
+	Files        []string          `json:"files"`
 }
 
 // BounceRecordDTO is a bounces row with every column.
 type BounceRecordDTO struct {
 	ID                 int64   `json:"id"`
+	MessageID          int64   `json:"message_id"`
+	RecipientIndex     int     `json:"recipient_index"`
 	GroupKey           string  `json:"group_key"`
 	Recipient          string  `json:"recipient"`
 	RecipientDomain    string  `json:"recipient_domain"`
@@ -536,7 +543,8 @@ func toBounceRecordDTO(b *models.Bounce) *BounceRecordDTO {
 		return nil
 	}
 	return &BounceRecordDTO{
-		ID: b.ID, GroupKey: b.GroupKey, Recipient: b.Recipient, RecipientDomain: b.RecipientDomain, Action: b.Action,
+		ID: b.ID, MessageID: b.MessageID, RecipientIndex: b.RecipientIndex, GroupKey: b.GroupKey, Recipient: b.Recipient,
+		RecipientDomain: b.RecipientDomain, Action: b.Action,
 		StatusCode: b.StatusCode, SMTPCode: b.SMTPCode, Diagnostic: b.Diagnostic, DiagnosticTemplate: b.DiagnosticTemplate,
 		DiagnosticSource: b.DiagnosticSource, CategoryRule: b.CategoryRule, PatternKey: b.PatternKey,
 		RemoteMTA: b.RemoteMTA, RemoteIP: b.RemoteIP, ReportingMTA: b.ReportingMTA,

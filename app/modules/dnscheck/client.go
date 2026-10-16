@@ -65,17 +65,6 @@ type reply struct {
 	answers       []dnsmessage.Resource
 }
 
-// typeOf returns the record type of a normalized qtype (MX, A, AAAA).
-func typeOf(qtype string) queryType {
-	switch qtype {
-	case "A":
-		return typeA
-	case "AAAA":
-		return typeAAAA
-	}
-	return typeMX
-}
-
 // typeName is the name of a record type in the evidence.
 func typeName(t queryType) string {
 	switch t {
@@ -93,48 +82,14 @@ func typeName(t queryType) string {
 	return t.String()
 }
 
-// lookupTarget asks one server the question of a verification and returns
-// the answer and its evidence ("MX ok (mx1.example.jp)"). For A and AAAA,
-// no data counts as data: the name exists without records of that type (an
-// IPv4-only host asked for AAAA), which is all a failed lookup of the name
-// is verified for. For MX, a name without MX records is asked for its A and
-// then AAAA records: mail goes to the address of the name itself then (the
-// implicit MX, RFC 5321 5.1), so an address counts as data, and a name with
-// neither stays no data. A non-nil auth asks an authoritative server (no
-// recursion; only an authoritative reply counts) and counts its replies.
-func (c *Checker) lookupTarget(ctx context.Context, server netip.AddrPort, name, qtype string, auth *authTally) (answer, string) {
-	t := typeOf(qtype)
-	a, _, note := c.lookupType(ctx, server, name, t, auth)
-	if t != typeMX {
-		if a == answerNoData {
-			return answerData, qtype + " " + note + " (no " + qtype + " record, name exists)"
-		}
-		return a, qtype + " " + note
-	}
-	if a != answerNoData {
-		return a, qtype + " " + note
-	}
-	notes := []string{"MX none"}
-	result := answerNoData
-	for _, t := range []queryType{typeA, typeAAAA} {
-		got, _, note := c.lookupType(ctx, server, name, t, auth)
-		notes = append(notes, typeName(t)+" "+note)
-		result = combine(result, got)
-		if got == answerData {
-			break
-		}
-	}
-	return result, strings.Join(notes, "; ")
-}
-
 // lookupType asks one server for the records of one type and classifies
 // the reply: data (with the records as text), NXDOMAIN, no data, an error
 // reply (fail), or none (no reply; from an authoritative server also a
 // reply that is not authoritative, such as a referral to a delegated zone).
 // From an authoritative server, a CNAME of the name counts as data: the
-// name exists, and its target may lie in another zone. A non-nil auth asks
-// an authoritative server (see exchange).
-func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name string, t queryType, auth *authTally) (answer, []string, string) {
+// name exists, and its target may lie in another zone. auth asks an
+// authoritative server (see exchange).
+func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name string, t queryType, auth bool) (answer, []string, string) {
 	r, err := c.exchange(ctx, server, name, t, auth)
 	if err != nil {
 		return answerNone, nil, describeError(err)
@@ -142,7 +97,7 @@ func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name st
 	if r.rcode != dnsmessage.RCodeSuccess && r.rcode != dnsmessage.RCodeNameError {
 		return answerFail, nil, rcodeName(r.rcode)
 	}
-	if auth != nil && !r.authoritative {
+	if auth && !r.authoritative {
 		return answerNone, nil, "not authoritative for the name"
 	}
 	if r.rcode == dnsmessage.RCodeNameError {
@@ -151,7 +106,7 @@ func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name st
 	if values := r.records(t); len(values) > 0 {
 		return answerData, values, "ok (" + quote(values) + ")"
 	}
-	if auth != nil {
+	if auth {
 		if target := r.cname(name); target != "" {
 			return answerData, nil, "CNAME " + target
 		}
@@ -161,12 +116,12 @@ func (c *Checker) lookupType(ctx context.Context, server netip.AddrPort, name st
 
 // exchange sends one question to a server and returns the matching reply:
 // over UDP, and over TCP when the UDP reply is truncated. Each transport is
-// bounded by the per-query timeout and by ctx. auth is nil for a resolver
-// (recursion desired); for an authoritative server (no recursion) whether
-// it replied over UDP is recorded (noteAuthReply) and counted in auth,
-// unless ctx ended first (a query cut off tells nothing about the server).
-func (c *Checker) exchange(ctx context.Context, server netip.AddrPort, name string, t queryType, auth *authTally) (*reply, error) {
-	recursive := auth == nil
+// bounded by the per-query timeout and by ctx. auth is false for a
+// resolver (recursion desired); for an authoritative server (no recursion)
+// whether it replied over UDP is recorded (noteAuthReply), unless ctx ended
+// first (a query cut off tells nothing about the server).
+func (c *Checker) exchange(ctx context.Context, server netip.AddrPort, name string, t queryType, auth bool) (*reply, error) {
+	recursive := !auth
 	q, msg, id, err := newQuery(name, t, recursive)
 	if err != nil {
 		return nil, err
@@ -174,7 +129,6 @@ func (c *Checker) exchange(ctx context.Context, server netip.AddrPort, name stri
 	r, truncated, err := c.exchangeUDP(ctx, server, msg, id, q)
 	if !recursive && !ended(ctx) {
 		c.noteAuthReply(server, err == nil)
-		auth.note(err == nil)
 	}
 	if err == nil && truncated {
 		r, err = c.exchangeTCP(ctx, server, msg, id, q)
@@ -186,17 +140,41 @@ func (c *Checker) exchange(ctx context.Context, server netip.AddrPort, name stri
 }
 
 // exchangeUDP sends the query over a connected UDP socket (the kernel drops
-// datagrams from other addresses) and reads until a reply matches it.
+// datagrams from other addresses) and reads until a reply matches it. A
+// query that gets no reply within the per-query timeout is sent once more
+// (queryAttempts in all, as the OS resolver does): one lost datagram does
+// not make a server count as not answering.
 func (c *Checker) exchangeUDP(ctx context.Context, server netip.AddrPort, msg []byte, id uint16, q dnsmessage.Question) (*reply, bool, error) {
 	conn, done, err := c.dial(ctx, "udp", server)
 	if err != nil {
 		return nil, false, err
 	}
 	defer done()
-	if _, err := conn.Write(msg); err != nil {
-		return nil, false, err
-	}
 	buf := make([]byte, maxUDPPayload)
+	var lastErr error
+	for attempt := 0; attempt < queryAttempts; attempt++ {
+		if err := c.armDeadline(ctx, conn); err != nil {
+			return nil, false, err
+		}
+		if _, err := conn.Write(msg); err != nil {
+			return nil, false, err
+		}
+		r, truncated, err := readUDPReply(conn, buf, id, q)
+		if err == nil {
+			return r, truncated, nil
+		}
+		if !isTimeout(err) || ctx.Err() != nil {
+			return nil, false, err
+		}
+		lastErr = err
+	}
+	return nil, false, lastErr
+}
+
+// readUDPReply reads datagrams until one is the reply to the query (another
+// ID or question, or an unreadable one, is passed over) or the deadline of
+// the socket passes.
+func readUDPReply(conn net.Conn, buf []byte, id uint16, q dnsmessage.Question) (*reply, bool, error) {
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
@@ -205,9 +183,24 @@ func (c *Checker) exchangeUDP(ctx context.Context, server netip.AddrPort, msg []
 		if r, truncated, ok := parseReply(buf[:n], id, q); ok {
 			return r, truncated, nil
 		}
-		// Not the reply to this query (another ID or question, or
-		// unreadable): keep waiting for it until the deadline.
 	}
+}
+
+// armDeadline gives the next attempt on a connection the per-query
+// timeout, unless the run was canceled (the connection was cut then).
+func (c *Checker) armDeadline(ctx context.Context, conn net.Conn) error {
+	if err := conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+		return err
+	}
+	// Checked after setting it: a cancellation that came first has already
+	// moved the deadline to the past, which the line above undid.
+	return ctx.Err()
+}
+
+// isTimeout reports whether an error is a timeout of the socket.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // exchangeTCP sends the query over TCP (2-byte length prefix) and reads one
@@ -218,6 +211,9 @@ func (c *Checker) exchangeTCP(ctx context.Context, server netip.AddrPort, msg []
 		return nil, err
 	}
 	defer done()
+	if err := c.armDeadline(ctx, conn); err != nil {
+		return nil, err
+	}
 	frame := make([]byte, 2+len(msg))
 	binary.BigEndian.PutUint16(frame, uint16(len(msg)))
 	copy(frame[2:], msg)
@@ -239,24 +235,21 @@ func (c *Checker) exchangeTCP(ctx context.Context, server netip.AddrPort, msg []
 	return r, nil
 }
 
-// dial connects to a server for one exchange. The connection's deadline is
-// the per-query timeout, moved to the past when ctx is canceled; done
-// releases everything.
+// dial connects to a server for one exchange, within the per-query
+// timeout. Each attempt on the connection gets a fresh deadline
+// (armDeadline); a cancellation of the run moves it to the past at once.
+// done releases everything.
 func (c *Checker) dial(ctx context.Context, network string, server netip.AddrPort) (net.Conn, func(), error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	dialCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, network, server.String())
+	conn, err := d.DialContext(dialCtx, network, server.String())
+	cancel()
 	if err != nil {
-		cancel()
 		return nil, nil, err
-	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline) // the deadline of a fresh connection cannot fail to be set
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
 	return conn, func() {
 		stop()
-		cancel()
 		conn.Close()
 	}, nil
 }

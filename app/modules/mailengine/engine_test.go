@@ -662,7 +662,7 @@ func countBounceDetails(t *testing.T, db *sql.DB) int {
 			if b.Recipient == "" && b.Diagnostic == "" && b.StatusCode == "" {
 				t.Errorf("bounce details of %s are empty: %+v", m.MessageKey, b)
 			}
-			if b.ID != m.ID || b.GroupKey != m.GroupKey || !m.IsBounce || m.BounceKind == bounceKindAutoReply {
+			if b.MessageID != m.ID || b.RecipientIndex != 0 || b.GroupKey != m.GroupKey || !m.IsBounce || m.BounceKind == bounceKindAutoReply {
 				t.Errorf("bounces row of %s disagrees with the message: %+v vs %+v", m.MessageKey, b, m)
 			}
 			n++
@@ -1652,7 +1652,7 @@ type categoryCase struct {
 // Diagnostics of DNS lookup failures (design document "mail
 // classification" 4.4): the Postfix notice of a temporary failure (the
 // "0 hour(s)" delay warning of a real mailbox), of a permanent one, and of
-// a NODATA answer, which is no lookup failure.
+// a NODATA answer (a definite answer without the records asked for).
 const (
 	dnsTryAgainDiag = "Host or domain name not found. Name service error for name=infoseek.jp type=MX: Host not found, try again"
 	dnsNotFoundDiag = "Host or domain name not found. Name service error for name=nowhere.example type=MX: Host not found"
@@ -1818,7 +1818,7 @@ var categoryCases = []categoryCase{
 	},
 	{
 		name: "domain status code without a lookup failure", kind: bounceKindFailed, status: "5.4.4",
-		diag:      "550 5.4.4 <n4@nowhere.example>: unrouteable address",
+		diag:      "550 5.4.4 <n4@nowhere.example>: no route to the destination",
 		recipient: "n4@nowhere.example", from: "newsletter@example.jp", reporting: "mx1.example.jp",
 		category: categoryDomainNotFound, unit: "nowhere.example", authority: "", actionable: false, respons: responsibleDomain,
 		reason: "status_domain_not_found",
@@ -1827,23 +1827,24 @@ var categoryCases = []categoryCase{
 		name: "dns unverified temporary failure", kind: bounceKindFailed, status: "4.4.3",
 		diag:      dnsTryAgainDiag,
 		recipient: "u1@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		category: categoryDeliveryDelay, unit: "infoseek.jp", authority: "", actionable: false, respons: responsibleDomain,
-		reason: "dns_unverified_delay",
+		category: categoryDNSLookupFailure, unit: "infoseek.jp", authority: "", actionable: true, respons: responsibleUnknown,
+		reason: "dns_unverified_temporary",
 	},
 	{
 		name: "dns unverified delay warning", kind: bounceKindDelayed, status: "4.4.3",
 		diag:      dnsTryAgainDiag,
 		recipient: "u2@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		category: categoryDeliveryDelay, unit: "infoseek.jp", authority: "", actionable: false, respons: responsibleDomain,
-		reason: "dns_unverified_delay",
+		category: categoryDNSLookupFailure, unit: "infoseek.jp", authority: "", actionable: true, respons: responsibleUnknown,
+		reason: "dns_unverified_temporary",
 	},
 	{
-		// A permanent failure reported by a delay warning is still a delay.
+		// A permanent failure reported by a delay warning is still a delay:
+		// the reporting MTA keeps trying, so either side may be at fault.
 		name: "dns unverified permanent delay warning", kind: bounceKindDelayed, status: "",
 		diag:      dnsNotFoundDiag,
 		recipient: "u3@nowhere.example", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		category: categoryDeliveryDelay, unit: "nowhere.example", authority: "", actionable: false, respons: responsibleDomain,
-		reason: "dns_unverified_delay",
+		category: categoryDNSLookupFailure, unit: "nowhere.example", authority: "", actionable: true, respons: responsibleUnknown,
+		reason: "dns_unverified_temporary",
 	},
 	{
 		name: "dns unverified permanent failure", kind: bounceKindFailed, status: "",
@@ -1864,8 +1865,8 @@ var categoryCases = []categoryCase{
 		name: "dns try again later is not rate limited", kind: bounceKindFailed, status: "",
 		diag:      "Name service error for name=example.org type=MX: Host not found, try again later",
 		recipient: "u6@example.org", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		category: categoryDeliveryDelay, unit: "example.org", authority: "", actionable: false, respons: responsibleDomain,
-		reason: "dns_unverified_delay",
+		category: categoryDNSLookupFailure, unit: "example.org", authority: "", actionable: true, respons: responsibleUnknown,
+		reason: "dns_unverified_temporary",
 	},
 	{
 		// An outcome the rules do not know counts as not verified.
@@ -1873,8 +1874,8 @@ var categoryCases = []categoryCase{
 		diag:      dnsTryAgainDiag,
 		recipient: "u7@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
 		verdict:  DNSVerdict{Outcome: "pending", FromSendingSource: true},
-		category: categoryDeliveryDelay, unit: "infoseek.jp", authority: "", actionable: false, respons: responsibleDomain,
-		reason: "dns_unverified_delay",
+		category: categoryDNSLookupFailure, unit: "infoseek.jp", authority: "", actionable: true, respons: responsibleUnknown,
+		reason: "dns_unverified_temporary",
 	},
 	{
 		// A permanent failure reported by a notice that is neither a failure
@@ -1886,12 +1887,12 @@ var categoryCases = []categoryCase{
 		reason: "domain_not_found",
 	},
 	{
-		// The temporary flag alone (no delay kind, no status) makes it a delay.
+		// The temporary flag alone (no delay kind, no status) is enough.
 		name: "dns unverified temporary failure without status", kind: bounceKindFailed, status: "",
 		diag:      "Name service error for name=infoseek.jp type=MX: Host not found, try again",
 		recipient: "u9@infoseek.jp", from: "newsletter@example.jp", reporting: "mx1.example.jp",
-		category: categoryDeliveryDelay, unit: "infoseek.jp", authority: "", actionable: false, respons: responsibleDomain,
-		reason: "dns_unverified_delay",
+		category: categoryDNSLookupFailure, unit: "infoseek.jp", authority: "", actionable: true, respons: responsibleUnknown,
+		reason: "dns_unverified_temporary",
 	},
 	// The recipient-side status codes win over a DNS lookup failure in the
 	// diagnostic, verified or not.
@@ -1978,14 +1979,60 @@ var categoryCases = []categoryCase{
 		reason: "dns_failure_external",
 	},
 	{
-		// A verdict only counts for a detected failure: NODATA is none, so
-		// the wording decides as before.
-		name: "dns nodata ignores verdict", kind: bounceKindFailed, status: "",
+		// NODATA is a lookup failure too: a name with an address to deliver
+		// to puts it on the resolver of the sending MTA.
+		name: "dns nodata verified exists", kind: bounceKindFailed, status: "",
 		diag:      dnsNoDataDiag,
 		recipient: "w1@nodata.example.org", from: "newsletter@example.jp", reporting: "mx1.example.jp",
 		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
+		category: categoryDNSResolverFailure, unit: "mx1.example.jp", authority: "", actionable: true, respons: responsibleSender,
+		reason: "dns_resolver_failure",
+	},
+	{
+		// "type=AAAA: Host found but no data record" for a host that has an
+		// A record: the host exists and takes mail over IPv4, so the
+		// failure lies with the sending MTA.
+		name: "dns aaaa nodata of a host with an a record", kind: bounceKindFailed, status: "5.4.4",
+		diag:      "550 5.4.4 <w3@example.net>: Host or domain name not found. Name service error for name=mx1.example.net type=AAAA: Host found but no data record of requested type",
+		recipient: "w3@example.net", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		verdict:  DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true},
+		category: categoryDNSResolverFailure, unit: "mx1.example.jp", authority: "", actionable: true, respons: responsibleSender,
+		reason: "dns_resolver_failure",
+	},
+	{
+		// Not verified: a permanent failure of the recipient domain itself
+		// is an unknown domain.
+		name: "dns nodata not verified", kind: bounceKindFailed, status: "",
+		diag:      dnsNoDataDiag,
+		recipient: "w4@nodata.example.org", from: "newsletter@example.jp", reporting: "mx1.example.jp",
 		category: categoryDomainNotFound, unit: "nodata.example.org", authority: "", actionable: false, respons: responsibleDomain,
-		reason: "domain_not_found",
+		reason: "dns_unverified_not_found",
+	},
+	{
+		// Not verified: a permanent failure of another name (a host the MX
+		// records point to) is a fault of the receiving side's DNS.
+		name: "dns unverified permanent failure of an mx host", kind: bounceKindFailed, status: "5.4.4",
+		diag:      "550 5.4.4 <w5@example.net>: Host or domain name not found. Name service error for name=mx1.example.net type=A: Host not found",
+		recipient: "w5@example.net", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		category: categoryDNSFailureExternal, unit: "example.net", authority: "", actionable: false, respons: responsibleDomain,
+		reason: "dns_unverified_name_not_found",
+	},
+	{
+		// Verified: an MX host that does not exist is the receiving side's.
+		name: "dns verified not found of an mx host", kind: bounceKindFailed, status: "5.4.4",
+		diag:      "550 5.4.4 <w6@example.net>: Host or domain name not found. Name service error for name=mx1.example.net type=A: Host not found",
+		recipient: "w6@example.net", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		verdict:  DNSVerdict{Outcome: DNSOutcomeNotFound, FromSendingSource: true},
+		category: categoryDNSFailureExternal, unit: "example.net", authority: "", actionable: false, respons: responsibleDomain,
+		reason: "dns_verified_name_not_found",
+	},
+	{
+		// A form without a name means the recipient domain.
+		name: "dns unnamed form not verified", kind: bounceKindFailed, status: "",
+		diag:      "all relevant MX records point to non-existent hosts",
+		recipient: "w7@example.net", from: "newsletter@example.jp", reporting: "mx1.example.jp",
+		category: categoryDomainNotFound, unit: "example.net", authority: "", actionable: false, respons: responsibleDomain,
+		reason: "dns_unverified_not_found",
 	},
 	{
 		name: "verdict without dns failure is ignored", kind: bounceKindFailed, status: "5.7.1",
@@ -2099,13 +2146,13 @@ func TestCategorizeDNSFailureSample(t *testing.T) {
 	if b.Recipient != "user1@infoseek.jp" || b.StatusCode != "4.4.3" || b.ReportingMTA != "mx1.example.jp" {
 		t.Fatalf("bounce = %+v", b)
 	}
-	failure, ok := ParseDNSFailure(b.Diagnostic)
+	failure, ok := ParseDNSFailure(b.Diagnostic, b.RemoteMTA)
 	if !ok || failure != (DNSFailure{Name: "infoseek.jp", QType: "MX", Temporary: true}) {
 		t.Fatalf("ParseDNSFailure(%q) = %+v, %v", b.Diagnostic, failure, ok)
 	}
 	g := groupForBounce(cls.Kind, b)
-	if g == nil || g.Category != categoryDeliveryDelay || g.UnitValue != "infoseek.jp" || g.Actionable ||
-		b.CategoryRule != "dns_unverified_delay" {
+	if g == nil || g.Category != categoryDNSLookupFailure || g.UnitValue != "infoseek.jp" || !g.Actionable ||
+		b.CategoryRule != "dns_unverified_temporary" {
 		t.Errorf("unverified group = %+v, rule %q", g, b.CategoryRule)
 	}
 	c := CategorizeWith(b, cls.Kind, DNSVerdict{Outcome: DNSOutcomeExists, FromSendingSource: true})

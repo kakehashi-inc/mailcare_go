@@ -14,8 +14,8 @@ import (
 )
 
 // Scheduler queues a sync job for every enabled mailbox at each configured
-// check time (HH:MM, local wall clock), a notify job when the notify time
-// arrives and the notification interval has elapsed (NotifyDue), one
+// check time (HH:MM, local wall clock), a notify job at each notification
+// time of a notification day (NotifyDue), one
 // cleanup job (every mailbox) a day at the cleanup time (CleanupDue; the
 // date of the occurrence is recorded in the cleanup_last_run_date setting so
 // a restart does not repeat it and an occurrence missed while the server was
@@ -33,7 +33,7 @@ type Scheduler struct {
 	mu           sync.Mutex
 	lastTick     time.Time
 	lastFired    map[string]string // HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
-	notifyFired  string            // "YYYY-MM-DD HH:MM" of the last notify firing
+	notifyFired  map[string]string // notification HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
 	cleanupFired string            // "YYYY-MM-DD" of the last cleanup occurrence queued by this process
 	probeFired   map[string]string // probe send HH:MM -> "YYYY-MM-DD HH:MM" of the last firing
 	cancel       context.CancelFunc
@@ -42,7 +42,7 @@ type Scheduler struct {
 
 // NewScheduler creates a scheduler that submits jobs through jm.
 func NewScheduler(db *sql.DB, jm *JobManager) *Scheduler {
-	return &Scheduler{db: db, jm: jm, now: time.Now, lastFired: map[string]string{}, probeFired: map[string]string{}}
+	return &Scheduler{db: db, jm: jm, now: time.Now, lastFired: map[string]string{}, notifyFired: map[string]string{}, probeFired: map[string]string{}}
 }
 
 // Start launches the ticking goroutine. Check and notify times that already
@@ -88,10 +88,11 @@ func (s *Scheduler) Stop() {
 	s.wg.Wait()
 }
 
-// Tick evaluates the check times, the notify time and the daily cleanup
-// once: every configured check time that arrived since the previous tick
-// queues one sync job (mailbox NULL: expanded into one child per enabled
-// mailbox by the job manager), a due notify time queues one notify job, and
+// Tick evaluates the check times, the notification times and the daily
+// cleanup once: every configured check time that arrived since the previous
+// tick queues one sync job (mailbox NULL: expanded into one child per enabled
+// mailbox by the job manager), the notification times due (one or more)
+// queue one notify job, and
 // the first tick at or after the cleanup time of a day queues one cleanup
 // job (mailbox NULL: one child per mailbox, disabled ones included). A job
 // that could do nothing is not queued (no error, no log line): no sync
@@ -118,8 +119,10 @@ func (s *Scheduler) Tick() {
 		log.Printf("scheduler: failed to read the notification settings: %v", err)
 		return
 	}
-	if key, due := NotifyDue(last, now, settings, s.notifyFired); due {
-		s.notifyFired = key
+	if due := NotifyDue(last, now, settings, s.notifyFired); len(due) > 0 {
+		for _, key := range due {
+			s.notifyFired[key.time] = key.minute
+		}
 		if s.notifyReachesSomeone(settings) {
 			s.enqueue(JobKindNotify)
 		}
@@ -329,8 +332,9 @@ func (s *Scheduler) NextCheckAt() (time.Time, bool) {
 }
 
 type dueTime struct {
-	time   string // HH:MM
-	minute string // the occurrence, "2006-01-02 15:04"
+	time   string    // HH:MM
+	minute string    // the occurrence, "2006-01-02 15:04"
+	at     time.Time // the occurrence
 }
 
 // dueCheckTimes returns the check times whose occurrence lies in (last, now]
@@ -358,7 +362,7 @@ func dueCheckTimes(last, now time.Time, times []string, fired map[string]string)
 			if fired[t] == minute {
 				continue
 			}
-			due = append(due, dueTime{time: t, minute: minute})
+			due = append(due, dueTime{time: t, minute: minute, at: occ})
 		}
 	}
 	return due

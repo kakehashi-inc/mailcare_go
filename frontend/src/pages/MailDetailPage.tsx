@@ -88,7 +88,9 @@ export function MailDetailPage() {
         );
     }
 
-    const { message, bounce, text_sections, headers } = detail.data;
+    const { message, bounce, bounces, text_sections, headers } = detail.data;
+    // Every recipient block of the notice (older servers send only the first).
+    const blocks = bounces && bounces.length > 0 ? bounces : bounce ? [bounce] : [];
     const headerEntries = Object.entries(headers ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '');
     // Text sections arrive in MIME order; blank ones are dropped so the numbering only counts visible text.
     const sections = (text_sections ?? []).filter(s => s.trim() !== '');
@@ -300,63 +302,101 @@ export function MailDetailPage() {
                             {t('field.bounce.bodySource')}:{' '}
                             <span className='text-ink'>{t(`value.bodySource.${bodySourceKey}`)}</span>
                         </p>
-                        {bounce ? (
-                            <DescriptionList
-                                columns={1}
-                                items={[
-                                    {
-                                        label: t('field.bounce.originalRecipient'),
-                                        value: <span className='break-all'>{bounce.original_recipient || '-'}</span>,
-                                    },
-                                    { label: t('field.common.recipientDomain'), value: bounce.recipient_domain || '-' },
-                                    { label: t('field.bounce.action'), value: bounce.action || '-' },
-                                    {
-                                        label: t('field.bounce.statusCode'),
-                                        value: `${bounce.status_code || '-'} / ${bounce.smtp_code || '-'}`,
-                                    },
-                                    {
-                                        label: t('field.group.responsible'),
-                                        value: <ResponsibleBadge responsible={bounce.responsible} />,
-                                    },
-                                    {
-                                        label: t('field.common.remoteMta'),
-                                        value: <span className='break-all'>{bounce.remote_mta || '-'}</span>,
-                                    },
-                                    { label: t('field.bounce.remoteIp'), value: bounce.remote_ip || '-' },
-                                    {
-                                        label: t('field.bounce.reportingMta'),
-                                        value: <span className='break-all'>{bounce.reporting_mta || '-'}</span>,
-                                    },
-                                    {
-                                        label: t('field.bounce.diagnostic'),
-                                        value: (
-                                            <code className='block whitespace-pre-wrap break-words rounded-md bg-well p-2 font-mono text-sm'>
-                                                {bounce.diagnostic || '-'}
-                                            </code>
-                                        ),
-                                    },
-                                    {
-                                        label: t('field.bounce.originalSubject'),
-                                        value: <span className='break-words'>{bounce.original_subject || '-'}</span>,
-                                    },
-                                    {
-                                        label: t('field.bounce.originalFrom'),
-                                        value: <span className='break-all'>{bounce.original_from || '-'}</span>,
-                                    },
-                                    {
-                                        label: t('field.bounce.originalDate'),
-                                        value: <DateTime value={bounce.original_date} />,
-                                    },
-                                    {
-                                        label: t('field.bounce.originalMessageId'),
-                                        value: (
-                                            <code className='break-all font-mono text-sm'>
-                                                {bounce.original_message_id || '-'}
-                                            </code>
-                                        ),
-                                    },
-                                ]}
-                            />
+                        {blocks.length > 0 ? (
+                            <div className='flex flex-col gap-4 divide-y divide-line'>
+                                {blocks.map((b, i) => (
+                                    <div key={i} className={i > 0 ? 'pt-4' : undefined}>
+                                        <DescriptionList
+                                            columns={1}
+                                            items={[
+                                                {
+                                                    label: t('field.bounce.originalRecipient'),
+                                                    value: (
+                                                        <span className='break-all'>{b.original_recipient || '-'}</span>
+                                                    ),
+                                                },
+                                                {
+                                                    label: t('field.common.recipientDomain'),
+                                                    value: b.recipient_domain || '-',
+                                                },
+                                                { label: t('field.bounce.action'), value: b.action || '-' },
+                                                {
+                                                    label: t('field.bounce.statusCode'),
+                                                    value: `${b.status_code || '-'} / ${b.smtp_code || '-'}`,
+                                                },
+                                                {
+                                                    label: t('field.group.responsible'),
+                                                    value: <ResponsibleBadge responsible={b.responsible} />,
+                                                },
+                                                {
+                                                    label: t('field.common.remoteMta'),
+                                                    value: <span className='break-all'>{b.remote_mta || '-'}</span>,
+                                                },
+                                                { label: t('field.bounce.remoteIp'), value: b.remote_ip || '-' },
+                                                {
+                                                    label: t('field.bounce.diagnostic'),
+                                                    value: (
+                                                        <code className='block whitespace-pre-wrap break-words rounded-md bg-well p-2 font-mono text-sm'>
+                                                            {b.diagnostic || '-'}
+                                                        </code>
+                                                    ),
+                                                },
+                                                // The fields of the message itself, once.
+                                                ...(i > 0
+                                                    ? []
+                                                    : [
+                                                          {
+                                                              label: t('field.bounce.reportingMta'),
+                                                              value: (
+                                                                  <span className='break-all'>
+                                                                      {b.reporting_mta || '-'}
+                                                                  </span>
+                                                              ),
+                                                          },
+                                                          {
+                                                              label: t('field.bounce.originalSubject'),
+                                                              value: (
+                                                                  <span className='break-words'>
+                                                                      {b.original_subject || '-'}
+                                                                  </span>
+                                                              ),
+                                                          },
+                                                          {
+                                                              label: t('field.bounce.originalFrom'),
+                                                              value: (
+                                                                  <span className='break-all'>
+                                                                      {b.original_from || '-'}
+                                                                  </span>
+                                                              ),
+                                                          },
+                                                          {
+                                                              label: t('field.bounce.originalDate'),
+                                                              value: <DateTime value={b.original_date} />,
+                                                          },
+                                                          {
+                                                              label: t('field.bounce.originalMessageId'),
+                                                              value: (
+                                                                  <code className='break-all font-mono text-sm'>
+                                                                      {b.original_message_id || '-'}
+                                                                  </code>
+                                                              ),
+                                                          },
+                                                      ]),
+                                            ]}
+                                        />
+                                        {/* A recipient filed into another group than the first one links to it. */}
+                                        {i > 0 && b.group_key && b.group_key !== message.group_key && (
+                                            <Link
+                                                to={`/alerts/${id}/groups/${encodeURIComponent(b.group_key)}`}
+                                                className={`mt-3 ${BUTTON_LINK}`}
+                                            >
+                                                <Icon name='notifications' className='text-[20px]' />
+                                                {t('action.mail.openGroup')}
+                                            </Link>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
                         ) : (
                             <EmptyState
                                 title={t('page.mailDetail.extract.none')}

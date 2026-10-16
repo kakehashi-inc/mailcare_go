@@ -68,12 +68,12 @@ func addTestBounce(t *testing.T, db *sql.DB, mailsRoot, address, key string, uid
 	if err := models.InsertMessage(db, m); err != nil {
 		t.Fatal(err)
 	}
-	if err := models.UpsertBounce(db, &models.Bounce{
-		ID: m.ID, GroupKey: testGroupKey, Recipient: "user" + key[len(key)-1:] + "@example.net", RecipientDomain: "example.net",
+	if err := models.ReplaceBounces(db, m.ID, []*models.Bounce{{
+		GroupKey: testGroupKey, Recipient: "user" + key[len(key)-1:] + "@example.net", RecipientDomain: "example.net",
 		Action: "failed", StatusCode: "5.7.1", SMTPCode: "550", Diagnostic: "550 5.7.1 Message rejected by policy",
 		DiagnosticTemplate: "550 5.7.1 message rejected by policy", DiagnosticSource: "html:1", CategoryRule: "unknown_failure",
 		PatternKey: pattern, RemoteMTA: "mx.example.net", RemoteIP: "192.0.2.10",
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	// Counters (message count, recipients, IPs, first/last seen) are derived
@@ -144,7 +144,7 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 		t.Fatalf("unexpected run directory %s", work)
 	}
 	for _, f := range []string{PromptFileName, ResultFileName, ReportFileName, "AGENTS.md", filepath.Join("sub", "notes.txt"), "received_prompt.txt",
-		filepath.Join(EvidenceDirName, "20260902-120000_bbbbbbbbbbbb.txt")} {
+		filepath.Join(EvidenceDirName, "20260902-120000_bbbbbbbbbbbb.txt"), filepath.FromSlash(PatternsFileName)} {
 		if _, err := os.Stat(filepath.Join(work, f)); err != nil {
 			t.Errorf("workspace file %s missing: %v", f, err)
 		}
@@ -197,7 +197,7 @@ func TestAnalyzeGroupSuccess(t *testing.T) {
 		t.Errorf("progress lines unexpected: %v", lines)
 	}
 	if !slices.ContainsFunc(lines, func(l string) bool {
-		return strings.HasPrefix(l, "running ") && strings.HasSuffix(l, " on 2 messages in 1 patterns, 1 samples")
+		return strings.HasPrefix(l, "running ") && strings.HasSuffix(l, " on 2 messages in 1 patterns, 1 samples (1 in the prompt)")
 	}) {
 		t.Errorf("progress must announce the run: %v", lines)
 	}
@@ -335,6 +335,43 @@ func TestAnalyzeGroupRecipientSideFailureKeepsFlagClear(t *testing.T) {
 	}
 }
 
+// An explicit request flags a recipient-side group (modules runAnalyze); a
+// run stopped by the usage limit leaves the flag, so the scheduled analysis
+// after the limit runs it again; any other failure settles it.
+func TestAnalyzeGroupRecipientSideRequestAfterUsageLimit(t *testing.T) {
+	db, mailsRoot, agentRoot, address := newTestIndex(t)
+	if err := models.UpsertGroup(db, &models.BounceGroup{
+		GroupKey: testGroupKey, Category: CategoryUserUnknown, UnitValue: "user2@example.net", Actionable: false,
+		RecipientDomain: "example.net", StatusCode: "5.1.1", Responsible: ResponsibleRecipient,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.SetGroupNeedsAnalysis(db, testGroupKey, true); err != nil {
+		t.Fatal(err)
+	}
+	run := func(canned string) *models.AgentReport {
+		t.Helper()
+		registerFake(t, fakeProvider{name: "fake", command: writeFakeCLI(t, t.TempDir(), canned)})
+		rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
+			MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
+		}, nil)
+		if err != nil || rep.Status != "error" {
+			t.Fatalf("expected a failure: %+v %v", rep, err)
+		}
+		return rep
+	}
+	if rep := run("Error: HTTP 429 Too Many Requests\n"); !IsUsageLimitMessage(rep.ErrorMessage) {
+		t.Fatalf("expected the usage limit: %+v", rep)
+	}
+	if g, _ := models.GetGroup(db, testGroupKey); !g.NeedsAnalysis {
+		t.Error("the request was dropped by the usage limit")
+	}
+	run("Refused to answer.\n")
+	if g, _ := models.GetGroup(db, testGroupKey); g.NeedsAnalysis {
+		t.Error("a settled failure must clear the request")
+	}
+}
+
 func TestAnalyzeGroupNoReportBlock(t *testing.T) {
 	db, mailsRoot, agentRoot, address := newTestIndex(t)
 	if err := models.SetGroupNeedsAnalysis(db, testGroupKey, false); err != nil {
@@ -381,7 +418,7 @@ func TestAnalyzeGroupRejectsUnusableReport(t *testing.T) {
 		reason string
 	}{
 		{"echoed template", cannedEcho, "produced no report"},
-		{"too short", ReportBegin + "\n## 原因の分析\n不明。\n" + ReportEnd + "\n", "too short"},
+		{"headings only", ReportBegin + "\n## 原因の分析\n## 推奨する対応\n" + ReportEnd + "\n", "report body is empty"},
 		{"one placeholder left", ReportBegin + "\n" + sampleReport + "\n2. <next action>\n" + ReportEnd + "\n", "template placeholder"},
 		{"secret in the report", ReportBegin + "\n" + sampleReport + "\nkey: " + strings.Repeat("0f", 32) + "\n" + ReportEnd + "\n", "secret-like content"},
 		{"secret in the summary", ReportBegin + "\n" + sampleReport + "\n" + ReportEnd + "\n" +
@@ -774,7 +811,7 @@ func TestAnalyzeGroupPassesDNSCheck(t *testing.T) {
 	if err != nil || rep.Status != "completed" {
 		t.Fatalf("run: %+v %v", rep, err)
 	}
-	if len(calls) != 1 || calls[0].name != "infoseek.jp" || calls[0].qtype != "MX" || !calls[0].at.Equal(received) {
+	if len(calls) != 1 || calls[0].name != "infoseek.jp" || !calls[0].at.Equal(received) {
 		t.Errorf("callback calls = %+v", calls)
 	}
 	prompt, err := os.ReadFile(filepath.Join(RunDir(agentRoot, address, testGroupKey, rep.ID), PromptFileName))
@@ -786,5 +823,45 @@ func TestAnalyzeGroupPassesDNSCheck(t *testing.T) {
 		if !strings.Contains(string(prompt), want) {
 			t.Errorf("prompt lacks %q", want)
 		}
+	}
+}
+
+// TestAnalyzeGroupRunHasNoTimeLimit checks that the CLI of an analysis
+// runs under the job's context alone: no deadline is added.
+func TestAnalyzeGroupRunHasNoTimeLimit(t *testing.T) {
+	db, mailsRoot, agentRoot, address := newTestIndex(t)
+	registerFake(t, fakeProvider{name: "fake", command: []string{"true"}})
+	saved := runAgent
+	t.Cleanup(func() { runAgent = saved })
+	var hasDeadline, called bool
+	runAgent = func(ctx context.Context, _ Provider, _, _, _, _, _ string) (string, error) {
+		_, hasDeadline = ctx.Deadline()
+		called = true
+		return cannedSuccess, nil
+	}
+	rep, err := AnalyzeGroup(context.Background(), AnalyzeInput{
+		MailsRoot: mailsRoot, AgentRoot: agentRoot, Address: address, Index: db, GroupKey: testGroupKey, Provider: "fake",
+	}, nil)
+	if err != nil || rep.Status != "completed" {
+		t.Fatalf("run: %+v %v", rep, err)
+	}
+	if !called || hasDeadline {
+		t.Errorf("the CLI ran with a deadline (called %v, deadline %v)", called, hasDeadline)
+	}
+}
+
+// TestRunArgvEndsWithTheProcess checks that a run ends when the CLI process
+// ends, even when a process it left behind keeps its output open.
+func TestRunArgvEndsWithTheProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	start := time.Now()
+	out, err := runArgv(context.Background(), "sh", []string{"/bin/sh", "-c", "echo done; (sleep 30 &)"}, t.TempDir(), "prompt", "")
+	if err != nil || !strings.Contains(out, "done") {
+		t.Fatalf("runArgv = %q, %v", out, err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("the run waited %v for a process left behind", elapsed)
 	}
 }

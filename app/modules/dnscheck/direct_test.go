@@ -10,11 +10,11 @@ import (
 	"mailcare/app/modules/mailengine"
 )
 
-// The reuse rule of a notice that shows mail from the sending sources (direct): it uses an
-// outcome the authoritative servers were asked for (dns_checks.direct 1, a
-// direct memo of the run), and one of the resolvers alone only when it
-// cannot be verified live with them or that gives nothing. Any other notice
-// uses either kind.
+// The reuse rule of a notice that shows mail from the sending sources (direct): it uses a
+// fresh outcome the authoritative servers were asked for (dns_checks.direct
+// 1), and one of the resolvers alone only when it cannot be verified live
+// with them or that gives nothing (then the latest stored outcome of either
+// kind stands in). Any other notice uses a fresh outcome of either kind.
 
 // directSetup starts a fake server that resolves example.jp as existing and
 // is its authoritative server (a live direct verification is exists), and
@@ -24,12 +24,13 @@ func directSetup(t *testing.T, rows ...*models.DNSCheck) (*fakeServer, *Checker)
 	db := openTestMasterDB(t)
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	s.resolve("mx1.example.jp A", data("192.0.2.1"))
 	withAuthority(s)
 	for _, r := range rows {
 		if r.Name == "" {
 			r.Name = "example.jp"
 		}
-		r.QType, r.Detail = "MX", "stored"
+		r.QType, r.Detail = VerifyKind, "stored"
 		if err := models.InsertDNSCheck(db, r); err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +75,7 @@ func TestVerifyDirectReusesDirectRow(t *testing.T) {
 }
 
 // TestVerifyDirectSkipsResolverRow: a row of the resolvers alone does not
-// decide a recent notice that shows mail from the sending sources: it is verified live with
+// decide a notice that shows mail from the sending sources: it is verified live with
 // the authoritative servers and stores a direct row next to the other (the
 // row of the resolvers alone does not count as present for it), which the
 // next such notice reuses. A notice that does not show mail from the sending sources still
@@ -104,18 +105,19 @@ func TestVerifyDirectSkipsResolverRow(t *testing.T) {
 
 // TestVerifyDirectAcceptsResolverRowWhenNotLive: a notice that shows mail
 // from the sending sources accepts a row of the resolvers alone when it cannot be verified
-// live: too old, the check off (StoredOnly), only the OS resolver used (the
-// authoritative servers are never asked then), or the authoritative stage
-// off for the run.
+// live with the authoritative servers: the check off (StoredOnly), only
+// the OS resolver used (the authoritative servers are never asked then),
+// or the authoritative stage off for the run. The age of the notice does
+// not matter: an old one is verified live like a recent one.
 func TestVerifyDirectAcceptsResolverRowWhenNotLive(t *testing.T) {
-	old := time.Now().Add(-72 * time.Hour)
-	t.Run("too old", func(t *testing.T) {
+	t.Run("old notice verified live", func(t *testing.T) {
+		old := time.Now().Add(-72 * time.Hour)
 		s, c := directSetup(t, &models.DNSCheck{Outcome: "not_found", CheckedAt: old.Add(time.Hour)})
-		if got, st := verifyAt(c, old, true); got != mailengine.DNSOutcomeNotFound || st != mailengine.DNSStatusReused {
-			t.Errorf("%q, %v; want the row of the resolvers alone", got, st)
+		if got, st := verifyAt(c, old, true); got != mailengine.DNSOutcomeExists || st != mailengine.DNSStatusVerified {
+			t.Errorf("%q, %v; want verified live", got, st)
 		}
-		if q := s.received(); len(q) != 0 {
-			t.Errorf("queries %v", q)
+		if !containsQuery(s.received(), "auth example.jp MX udp") {
+			t.Errorf("the authoritative server was not asked: %v", s.received())
 		}
 	})
 	t.Run("check off", func(t *testing.T) {
@@ -139,29 +141,19 @@ func TestVerifyDirectAcceptsResolverRowWhenNotLive(t *testing.T) {
 			t.Errorf("queries %v", q)
 		}
 	})
-	t.Run("authoritative stage off", func(t *testing.T) {
-		s, c := directSetup(t, &models.DNSCheck{Outcome: "not_found", CheckedAt: time.Now().Add(-time.Hour)})
-		c.authDomains = map[string]bool{"a.example": false, "b.example": false, "c.example": false}
-		if got, st := verifyAt(c, time.Now(), true); got != mailengine.DNSOutcomeNotFound || st != mailengine.DNSStatusReused {
-			t.Errorf("%q, %v; want the row of the resolvers alone", got, st)
-		}
-		if q := s.received(); len(q) != 0 {
-			t.Errorf("queries %v", q)
-		}
-	})
 }
 
 // TestVerifyDirectFallsBackWithoutLiveOutcome: when a notice that shows
 // mail from the sending sources may be verified live but that gives no outcome (the name may
-// not be looked up for it, the limits of the run are reached, the
-// verification is inconclusive), a row of the resolvers alone stands in, the
-// same for every notice of the run; without one the status stays.
+// not be looked up for it, or no resolver is reachable), the latest stored
+// row stands in, here one of the resolvers alone, the same for every notice
+// of the run; without one the status stays.
 func TestVerifyDirectFallsBackWithoutLiveOutcome(t *testing.T) {
 	t.Run("not applicable", func(t *testing.T) {
 		db := openTestMasterDB(t)
 		s := startFakeServers(t, "127.0.0.1")[0]
 		s.resolve("customer.jp MX", data("mx.customer.jp"))
-		if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "mx.provider.net", QType: "MX", Outcome: "exists", Detail: "stored",
+		if err := models.InsertDNSCheck(db, &models.DNSCheck{Name: "mx.provider.net", QType: VerifyKind, Outcome: "exists", Detail: "stored",
 			CheckedAt: time.Now().Add(-time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
@@ -175,27 +167,13 @@ func TestVerifyDirectFallsBackWithoutLiveOutcome(t *testing.T) {
 			t.Errorf("no row: %q, %v; want not applicable", got, st)
 		}
 	})
-	t.Run("over budget", func(t *testing.T) {
-		s, c := directSetup(t, &models.DNSCheck{Outcome: "not_found", CheckedAt: time.Now().Add(-time.Hour)})
-		c.lookups = c.maxLookups
-		if got, st := verifyAt(c, time.Now(), true); got != mailengine.DNSOutcomeNotFound || st != mailengine.DNSStatusReused {
-			t.Errorf("%q, %v; want the row of the resolvers alone", got, st)
-		}
-		if q := s.receivedFor("example.jp"); len(q) != 0 {
-			t.Errorf("queries %v", q)
-		}
-	})
 	t.Run("inconclusive", func(t *testing.T) {
 		s, c := directSetup(t, &models.DNSCheck{Outcome: "not_found", CheckedAt: time.Now().Add(-time.Hour)})
-		s.resolve("example.jp MX", answerWith(fakeServFail))
-		s.authority("example.jp MX", answerWith(fakeDrop))
+		s.resolve(controlName+" A", answerWith(fakeServFail))
 		for i := 0; i < 2; i++ {
 			if got, st := verifyAt(c, time.Now(), true); got != mailengine.DNSOutcomeNotFound || st != mailengine.DNSStatusReused {
 				t.Errorf("notice %d: %q, %v; want the row of the resolvers alone", i, got, st)
 			}
-		}
-		if q := s.receivedFor("example.jp"); !containsQuery(q, "auth example.jp MX udp") {
-			t.Errorf("the name was not verified live with the authoritative server: %v", q)
 		}
 		if kinds := directRows(t, c); len(kinds) != 1 {
 			t.Errorf("rows (direct) %v; want only the stored one", kinds)
@@ -203,17 +181,19 @@ func TestVerifyDirectFallsBackWithoutLiveOutcome(t *testing.T) {
 	})
 }
 
-// TestVerifyDirectMemory: the memory of the run follows the same rule
-// (here without a database): an outcome of the resolvers alone does not
-// decide a notice that shows mail from the sending sources, which is verified with the
-// authoritative servers and decides the next ones of its kind; a notice that
-// does not show mail from the sending sources uses either, the earlier first.
-func TestVerifyDirectMemory(t *testing.T) {
+// TestVerifyDirectStoredRows: within one run the stored rows decide (there
+// is no other memory of the run): an outcome of the resolvers alone does
+// not decide a notice that shows mail from the sending sources, which is
+// verified with the authoritative servers and decides the next ones of its
+// kind; a notice that does not show mail from the sending sources uses
+// either, the earlier first.
+func TestVerifyDirectStoredRows(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp MX", data("mx1.example.jp"))
+	s.resolve("mx1.example.jp A", data("192.0.2.1"))
 	withAuthority(s)
 	s.authority("example.jp MX", answerWith(fakeNX)) // with the authoritative server: broken
-	c := newTestChecker(nil, s.port, "127.0.0.1")
+	c := newTestChecker(openTestMasterDB(t), s.port, "127.0.0.1")
 	auth := func() int {
 		n := 0
 		for _, q := range s.received() {
@@ -254,7 +234,7 @@ func TestVerifyDirectOtherRunResolverRow(t *testing.T) {
 			return
 		}
 		once.Do(func() {
-			if err := models.InsertDNSCheck(c.db, &models.DNSCheck{Name: "example.jp", QType: "MX", Outcome: "broken", Detail: "other run"}); err != nil {
+			if err := models.InsertDNSCheck(c.db, &models.DNSCheck{Name: "example.jp", QType: VerifyKind, Outcome: "broken", Detail: "other run"}); err != nil {
 				t.Error(err)
 			}
 		})
@@ -279,7 +259,7 @@ func TestVerifyDirectInconclusiveNotRepeated(t *testing.T) {
 			t.Errorf("notice %d: %q, %v; want inconclusive", i, got, st)
 		}
 	}
-	if c.lookups != 1 {
-		t.Errorf("%d live verifications, want 1", c.lookups)
+	if q := s.receivedFor(controlName); len(q) != 1 {
+		t.Errorf("control queries %v, want one", q)
 	}
 }

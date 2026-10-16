@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestSendingSourceLookupReplace(t *testing.T) {
 		{Kind: SendingSourceKindGlobalHost, Name: "mail.example.jp", Addresses: []string{"198.51.100.7"}, FetchedAt: base},
 	}
 	for _, r := range rows {
-		if _, err := ReplaceSendingSourceLookup(db, r, time.Time{}); err != nil {
+		if _, err := ReplaceSendingSourceLookup(db, r, false); err != nil {
 			t.Fatalf("replace %s %s: %v", r.Kind, r.Name, err)
 		}
 	}
@@ -46,7 +47,7 @@ func TestSendingSourceLookupReplace(t *testing.T) {
 
 	// A replacement keeps one row per source.
 	again := &SendingSourceLookup{Kind: SendingSourceKindSMTPHost, Name: "mail.example.jp", Addresses: []string{"203.0.113.9"}}
-	if _, err := ReplaceSendingSourceLookup(db, again, time.Time{}); err != nil {
+	if _, err := ReplaceSendingSourceLookup(db, again, false); err != nil {
 		t.Fatal(err)
 	}
 	got, err := GetSendingSourceLookup(db, SendingSourceKindSMTPHost, "mail.example.jp")
@@ -73,39 +74,37 @@ func TestSendingSourceLookupReplace(t *testing.T) {
 }
 
 // TestSendingSourceLookupKeepsNonEmpty checks the condition of the statement:
-// a row listing nothing does not replace a non-empty one fetched at
-// keepSince or later (one dated in the future included), and replaces an
-// older non-empty one, an empty one, or any one with the zero keepSince; a
-// non-empty row always replaces.
+// with keepNonEmpty a row listing nothing does not replace a non-empty one,
+// whatever its age (one dated in the future included), and replaces an
+// empty one; without it, it replaces any row; a non-empty row always
+// replaces.
 func TestSendingSourceLookupKeepsNonEmpty(t *testing.T) {
 	db := openTestMasterDB(t)
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	keepSince := now.Add(-14 * 24 * time.Hour)
 	for _, c := range []struct {
 		name          string
 		stored        []string // addresses of the stored row (nil: empty)
 		storedHosts   []string
 		age           time.Duration
 		next          []string // addresses of the new row
-		keepSince     time.Time
+		keep          bool
 		written       bool
 		wantAddresses []string
 	}{
-		{"empty over a recent non-empty", []string{"192.0.2.25"}, nil, 13 * 24 * time.Hour, nil, keepSince, false, []string{"192.0.2.25"}},
-		{"empty over one exactly at the limit", []string{"192.0.2.25"}, nil, 14 * 24 * time.Hour, nil, keepSince, false, []string{"192.0.2.25"}},
-		{"empty over hosts only", nil, []string{"mx1.example.jp"}, time.Hour, nil, keepSince, false, nil},
-		{"empty over one dated in the future", []string{"192.0.2.25"}, nil, -time.Hour, nil, keepSince, false, []string{"192.0.2.25"}},
-		{"empty over an old non-empty", []string{"192.0.2.25"}, nil, 14*24*time.Hour + time.Second, nil, keepSince, true, nil},
-		{"empty over empty", nil, nil, time.Hour, nil, keepSince, true, nil},
-		{"empty, zero keepSince", []string{"192.0.2.25"}, nil, time.Hour, nil, time.Time{}, true, nil},
-		{"non-empty over non-empty", []string{"192.0.2.25"}, nil, time.Hour, []string{"198.51.100.7"}, keepSince, true, []string{"198.51.100.7"}},
+		{"empty over a recent non-empty", []string{"192.0.2.25"}, nil, time.Hour, nil, true, false, []string{"192.0.2.25"}},
+		{"empty over a year-old non-empty", []string{"192.0.2.25"}, nil, 365 * 24 * time.Hour, nil, true, false, []string{"192.0.2.25"}},
+		{"empty over hosts only", nil, []string{"mx1.example.jp"}, time.Hour, nil, true, false, nil},
+		{"empty over one dated in the future", []string{"192.0.2.25"}, nil, -time.Hour, nil, true, false, []string{"192.0.2.25"}},
+		{"empty over empty", nil, nil, time.Hour, nil, true, true, nil},
+		{"empty, not kept", []string{"192.0.2.25"}, nil, time.Hour, nil, false, true, nil},
+		{"non-empty over non-empty", []string{"192.0.2.25"}, nil, time.Hour, []string{"198.51.100.7"}, true, true, []string{"198.51.100.7"}},
 	} {
 		name := "mail.example.jp"
 		if _, err := ReplaceSendingSourceLookup(db, &SendingSourceLookup{Kind: SendingSourceKindSPF, Name: name, Addresses: c.stored, Hosts: c.storedHosts,
-			FetchedAt: now.Add(-c.age)}, time.Time{}); err != nil {
+			FetchedAt: now.Add(-c.age)}, false); err != nil {
 			t.Fatal(err)
 		}
-		written, err := ReplaceSendingSourceLookup(db, &SendingSourceLookup{Kind: SendingSourceKindSPF, Name: name, Addresses: c.next, FetchedAt: now}, c.keepSince)
+		written, err := ReplaceSendingSourceLookup(db, &SendingSourceLookup{Kind: SendingSourceKindSPF, Name: name, Addresses: c.next, FetchedAt: now}, c.keep)
 		if err != nil || written != c.written {
 			t.Errorf("%s: written %v (err %v), want %v", c.name, written, err, c.written)
 		}
@@ -114,22 +113,22 @@ func TestSendingSourceLookupKeepsNonEmpty(t *testing.T) {
 			t.Errorf("%s: stored %+v (err %v), want addresses %v, renewed %v", c.name, got, err, c.wantAddresses, c.written)
 		}
 	}
-	// A row listing host names only is not empty: it replaces a recent
-	// non-empty one.
+	// A row listing host names only is not empty: it replaces a non-empty
+	// one.
 	if _, err := ReplaceSendingSourceLookup(db, &SendingSourceLookup{Kind: SendingSourceKindSPF, Name: "hosts.example.jp", Addresses: []string{"192.0.2.0/24"},
-		FetchedAt: now.Add(-time.Hour)}, time.Time{}); err != nil {
+		FetchedAt: now.Add(-time.Hour)}, false); err != nil {
 		t.Fatal(err)
 	}
 	if written, err := ReplaceSendingSourceLookup(db, &SendingSourceLookup{Kind: SendingSourceKindSPF, Name: "hosts.example.jp", Hosts: []string{"mx1.example.jp"},
-		FetchedAt: now}, keepSince); err != nil || !written {
-		t.Errorf("hosts only over a recent non-empty: written %v (err %v), want true", written, err)
+		FetchedAt: now}, true); err != nil || !written {
+		t.Errorf("hosts only over a non-empty: written %v (err %v), want true", written, err)
 	}
 	if got, err := GetSendingSourceLookup(db, SendingSourceKindSPF, "hosts.example.jp"); err != nil || got.Addresses != nil ||
 		!reflect.DeepEqual(got.Hosts, []string{"mx1.example.jp"}) {
-		t.Errorf("hosts only over a recent non-empty: stored %+v (err %v)", got, err)
+		t.Errorf("hosts only over a non-empty: stored %+v (err %v)", got, err)
 	}
 	// A new source is inserted whatever it lists.
-	if written, err := ReplaceSendingSourceLookup(db, &SendingSourceLookup{Kind: SendingSourceKindSMTPHost, Name: "new.example.jp", FetchedAt: now}, keepSince); err != nil || !written {
+	if written, err := ReplaceSendingSourceLookup(db, &SendingSourceLookup{Kind: SendingSourceKindSMTPHost, Name: "new.example.jp", FetchedAt: now}, true); err != nil || !written {
 		t.Errorf("new empty source: written %v (err %v)", written, err)
 	}
 }
@@ -165,7 +164,7 @@ func TestSendingSourceLookupConcurrentWriters(t *testing.T) {
 				if i%2 == 0 {
 					row.Addresses = []string{"192.0.2.25"}
 				}
-				_, errs[i] = ReplaceSendingSourceLookup(db, row, time.Now().Add(-14*24*time.Hour))
+				_, errs[i] = ReplaceSendingSourceLookup(db, row, true)
 			})
 		}
 		close(start)
@@ -182,33 +181,61 @@ func TestSendingSourceLookupConcurrentWriters(t *testing.T) {
 	}
 }
 
-// TestSendingSourceLookupCleanup checks the removal of the old rows and of the
-// rows dated in the future; a row dated exactly at either cutoff stays.
+// TestSendingSourceLookupCleanup checks that the cleanup removes only the
+// rows dated after now, whatever the age of the others.
 func TestSendingSourceLookupCleanup(t *testing.T) {
 	db := openTestMasterDB(t)
 	now := time.Now().UTC()
 	for _, r := range []*SendingSourceLookup{
-		{Kind: SendingSourceKindSMTPHost, Name: "old.example.jp", FetchedAt: now.Add(-91 * 24 * time.Hour)},
-		{Kind: SendingSourceKindSMTPHost, Name: "new.example.jp", FetchedAt: now},
-		{Kind: SendingSourceKindSMTPHost, Name: "future.example.jp", FetchedAt: now.Add(25 * time.Hour)},
-		{Kind: SendingSourceKindSMTPHost, Name: "soon.example.jp", FetchedAt: now.Add(23 * time.Hour)},
-		{Kind: SendingSourceKindSMTPHost, Name: "oldest-kept.example.jp", FetchedAt: now.Add(-90 * 24 * time.Hour)},
-		{Kind: SendingSourceKindSMTPHost, Name: "latest-kept.example.jp", FetchedAt: now.Add(24 * time.Hour)},
+		{Kind: SendingSourceKindSMTPHost, Name: "old.example.jp", FetchedAt: now.Add(-3650 * 24 * time.Hour)},
+		{Kind: SendingSourceKindSMTPHost, Name: "new.example.jp", FetchedAt: now.Add(-time.Second)},
+		{Kind: SendingSourceKindSMTPHost, Name: "future.example.jp", FetchedAt: now.Add(time.Hour)},
 	} {
-		if _, err := ReplaceSendingSourceLookup(db, r, time.Time{}); err != nil {
+		if _, err := ReplaceSendingSourceLookup(db, r, false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n, err := DeleteSendingSourceLookupsOlderThan(db, now.Add(-90*24*time.Hour)); err != nil || n != 1 {
-		t.Errorf("older than 90 days: %d removed (err %v), want 1", n, err)
-	}
-	if n, err := DeleteSendingSourceLookupsNewerThan(db, now.Add(24*time.Hour)); err != nil || n != 1 {
-		t.Errorf("more than a day in the future: %d removed (err %v), want 1", n, err)
+	if n, err := DeleteFutureSendingSourceLookups(db); err != nil || n != 1 {
+		t.Errorf("dated in the future: %d removed (err %v), want 1", n, err)
 	}
 	all, err := ListSendingSourceLookups(db)
-	if err != nil || len(all) != 4 || all[0].Name != "new.example.jp" || all[1].Name != "soon.example.jp" ||
-		all[2].Name != "oldest-kept.example.jp" || all[3].Name != "latest-kept.example.jp" {
+	if err != nil || len(all) != 2 || all[0].Name != "old.example.jp" || all[1].Name != "new.example.jp" {
 		t.Errorf("after the cleanup: %+v (err %v)", all, err)
+	}
+}
+
+// TestSendingSourceLookupDeleteKindOlderThan checks the cleanup of the
+// reporting MTAs: only the rows of the kind fetched before the cutoff go,
+// a row exactly at it stays, and the other kinds stay whatever their age.
+func TestSendingSourceLookupDeleteKindOlderThan(t *testing.T) {
+	db := openTestMasterDB(t)
+	cutoff := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	for _, r := range []*SendingSourceLookup{
+		{Kind: SendingSourceKindReporter, Name: "old.example.jp", Addresses: []string{"192.0.2.1"}, FetchedAt: cutoff.Add(-time.Second)},
+		{Kind: SendingSourceKindReporter, Name: "at.example.jp", FetchedAt: cutoff},
+		{Kind: SendingSourceKindReporter, Name: "new.example.jp", FetchedAt: cutoff.Add(time.Hour)},
+		{Kind: SendingSourceKindSMTPHost, Name: "old.example.jp", FetchedAt: cutoff.Add(-3650 * 24 * time.Hour)},
+		{Kind: SendingSourceKindGlobalHost, Name: "old.example.jp", FetchedAt: cutoff.Add(-3650 * 24 * time.Hour)},
+		{Kind: SendingSourceKindSPF, Name: "example.jp", FetchedAt: cutoff.Add(-3650 * 24 * time.Hour)},
+	} {
+		if _, err := ReplaceSendingSourceLookup(db, r, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := DeleteSendingSourceLookupsOlderThan(db, SendingSourceKindReporter, cutoff); err != nil || n != 1 {
+		t.Errorf("removed %d (err %v), want 1", n, err)
+	}
+	all, err := ListSendingSourceLookups(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, r := range all {
+		left = append(left, r.Kind+" "+r.Name)
+	}
+	want := "reporter at.example.jp, reporter new.example.jp, smtp_host old.example.jp, global_host old.example.jp, spf example.jp"
+	if got := strings.Join(left, ", "); got != want {
+		t.Errorf("left %s, want %s", got, want)
 	}
 }
 

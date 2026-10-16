@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,8 +33,6 @@ import (
 const (
 	// progressFlushInterval throttles progress writes to the jobs table.
 	progressFlushInterval = 500 * time.Millisecond
-	// progressMaxLines bounds the progress text kept per job (newest lines).
-	progressMaxLines = 100
 	// progressTimeSep separates the UTC timestamp (RFC 3339) that starts each
 	// stored progress line from the message.
 	progressTimeSep = "\t"
@@ -563,9 +562,7 @@ func ResetStaleJobs(db *sql.DB, mailsRoot string) {
 		return
 	}
 	for _, mb := range mailboxes {
-		ctx, cancel := context.WithTimeout(context.Background(), IMAPTimeout)
-		idx, err := mailengine.OpenIndex(ctx, mailsRoot, mb.Address, nil)
-		cancel()
+		idx, err := mailengine.OpenIndex(context.Background(), mailsRoot, mb.Address, nil)
 		if err != nil {
 			log.Printf("index of %s could not be opened: %v", mb.Address, err)
 			continue
@@ -592,17 +589,35 @@ type progressWriter struct {
 
 	mu      sync.Mutex
 	lines   []string
+	counter string // counterTemplate of the last line ("" when it is no counter)
 	dirty   bool
 	last    time.Time
 	timer   *time.Timer
 	stopped bool
 }
 
+// counterRe finds the counter of a progress message ("fetching 20 of 300",
+// "reindexed 50 of 900 messages", "grouped 100 of 900 messages").
+var counterRe = regexp.MustCompile(`\b\d+ of \d+\b`)
+
+// counterTemplate is a progress message that reports how far a step got,
+// with its numbers taken out ("" for any other message): a line of the same
+// template takes the place of the one before, so that the progress of a
+// long step stays one line and the stored text does not grow with every
+// step.
+func counterTemplate(msg string) string {
+	if !counterRe.MatchString(msg) {
+		return ""
+	}
+	return counterRe.ReplaceAllString(msg, "#")
+}
+
 func newProgressWriter(db *sql.DB, jobID int64, echo func(string)) *progressWriter {
 	return &progressWriter{db: db, jobID: jobID, echo: echo}
 }
 
-// Add records one progress line.
+// Add records one progress line; a counter line of the same step replaces
+// the one before (counterTemplate).
 func (p *progressWriter) Add(msg string) {
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
@@ -617,9 +632,11 @@ func (p *progressWriter) Add(msg string) {
 	if p.stopped {
 		return
 	}
-	p.lines = append(p.lines, line)
-	if len(p.lines) > progressMaxLines {
-		p.lines = p.lines[len(p.lines)-progressMaxLines:]
+	if tmpl := counterTemplate(msg); tmpl != "" && tmpl == p.counter && len(p.lines) > 0 {
+		p.lines[len(p.lines)-1] = line
+	} else {
+		p.lines = append(p.lines, line)
+		p.counter = tmpl
 	}
 	p.dirty = true
 	if since := time.Since(p.last); since >= progressFlushInterval {
@@ -1159,8 +1176,8 @@ func (m *JobManager) runSync(ctx context.Context, job *models.Job, mb *models.Ma
 	return line, nil
 }
 
-// countGroupsNeedingAnalysis returns how many actionable open groups of the
-// address are flagged needs_analysis.
+// countGroupsNeedingAnalysis returns how many groups of the address are
+// flagged needs_analysis (models.ListGroupsNeedingAnalysis).
 func (m *JobManager) countGroupsNeedingAnalysis(ctx context.Context, address string) (int, error) {
 	idx, err := mailengine.OpenIndex(ctx, m.mailsRoot, address, nil)
 	if err != nil {
@@ -1199,7 +1216,7 @@ func (m *JobManager) runReindex(ctx context.Context, job *models.Job, mb *models
 }
 
 // runAnalyze runs the agent over the groups named by the target: "" = the
-// actionable groups flagged for analysis, "*" = every actionable group, or
+// groups flagged for analysis, "*" = every actionable group, or
 // one group key (any group, recipient-side ones included: the "Analyze"
 // button of the group detail). When a run is refused by a usage limit the
 // remaining groups are not started (they would be refused as well); they
@@ -1240,15 +1257,13 @@ func (m *JobManager) runAnalyze(ctx context.Context, job *models.Job, mb *models
 	if len(groups) == 0 {
 		return "no group needs analysis", nil
 	}
-	// An explicit request ("*" or one group) marks its actionable groups as
-	// waiting first; like the flags the grouping sets, they are cleared only
-	// by a successful analysis, so whatever this run does not finish is
-	// picked up by the next scheduled one.
+	// An explicit request ("*" or one group, recipient-side ones included)
+	// marks its groups as waiting first; like the flags the grouping sets,
+	// they are cleared only when the analysis settles, so whatever this run
+	// does not finish (the usage limit) is picked up by the next scheduled
+	// one. A recipient-side group is flagged by nothing else.
 	if job.Target != "" {
 		for _, g := range groups {
-			if !g.Actionable {
-				continue
-			}
 			if err := models.SetGroupNeedsAnalysis(idx, g.GroupKey, true); err != nil {
 				return "", fmt.Errorf("flag %s for analysis: %w", g.GroupKey, err)
 			}

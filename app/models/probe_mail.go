@@ -257,28 +257,6 @@ func CountOpenProbeMails(db *sql.DB) (int, error) {
 	return n, err
 }
 
-// ListUndeletedClosedProbeTokens returns the tokens of the probe mails sent
-// since the given time that are no longer open (arrived, recovered,
-// resolved) and whose mail was not deleted from the probe server yet (the
-// cleanup of the recorded leftovers looks for them).
-func ListUndeletedClosedProbeTokens(db *sql.DB, since time.Time) ([]string, error) {
-	rows, err := db.Query(`SELECT token FROM probe_mails WHERE status NOT IN `+probeOpenStatuses+`
-		AND deleted_at IS NULL AND sent_at >= ? ORDER BY sent_at ASC, id ASC`, since.UTC())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
-}
-
 // MarkProbeMailsDeleted records that the probe mails of the tokens were
 // deleted from the probe server.
 func MarkProbeMailsDeleted(db *sql.DB, tokens []string, at time.Time) error {

@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,7 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
+
+	"mailcare/app/modules/fileinuse"
 )
 
 // Control token (the system design document (Documents) 9.1): the control
@@ -62,9 +64,9 @@ func DataDirID(dir string) string {
 // WriteControlToken stores the port and the token in the data directory with
 // mode 0600 (a failing chmod is only logged; on Windows the directory's
 // permissions protect it), replacing an older file in one step (a temporary
-// file renamed over it; retried briefly on Windows, where a reader may hold
-// the old file open).
-func WriteControlToken(dataDir string, port int, token string) error {
+// file renamed over it; on Windows, where a reader may hold the old file
+// open, the rename waits until it is closed or ctx ends: fileinuse.Retry).
+func WriteControlToken(ctx context.Context, dataDir string, port int, token string) error {
 	raw, err := json.Marshal(controlTokenContent{Port: port, Token: token})
 	if err != nil {
 		return err
@@ -90,12 +92,9 @@ func WriteControlToken(dataDir string, port int, token string) error {
 		return err
 	}
 	target := filepath.Join(dataDir, ControlTokenFile)
-	err = os.Rename(name, target)
-	for i := 0; err != nil && runtime.GOOS == "windows" && i < 20; i++ {
-		time.Sleep(50 * time.Millisecond)
-		err = os.Rename(name, target)
-	}
-	return err
+	return fileinuse.Retry(ctx, func() error { return os.Rename(name, target) }, func(err error) {
+		log.Printf("waiting for %s to be released: %v", target, err)
+	})
 }
 
 // ReadControlToken returns the port and the token stored in the data

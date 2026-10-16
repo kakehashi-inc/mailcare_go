@@ -2,20 +2,14 @@ package modules
 
 import (
 	"database/sql"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"mailcare/app/models"
 	"mailcare/app/modules/mailengine"
 	"mailcare/app/modules/wording"
 )
-
-// MaxGroupStateNoteLength is the maximum length in characters of the note
-// written with a state change.
-const MaxGroupStateNoteLength = 2000
 
 var (
 	errGroupStateInvalid    = wording.New("system.invalidRequest", "state must be open, resolved or ignored")
@@ -27,8 +21,6 @@ var (
 		"reason of a resolved group must be one of "+strings.Join(models.ResolveActions, ", "))
 	errIgnoreReasonInvalid = wording.New("system.invalidRequest",
 		"reason of an ignored group must be one of "+strings.Join(models.IgnoreReasons, ", "))
-	errGroupStateNoteTooLong = wording.New("validation.group.stateNoteTooLong",
-		fmt.Sprintf("note must be %d characters or fewer", MaxGroupStateNoteLength)).With("max", MaxGroupStateNoteLength)
 )
 
 // GroupStateChange is a validated state change of a group: the new state
@@ -76,9 +68,6 @@ func GroupStateInput(state, reason, note string) (GroupStateChange, error) {
 		return change, errGroupStateInvalid
 	}
 	change.Reason = sql.NullString{String: reason, Valid: true}
-	if utf8.RuneCountInString(note) > MaxGroupStateNoteLength {
-		return change, errGroupStateNoteTooLong
-	}
 	if note != "" {
 		change.Note = sql.NullString{String: note, Valid: true}
 	}

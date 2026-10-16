@@ -330,22 +330,10 @@ func (c *core) handleListProbes(w http.ResponseWriter, r *http.Request) {
 		}
 		mailboxID = id
 	}
-	page, perPage := 1, defaultProbePage
-	for _, p := range []struct {
-		name string
-		dst  *int
-		max  int
-	}{{"page", &page, maxJobPage}, {"per_page", &perPage, maxProbePage}} {
-		s := q.Get(p.name)
-		if s == "" {
-			continue
-		}
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 || n > p.max {
-			writeError(w, http.StatusBadRequest, "system.invalidRequest")
-			return
-		}
-		*p.dst = n
+	page, perPage, ok := readPage(q, defaultProbePage, maxProbePage)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "system.invalidRequest")
+		return
 	}
 	list, total, err := models.ListProbeMails(c.db, filter, mailboxID, (page-1)*perPage, perPage)
 	if err != nil {

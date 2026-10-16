@@ -9,7 +9,7 @@ import (
 )
 
 func TestGroupStateInput(t *testing.T) {
-	long := strings.Repeat("あ", MaxGroupStateNoteLength+1)
+	long := strings.Repeat("あ", 50000)
 	for _, c := range []struct {
 		name                 string
 		state, reason, note  string
@@ -23,8 +23,8 @@ func TestGroupStateInput(t *testing.T) {
 			note: "  asked Spamhaus\n", wantReason: models.ResolveActionDelisting, wantNote: "asked Spamhaus"},
 		{name: "resolved with a blank note", state: "resolved", reason: models.ResolveActionOther, note: "  ",
 			wantReason: models.ResolveActionOther},
-		{name: "resolved note too long", state: "resolved", reason: models.ResolveActionOther, note: long,
-			wantKey: "validation.group.stateNoteTooLong"},
+		{name: "resolved with a long note", state: "resolved", reason: models.ResolveActionOther, note: long,
+			wantReason: models.ResolveActionOther, wantNote: long},
 		{name: "ignored needs a reason", state: "ignored", note: "x", wantKey: "validation.group.ignoreReasonRequired"},
 		{name: "ignored with an unknown reason", state: "ignored", reason: models.ResolveActionDelisting, wantKey: "system.invalidRequest"},
 		{name: "ignored drops the note of a fixed reason", state: "ignored", reason: models.IgnoreReasonSpoofing, note: "x",

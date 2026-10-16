@@ -7,24 +7,69 @@ import (
 	"mailcare/app/models"
 )
 
+// ExtractBounces builds the bounces rows of a message classified as failed
+// or delayed (design document "mail classification" 3): one per failed
+// recipient, so that every recipient a notice reports as failed or delayed
+// is recorded and judged. The first row is ExtractBounce (the block that
+// reports the kind of the notice, completed from the body text); every
+// other per-recipient block of the delivery-status part that reports a
+// failure or a delay (blockKind, read as the classification reads it)
+// adds a row with what that block gives (the body speaks of one
+// recipient at a time and cannot be told apart per block), its action
+// being what the block reports. Blocks that report a success (delivered,
+// relayed, expanded) or nothing are not failures and give no row, and
+// neither does a block whose recipient is excluded. A notice without a
+// delivery-status part, or with one such block, gives the one row of
+// ExtractBounce.
+func ExtractBounces(pm *ParsedMessage, kind string, exclude ...string) []*models.Bounce {
+	first := ExtractBounce(pm, kind, exclude...)
+	out := []*models.Bounce{first}
+	if pm == nil || pm.DeliveryStatus == nil {
+		return out
+	}
+	picked := pickBlock(pm.DeliveryStatus, kind)
+	for i, r := range pm.DeliveryStatus.Recipients {
+		k := blockKind(r)
+		if i == picked || (k != bounceKindFailed && k != bounceKindDelayed) || excluded(blockRecipient(r), exclude) {
+			continue
+		}
+		f := fields{source: DiagnosticSourceDSN}
+		f.fromBlock(r)
+		f.action = k
+		f.finish()
+		out = append(out, newBounce(pm, k, &f))
+	}
+	return out
+}
+
+// BounceKind is the kind a bounces row is judged as: the action of its
+// recipient block when that reports a failure or a delay (a notice can
+// report both for different recipients), else the kind of the notice.
+func BounceKind(b *models.Bounce, noticeKind string) string {
+	switch b.Action {
+	case bounceKindFailed, bounceKindDelayed:
+		return b.Action
+	}
+	return noticeKind
+}
+
 // ExtractBounce builds the bounces row of a message classified as failed or
-// delayed. The delivery-status part is used first; what it does not
-// provide is filled from the body text by the rule table below. exclude lists
-// addresses that must not be taken as the failed recipient (the monitored
-// address and the sender of the notice itself).
+// delayed, for its first recipient block. The delivery-status part is used
+// first; what it does not provide is filled from the body text by the rule
+// table below. exclude lists addresses that must not be taken as the failed
+// recipient (the monitored address and the sender of the notice itself).
 //
-// The returned Bounce has no ID and no GroupKey; the caller (groupMessage)
-// sets them from the message row and the group it files the bounce into.
+// The returned Bounce has no ID, message id and GroupKey; the caller
+// (groupMessage) sets them from the message row and the group it files the
+// bounce into.
 func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bounce {
-	b := &models.Bounce{}
 	if pm == nil {
-		return b
+		return &models.Bounce{}
 	}
 	f := fields{}
 	if pm.DeliveryStatus != nil {
 		f.source = DiagnosticSourceDSN
 		f.fromDeliveryStatus(pm.DeliveryStatus, kind)
-		b.ReportingMTA = pm.DeliveryStatus.ReportingMTA
 	}
 	// The primary body (every text section joined) first; whatever is still
 	// empty is completed from the HTML sections rendered as text when the
@@ -36,7 +81,17 @@ func ExtractBounce(pm *ParsedMessage, kind string, exclude ...string) *models.Bo
 		f.fromBody(unfold(secondary), nil, exclude)
 	}
 	f.finish()
+	return newBounce(pm, kind, &f)
+}
 
+// newBounce builds a bounces row from the values of one recipient block
+// and what the message itself gives (the reporting MTA, the returned
+// original).
+func newBounce(pm *ParsedMessage, kind string, f *fields) *models.Bounce {
+	b := &models.Bounce{}
+	if pm.DeliveryStatus != nil {
+		b.ReportingMTA = pm.DeliveryStatus.ReportingMTA
+	}
 	b.Recipient = f.addr
 	b.RecipientDomain = domainOf(f.addr)
 	b.Action = f.action
@@ -114,28 +169,48 @@ func (f *fields) fill(name, value string) {
 }
 
 // fromDeliveryStatus takes the per-recipient block that matches the bounce
-// kind (a failed block for failed notices, a delayed one for delays).
+// kind (a failed block for failed notices, a delayed one for delays;
+// pickBlock).
 func (f *fields) fromDeliveryStatus(ds *DeliveryStatus, kind string) {
-	if len(ds.Recipients) == 0 {
-		return
+	if i := pickBlock(ds, kind); i >= 0 {
+		f.fromBlock(ds.Recipients[i])
 	}
-	pick := ds.Recipients[0]
-	for _, r := range ds.Recipients {
-		if r.Action == kind {
-			pick = r
-			break
+}
+
+// pickBlock returns the index of the first per-recipient block that reports
+// the kind of the notice (blockKind), else of the first block that does not
+// report a success; -1 when there is none (the values then come from the
+// body alone).
+func pickBlock(ds *DeliveryStatus, kind string) int {
+	for i, r := range ds.Recipients {
+		if blockKind(r) == kind {
+			return i
 		}
 	}
-	f.action = pick.Action
-	if pick.OriginalRecipient != "" {
-		f.fill("addr", pick.OriginalRecipient)
-	} else {
-		f.fill("addr", pick.FinalRecipient)
+	for i, r := range ds.Recipients {
+		if blockKind(r) != blockSuccess {
+			return i
+		}
 	}
-	f.fill("status", pick.Status)
-	diag := stripTypePrefix(pick.DiagnosticCode)
-	f.fill("diag", diag)
-	host, ip := splitMTA(pick.RemoteMTA)
+	return -1
+}
+
+// blockRecipient is the recipient a per-recipient block names: the
+// original recipient when given, else the final one.
+func blockRecipient(r DeliveryStatusRecipient) string {
+	if r.OriginalRecipient != "" {
+		return r.OriginalRecipient
+	}
+	return r.FinalRecipient
+}
+
+// fromBlock takes the values of one per-recipient block.
+func (f *fields) fromBlock(r DeliveryStatusRecipient) {
+	f.action = r.Action
+	f.fill("addr", blockRecipient(r))
+	f.fill("status", r.Status)
+	f.fill("diag", stripTypePrefix(r.DiagnosticCode))
+	host, ip := splitMTA(r.RemoteMTA)
 	f.fill("host", host)
 	f.fill("ip", ip)
 }

@@ -1,18 +1,17 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
-	"time"
 )
 
-// waitDelay bounds how long a run waits for the CLI's output pipes to close
-// after the process itself has ended (or been killed on context cancel). A
-// child process left behind by the CLI would otherwise keep Wait blocked.
-const waitDelay = 5 * time.Second
+// runAgent runs the CLI of an analysis (runProvider); a variable so that
+// the tests can see what it is given.
+var runAgent = runProvider
 
 // runProvider launches the provider CLI (with the model and the reasoning
 // level when the provider supports them and they are set) with the
@@ -50,15 +49,60 @@ func runArgv(ctx context.Context, name string, command []string, dir, promptText
 		return "", fmt.Errorf("%q not found on PATH (is %s installed?)", argv[0], name)
 	}
 
+	// The prompt and the output go through files rather than pipes: the
+	// run then ends when the CLI process ends, even when a process it left
+	// behind still holds them open (no wait for pipes to close is needed).
+	// The files are made in the workspace of the run (dir), not in the
+	// temporary directory of the OS, and removed when the run ends.
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	cmd.WaitDelay = waitDelay
 	if useStdin {
-		cmd.Stdin = strings.NewReader(promptText)
+		in, err := tempFileWith(dir, promptText)
+		if err != nil {
+			return "", fmt.Errorf("prepare the prompt for %s: %w", name, err)
+		}
+		defer removeTemp(in)
+		cmd.Stdin = in
 	}
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	return buf.String(), err
+	out, err := os.CreateTemp(dir, tempFilePattern+".out")
+	if err != nil {
+		return "", fmt.Errorf("prepare the output of %s: %w", name, err)
+	}
+	defer removeTemp(out)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	runErr := cmd.Run()
+	text, err := os.ReadFile(out.Name())
+	if err != nil && runErr == nil {
+		runErr = err
+	}
+	return string(text), runErr
+}
+
+// tempFilePattern is the name of the temporary files of a run (the prompt
+// fed on stdin, the output) in its workspace, without the extension.
+const tempFilePattern = ".mailcare-agent-*"
+
+// tempFileWith returns a temporary file in dir holding text, positioned at
+// its start.
+func tempFileWith(dir, text string) (*os.File, error) {
+	f, err := os.CreateTemp(dir, tempFilePattern+".in")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.WriteString(text); err != nil {
+		removeTemp(f)
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		removeTemp(f)
+		return nil, err
+	}
+	return f, nil
+}
+
+// removeTemp closes and removes a temporary file.
+func removeTemp(f *os.File) {
+	f.Close()
+	_ = os.Remove(f.Name())
 }

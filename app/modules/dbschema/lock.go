@@ -1,7 +1,6 @@
 package dbschema
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -10,10 +9,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
+
+	"mailcare/app/modules/filelock"
 )
 
 // Applying the migrations of one database is serialized across processes
@@ -21,31 +21,29 @@ import (
 // database, two jobs opening a mailbox index for the first time): each
 // would otherwise find the same versions pending, apply them both and record
 // every version twice in goose_db_version, and a migration that cannot run
-// twice would fail. SQLite offers no lock that outlives a transaction, and
-// flock exists on Unix only, so the lock is a file next to the database
-// created exclusively (O_CREATE|O_EXCL, an atomic test-and-create on
-// Windows, macOS and Linux alike) that holds the process id, the time and
-// a random token of its holder. It is removed after the migrations ran;
-// one left behind by a process that died is taken over once it is older
-// than lockStale.
+// twice would fail. The lock is an exclusive operating system lock
+// (filelock) on a file next to the database: the operating system releases
+// it when its holder closes it or ends, also after a crash, so it never goes
+// stale and a waiter waits exactly as long as the holder migrates, however
+// many databases it migrates. The holder removes the file before it
+// releases the lock; a waiter that got the lock of a file removed meanwhile
+// tries the current one.
 
 // LockSuffix is appended to the path of a database for its migration lock.
 const LockSuffix = ".migrate.lock"
 
-// Bounds of the migration lock; variables so that the tests can shorten
-// them.
-var (
-	lockWait  = 30 * time.Second      // how long ApplyLocked waits for another holder
-	lockStale = 2 * time.Minute       // a lock older than this is taken over
-	lockPoll  = 50 * time.Millisecond // how often a held lock is tried again
-)
+// lockPoll is how often a held lock is tried again (the pace of the wait,
+// which lasts until the lock is released; a variable so that the tests can
+// change it).
+var lockPoll = 50 * time.Millisecond
 
 // ApplyLocked is Apply for the database file at dbPath, serialized across
 // processes by the lock file dbPath + LockSuffix. A database that is up to
 // date is not locked at all (upToDate only reads). Otherwise the lock is
-// taken, waiting up to lockWait for another holder, the pending migrations
-// are looked up again (the other holder has usually applied them meanwhile)
-// and applied, and the lock file is removed, whatever the outcome.
+// taken, waiting while another process holds it (until it is released or
+// ctx ends), the pending migrations are looked up again (the other holder
+// has usually applied them meanwhile) and applied, and the lock file is
+// removed, whatever the outcome.
 func ApplyLocked(ctx context.Context, db *sql.DB, fsys fs.FS, dbPath string) ([]string, error) {
 	if fsys == nil {
 		return nil, errNoMigrations
@@ -98,36 +96,45 @@ func newProvider(db *sql.DB, fsys fs.FS) (*goose.Provider, error) {
 	return goose.NewProvider(goose.DialectSQLite3, db, fsys, goose.WithDisableGlobalRegistry(true))
 }
 
-// acquireLock creates the lock file, waiting up to lockWait (or until ctx
-// ends) while another process holds it and taking over one older than
-// lockStale. release removes the file when it is still the one created
-// here.
+// acquireLock takes the lock on the file at path (creating it), waiting
+// while another process holds it until it is released or ctx ends. release
+// removes the file and releases the lock (on Windows the file goes once it
+// is closed).
 func acquireLock(ctx context.Context, path string) (release func(), err error) {
-	token := lockToken()
-	deadline := time.Now().Add(lockWait)
 	for {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_, werr := fmt.Fprintf(f, "%d %s %s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), token)
-			if cerr := f.Close(); werr == nil {
-				werr = cerr
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("open the migration lock %s: %w", path, err)
+		}
+		err = filelock.TryLock(f)
+		switch {
+		case err == nil:
+			if !samePath(f, path) {
+				// The previous holder removed this file after this process
+				// opened it: lock the file now at path instead.
+				_ = filelock.Unlock(f)
+				f.Close()
+				continue
 			}
-			if werr != nil {
-				_ = os.Remove(path)
-				return nil, fmt.Errorf("write the migration lock %s: %w", path, werr)
+			if err := f.Truncate(0); err == nil {
+				_, _ = fmt.Fprintf(f, "%d %s %s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), lockToken())
 			}
-			return func() { releaseLock(path, token) }, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("create the migration lock %s: %w", path, err)
-		}
-		if takeOverStale(path) {
-			continue
-		}
-		if !time.Now().Before(deadline) {
-			holder, _ := os.ReadFile(path)
-			return nil, fmt.Errorf("the migrations of the database are being applied by another process (lock %s: %s); "+
-				"if no MailCare process is running, remove the file", path, strings.TrimSpace(string(holder)))
+			return func() {
+				// Removed while still locked: a waiter then retries the new
+				// file. Windows refuses to remove an open file: there it goes
+				// once closed (a waiter that opened it meanwhile keeps it).
+				removeErr := os.Remove(path)
+				_ = filelock.Unlock(f)
+				f.Close()
+				if removeErr != nil {
+					_ = os.Remove(path)
+				}
+			}, nil
+		case errors.Is(err, filelock.ErrHeld):
+			f.Close()
+		default:
+			f.Close()
+			return nil, fmt.Errorf("lock %s: %w", path, err)
 		}
 		select {
 		case <-ctx.Done():
@@ -137,60 +144,14 @@ func acquireLock(ctx context.Context, path string) (release func(), err error) {
 	}
 }
 
-// takeOverStale removes the lock file when it is older than lockStale (by
-// the time its holder wrote in it, else by its modification time) and
-// reports whether it did. The file is first moved aside and compared with
-// what was judged: when another process took the stale lock over in
-// between, the moved file is its fresh one, which is put back (unless yet
-// another lock is there by then, which then stands).
-func takeOverStale(path string) bool {
-	data, err := os.ReadFile(path)
+// samePath reports whether path still names the open file f.
+func samePath(f *os.File, path string) bool {
+	opened, err := f.Stat()
 	if err != nil {
 		return false
 	}
-	written, ok := lockTime(data)
-	if !ok {
-		info, err := os.Stat(path)
-		if err != nil {
-			return false
-		}
-		written = info.ModTime()
-	}
-	if time.Since(written) <= lockStale {
-		return false
-	}
-	aside := path + ".stale-" + lockToken()
-	if err := os.Rename(path, aside); err != nil {
-		return false
-	}
-	if moved, err := os.ReadFile(aside); err != nil || !bytes.Equal(moved, data) {
-		_ = os.Link(aside, path)
-	}
-	_ = os.Remove(aside)
-	return true
-}
-
-// lockTime reads the time a holder wrote in the lock file ("<pid> <time>
-// <token>").
-func lockTime(data []byte) (time.Time, bool) {
-	fields := strings.Fields(string(data))
-	if len(fields) != 3 {
-		return time.Time{}, false
-	}
-	t, err := time.Parse(time.RFC3339Nano, fields[1])
-	return t, err == nil
-}
-
-// releaseLock removes the lock file when it still holds token (a lock taken
-// over as stale meanwhile belongs to another process and stays).
-func releaseLock(path, token string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	if fields := strings.Fields(string(data)); len(fields) == 3 && fields[2] == token {
-		_ = os.Remove(path)
-	}
+	current, err := os.Stat(path)
+	return err == nil && os.SameFile(opened, current)
 }
 
 // lockToken returns a random token that identifies one holder of a lock.

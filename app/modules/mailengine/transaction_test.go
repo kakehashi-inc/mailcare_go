@@ -173,10 +173,12 @@ func TestClearMailClassificationIsAtomic(t *testing.T) {
 	}
 }
 
-// TestNeedsAnalysisOnlyForActionableGroups checks that a recipient-side
-// group never carries needs_analysis = 1: not when it is created, not when
-// it gains messages, not when it is restored by a reindex; an actionable
-// group is flagged when created and when it grows.
+// TestNeedsAnalysisOnlyForActionableGroups checks that the grouping never
+// flags a recipient-side group: not when it is created, not when it gains
+// messages, not when it is restored by a reindex; an actionable group is
+// flagged when created and when it grows. The flag of an explicit request
+// on a recipient-side group (an analysis stopped by the usage limit) is
+// kept through all of these.
 func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 	root := t.TempDir()
 	address := "newsletter@example.jp"
@@ -211,7 +213,7 @@ func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 		if err := models.InsertMessage(db, m); err != nil {
 			t.Fatal(err)
 		}
-		if err := models.UpsertBounce(db, &models.Bounce{ID: m.ID, GroupKey: g.GroupKey, Recipient: "r@x.example"}); err != nil {
+		if err := models.ReplaceBounces(db, m.ID, []*models.Bounce{{GroupKey: g.GroupKey, Recipient: "r@x.example"}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := models.SetGroupNeedsAnalysis(db, g.GroupKey, false); err != nil {
@@ -228,15 +230,15 @@ func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 	if flag(actionable.GroupKey) {
 		t.Error("RefreshGroupCounters must not set the flag by itself (the grouping phase does)")
 	}
-	// A restore (reindex carry-over) never flags a recipient-side group.
-	if err := models.RestoreGroupState(db, &models.BounceGroup{GroupKey: excluded.GroupKey, State: "open", NeedsAnalysis: true}); err != nil {
+	// The flag of an explicit request survives a counter refresh.
+	if err := models.SetGroupNeedsAnalysis(db, excluded.GroupKey, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := models.RestoreGroupState(db, &models.BounceGroup{GroupKey: actionable.GroupKey, State: "open", NeedsAnalysis: true}); err != nil {
+	if err := models.RefreshGroupCounters(db, excluded.GroupKey); err != nil {
 		t.Fatal(err)
 	}
-	if flag(excluded.GroupKey) || !flag(actionable.GroupKey) {
-		t.Errorf("after restore: excluded=%v actionable=%v, want false / true", flag(excluded.GroupKey), flag(actionable.GroupKey))
+	if !flag(excluded.GroupKey) {
+		t.Error("the explicit request on the recipient-side group was dropped by a counter refresh")
 	}
 	db.Close()
 
@@ -282,6 +284,44 @@ func TestNeedsAnalysisOnlyForActionableGroups(t *testing.T) {
 	}
 	if spam == nil || spam.MessageCount != 2 || !spam.NeedsAnalysis {
 		t.Errorf("spamhaus group after growth = %+v, want 2 messages and the flag", spam)
+	}
+
+	// A reindex restores the recipient-side group without the flag; with
+	// the flag of an explicit request it keeps it, also through growth.
+	db.Close()
+	if _, err := Reindex(context.Background(), root2, address, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	db = mustOpenIndex(t, root2, address)
+	if quota, _ = models.GetGroup(db, quota.GroupKey); quota == nil || quota.NeedsAnalysis {
+		t.Errorf("over-quota group after a reindex = %+v, want no flag", quota)
+	}
+	if err := models.SetGroupNeedsAnalysis(db, quota.GroupKey, true); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, err := Reindex(context.Background(), root2, address, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	storeSamples(t, root2, address, 5, sampleByFile(t, "gmail_overquota.eml"))
+	if _, err := GroupMailbox(context.Background(), root2, address, false, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	db = mustOpenIndex(t, root2, address)
+	defer db.Close()
+	if quota, _ = models.GetGroup(db, quota.GroupKey); quota == nil || !quota.NeedsAnalysis || quota.MessageCount != 3 {
+		t.Errorf("over-quota group with an explicit request after a reindex and growth = %+v, want the flag and 3 messages", quota)
+	}
+	waiting, err := models.ListGroupsNeedingAnalysis(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, g := range waiting {
+		found = found || g.GroupKey == quota.GroupKey
+	}
+	if !found {
+		t.Error("the requested recipient-side group is not listed as waiting for analysis")
 	}
 }
 

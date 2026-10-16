@@ -12,17 +12,20 @@ import (
 )
 
 // DNSVerifier verifies the name of a detected DNS lookup failure (design
-// document "mail classification" 4.4): f is the failure the diagnostic
-// reports, recipientDomain the domain of the failed recipient and
-// noticeTime when the notice was received (a stored result checked from a
-// day before it to DNSLiveMaxAge after it may be reused). direct allows the
+// document "mail classification" 4.4), whatever the age of the notice and
+// whatever record type it names: f is the failure the diagnostic reports
+// (its name, or the recipient domain for a form that names none),
+// recipientDomain the domain of the failed recipient and noticeTime when
+// the notice was received (a stored result checked from a day before it up
+// to now may be reused, the earliest first). direct allows the
 // verification to ask the
 // authoritative servers of the name directly, besides the resolvers: the
 // grouping sets it only for a notice that clearly concerns mail sent from
 // the sending sources (dnsVerification.aboutSentMail), since a forged notice chooses both the
 // name and the recipient domain, and so the servers that would be asked.
-// ok = false means the name was not verified (outside the conditions, over
-// the limit of the run, or no resolver answered). The implementation lives
+// ok = false means the name was not verified (outside the conditions, the
+// check off with nothing stored, or the answers cut short by the deadline
+// of the verification or the end of the run). The implementation lives
 // in app/modules/dnscheck; the tests replace it.
 type DNSVerifier interface {
 	Verify(ctx context.Context, f DNSFailure, recipientDomain string, noticeTime time.Time, direct bool) (DNSOutcome, bool)
@@ -33,28 +36,20 @@ type DNSVerifier interface {
 type DNSVerifyStatus int
 
 const (
-	// DNSStatusInconclusive: no resolver gave a usable answer in time
-	// about the name or the MX targets of the recipient domain (or the run
-	// was canceled), or the name exists but whether the reporting MTA is
-	// a sending server could not be told.
+	// DNSStatusInconclusive: the deadline of the verification or the end
+	// of the run cut the answers short, no resolver answered the MX
+	// question of the applicability, or the name exists but whether the
+	// reporting MTA is a sending server could not be told. The next
+	// grouping verifies the notice again (4.4).
 	DNSStatusInconclusive DNSVerifyStatus = iota
 	// DNSStatusVerified: looked up now.
 	DNSStatusVerified
 	// DNSStatusReused: a stored outcome, or one found earlier in the run.
 	DNSStatusReused
-	// DNSStatusOverBudget: the limits of the run (network time, number of
-	// names, number of recipient domains whose MX targets are looked up)
-	// were reached; a later run verifies the name.
-	DNSStatusOverBudget
 	// DNSStatusNotApplicable: the name may not be looked up for the notice
 	// (neither in the domain of the recipient nor one of its MX targets) or
 	// is no usable name.
 	DNSStatusNotApplicable
-	// DNSStatusTooOld: nothing stored for the notice, and it is older than
-	// DNSLiveMaxAge (also when only a lookup of its reporting MTA, not
-	// allowed for it either, could have told whether that is a sending
-	// server).
-	DNSStatusTooOld
 	// DNSStatusCheckOff: nothing stored for the notice, and the DNS check
 	// is off.
 	DNSStatusCheckOff
@@ -73,13 +68,14 @@ type DNSStatusVerifier interface {
 // one of the sending sources (4.4). ResolveHost resolves one of the source
 // host names and tells whether it was answered (SourceHostResolver).
 // ResolveReporter resolves the reporting MTA
-// a notice names (untrusted: the implementation bounds what it looks up);
-// answered is false when the lookup was not made (a name refused as no host
-// name of two labels or more, the limits of the run reached, no live
-// lookups at all) or not answered (no resolver answered, ctx ended), and
-// true when it was answered, with addresses or without any. The grouping
-// asks only about a notice recent enough for live lookups
-// (LiveCheckAllowed). The implementation lives in app/modules/dnscheck (its
+// a notice names (untrusted: the implementation bounds what it looks up;
+// it may answer from a stored lookup of the addresses, never from a stored
+// judgement); answered is false when the lookup was not made (a name
+// refused as no host name of two labels or more, no live lookups and
+// nothing stored) or not answered (no resolver answered and nothing stored,
+// ctx ended), and true when it was answered, with addresses or without
+// any. The grouping asks about a notice of any age. The implementation lives in
+// app/modules/dnscheck (its
 // Checker is also the DNSVerifier); the tests replace it.
 type HostResolver interface {
 	SourceHostResolver
@@ -109,26 +105,23 @@ type sourceMatcher struct {
 // literal is compared with the source addresses (matchAddrs), and a host
 // name as text with the source host names and the host names of the SPF
 // records; a host
-// name the text does not match is resolved (ResolveReporter) when live
-// (the notice is recent enough, LiveCheckAllowed) and its addresses are
-// compared like an IP literal. Only addresses that were found and are none
+// name the text does not match is resolved (ResolveReporter), whatever the
+// age of the notice, and its addresses are compared like an IP literal. Only addresses that were found and are none
 // of the sending sources make the reporting MTA an outside server. known is
 // false, the
 // question left open, when the reporting MTA is empty or unreadable, when
-// it is a host name that could not be resolved (no resolver, not live,
-// refused as no host name of two labels or more, not answered) or was
+// it is a host name that could not be resolved (no resolver, refused as no
+// host name of two labels or more, not answered) or was
 // answered without any address (NXDOMAIN, no data: a name that does not
 // resolve tells nothing about whose server wrote it), and when its
 // addresses (or its IP literal) matched nothing while the lookups of the
 // run are incomplete (a source host name not answered, an SPF record not
-// evaluated completely: an address of a sending source may be missing). The
-// limits of
-// the run, no answer or a cancellation would otherwise make the notice
-// external depending on the order of the notices, and an odd name would
-// hide a failure of the resolver of a sending server. A cancellation of ctx
-// leaves what was
-// looked up unremembered.
-func (m *sourceMatcher) match(ctx context.Context, reportingMTA string, live bool) (matched, known bool) {
+// evaluated completely: an address of a sending source may be missing). No
+// answer or a cancellation would otherwise make the notice external
+// depending on the order of the notices, and an odd name would hide a
+// failure of the resolver of a sending server. A cancellation of ctx
+// leaves what was looked up unremembered.
+func (m *sourceMatcher) match(ctx context.Context, reportingMTA string) (matched, known bool) {
 	if m.sources.Empty() {
 		return true, true
 	}
@@ -147,7 +140,7 @@ func (m *sourceMatcher) match(ctx context.Context, reportingMTA string, live boo
 	if m.lookups.readsSPF() && slices.Contains(m.extra(ctx).hosts, name) {
 		return true, true
 	}
-	if m.resolver == nil || !live {
+	if m.resolver == nil {
 		return false, false
 	}
 	addrs, answered := m.resolver.ResolveReporter(ctx, name)
@@ -208,6 +201,26 @@ func WithDNS(v DNSVerifier, sources SendingSources) GroupOption {
 	}
 }
 
+// LiveVerifier is implemented by a DNSVerifier that can tell whether it
+// may query (Live false: it only reuses stored outcomes, the DNS check is
+// off). A verifier without it counts as live.
+type LiveVerifier interface {
+	Live() bool
+}
+
+// verifiesLive reports whether the verifier of the run may query: only
+// then are the notices left unverified by an earlier grouping verified
+// again (GroupMailbox).
+func (cfg *groupConfig) verifiesLive() bool {
+	if cfg.verifier == nil {
+		return false
+	}
+	if l, ok := cfg.verifier.(LiveVerifier); ok {
+		return l.Live()
+	}
+	return true
+}
+
 // newDNSVerification returns the verification of one run with verifier v,
 // the sending sources and the lookups of the run (nil: the source host names
 // resolved through v when it is a HostResolver). nil without a verifier.
@@ -245,16 +258,19 @@ const dnsStatusCount = int(DNSStatusCheckOff) + 1
 // verified) is returned without a verifier, without a detected failure,
 // when the verifier did not verify the name, and when the name exists but
 // whether the reporting MTA is a sending server could not be told (sourceMatcher.match):
-// the notice then counts as not verified too (inconclusive, or too old when
-// only a lookup of its reporting MTA name could have told). Every notice
-// whose name reaches the verifier counts once in statuses.
+// the notice then counts as not verified too (inconclusive). A form that
+// names no name is verified for the recipient domain. Every notice whose
+// name reaches the verifier counts once in statuses.
 func (d *dnsVerification) verdict(ctx context.Context, b *models.Bounce, pm *ParsedMessage, noticeTime time.Time) DNSVerdict {
 	if d == nil || b == nil {
 		return DNSVerdict{}
 	}
-	failure, found := ParseDNSFailure(b.Diagnostic)
+	failure, found := ParseDNSFailure(b.Diagnostic, b.RemoteMTA)
 	if !found {
 		return DNSVerdict{}
+	}
+	if failure.Name == "" {
+		failure.Name = b.RecipientDomain
 	}
 	d.checked++
 	outcome, status := d.verify(ctx, failure, b.RecipientDomain, noticeTime, d.aboutSentMail(ctx, pm))
@@ -264,14 +280,9 @@ func (d *dnsVerification) verdict(ctx context.Context, b *models.Bounce, pm *Par
 	}
 	v := DNSVerdict{Outcome: outcome}
 	if outcome == DNSOutcomeExists {
-		live := LiveCheckAllowed(noticeTime, time.Now())
-		matched, known := d.matcher.match(ctx, b.ReportingMTA, live)
+		matched, known := d.matcher.match(ctx, b.ReportingMTA)
 		if !known {
-			status = DNSStatusInconclusive
-			if !live && d.matcher.resolver != nil && isHostNameMTA(b.ReportingMTA) {
-				status = DNSStatusTooOld
-			}
-			d.statuses[status]++
+			d.statuses[DNSStatusInconclusive]++
 			return DNSVerdict{}
 		}
 		v.FromSendingSource = matched
@@ -302,30 +313,17 @@ func (d *dnsVerification) verify(ctx context.Context, f DNSFailure, recipientDom
 	return outcome, status
 }
 
-// isHostNameMTA reports whether a reporting MTA is given as a host name
-// (not empty, not an IP literal).
-func isHostNameMTA(reportingMTA string) bool {
-	host := mtaHost(reportingMTA)
-	if host == "" {
-		return false
-	}
-	_, err := netip.ParseAddr(trimIPv6Tag(host))
-	return err != nil
-}
-
-// maxDirectHops bounds the Received headers of a notice, from the top, that
-// aboutSentMail reads.
-const maxDirectHops = 8
-
 // aboutSentMail reports whether a notice clearly concerns mail sent from the
 // sending sources, told by a signal its sender cannot forge: the Received
 // headers the inbound servers of the mailbox added to the notice when it
 // arrived (pm.Headers, topmost
-// first; whoever sends a notice can add headers only below them). At most
-// the maxDirectHops topmost ones are read (noticeEntry): a hop whose from
-// clause records no address is passed over, and so is one whose connecting
-// address is internal (internalHop: an internal relay); the first hop with
-// any other connecting address decides. The notice concerns mail sent from
+// first; whoever sends a notice can add headers only below them). They are
+// read from the top (noticeEntry): a hop whose from clause records no
+// address is passed over, and so is one whose connecting address is
+// internal (internalHop: an internal relay); the first hop with any other
+// connecting address decides, and nothing below it is read (the headers
+// below the hop on which the notice entered were written before it
+// arrived). The notice concerns mail sent from
 // the sending sources when that address is one of the sending sources as an
 // address: in a configured prefix, or, when the lookups of the run
 // (sourceLookups, made now on their first need) are complete, among the
@@ -336,8 +334,8 @@ const maxDirectHops = 8
 // the content of the notice (its reporting MTA, the Received headers and
 // the DKIM signature of the returned original) is not looked at: whoever
 // ever received mail from the sending sources can copy it. Nothing configured for the
-// mailbox (SendingSources.Empty), no such hop within the bound, a hop that
-// cannot be judged (receivedFromAddr) or incomplete lookups that the
+// mailbox (SendingSources.Empty), no such hop, a hop above it that cannot
+// be judged (receivedFromAddr) or incomplete lookups that the
 // address would need: false. Only a true answer lets the verification ask
 // the authoritative servers of the name directly (DNSVerifier): a forged
 // notice chooses the name and the recipient domain, and asking the name
@@ -360,18 +358,15 @@ func (d *dnsVerification) aboutSentMail(ctx context.Context, pm *ParsedMessage) 
 }
 
 // noticeEntry returns the connecting address of the first hop of a notice,
-// from the top, that is not internal (internalHop), among the maxDirectHops
-// topmost Received headers (received: their values one per line, topmost
-// first, as ParsedMessage.Headers holds them). ok is false when there is no
-// such hop within the bound, or a header before it cannot be judged.
+// from the top, that is not internal (internalHop), among its Received
+// headers (received: their values one per line, topmost first, as
+// ParsedMessage.Headers holds them). ok is false when there is no such hop,
+// or a header before it cannot be judged.
 func noticeEntry(received string) (netip.Addr, bool) {
 	if received == "" {
 		return netip.Addr{}, false
 	}
-	for i, line := range strings.Split(received, "\n") {
-		if i == maxDirectHops {
-			break
-		}
+	for _, line := range strings.Split(received, "\n") {
 		addr, found, ok := receivedFromAddr(line)
 		if !ok {
 			return netip.Addr{}, false
@@ -407,12 +402,8 @@ func internalHop(a netip.Addr) bool {
 // the word after "from" in the Postfix form, which the address in its
 // comment then outranks). found is false when there is no from clause or
 // it records no address; ok is false when the header cannot be judged:
-// longer than maxReceivedLineBytes, or with two different addresses in the
-// comments of its from clause.
+// two different addresses in the comments of its from clause.
 func receivedFromAddr(line string) (addr netip.Addr, found, ok bool) {
-	if len(line) > maxReceivedLineBytes {
-		return netip.Addr{}, false, false
-	}
 	tokens := receivedTokens(line)
 	start := -1
 	for i, t := range tokens {
@@ -495,35 +486,19 @@ func (d *dnsVerification) reportSummary(progress Progress) {
 		return
 	}
 	s := d.statuses
-	line := fmt.Sprintf("dns: %d notice(s): %d verified, %d reused from stored results, %d over budget (run again), "+
-		"%d not applicable, %d inconclusive, %d too old for a live check",
-		d.checked, s[DNSStatusVerified], s[DNSStatusReused], s[DNSStatusOverBudget],
-		s[DNSStatusNotApplicable], s[DNSStatusInconclusive], s[DNSStatusTooOld])
+	line := fmt.Sprintf("dns: %d notice(s): %d verified, %d reused from stored results, %d not applicable, %d inconclusive",
+		d.checked, s[DNSStatusVerified], s[DNSStatusReused], s[DNSStatusNotApplicable], s[DNSStatusInconclusive])
 	if n := s[DNSStatusCheckOff]; n > 0 {
 		line += fmt.Sprintf(", %d not checked (the DNS check is off)", n)
 	}
 	report(progress, line)
 }
 
-// DNSLiveMaxAge is how old a notice (its noticeTime) may be for the network
-// to be asked about it: the live verification of the name it reports
-// (DNSVerifier: an older notice uses a stored result only, else stays not
-// verified) and the lookup of its reporting MTA (sourceMatcher.match: an older
-// notice whose reporting MTA only a lookup could tell stays not verified).
-// Today's DNS says little about a lookup failure of days ago, and a full
-// reclassify must not turn the old notices into new alerts by it.
-const DNSLiveMaxAge = 48 * time.Hour
-
-// LiveCheckAllowed reports whether a notice received at noticeTime is
-// recent enough at now for live lookups (DNSLiveMaxAge); a time that is
-// zero or after now counts as now. The grouping and the verifier
-// (app/modules/dnscheck) both decide by it.
-func LiveCheckAllowed(noticeTime, now time.Time) bool {
-	if noticeTime.IsZero() || noticeTime.After(now) {
-		return true
-	}
-	return now.Sub(noticeTime) <= DNSLiveMaxAge
-}
+// DNSLateCheckAfter is how long after a notice a verification of its name
+// counts as made at the time of the failure; a later one is noted as such
+// in the evidence of the analysis ("checked N days after the notice"): the
+// DNS of the name may have changed since the failure.
+const DNSLateCheckAfter = 24 * time.Hour
 
 // noticeTime is the time a notice was received, used to pick a stored
 // verification result: the IMAP INTERNALDATE when known, else the date of

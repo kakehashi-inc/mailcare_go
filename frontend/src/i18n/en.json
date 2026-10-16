@@ -165,8 +165,7 @@
         },
         "group": {
             "resolveActionRequired": "Select the action taken.",
-            "ignoreReasonRequired": "Select the reason.",
-            "stateNoteTooLong": "Details must be {{max}} characters or fewer."
+            "ignoreReasonRequired": "Select the reason."
         },
         "agent": {
             "providerUnknown": "The selected provider is not available.",
@@ -517,6 +516,10 @@
                 "label": "DNS resolver failure (sending side's mail server)",
                 "description": "The sending side's mail server cannot resolve the recipient's name in DNS and cannot deliver, although the name exists. Check the name resolution of the sending side's mail server (resolv.conf, caching DNS, port 53, DNSSEC and so on)."
             },
+            "dns_lookup_failure": {
+                "label": "Name lookup failure (not verified)",
+                "description": "A temporary failed name lookup was reported, but the name has not been verified yet, so it is not known which side is at fault. While the DNS check is on, the next grouping verifies it again."
+            },
             "unknown_failure": {
                 "label": "Unknown failure",
                 "description": "A delivery failure that matches no known pattern. Check the diagnostic and the original message, and see the analysis report if needed."
@@ -773,7 +776,7 @@
             "testToHint": "If empty, the email is sent to the email address of the signed-in user.",
             "enabled": "Enable notifications",
             "enabledHint": "At the notification time, a list of the groups that need action is sent. Nothing is sent if there are none.",
-            "time": "Notification time",
+            "time": "Notification times",
             "timeHint": "Server time, in HH:MM format.",
             "interval": "Interval",
             "recipients": "Recipients",

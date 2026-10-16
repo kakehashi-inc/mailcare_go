@@ -8,14 +8,17 @@ import (
 )
 
 // Bounce is a row of the per-mailbox bounces table: the details extracted from
-// one bounce message (delivery-status part and/or body text). It shares its id
-// with the messages row it belongs to (1:1; deleted with it) and names the
-// group the bounce was bundled into (GroupKey, "" while ungrouped). Only
-// messages detected as failed / delayed notices have a row; auto replies,
-// daemon mail without failure evidence (kind "other", success DSNs included)
-// and ordinary mail do not.
+// one recipient block of a bounce message (a per-recipient block of the
+// delivery-status part, and/or the body text). A message has one row per
+// recipient block taken (MessageID, RecipientIndex 0, 1, ...; deleted with
+// the message), each naming the group it was bundled into (GroupKey, ""
+// while ungrouped). Only messages detected as failed / delayed notices have
+// rows; auto replies, daemon mail without failure evidence (kind "other",
+// success DSNs included) and ordinary mail do not.
 type Bounce struct {
-	ID                 int64  `json:"-"` // = messages.id
+	ID                 int64  `json:"-"` // the row id
+	MessageID          int64  `json:"-"` // messages.id
+	RecipientIndex     int    `json:"recipient_index"`
 	GroupKey           string `json:"group_key"`
 	Recipient          string `json:"recipient"` // the failed recipient address
 	RecipientDomain    string `json:"recipient_domain"`
@@ -43,47 +46,86 @@ type Bounce struct {
 	OriginalDate      sql.NullTime `json:"-"`
 }
 
-const bounceColumns = `id, group_key, recipient, recipient_domain, action, status_code, smtp_code, diagnostic,
-	diagnostic_template, diagnostic_source, category_rule, pattern_key, remote_mta, remote_ip, reporting_mta,
-	original_message_id, original_subject, original_from, original_date`
+const bounceColumns = `id, message_id, recipient_index, group_key, recipient, recipient_domain, action, status_code,
+	smtp_code, diagnostic, diagnostic_template, diagnostic_source, category_rule, pattern_key, remote_mta, remote_ip,
+	reporting_mta, original_message_id, original_subject, original_from, original_date`
 
-// UpsertBounce stores (or replaces) the bounce details of message b.ID.
-func UpsertBounce(db Execer, b *Bounce) error {
-	b.OriginalDate = utcNullTime(b.OriginalDate)
-	_, err := db.Exec(
-		`INSERT INTO bounces (`+bounceColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET group_key = excluded.group_key, recipient = excluded.recipient,
-		   recipient_domain = excluded.recipient_domain, action = excluded.action, status_code = excluded.status_code,
-		   smtp_code = excluded.smtp_code, diagnostic = excluded.diagnostic,
-		   diagnostic_template = excluded.diagnostic_template, diagnostic_source = excluded.diagnostic_source,
-		   category_rule = excluded.category_rule, pattern_key = excluded.pattern_key, remote_mta = excluded.remote_mta,
-		   remote_ip = excluded.remote_ip, reporting_mta = excluded.reporting_mta,
-		   original_message_id = excluded.original_message_id, original_subject = excluded.original_subject,
-		   original_from = excluded.original_from, original_date = excluded.original_date`,
-		b.ID, b.GroupKey, b.Recipient, b.RecipientDomain, b.Action, b.StatusCode, b.SMTPCode, b.Diagnostic,
-		b.DiagnosticTemplate, b.DiagnosticSource, b.CategoryRule, b.PatternKey, b.RemoteMTA, b.RemoteIP, b.ReportingMTA,
-		b.OriginalMessageID, b.OriginalSubject, b.OriginalFrom, b.OriginalDate,
-	)
+// ReplaceBounces stores the bounce details of a message: the given rows
+// replace the ones it had (none removes them: a message that turned out not
+// to be a grouped bounce keeps no row). Each row gets the message id, its
+// position (RecipientIndex) and its row id.
+func ReplaceBounces(db Execer, messageID int64, bounces []*Bounce) error {
+	if err := DeleteBounces(db, messageID); err != nil {
+		return err
+	}
+	for i, b := range bounces {
+		b.MessageID, b.RecipientIndex = messageID, i
+		b.OriginalDate = utcNullTime(b.OriginalDate)
+		res, err := db.Exec(
+			`INSERT INTO bounces (message_id, recipient_index, group_key, recipient, recipient_domain, action, status_code,
+			   smtp_code, diagnostic, diagnostic_template, diagnostic_source, category_rule, pattern_key, remote_mta,
+			   remote_ip, reporting_mta, original_message_id, original_subject, original_from, original_date)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			b.MessageID, b.RecipientIndex, b.GroupKey, b.Recipient, b.RecipientDomain, b.Action, b.StatusCode, b.SMTPCode,
+			b.Diagnostic, b.DiagnosticTemplate, b.DiagnosticSource, b.CategoryRule, b.PatternKey, b.RemoteMTA, b.RemoteIP,
+			b.ReportingMTA, b.OriginalMessageID, b.OriginalSubject, b.OriginalFrom, b.OriginalDate,
+		)
+		if err != nil {
+			return err
+		}
+		if b.ID, err = res.LastInsertId(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteBounces removes the bounce details of a message, if any.
+func DeleteBounces(db Execer, messageID int64) error {
+	_, err := db.Exec(`DELETE FROM bounces WHERE message_id = ?`, messageID)
 	return err
 }
 
-// DeleteBounce removes the bounce details of a message, if any (a message
-// that turned out not to be a grouped bounce keeps no row).
-func DeleteBounce(db Execer, messageID int64) error {
-	_, err := db.Exec(`DELETE FROM bounces WHERE id = ?`, messageID)
-	return err
+// GetBounceByMessageID returns the bounces row of the first failed
+// recipient of a message (sql.ErrNoRows when the message has none).
+func GetBounceByMessageID(db Execer, messageID int64) (*Bounce, error) {
+	return scanBounce(db.QueryRow(`SELECT `+bounceColumns+` FROM bounces WHERE message_id = ? AND recipient_index = 0`, messageID))
 }
 
-// GetBounceByMessageID returns the bounce details of a message (sql.ErrNoRows
-// when the message has none).
-func GetBounceByMessageID(db *sql.DB, messageID int64) (*Bounce, error) {
-	return scanBounce(db.QueryRow(`SELECT `+bounceColumns+` FROM bounces WHERE id = ?`, messageID))
+// ListBouncesByMessage returns the bounce details of a message, one row per
+// recipient block in their order (none when the message has none).
+func ListBouncesByMessage(db Execer, messageID int64) ([]*Bounce, error) {
+	return queryBounces(db, `SELECT `+bounceColumns+` FROM bounces WHERE message_id = ? ORDER BY recipient_index`, messageID)
 }
 
-// ListBouncesByGroup returns the bounces rows of a group, in message id
-// order.
+// ListBounceGroupKeys returns the distinct groups the recipient blocks of a
+// message are filed into.
+func ListBounceGroupKeys(db Execer, messageID int64) ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT group_key FROM bounces WHERE message_id = ? AND group_key <> '' ORDER BY group_key`, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// ListBouncesByGroup returns the bounces rows of a group, in message and
+// recipient order.
 func ListBouncesByGroup(db *sql.DB, groupKey string) ([]*Bounce, error) {
-	rows, err := db.Query(`SELECT `+bounceColumns+` FROM bounces WHERE group_key = ? ORDER BY id`, groupKey)
+	return queryBounces(db, `SELECT `+bounceColumns+` FROM bounces WHERE group_key = ? ORDER BY message_id, recipient_index`, groupKey)
+}
+
+// queryBounces runs a query of bounceColumns.
+func queryBounces(db Execer, query string, args ...any) ([]*Bounce, error) {
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +143,7 @@ func ListBouncesByGroup(db *sql.DB, groupKey string) ([]*Bounce, error) {
 
 func scanBounce(s rowScanner) (*Bounce, error) {
 	b := &Bounce{}
-	if err := s.Scan(&b.ID, &b.GroupKey, &b.Recipient, &b.RecipientDomain, &b.Action, &b.StatusCode, &b.SMTPCode,
+	if err := s.Scan(&b.ID, &b.MessageID, &b.RecipientIndex, &b.GroupKey, &b.Recipient, &b.RecipientDomain, &b.Action, &b.StatusCode, &b.SMTPCode,
 		&b.Diagnostic, &b.DiagnosticTemplate, &b.DiagnosticSource, &b.CategoryRule, &b.PatternKey, &b.RemoteMTA,
 		&b.RemoteIP, &b.ReportingMTA, &b.OriginalMessageID, &b.OriginalSubject, &b.OriginalFrom,
 		&b.OriginalDate); err != nil {
@@ -151,7 +193,7 @@ func ListGroupBounces(db Execer, groupKey string) ([]*GroupBounce, error) {
 // listGroupBouncesOnly returns the bounces of a group, newest message first.
 func listGroupBouncesOnly(db Execer, groupKey string) ([]*GroupBounce, error) {
 	rows, err := db.Query(`SELECT m.message_key, m.date, m.received_at, m.body_source, `+prefixColumns("b.", bounceColumns)+`
-		FROM bounces b JOIN messages m ON m.id = b.id WHERE b.group_key = ? ORDER BY m.date DESC, m.id DESC`, groupKey)
+		FROM bounces b JOIN messages m ON m.id = b.message_id WHERE b.group_key = ? ORDER BY m.date DESC, m.id DESC, b.recipient_index`, groupKey)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +202,7 @@ func listGroupBouncesOnly(db Execer, groupKey string) ([]*GroupBounce, error) {
 	for rows.Next() {
 		gb := &GroupBounce{}
 		b := &gb.Bounce
-		if err := rows.Scan(&gb.MessageKey, &gb.Date, &gb.ReceivedAt, &gb.BodySource, &b.ID, &b.GroupKey, &b.Recipient, &b.RecipientDomain, &b.Action,
+		if err := rows.Scan(&gb.MessageKey, &gb.Date, &gb.ReceivedAt, &gb.BodySource, &b.ID, &b.MessageID, &b.RecipientIndex, &b.GroupKey, &b.Recipient, &b.RecipientDomain, &b.Action,
 			&b.StatusCode, &b.SMTPCode, &b.Diagnostic, &b.DiagnosticTemplate, &b.DiagnosticSource, &b.CategoryRule,
 			&b.PatternKey, &b.RemoteMTA, &b.RemoteIP, &b.ReportingMTA, &b.OriginalMessageID, &b.OriginalSubject,
 			&b.OriginalFrom, &b.OriginalDate); err != nil {

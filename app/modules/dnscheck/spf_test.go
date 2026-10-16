@@ -3,15 +3,12 @@ package dnscheck
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-
-	"mailcare/app/modules/mailengine"
 )
 
 // prefixes parses the expected prefixes of an SPF result.
@@ -40,15 +37,18 @@ func txtQueries(s *fakeServer) []string {
 // without an all mechanism, whatever its qualifier); only the terms with
 // the pass qualifier (none or "+") count, the others ("-", "~", "?") are
 // skipped, an include with its whole tree; exists, ptr, exp, unknown
-// modifiers and macros are ignored. The record is split into
-// character-strings, joined without separator.
+// modifiers and macros are ignored (the terms that cause DNS queries still
+// count against the limit of RFC 7208 4.6.4, see qualifiers.example.jp).
+// The record is split into character-strings, joined without separator.
 func TestLookupSPFTerms(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("example.jp TXT", data("google-site-verification=abc",
-		"v=spf1 ip4:192.0.2.1 -ip4:198.51.100.0/24 ~ip6:2001:db8:5::/48 ?a:skipped.example.jp +ip6:2001:db8::/32 +a "+
-			"a:web.example.jp/24 mx/28//64 |mx:other.example.jp include:_spf.example.net -include:fail.example.net "+
-			"~include:soft.example.net ?include:neutral.example.net -mx:skipped.example.jp ~a |"+
-			"exists:%{i}.x.example.jp ptr a:%{d}.example.jp exp=explain.example.jp foo=bar redirect=ignored.example.jp ~all"))
+		"v=spf1 ip4:192.0.2.1 -ip4:198.51.100.0/24 ~ip6:2001:db8:5::/48 +ip6:2001:db8::/32 +a "+
+			"a:web.example.jp/24 mx/28//64 |mx:other.example.jp include:_spf.example.net "+
+			"exp=explain.example.jp foo=bar redirect=ignored.example.jp ~all"))
+	s.resolve("qualifiers.example.jp TXT", data("v=spf1 ?a:skipped.example.jp -include:fail.example.net "+
+		"~include:soft.example.net ?include:neutral.example.net -mx:skipped.example.jp ~a |"+
+		"exists:%{i}.x.example.jp ptr a:%{d}.example.jp ip4:192.0.2.7 ~all"))
 	for _, skipped := range []string{"fail.example.net", "soft.example.net", "neutral.example.net"} {
 		s.resolve(skipped+" TXT", data("v=spf1 ip4:10.1.0.0/16"))
 	}
@@ -93,6 +93,16 @@ func TestLookupSPFTerms(t *testing.T) {
 	if p, h, ok := c.ResolveSPF(context.Background(), "example.jp"); !ok || !reflect.DeepEqual(p, want.Prefixes) || !reflect.DeepEqual(h, want.Hosts) {
 		t.Errorf("ResolveSPF = %v %v %v", p, h, ok)
 	}
+	// Nine terms that cause queries, none of them followed.
+	before = len(s.received())
+	if got := c.LookupSPF(context.Background(), "qualifiers.example.jp"); !got.Complete || !reflect.DeepEqual(got.Prefixes, prefixes("192.0.2.7/32")) {
+		t.Errorf("qualifiers: %+v", got)
+	}
+	for _, q := range s.received()[before:] {
+		if !strings.Contains(q, "qualifiers.example.jp") {
+			t.Errorf("a skipped term was looked up: %q", q)
+		}
+	}
 }
 
 // TestLookupSPFNoRecord: NXDOMAIN, a name without TXT records and TXT
@@ -121,9 +131,10 @@ func TestLookupSPFNoRecord(t *testing.T) {
 }
 
 // TestLookupSPFIncomplete: a lookup that fails (SERVFAIL, no answer), two
-// SPF records, a malformed term, and every bound (depth, queries, prefixes,
-// MX targets) leave the evaluation incomplete, keeping what was found
-// before.
+// SPF records, a malformed term, and the limits of RFC 7208 4.6.4 (10 terms
+// that cause DNS queries, 2 void lookups, 10 MX targets of an mx term) and
+// the nesting guard leave the evaluation incomplete, keeping what was found
+// before; the same limits are met exactly by a complete evaluation.
 func TestLookupSPFIncomplete(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("servfail.example.jp TXT", answerWith(fakeServFail))
@@ -162,9 +173,10 @@ func TestLookupSPFIncomplete(t *testing.T) {
 	}
 	s.resolve("manymx.example.jp TXT", data("v=spf1 mx"))
 	s.resolve("manymx.example.jp MX", data(mxs...))
-	s.resolve("prefixes.example.jp TXT", data("v=spf1 ip4:192.0.2.1 ip4:192.0.2.2 ip4:192.0.2.3"))
+	// Void lookups: names without addresses, an include without a record.
+	s.resolve("void2.example.jp TXT", data("v=spf1 a:nx1.example.jp include:nx2.example.jp ip4:192.0.2.5"))
+	s.resolve("void3.example.jp TXT", data("v=spf1 ip4:192.0.2.5 a:nx1.example.jp mx:nx2.example.jp a:nx3.example.jp"))
 	c := newTestChecker(nil, s.port, "127.0.0.1")
-	c.spfMaxPrefixes = 2
 	for _, tc := range []struct {
 		domain string
 		found  []netip.Prefix
@@ -185,7 +197,7 @@ func TestLookupSPFIncomplete(t *testing.T) {
 		{"d0.example.jp", nil},
 		{"queries.example.jp", nil},
 		{"manymx.example.jp", nil},
-		{"prefixes.example.jp", prefixes("192.0.2.1/32", "192.0.2.2/32")},
+		{"void3.example.jp", prefixes("192.0.2.5/32")},
 	} {
 		got := c.LookupSPF(context.Background(), tc.domain)
 		if got.Complete {
@@ -201,16 +213,21 @@ func TestLookupSPFIncomplete(t *testing.T) {
 	if got := c2.LookupSPF(context.Background(), "d0.example.jp"); !got.Complete || len(got.Prefixes) != 11 {
 		t.Errorf("ten levels deep: %+v", got)
 	}
-	// The query bound: 30 queries are allowed.
+	// The term limit: 10 terms that cause queries are allowed, 11 are not.
 	c3 := newTestChecker(nil, s.port, "127.0.0.1")
-	s.resolve("fifteen.example.jp TXT", data("v=spf1 "+strings.Join(terms[:14], " ")+"|"+" "+terms[14]))
-	if got := c3.LookupSPF(context.Background(), "fifteen.example.jp"); got.Complete {
-		t.Errorf("31 queries: %+v, want incomplete", got)
+	s.resolve("eleven.example.jp TXT", data("v=spf1 "+strings.Join(terms[:10], " ")+"|"+" "+terms[10]))
+	if got := c3.LookupSPF(context.Background(), "eleven.example.jp"); got.Complete || len(got.Prefixes) != 10 {
+		t.Errorf("11 terms: %+v, want incomplete with the first 10", got)
 	}
 	c4 := newTestChecker(nil, s.port, "127.0.0.1")
-	s.resolve("fourteen.example.jp TXT", data("v=spf1 "+strings.Join(terms[:14], " ")))
-	if got := c4.LookupSPF(context.Background(), "fourteen.example.jp"); !got.Complete || len(got.Prefixes) != 14 {
-		t.Errorf("29 queries: %+v, want complete", got)
+	s.resolve("ten.example.jp TXT", data("v=spf1 "+strings.Join(terms[:10], " ")))
+	if got := c4.LookupSPF(context.Background(), "ten.example.jp"); !got.Complete || len(got.Prefixes) != 10 {
+		t.Errorf("10 terms: %+v, want complete", got)
+	}
+	// The void limit: two void lookups are allowed.
+	if got := newTestChecker(nil, s.port, "127.0.0.1").LookupSPF(context.Background(), "void2.example.jp"); !got.Complete ||
+		!reflect.DeepEqual(got.Prefixes, prefixes("192.0.2.5/32")) {
+		t.Errorf("2 void lookups: %+v, want complete", got)
 	}
 	// The MX bound: 10 targets of one mx term are allowed.
 	c5 := newTestChecker(nil, s.port, "127.0.0.1")
@@ -236,16 +253,62 @@ func TestLookupSPFIncomplete(t *testing.T) {
 	}
 }
 
+// TestLookupSPFLimitTermKinds checks which terms count against the limits
+// of RFC 7208 4.6.4. Ten a terms reach the term limit; one more term that
+// causes DNS queries exceeds it, whatever it is: a redirect, a ptr or an
+// exists term, or any term with another qualifier than pass (not followed,
+// still counted). An ip4 term causes no query and does not count. An
+// include whose target has no SPF record is a void lookup like a name
+// without an address: three void lookups exceed the limit of two.
+func TestLookupSPFLimitTermKinds(t *testing.T) {
+	s := startFakeServers(t, "127.0.0.1")[0]
+	var ten []string
+	for i := 0; i < 10; i++ {
+		ten = append(ten, fmt.Sprintf("a:k%d.example.jp", i))
+		s.resolve(fmt.Sprintf("k%d.example.jp A", i), data(fmt.Sprintf("192.0.2.%d", i+1)))
+	}
+	terms := strings.Join(ten, " ")
+	s.resolve("final.example.jp TXT", data("v=spf1 ip4:198.51.100.1"))
+	s.resolve("other.example.jp A", data("198.51.100.2"))
+	for name, record := range map[string]string{
+		"ip4.example.jp":      "v=spf1 " + terms + " ip4:198.51.100.3",
+		"redirect.example.jp": "v=spf1 " + terms + " redirect=final.example.jp",
+		"ptr.example.jp":      "v=spf1 " + terms + " ptr",
+		"exists.example.jp":   "v=spf1 " + terms + " exists:other.example.jp",
+		"fail.example.jp":     "v=spf1 " + terms + " -a:other.example.jp",
+		"soft.example.jp":     "v=spf1 " + terms + " ~include:final.example.jp",
+		"void.example.jp":     "v=spf1 ip4:192.0.2.100 a:nx1.example.jp a:nx2.example.jp include:nx3.example.jp",
+	} {
+		s.resolve(name+" TXT", data(record))
+	}
+	for _, tc := range []struct {
+		domain   string
+		complete bool
+		found    int
+	}{
+		{"ip4.example.jp", true, 11},
+		{"redirect.example.jp", false, 10},
+		{"ptr.example.jp", false, 10},
+		{"exists.example.jp", false, 10},
+		{"fail.example.jp", false, 10},
+		{"soft.example.jp", false, 10},
+		{"void.example.jp", false, 1},
+	} {
+		got := newTestChecker(nil, s.port, "127.0.0.1").LookupSPF(context.Background(), tc.domain)
+		if got.Complete != tc.complete || len(got.Prefixes) != tc.found {
+			t.Errorf("%s: complete %v with %d prefixes, want %v with %d: %+v", tc.domain, got.Complete, len(got.Prefixes), tc.complete, tc.found, got)
+		}
+	}
+}
+
 // TestLookupSPFWideRanges: a term with the pass qualifier that yields a
 // prefix shorter than an IPv4 /8 or an IPv6 /16 makes the evaluation
 // incomplete, whether it is written in an ip4 or ip6 term, reached through
 // an include (a third party listing the whole Internet), or made by the
 // CIDR length of an a or mx term from the addresses found; what was found
-// before is kept. A /8 and a /16 are accepted (with an address inside the
-// /8: one outside would go past the total address space, see
-// TestLookupSPFAddressSpace); an a term with a short CIDR
-// length that finds no address yields nothing; a wide range with another
-// qualifier is skipped like every such term.
+// before is kept. A /8 and a /16 are accepted; an a term with a short CIDR
+// length that finds no address yields nothing (a void lookup); a wide range
+// with another qualifier is skipped like every such term.
 func TestLookupSPFWideRanges(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	s.resolve("evil.example.net TXT", data("v=spf1 ip4:0.0.0.0/0"))
@@ -326,88 +389,9 @@ func TestLookupSPFMappedIPv6(t *testing.T) {
 	}
 }
 
-// TestAddressSpace counts the addresses prefixes cover, each once:
-// duplicates and prefixes inside others are not counted again, adjacent
-// ones are merged, and the families are counted apart.
-func TestAddressSpace(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		in     []netip.Prefix
-		v4, v6 string
-	}{
-		{"none", nil, "0", "0"},
-		{"one /8", prefixes("10.0.0.0/8"), "16777216", "0"},
-		{"duplicates and nested", prefixes("10.0.0.0/8", "10.0.0.0/8", "10.1.0.0/16", "10.0.0.0/9", "10.255.255.255/32"), "16777216", "0"},
-		{"adjacent halves", prefixes("10.128.0.0/9", "10.0.0.0/9"), "16777216", "0"},
-		{"apart", prefixes("10.0.0.0/8", "192.0.2.1/32", "192.0.2.0/31"), "16777218", "0"},
-		{"families apart", prefixes("192.0.2.0/24", "2001:db8::/126", "2001:db8::1/128"), "256", "4"},
-		{"two ipv6 /16", prefixes("2001::/16", "2002::/16", "2001:db8::/32"), "0", new(big.Int).Lsh(big.NewInt(1), 113).String()},
-		{"not masked", []netip.Prefix{netip.MustParsePrefix("192.0.2.5/24"), netip.MustParsePrefix("192.0.2.0/24")}, "256", "0"},
-	} {
-		if v4, v6 := mailengine.AddressSpace(tc.in, true).String(), mailengine.AddressSpace(tc.in, false).String(); v4 != tc.v4 || v6 != tc.v6 {
-			t.Errorf("%s: %s / %s, want %s / %s", tc.name, v4, v6, tc.v4, tc.v6)
-		}
-	}
-}
-
-// TestLookupSPFAddressSpace: an evaluation whose ranges together cover more
-// than one IPv4 /8 or one IPv6 /16 is incomplete, even when no single range
-// is wider than that (256 terms of a /8 each, spread over includes, cover
-// every IPv4 address); exactly that much is complete, and a range listed
-// again or inside another, in the record or in an include, is counted once.
-func TestLookupSPFAddressSpace(t *testing.T) {
-	s := startFakeServers(t, "127.0.0.1")[0]
-	var includes []string
-	for part := 0; part < 4; part++ {
-		var terms []string
-		for n := part * 64; n < (part+1)*64; n++ {
-			terms = append(terms, fmt.Sprintf("ip4:%d.0.0.0/8", n))
-		}
-		name := fmt.Sprintf("part%d.example.net", part)
-		// Character-strings of at most 255 bytes, as in real records.
-		var strs []string
-		for i := 0; i < len(terms); i += 10 {
-			strs = append(strs, strings.Join(terms[i:min(i+10, len(terms))], " ")+" ")
-		}
-		s.resolve(name+" TXT", data("v=spf1 "+strings.Join(strs, "|")+"~all"))
-		includes = append(includes, "include:"+name)
-	}
-	records := map[string]string{
-		"all-by-eights.example.jp": "v=spf1 ip4:192.0.2.1 " + strings.Join(includes, " ") + " -all",
-		"seventeen.example.jp": "v=spf1 ip4:10.0.0.0/12 ip4:10.16.0.0/12 ip4:10.32.0.0/12 ip4:10.48.0.0/12 ip4:10.64.0.0/12 " +
-			"ip4:10.80.0.0/12 ip4:10.96.0.0/12 ip4:10.112.0.0/12 ip4:10.128.0.0/12 ip4:10.144.0.0/12 ip4:10.160.0.0/12 " +
-			"|ip4:10.176.0.0/12 ip4:10.192.0.0/12 ip4:10.208.0.0/12 ip4:10.224.0.0/12 ip4:10.240.0.0/12 ip4:11.0.0.0/12 -all",
-		"one-eight.example.jp":     "v=spf1 ip4:10.0.0.0/9 ip4:10.128.0.0/9 include:again.example.net ip4:10.1.2.3 -all",
-		"two-sixteens.example.jp":  "v=spf1 ip6:2001::/16 ip6:2002::/16 -all",
-		"one-sixteen.example.jp":   "v=spf1 ip6:2001::/16 ip6:2001:db8::/32 include:again.example.net -all",
-		"again.example.net":        "v=spf1 ip4:10.0.0.0/8 ip6:2001::/17 ~all",
-		"sixteen-and-more.example": "v=spf1 ip6:2001::/16 ip6:2002::1 -all",
-	}
-	for name, record := range records {
-		s.resolve(name+" TXT", data(record))
-	}
-	c := newTestChecker(nil, s.port, "127.0.0.1")
-	for domain, complete := range map[string]bool{
-		"all-by-eights.example.jp": false,
-		"seventeen.example.jp":     false,
-		"one-eight.example.jp":     true,
-		"two-sixteens.example.jp":  false,
-		"one-sixteen.example.jp":   true,
-		"sixteen-and-more.example": false,
-	} {
-		got := c.LookupSPF(context.Background(), domain)
-		if got.Complete != complete || len(got.Prefixes) == 0 {
-			t.Errorf("%s: complete %v with %d prefixes, want complete %v", domain, got.Complete, len(got.Prefixes), complete)
-		}
-	}
-	if got := c.LookupSPF(context.Background(), "all-by-eights.example.jp"); len(got.Prefixes) != 257 {
-		t.Errorf("all by eights: %d prefixes kept, want 257", len(got.Prefixes))
-	}
-}
-
-// TestSPFTooWide checks the limits a stored SPF result is held to as well:
-// a single range wider than an IPv4 /8 or an IPv6 /16, or more address
-// space together than one of each, every address counted once.
+// TestSPFTooWide checks the limit a stored SPF result is held to as well: a
+// single range wider than an IPv4 /8 or an IPv6 /16. Many ranges together
+// are no reason (there is no total).
 func TestSPFTooWide(t *testing.T) {
 	var twelves []netip.Prefix
 	for i := range 17 {
@@ -424,9 +408,15 @@ func TestSPFTooWide(t *testing.T) {
 		{"a /7", prefixes("12.0.0.0/7"), true},
 		{"an IPv6 /16", prefixes("2001::/16"), false},
 		{"an IPv6 /15", prefixes("2000::/15"), true},
-		{"seventeen /12", twelves, true},
-		{"sixteen /12", twelves[:16], false},
-		{"two IPv6 /16", prefixes("2001::/16", "2002::/16"), true},
+		{"seventeen /12", twelves, false},
+		{"two IPv6 /16", prefixes("2001::/16", "2002::/16"), false},
+		{"256 IPv4 /8", func() []netip.Prefix {
+			var out []netip.Prefix
+			for n := range 256 {
+				out = append(out, netip.PrefixFrom(netip.AddrFrom4([4]byte{byte(n), 0, 0, 0}), 8))
+			}
+			return out
+		}(), false},
 	} {
 		if got := SPFTooWide(tc.in); got != tc.want {
 			t.Errorf("%s: SPFTooWide = %v, want %v", tc.name, got, tc.want)
@@ -464,8 +454,8 @@ func loadSPFFixture(t *testing.T, s *fakeServer) {
 
 // TestLookupSPFRealSenders evaluates the recorded SPF records of large mail
 // services (testdata/spf_real_senders.txt): each is complete, and so is a
-// domain that includes the four of them, all well within the total
-// address space of one IPv4 /8 and one IPv6 /16.
+// domain that includes the four of them, all within the limits of RFC 7208
+// 4.6.4.
 func TestLookupSPFRealSenders(t *testing.T) {
 	s := startFakeServers(t, "127.0.0.1")[0]
 	loadSPFFixture(t, s)
@@ -475,26 +465,19 @@ func TestLookupSPFRealSenders(t *testing.T) {
 	for _, tc := range []struct {
 		domain   string
 		prefixes int
-		v4       int64
 	}{
-		{"_spf.google.com", 8, 98304},
-		{"_netblocks.google.com", 2, 98304},
-		{"_netblocks2.google.com", 6, 0},
-		{"_netblocks3.google.com", 0, 0},
-		{"spf.protection.outlook.com", 11, 458752},
-		{"amazonses.com", 13, 157696},
-		{"sendgrid.net", 15, 241152},
-		{"combined.example.jp", 47, 955904},
+		{"_spf.google.com", 8},
+		{"_netblocks.google.com", 2},
+		{"_netblocks2.google.com", 6},
+		{"_netblocks3.google.com", 0},
+		{"spf.protection.outlook.com", 11},
+		{"amazonses.com", 13},
+		{"sendgrid.net", 15},
+		{"combined.example.jp", 47},
 	} {
 		got := c.LookupSPF(context.Background(), tc.domain)
-		v4, v6 := mailengine.AddressSpace(got.Prefixes, true), mailengine.AddressSpace(got.Prefixes, false)
-		t.Logf("%s: complete %v, %d prefixes, %s IPv4 and %s IPv6 addresses", tc.domain, got.Complete, len(got.Prefixes), v4, v6)
-		if !got.Complete || len(got.Prefixes) != tc.prefixes || v4.Cmp(big.NewInt(tc.v4)) != 0 {
-			t.Errorf("%s: complete %v, %d prefixes, %s IPv4 addresses; want complete, %d prefixes, %d IPv4 addresses",
-				tc.domain, got.Complete, len(got.Prefixes), v4, tc.prefixes, tc.v4)
-		}
-		if v4.BitLen() > spfMaxSpaceBits4 || v6.BitLen() > spfMaxSpaceBits6 {
-			t.Errorf("%s: %s IPv4 and %s IPv6 addresses reach the cap", tc.domain, v4, v6)
+		if !got.Complete || len(got.Prefixes) != tc.prefixes {
+			t.Errorf("%s: complete %v, %d prefixes; want complete, %d prefixes", tc.domain, got.Complete, len(got.Prefixes), tc.prefixes)
 		}
 	}
 }

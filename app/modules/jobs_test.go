@@ -5,9 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
@@ -1031,8 +1033,8 @@ func TestNewProgressLines(t *testing.T) {
 	if got := newProgressLines("a\nb", "a\nb\nc\nd"); len(got) != 2 || got[0] != "c" {
 		t.Errorf("appended: %v", got)
 	}
-	if got := newProgressLines("a\nb", "b\nc"); len(got) != 1 || got[0] != "c" {
-		t.Errorf("scrolled: %v", got)
+	if got := newProgressLines("a\nfetching 20 of 300", "a\nfetching 40 of 300\nb"); len(got) != 2 || got[0] != "fetching 40 of 300" {
+		t.Errorf("counter replaced: %v", got)
 	}
 	if got := newProgressLines("a\nb", "a\nb"); len(got) != 0 {
 		t.Errorf("unchanged: %v", got)
@@ -1133,6 +1135,7 @@ func startMemIMAP(t *testing.T, address, password string) (user *imapmemserver.U
 		},
 		InsecureAuth: true,
 		Caps:         imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}},
+		Logger:       quietIMAPLog{},
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1327,6 +1330,68 @@ func TestJobsOfDeletedMailboxAreLabeled(t *testing.T) {
 	}
 }
 
+// A recipient-side group is analyzed automatically only after an explicit
+// request that the usage limit stopped: the request flags it, the flag
+// stays until the analysis settles, and the scheduled analysis after the
+// limit takes it up. Without a request the scheduled analysis leaves it
+// alone.
+func TestManualAnalysisOfRecipientGroupAfterUsageLimit(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no agent CLI
+	db := newTestDB(t)
+	jm, key := newTestJobManager(t, db)
+	mb, mailsRoot := seedMailbox(t, db, key, "ops@example.test", testSamples)
+	if _, err := jm.RunJob(context.Background(), mailboxJob(JobKindReindex, mb, ""), nil); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := mailengine.OpenIndex(context.Background(), mailsRoot, mb.Address, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	groups, err := models.ListGroups(idx, models.GroupFilter{})
+	if err != nil || len(groups) == 0 {
+		t.Fatalf("groups: %v (%d)", err, len(groups))
+	}
+	target := groups[0].GroupKey
+	if _, err := idx.Exec(`UPDATE groups SET actionable = 0, needs_analysis = 0`); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := func() (string, error) {
+		return jm.RunJob(context.Background(), mailboxJob(JobKindAnalyze, mb, ""), nil)
+	}
+	if result, err := scheduled(); err != nil || result != "no group needs analysis" {
+		t.Errorf("scheduled analysis without a request: %q, %v", result, err)
+	}
+
+	until := time.Now().Add(time.Hour)
+	if err := SetAgentLimitedUntil(db, until); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jm.RunJob(context.Background(), mailboxJob(JobKindAnalyze, mb, target), nil); err == nil ||
+		!strings.Contains(err.Error(), "usage limit lasts until") {
+		t.Errorf("explicit analysis during the limit: %v", err)
+	}
+	waiting, err := models.ListGroupsNeedingAnalysis(idx)
+	if err != nil || len(waiting) != 1 || waiting[0].GroupKey != target {
+		t.Fatalf("waiting after the stopped request: %d (err %v), want the requested group only", len(waiting), err)
+	}
+	if result, err := scheduled(); err != nil || !strings.HasPrefix(result, "skipped: the agent's usage limit lasts until ") {
+		t.Errorf("scheduled analysis during the limit: %q, %v", result, err)
+	}
+	// New mail for the group during the limit keeps the request.
+	if err := models.RefreshGroupCounters(idx, target); err != nil {
+		t.Fatal(err)
+	}
+	// After the limit the scheduled analysis takes the group up (it gets as
+	// far as looking for the CLI, which is missing here).
+	if err := SetAgentLimitedUntil(db, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduled(); err == nil || !strings.Contains(err.Error(), "is not available on this machine") {
+		t.Errorf("scheduled analysis after the limit: %v, want it to start on the requested group", err)
+	}
+}
+
 func TestAnalyzeDuringUsageLimit(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
@@ -1392,5 +1457,39 @@ func TestAnalyzeDuringUsageLimit(t *testing.T) {
 	}
 	if jobs, _ := models.ListJobs(db, 50); slices.ContainsFunc(jobs, func(j *models.Job) bool { return j.Kind == JobKindAnalyze && j.Status == "queued" }) {
 		t.Error("an analysis was queued with the automatic analysis switched off")
+	}
+}
+
+// A counter line of the same step replaces the one before, so the stored
+// progress of a long step stays short; other lines, and a counter of
+// another step, are added.
+func TestProgressCollapsesCounters(t *testing.T) {
+	db := newTestDB(t)
+	job, _, err := EnqueueJob(db, JobKindReindex, 0, "", "test", 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newProgressWriter(db, job.ID, nil)
+	p.Add("reindexing 3000 raw messages")
+	for i := 50; i <= 3000; i += 50 {
+		p.Add(fmt.Sprintf("reindexed %d of 3000 messages", i))
+	}
+	p.Add("error: skipping 20260901-120000_aaaaaaaaaaaa: unreadable")
+	p.Add("grouped 10 of 20 messages")
+	p.Add("grouped 20 of 20 messages")
+	p.Close()
+	got, err := models.GetJobByID(db, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msgs []string
+	for _, line := range strings.Split(got.Progress, "\n") {
+		_, msg, _ := strings.Cut(line, progressTimeSep)
+		msgs = append(msgs, msg)
+	}
+	want := []string{"reindexing 3000 raw messages", "reindexed 3000 of 3000 messages",
+		"error: skipping 20260901-120000_aaaaaaaaaaaa: unreadable", "grouped 20 of 20 messages"}
+	if !reflect.DeepEqual(msgs, want) {
+		t.Errorf("progress %q, want %q", msgs, want)
 	}
 }

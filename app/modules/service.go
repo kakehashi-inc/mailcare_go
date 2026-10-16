@@ -19,8 +19,11 @@ import (
 // the saved setting).
 var StartServer func(webListen string, webPort int, workers int, checkTimes []string, mailKeepDays int) error
 
-// controlClient is used for every request to the local control endpoints.
-var controlClient = &http.Client{Timeout: 10 * time.Second}
+// controlClient is used for every request to the local control endpoints:
+// the connection is made within the connect timeout of the operating
+// system, and nothing after it has a time limit (Ctrl+C ends the command).
+// It does not use a proxy of the environment.
+var controlClient = &http.Client{Transport: &http.Transport{}}
 
 func controlURL(port int, path string) string {
 	return fmt.Sprintf("http://127.0.0.1:%d/control%s", port, path)
@@ -53,7 +56,7 @@ type controlFailure struct {
 
 // readControlFailure reads the error body of a control response (once).
 func readControlFailure(resp *http.Response) controlFailure {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	body, _ := io.ReadAll(resp.Body)
 	var f controlFailure
 	if json.Unmarshal(body, &f) != nil || f.Error == "" {
 		f = controlFailure{Error: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
@@ -176,8 +179,7 @@ func ShowServerStatus(port int) error {
 // directory, with RefusedOwnDir set when its refusal names the data
 // directory of this process (DataDirID).
 func LocalServer(port int) *ServerStatus {
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := controlDo(client, http.MethodGet, port, "/status", nil)
+	resp, err := controlDo(controlClient, http.MethodGet, port, "/status", nil)
 	if err != nil {
 		return nil
 	}
@@ -300,9 +302,9 @@ func WaitForJob(ctx context.Context, port int, id int64, echo func(string)) (*Jo
 	}
 }
 
-// newProgressLines returns the lines of cur that were not part of prev. The
-// progress text is a bounded log, so lines may have scrolled off its top; the
-// last line of prev is searched from the end of cur to find the boundary.
+// newProgressLines returns the lines of cur that were not part of prev: cur
+// past the lines it shares with the start of prev (a counter line of prev
+// that cur replaced by a newer one counts as new).
 func newProgressLines(prev, cur string) []string {
 	if cur == "" {
 		return nil
@@ -312,11 +314,9 @@ func newProgressLines(prev, cur string) []string {
 		return curLines
 	}
 	prevLines := strings.Split(prev, "\n")
-	lastSeen := prevLines[len(prevLines)-1]
-	for i := len(curLines) - 1; i >= 0; i-- {
-		if curLines[i] == lastSeen {
-			return curLines[i+1:]
-		}
+	same := 0
+	for same < len(prevLines) && same < len(curLines) && prevLines[same] == curLines[same] {
+		same++
 	}
-	return curLines
+	return curLines[same:]
 }

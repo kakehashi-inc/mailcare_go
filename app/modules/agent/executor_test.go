@@ -54,6 +54,40 @@ func TestRunArgvStdinAndCwd(t *testing.T) {
 	}
 }
 
+// TestRunArgvTempFilesInWorkspace: the prompt fed on stdin and the output
+// go through files in the workspace of the run, never in the temporary
+// directory of the OS, and both are removed when the run ends.
+func TestRunArgvTempFilesInWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	osTemp := t.TempDir()
+	t.Setenv("TMPDIR", osTemp)
+	work := t.TempDir()
+	argv := []string{"/bin/sh", "-c", `ls -a; cat`}
+	out, err := runArgv(context.Background(), "sh", argv, work, "the prompt", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in, outFile bool
+	for _, line := range strings.Split(out, "\n") {
+		in = in || strings.HasPrefix(line, ".mailcare-agent-") && strings.HasSuffix(line, ".in")
+		outFile = outFile || strings.HasPrefix(line, ".mailcare-agent-") && strings.HasSuffix(line, ".out")
+	}
+	if !in || !outFile || !strings.HasSuffix(out, "the prompt") {
+		t.Errorf("listing of the workspace during the run and the prompt:\n%s", out)
+	}
+	for name, dir := range map[string]string{"workspace": work, "OS temporary directory": osTemp} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%s after the run: %v", name, entries)
+		}
+	}
+}
+
 func TestRunArgvPlaceholders(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")

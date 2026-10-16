@@ -15,35 +15,47 @@
 // is used when the settings ask for it (Config.SystemOnly); it cannot tell
 // NXDOMAIN from an empty answer.
 //
-// Outcomes are stored in dns_checks (master database) and reused by every
-// notice about the same name whose window holds the check (ReuseRange: from
-// 24 hours before the notice was received to 48 hours after), the earliest
-// first; a notice that shows mail sent from the sending sources takes those the authoritative
-// servers were asked for first (dns_checks.direct, see verify). Once a
-// notice has used an outcome, grouping it again uses the same
-// row, so a later change of the DNS of the name does not move it. It can
-// still move to another group: when it was not verified before and a row
-// now falls within its window, when whether its reporting MTA is a sending
-// server or whether it shows mail sent from the sending sources is judged
-// differently (the sending sources were changed, or their addresses could
-// not all be looked up in the run), and when it shows such mail and used an
-// outcome
-// of the resolvers alone until one with the authoritative servers was
-// stored within its window (see verify). A
-// Checker belongs to one job run: it remembers the resolvers that failed
+// The verification does not depend on the record type the notice names
+// (the type is only the last question the reporting server asked): it
+// asks whether mail can be delivered to the name (resolveName). A mail
+// domain is looked up as an MTA would: its MX records and the A and AAAA
+// records of every MX target (no count limit), without MX records the A
+// and AAAA records of the domain itself (the implicit MX of RFC 5321), a
+// null MX (RFC 7505) meaning that it accepts no mail; a host name (an MX
+// target of the recipient domain) by its A and AAAA records. exists: an
+// address was obtained; not_found: NXDOMAIN; broken: the name exists
+// without an address to deliver to, or DNS does not answer normally for it
+// (every resolver failed, or the answers disagree; see vote).
+//
+// Outcomes are stored in dns_checks (master database, qtype NAME, see
+// verifyKind) and reused by every notice about the same name while they are
+// fresh (CacheFreshAge, the one period of every stored DNS lookup):
+// a name checked within it is not looked up again, whatever the age of the
+// notice, and an older one is. A notice that shows mail sent from the
+// sending sources takes only those the authoritative servers were asked
+// for (dns_checks.direct, see verify). When a live verification gives
+// nothing, the latest stored outcome of the name stands in, whatever its
+// age; while the check is off (StoredOnly) the stored outcomes are used as
+// they are, by the window of the notice (ReuseRange). A notice can move to
+// another group when it is grouped again: the outcome of its name was
+// checked again since and differs, it was not verified before and now is,
+// or whether its reporting MTA is a sending server or whether it shows mail
+// sent from the sending sources is judged differently (the sending sources
+// were changed, or their addresses could not all be looked up in the run).
+// A Checker belongs to one job run: it remembers the resolvers that failed
 // their control query, the MX targets of the recipient domains, the name
-// servers of the domains, the addresses of the host names it resolved and
-// the inconclusive names of the run. The network time of a Checker is
-// bounded: each verification by a deadline (verifyDeadlineFactor times the
-// per-query timeout), all of them together with the names a notice chose
-// (verifications, MX targets, reporting MTAs) by Config.Budget, and the
-// names a notice chose by a count each.
+// servers of the domains and the addresses of the host names it resolved.
+// Only each query is bounded in time (the per-query timeout, with one
+// retransmission over UDP: queryAttempts); a verification, a lookup of a
+// reporting MTA and a run have no time or count limit beyond that, so every
+// notice of the run is verified. A name no resolver answered at all (every
+// query timed out) is inconclusive: it is not stored, and without a stored
+// outcome to stand in the next grouping verifies the notice again.
 //
 // The Checker also looks up the sending sources for the grouping: the
 // addresses of the source host names (ResolveHost) and what the SPF records
-// of the monitored domains list (LookupSPF, spf.go), both within a separate
-// time budget (Config.SourceBudget), so that the names the notices chose
-// cannot use it up. While the verification is off,
+// of the monitored domains list (LookupSPF, spf.go). While the
+// verification is off,
 // SystemHostResolver looks the source host names up through the OS resolver
 // alone (systemhosts.go).
 package dnscheck
@@ -67,79 +79,45 @@ import (
 )
 
 const (
-	// DefaultTimeout bounds one query (UDP, then TCP when truncated, each).
-	DefaultTimeout = 3 * time.Second
-	// DefaultMaxLookups bounds the names verified live by one Checker (one
-	// grouping or reindex run). Reused outcomes do not count.
-	DefaultMaxLookups = 200
-	// DefaultBudget bounds the network time one Checker spends on the names
-	// the notices chose: the live verifications, the MX targets of the
-	// recipient domains and the addresses of the reporting MTAs. The sending
-	// sources (ResolveHost, LookupSPF) do not count; DefaultSourceBudget bounds
-	// them.
-	DefaultBudget = 10 * time.Minute
-	// DefaultSourceBudget bounds the network time one Checker spends on the
-	// sending sources: the addresses of the source host names and the SPF
-	// records of the monitored domains. Once it is used up they are no
-	// longer looked up (a source host name is not answered, an SPF record
-	// incomplete).
-	DefaultSourceBudget = 2 * time.Minute
+	// DefaultTimeout bounds one attempt of a query (the UDP datagram and
+	// its reply, the TCP exchange after a truncated reply, the connection to
+	// the server) and, times queryAttempts, one call of the OS resolver: a
+	// server that does not reply within it is asked once more (UDP), then
+	// counts as not answering. The value is the owner's (no standard
+	// defines it for this client); it equals the default of the OS resolver
+	// (resolv.conf "timeout:5 attempts:2").
+	DefaultTimeout = 5 * time.Second
+	// queryAttempts is how many times a UDP query is sent to one server
+	// before it counts as not answering (the first and one
+	// retransmission, as the OS resolver does).
+	queryAttempts = 2
 	// defaultPort is the DNS port.
 	defaultPort = 53
-	// verifyDeadlineFactor times the per-query timeout bounds one live
-	// verification (the resolvers, the name servers of the domain and the
-	// authoritative servers together) and one lookup of a reporting MTA.
-	verifyDeadlineFactor = 4
-	// defaultMaxMXDomains bounds the recipient domains whose MX targets one
-	// Checker looks up for the applicability of a name, and
-	// defaultMaxReporters the reporting MTA names it resolves (both chosen
-	// by the notices).
-	defaultMaxMXDomains = 200
-	defaultMaxReporters = 200
+	// verifyKind is what dns_checks.qtype holds for a verification of a
+	// name (VerifyKind).
+	verifyKind = VerifyKind
 
 	// controlName is the stable name every resolver must resolve (an A
 	// record) before its answers count: a resolver that cannot is
 	// unreachable or filtered (a closed network), and an NXDOMAIN from it
 	// would be no evidence.
 	controlName = "example.com"
-	// maxNameServers bounds the authoritative servers asked per domain, and
-	// maxServerAddrs the addresses tried per server.
-	maxNameServers = 4
-	maxServerAddrs = 2
-	// authBlockedAfter is the number of different organization domains
-	// whose authoritative servers left every query unanswered, after which
-	// the authoritative servers are no longer asked in the run: the network
-	// then most likely blocks DNS to anything but the resolvers, and every
-	// name would wait for the timeouts in vain. A domain counts once its
-	// servers were asked and none of them replied to any query (each such
-	// address is not asked again in the run either); a domain whose servers
-	// were not asked (no NS, no usable address, every address silent
-	// already, the queries cut off) does not count. Counting domains rather
-	// than queries keeps one domain with many silent servers (4 name servers
-	// with 2 addresses each, hostile or broken) from switching the stage off
-	// for the names of every other domain. A domain that answered resets
-	// nothing: it is not counted itself, the silent domains before it stay
-	// counted, and the stage goes off at the third silent domain however
-	// many domains answered in between.
-	authBlockedAfter = 3
-	// maxDetailBytes bounds dns_checks.detail.
-	maxDetailBytes = 4096
-	// maxNoteValues bounds the records quoted per answer in the evidence.
-	maxNoteValues = 5
+	// failureTTL is how long an authoritative address that left a query
+	// unanswered is not asked again: the longest a resolver may remember a
+	// dead or unreachable server (RFC 2308 7.2; the verification asks the
+	// authoritative servers as a resolver does). A reply ends it at once.
+	failureTTL = 5 * time.Minute
 )
 
 // Config is the configuration of a Checker, taken from the settings
 // dns_check_enabled, dns_check_resolvers and dns_check_system_resolver_only.
 type Config struct {
-	Enabled      bool
-	StoredOnly   bool          // the check is off: Verify reuses stored outcomes, nothing is ever queried (see New)
-	Resolvers    []string      // resolver IPs, asked on port 53 (Port in tests)
-	SystemOnly   bool          // ask the OS resolver only (no authoritative server directly); Resolvers is ignored
-	Port         int           // tests only; 0 = 53
-	Timeout      time.Duration // per query; 0 = DefaultTimeout
-	MaxLookups   int           // names verified live per Checker; 0 = DefaultMaxLookups
-	Budget       time.Duration // network time per Checker (see DefaultBudget); 0 = DefaultBudget
-	SourceBudget time.Duration // network time of the sending sources per Checker (see DefaultSourceBudget); 0 = DefaultSourceBudget
+	Enabled    bool
+	StoredOnly bool          // the check is off: Verify reuses stored outcomes, nothing is ever queried (see New)
+	Resolvers  []string      // resolver IPs, asked on port 53 (Port in tests)
+	SystemOnly bool          // ask the OS resolver only (no authoritative server directly); Resolvers is ignored
+	Port       int           // tests only; 0 = 53
+	Timeout    time.Duration // per query; 0 = DefaultTimeout
 }
 
 // Stats counts the Verify calls of a Checker by how they ended
@@ -147,10 +125,8 @@ type Config struct {
 type Stats struct {
 	Verified      int // looked up now; the outcome was stored
 	Reused        int // the outcome came from dns_checks (or from earlier in the run)
-	OverBudget    int // no outcome: the budget, MaxLookups or the recipient domains of the MX lookups of the Checker were used up
 	NotApplicable int // no outcome: the name may not be looked up for the notice, or is no usable name
-	Inconclusive  int // no outcome: no resolver gave a usable answer in time (about the name or the MX targets)
-	TooOld        int // no outcome: none stored, and the notice is too old for a live verification
+	Inconclusive  int // no outcome: no resolver gave any answer (unreachable, every query timed out), the run was canceled, or no resolver answered the MX question of the applicability
 	CheckOff      int // no outcome: none stored, and the check is off (StoredOnly or not enabled)
 }
 
@@ -161,12 +137,8 @@ func (s *Stats) add(status mailengine.DNSVerifyStatus) {
 		s.Verified++
 	case mailengine.DNSStatusReused:
 		s.Reused++
-	case mailengine.DNSStatusOverBudget:
-		s.OverBudget++
 	case mailengine.DNSStatusNotApplicable:
 		s.NotApplicable++
-	case mailengine.DNSStatusTooOld:
-		s.TooOld++
 	case mailengine.DNSStatusCheckOff:
 		s.CheckOff++
 	default:
@@ -178,53 +150,40 @@ func (s *Stats) add(status mailengine.DNSVerifyStatus) {
 // documentation). Create one per run with New; it is safe for concurrent
 // use, although the grouping calls it from one goroutine.
 type Checker struct {
-	db           *sql.DB
-	enabled      bool
-	storedOnly   bool // Config.StoredOnly: no query at all, the stored outcomes only
-	systemOnly   bool // Config.SystemOnly: no authoritative server is asked directly
-	paths        []resolverPath
-	port         uint16
-	timeout      time.Duration
-	maxLookups   int
-	budget       time.Duration
-	sourceBudget time.Duration
+	db         *sql.DB
+	enabled    bool
+	storedOnly bool // Config.StoredOnly: no query at all, the stored outcomes only
+	systemOnly bool // Config.SystemOnly: no authoritative server is asked directly
+	paths      []resolverPath
+	port       uint16
+	timeout    time.Duration
 
 	// sys is the OS resolver: the resolver of the SystemOnly mode, and the
 	// one that knows the single-label host names of the settings (tests
 	// point it at a fake server).
 	sys systemResolver
-	// now is the clock of the reuse window and of the stored rows
+	// now is the clock of the fresh period and of the stored rows
 	// (time.Now; tests move it).
 	now func() time.Time
 	// allowLocal accepts authoritative servers on loopback and private
 	// addresses (tests only; see serverAllowed).
 	allowLocal bool
-	// maxMXDomains and maxReporters are defaultMaxMXDomains and
-	// defaultMaxReporters, the spf fields the bounds of an SPF evaluation
-	// (spf.go); tests may lower them.
-	maxMXDomains    int
-	maxReporters    int
+	// The spf fields are the limits of an SPF evaluation (spf.go, RFC
+	// 7208); tests may lower them.
 	spfMaxQueries   int
+	spfMaxVoid      int
 	spfMaxDepth     int
-	spfMaxPrefixes  int
 	spfMaxMXTargets int
 
-	mu              sync.Mutex
-	controls        []*controlState           // per path; nil until its control query ran
-	mxTargets       map[string]mxLookup       // recipient domain -> its MX target names
-	mxLookups       int                       // recipient domains whose MX targets were looked up
-	nameServers     map[string]*nameServerSet // organization domain -> its servers
-	hosts           map[string]hostLookup     // ResolveHost results
-	reporters       map[string]reporterResult // ResolveReporter results
-	spf             map[string]SPFResult      // LookupSPF results
-	reporterLookups int                       // reporting MTA names looked up
-	results         map[memoKey]memo          // outcomes of this run
-	silent          map[netip.AddrPort]bool   // authoritative addresses that did not answer
-	authDomains     map[string]bool           // organization domain -> a server of it replied (false: asked, none replied)
-	lookups         int                       // live verifications started
-	spent           time.Duration             // network time counted against the budget
-	sourceSpent     time.Duration             // network time counted against the budget of the sending sources
-	stats           Stats
+	mu          sync.Mutex
+	controls    []*controlState              // per path; nil until its control query ran
+	mxTargets   map[string]mxLookup          // recipient domain -> its MX target names
+	nameServers map[string]*nameServerSet    // organization domain -> its servers
+	hosts       map[string]hostLookup        // ResolveHost results
+	reporters   map[string]reporterResult    // ResolveReporter results
+	spf         map[string]SPFResult         // LookupSPF results
+	silent      map[netip.AddrPort]time.Time // authoritative address -> when it last left a query unanswered
+	stats       Stats
 }
 
 // resolverPath is one recursive resolver the verification asks: a
@@ -255,31 +214,10 @@ type nameServerSet struct {
 	note    string
 }
 
-// checkKey identifies a verification (and a dns_checks row): the name and
-// the record type.
+// checkKey identifies a verification (and the dns_checks rows of it, qtype
+// verifyKind): the name.
 type checkKey struct {
-	name, qtype string
-}
-
-// memo is the outcome of a verification made earlier in the run (ok false:
-// inconclusive), the time it stands for (when the row it comes from was
-// checked, or when the inconclusive verification was made) and whether the
-// authoritative servers were asked (direct, like dns_checks.direct). It
-// counts only for a notice whose window holds that time (ReuseRange), like
-// the row, and for a notice that shows mail sent from the sending sources like a row of its kind
-// (see verify).
-type memo struct {
-	outcome mailengine.DNSOutcome
-	ok      bool
-	at      time.Time
-	direct  bool
-}
-
-// memoKey identifies a memo of the run: the verification and whether the
-// authoritative servers were asked in it.
-type memoKey struct {
-	checkKey
-	direct bool
+	name string
 }
 
 // mxLookup is the lookup of the MX targets of a recipient domain made
@@ -291,7 +229,7 @@ type mxLookup struct {
 }
 
 // reporterResult is a lookup of a reporting MTA made earlier in the run:
-// its addresses and whether a resolver answered (see ResolveReporter).
+// its addresses and whether they are definitive (see ResolveReporter).
 type reporterResult struct {
 	addrs    []netip.Addr
 	answered bool
@@ -308,10 +246,11 @@ type hostLookup struct {
 // stores and reuses nothing). Invalid resolver entries are skipped. New
 // makes no query. With Config.StoredOnly (the check is switched off) the
 // Checker never makes one: Verify returns the outcome stored for a notice
-// (the reuse rule, see ReuseRange) and leaves every other name not
-// verified, ResolveHost and ResolveReporter answer nothing and LookupSPF
-// reads nothing, so that switching the check off stops every query yet
-// files the notices as the stored outcomes say.
+// (the window of the notice, see ReuseRange) and leaves every other name not
+// verified, ResolveReporter answers from the stored lookups alone,
+// ResolveHost answers nothing and LookupSPF reads nothing, so that
+// switching the check off stops every query yet files the notices as the
+// stored results say.
 func New(db *sql.DB, cfg Config) *Checker {
 	c := &Checker{
 		db:              db,
@@ -320,40 +259,24 @@ func New(db *sql.DB, cfg Config) *Checker {
 		systemOnly:      cfg.SystemOnly,
 		port:            defaultPort,
 		timeout:         cfg.Timeout,
-		maxLookups:      cfg.MaxLookups,
-		budget:          cfg.Budget,
-		sourceBudget:    cfg.SourceBudget,
 		sys:             defaultSystemResolver(),
 		now:             time.Now,
-		maxMXDomains:    defaultMaxMXDomains,
-		maxReporters:    defaultMaxReporters,
-		spfMaxQueries:   defaultSPFMaxQueries,
-		spfMaxDepth:     defaultSPFMaxDepth,
-		spfMaxPrefixes:  defaultSPFMaxPrefixes,
-		spfMaxMXTargets: defaultSPFMaxMXTargets,
+		spfMaxQueries:   spfMaxQueries,
+		spfMaxVoid:      spfMaxVoidLookups,
+		spfMaxDepth:     spfMaxDepth,
+		spfMaxMXTargets: spfMaxMXTargets,
 		spf:             map[string]SPFResult{},
 		mxTargets:       map[string]mxLookup{},
 		nameServers:     map[string]*nameServerSet{},
 		hosts:           map[string]hostLookup{},
 		reporters:       map[string]reporterResult{},
-		results:         map[memoKey]memo{},
-		silent:          map[netip.AddrPort]bool{},
-		authDomains:     map[string]bool{},
+		silent:          map[netip.AddrPort]time.Time{},
 	}
 	if cfg.Port > 0 && cfg.Port <= 65535 {
 		c.port = uint16(cfg.Port)
 	}
 	if c.timeout <= 0 {
 		c.timeout = DefaultTimeout
-	}
-	if c.maxLookups <= 0 {
-		c.maxLookups = DefaultMaxLookups
-	}
-	if c.budget <= 0 {
-		c.budget = DefaultBudget
-	}
-	if c.sourceBudget <= 0 {
-		c.sourceBudget = DefaultSourceBudget
 	}
 	if cfg.SystemOnly {
 		c.paths = []resolverPath{{label: "system"}}
@@ -384,18 +307,17 @@ func (c *Checker) Stats() Stats {
 }
 
 // Verify verifies the name of a DNS lookup failure a notice reports
-// (mailengine.DNSVerifier). recipientDomain is the domain of the failed
-// recipient and noticeTime when the notice was received (zero = now).
-// direct lets a live verification ask the authoritative servers of the
-// name as well (never in the SystemOnly mode); without it only the
-// resolvers vote. The outcome is returned with ok = true; ok = false means
-// not verified: the verification is off, no outcome is stored for the
-// notice while it is too old for a live verification
-// (mailengine.LiveCheckAllowed) or the Checker is StoredOnly, the name is
-// neither in the organization domain of the recipient domain nor one of
-// its MX targets, the run reached MaxLookups or used up its Budget, or no
-// resolver gave a usable answer in time (inconclusive). VerifyStatus tells
-// which.
+// (mailengine.DNSVerifier), whatever its age and whatever record type the
+// notice names. recipientDomain is the domain of the failed recipient and
+// noticeTime when the notice was received (zero = now). direct lets a live
+// verification ask the authoritative servers of the name as well (never in
+// the SystemOnly mode); without it only the resolvers vote. The outcome is
+// returned with ok = true; ok = false means not verified: the verification
+// is off and nothing is stored for the notice (or the Checker is
+// StoredOnly), the name is neither in the organization domain of the
+// recipient domain nor one of its MX targets, or no resolver gave any
+// answer (every query timed out) or the run was canceled (inconclusive;
+// the next grouping verifies the notice again). VerifyStatus tells which.
 func (c *Checker) Verify(ctx context.Context, f mailengine.DNSFailure, recipientDomain string, noticeTime time.Time, direct bool) (mailengine.DNSOutcome, bool) {
 	outcome, _ := c.VerifyStatus(ctx, f, recipientDomain, noticeTime, direct)
 	return outcome, outcome != ""
@@ -412,28 +334,38 @@ func (c *Checker) VerifyStatus(ctx context.Context, f mailengine.DNSFailure, rec
 	return outcome, status
 }
 
+// Live reports whether the Checker may query (mailengine.LiveVerifier): the
+// DNS check is on; a StoredOnly Checker only reuses stored outcomes.
+func (c *Checker) Live() bool {
+	return c.enabled && !c.storedOnly
+}
+
 // verify is VerifyStatus without the counting: the outcome ("" = not
-// verified) and how it was reached. An outcome stored for the notice
-// (within its window, ReuseRange) or remembered from earlier in the run
-// (at a time within that window) comes first and costs no query at all
-// (not even the MX lookup of the applicability); only then is the name
-// verified live, and only for a recent notice of a Checker that may query,
-// bounded by the deadline of the verification. The window and the age of
-// the notice are taken at one moment, so a notice old enough to be
-// verified live always has that moment in its window.
+// verified) and how it was reached.
+//
+// A Checker that may query uses a stored outcome checked within
+// CacheFreshAge before now without any query (not even the MX lookup of
+// the applicability), the earliest of that period, whatever the age of
+// the notice; otherwise it verifies the name live, each query bounded by
+// the per-query timeout, and stores the outcome. When the live
+// verification gives nothing (the name may not be looked up for the
+// notice, or no resolver gave any answer), the latest stored outcome of
+// the name stands in, whatever its age (latest); without one the notice
+// is not verified and the next grouping verifies it again. Nothing is
+// remembered within the run: every notice of the name reads the stored
+// outcomes again.
 //
 // A notice that shows mail sent from the sending sources (direct, while the authoritative servers
-// may be asked at all: not in the SystemOnly mode, and not once the stage
-// is off for the run, authBlocked) uses only an outcome the authoritative
-// servers were asked for (a direct row or memo), so that an outcome of the
+// may be asked at all: not in the SystemOnly mode) uses only a fresh outcome the authoritative
+// servers were asked for (a direct row), so that an outcome of the
 // resolvers alone, stored for a notice that did not show such mail, does
 // not decide it: without one it is verified live with them and stores a
-// direct row. An outcome of the resolvers alone stands in only when that
-// cannot be done or gives nothing: the notice is too old for a live
-// verification, the Checker may not query, the name may not be looked up
-// for the notice, the limits of the run are reached, or the live
-// verification is inconclusive. Any other notice uses an outcome of either
-// kind, the earliest of its window.
+// direct row. Any other notice uses a fresh outcome of either kind. The
+// stand-in of a live verification that gave nothing is of either kind.
+//
+// A StoredOnly Checker (the check is off) queries nothing and uses the
+// stored outcomes as they are, by the window of the notice (ReuseRange):
+// the earliest checked within it, for a direct notice a direct one first.
 func (c *Checker) verify(ctx context.Context, f mailengine.DNSFailure, recipientDomain string, noticeTime time.Time, direct bool) (mailengine.DNSOutcome, mailengine.DNSVerifyStatus) {
 	if !c.enabled && !c.storedOnly {
 		return "", mailengine.DNSStatusCheckOff
@@ -442,108 +374,88 @@ func (c *Checker) verify(ctx context.Context, f mailengine.DNSFailure, recipient
 	if !ok {
 		return "", mailengine.DNSStatusNotApplicable
 	}
-	qtype, ok := normalizeQType(f.QType)
-	if !ok {
-		return "", mailengine.DNSStatusNotApplicable
-	}
-	key := checkKey{name: name, qtype: qtype}
+	key := checkKey{name: name}
 	now := c.now()
-	from, to := ReuseRange(noticeTime, now)
-	tryDirect := direct && !c.systemOnly && !c.authBlocked()
-	// otherwise is how a notice that shows mail sent from the sending sources
-	// ends without an outcome of the direct kind: with one of the resolvers
-	// alone when there is one.
-	otherwise := func(status mailengine.DNSVerifyStatus) (mailengine.DNSOutcome, mailengine.DNSVerifyStatus) {
+	tryDirect := direct && !c.systemOnly
+	if !c.live() {
+		from, to := ReuseRange(noticeTime, now)
+		if outcome, ok := c.stored(key, from, to, tryDirect); ok {
+			return outcome, mailengine.DNSStatusReused
+		}
 		if tryDirect {
-			if outcome, reused, ok := c.reuse(key, from, to, false); ok {
-				return outcome, reused
+			if outcome, ok := c.stored(key, from, to, false); ok {
+				return outcome, mailengine.DNSStatusReused
 			}
+		}
+		return "", mailengine.DNSStatusCheckOff
+	}
+	from := now.Add(-CacheFreshAge)
+	if outcome, ok := c.stored(key, from, now, tryDirect); ok {
+		return outcome, mailengine.DNSStatusReused
+	}
+	// otherwise is how a live verification that gave nothing ends: with
+	// the latest stored outcome when there is one.
+	otherwise := func(status mailengine.DNSVerifyStatus) (mailengine.DNSOutcome, mailengine.DNSVerifyStatus) {
+		if outcome, ok := c.latest(key); ok {
+			return outcome, mailengine.DNSStatusReused
 		}
 		return "", status
 	}
-	if outcome, status, ok := c.reuse(key, from, to, tryDirect); ok {
-		if status == mailengine.DNSStatusReused {
-			return outcome, status
-		}
-		// Inconclusive earlier in the run: not verified again.
-		return otherwise(status)
+	applicable, host, why := c.applicable(ctx, name, recipientDomain)
+	if ended(ctx) {
+		return "", mailengine.DNSStatusInconclusive
 	}
-	if !c.live() {
-		return otherwise(mailengine.DNSStatusCheckOff)
-	}
-	if !mailengine.LiveCheckAllowed(noticeTime, now) {
-		return otherwise(mailengine.DNSStatusTooOld)
-	}
-	if applicable, why := c.applicable(ctx, name, recipientDomain); !applicable {
+	if !applicable {
 		return otherwise(why)
 	}
-	if !c.budgetLeft() || !c.takeLookup() {
-		return otherwise(mailengine.DNSStatusOverBudget)
-	}
-	live, cancel := context.WithTimeout(ctx, c.verifyDeadline())
-	start := time.Now()
-	outcome, ok, detail, asked := c.check(live, name, qtype, direct)
-	c.spend(time.Since(start))
-	cancel()
+	outcome, ok, detail, asked := c.check(ctx, name, host, direct)
 	if ended(ctx) {
 		// Canceled: what was not answered tells nothing about the name.
 		return "", mailengine.DNSStatusInconclusive
 	}
 	if !ok {
-		// Inconclusive, also when the deadline cut the resolvers short: the
-		// name is not asked again in the run for a notice whose window
-		// holds this moment (one that shows mail sent from the sending sources too when it was
-		// such a notice, whether the authoritative stage could run or not)
-		// and nothing is stored.
-		c.remember(key, memo{at: now, direct: asked || tryDirect})
+		// Inconclusive (no resolver is reachable, or none gave any answer:
+		// every query timed out): nothing is stored.
 		return otherwise(mailengine.DNSStatusInconclusive)
 	}
-	m, status := c.store(key, outcome, detail, asked, from, to)
-	c.remember(key, m)
-	return m.outcome, status
+	return c.store(key, outcome, detail, asked, from, now)
 }
 
-// reuse returns what a notice whose window is [from, to] finds for the name
-// without a query (of a verification that asked the authoritative servers
-// only, when directOnly): the outcome stored, else the one remembered from
-// earlier in the run (reused), or an inconclusive verification of the run
-// (inconclusive: not made again). ok is false when there is none of them.
-func (c *Checker) reuse(key checkKey, from, to time.Time, directOnly bool) (mailengine.DNSOutcome, mailengine.DNSVerifyStatus, bool) {
-	if outcome, ok := c.stored(key, from, to, directOnly); ok {
-		return outcome, mailengine.DNSStatusReused, true
-	}
-	if m, ok := c.remembered(key, from, to, directOnly); ok {
-		if m.ok {
-			return m.outcome, mailengine.DNSStatusReused, true
-		}
-		return "", mailengine.DNSStatusInconclusive, true
-	}
-	return "", mailengine.DNSStatusInconclusive, false
-}
+// VerifyKind is what dns_checks.qtype holds for a verification of a name:
+// the verification does not depend on the record type a notice names (the
+// rows of the earlier verification per type, MX / A / AAAA, are not used
+// and go with the daily cleanup).
+const VerifyKind = "NAME"
+
+// CacheFreshAge is how long a stored DNS lookup result is used instead of
+// asking again: one value for every stored lookup (the verifications of
+// dns_checks, and the sending sources and the reporting MTAs of
+// sending_source_lookups). A result checked longer ago is looked up again
+// by a Checker that may query; it still stands in when the new lookup gives
+// nothing, and a StoredOnly Checker (the check is off) uses the stored
+// results as they are. Many records have a TTL of 3600 seconds, but reusing
+// a result for one hour only would multiply the queries: 12 hours is the
+// owner's practical value that keeps the number of queries low (no
+// standard defines it).
+const CacheFreshAge = 12 * time.Hour
 
 // ReuseWindow is how long before a notice was received a stored outcome
-// still counts for it (design document "mail classification" 4.4).
+// still counts for it while the check is off (a StoredOnly Checker,
+// ReuseRange), and how long before the mail retention the daily cleanup
+// keeps the stored outcomes and the stored reporting MTAs.
 const ReuseWindow = 24 * time.Hour
 
 // ReuseRange returns the window of the stored outcomes a notice received at
-// noticeTime may use, both ends included: from ReuseWindow before it to
-// mailengine.DNSLiveMaxAge after it, the last moment it may be verified live
-// (a later lookup says nothing about a failure of days before, and a row a
-// recent notice stored today must not decide an old one). A time after now
-// (or none) counts as now, so that the outcome checked now is found again.
-// The grouping (Verify, which also stores within it) and the analysis,
-// which shows the outcome a notice used, both pick the stored outcome
-// through it.
+// noticeTime may use while the check is off (a StoredOnly Checker), both
+// ends included: from ReuseWindow before it up to now, whatever the age of
+// the notice. The earliest outcome of the window is used, so that switching
+// the check off keeps the outcome a notice was filed by. A time after now
+// (or none) counts as now.
 func ReuseRange(noticeTime, now time.Time) (from, to time.Time) {
 	if noticeTime.IsZero() || noticeTime.After(now) {
 		noticeTime = now
 	}
-	return noticeTime.Add(-ReuseWindow), noticeTime.Add(mailengine.DNSLiveMaxAge)
-}
-
-// inRange reports whether t lies within [from, to].
-func inRange(t, from, to time.Time) bool {
-	return !t.Before(from) && !t.After(to)
+	return noticeTime.Add(-ReuseWindow), now
 }
 
 // live reports whether the Checker may query at all: the check is on and
@@ -552,89 +464,62 @@ func (c *Checker) live() bool {
 	return c.enabled && !c.storedOnly
 }
 
-// verifyDeadline is the time one live verification, or one lookup of a
-// reporting MTA, may take: verifyDeadlineFactor times the per-query timeout
-// (12 seconds by default).
-func (c *Checker) verifyDeadline() time.Duration {
-	return verifyDeadlineFactor * c.timeout
-}
-
-// budgetLeft reports whether the Checker still has network time for the
-// names the notices chose.
-func (c *Checker) budgetLeft() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.spent < c.budget
-}
-
-// spend counts the wall-clock time of one live operation against the
-// budget (the queries it ran in parallel count once).
-func (c *Checker) spend(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.spent += d
-}
-
-// sourceBudgetLeft reports whether the Checker still has network time for the
-// sending sources (their separate budget).
-func (c *Checker) sourceBudgetLeft() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.sourceSpent < c.sourceBudget
-}
-
-// spendSource counts the wall-clock time of one lookup of the sending
-// sources against the budget of the sending sources.
-func (c *Checker) spendSource(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.sourceSpent += d
-}
-
-// normalizeQType returns the record type of a failure as stored in
-// dns_checks.qtype: MX, A or AAAA; the Sendmail forms name no type and are
-// verified as MX.
-func normalizeQType(qtype string) (string, bool) {
-	switch t := strings.ToUpper(strings.TrimSpace(qtype)); t {
-	case "":
-		return "MX", true
-	case "MX", "A", "AAAA":
-		return t, true
-	}
-	return "", false
-}
-
 // applicable reports whether a name may be looked up for a notice to
 // recipientDomain: the name of a forged notice is chosen by its author, so
-// only a name in the organization domain of the recipient domain, or one of
-// the MX targets of the recipient domain, is looked up. When it may not,
-// why tells the reason as the status of the verification: not applicable
-// (no recipient domain, or the MX targets were found and the name is none
-// of them), over budget (the MX targets were needed past the limits of the
-// run) or inconclusive (no resolver answered the MX question).
-func (c *Checker) applicable(ctx context.Context, name, recipientDomain string) (ok bool, why mailengine.DNSVerifyStatus) {
+// only the recipient domain, one of its MX targets or a name in its
+// organization domain is looked up. host tells how the name is verified:
+// an MX target of the recipient domain as a host (its A and AAAA), any other
+// name as a mail domain (its MX, see resolveName). When it may not, why
+// tells the reason as the status of the verification: not applicable (no
+// recipient domain, or the MX targets were found and the name is none of
+// them nor in the organization domain) or inconclusive (no resolver
+// answered the MX question).
+func (c *Checker) applicable(ctx context.Context, name, recipientDomain string) (ok, host bool, why mailengine.DNSVerifyStatus) {
 	domain, ok := normalizeName(strings.TrimPrefix(recipientDomain, "@"))
 	if !ok {
-		return false, mailengine.DNSStatusNotApplicable
+		return false, false, mailengine.DNSStatusNotApplicable
 	}
-	if organizationDomain(name) == organizationDomain(domain) {
-		return true, mailengine.DNSStatusNotApplicable
+	if name == domain {
+		return true, false, mailengine.DNSStatusNotApplicable
 	}
 	targets, why := c.mxTargetsOf(ctx, domain)
-	return targets[name], why
+	if targets[name] {
+		return true, true, why
+	}
+	if organizationDomain(name) == organizationDomain(domain) {
+		return true, false, why
+	}
+	return false, false, why
 }
 
-// stored returns the outcome dns_checks holds for a notice whose window is
-// [from, to] (ReuseRange): the earliest one checked within it, of a
-// verification that asked the authoritative servers when directOnly.
+// stored returns the outcome dns_checks holds for a notice within the
+// window [from, to] (the fresh period of a live Checker, ReuseRange of a
+// StoredOnly one): the earliest one checked within it, of a verification
+// that asked the authoritative servers when directOnly.
 func (c *Checker) stored(key checkKey, from, to time.Time, directOnly bool) (mailengine.DNSOutcome, bool) {
 	if c.db == nil {
 		return "", false
 	}
-	row, err := models.FindDNSCheck(c.db, key.name, key.qtype, from, to, directOnly)
+	row, err := models.FindDNSCheck(c.db, key.name, verifyKind, from, to, directOnly)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("dns check: failed to read the stored outcome of %s %s: %v", key.name, key.qtype, err)
+			log.Printf("dns check: failed to read the stored outcome of %s: %v", key.name, err)
+		}
+		return "", false
+	}
+	return validOutcome(row.Outcome)
+}
+
+// latest returns the latest outcome dns_checks holds for the name, whatever
+// its age and kind: the stand-in of a live verification that gave nothing.
+func (c *Checker) latest(key checkKey) (mailengine.DNSOutcome, bool) {
+	if c.db == nil {
+		return "", false
+	}
+	row, err := models.LatestDNSCheck(c.db, key.name, verifyKind)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("dns check: failed to read the stored outcome of %s: %v", key.name, err)
 		}
 		return "", false
 	}
@@ -653,96 +538,49 @@ func validOutcome(s string) (mailengine.DNSOutcome, bool) {
 
 // store saves a verified outcome with its evidence and whether the
 // authoritative servers were asked (direct) unless another run (two jobs
-// verifying the same name at once) stored one the notice would use within
-// the window [from, to] meanwhile (models.InsertDNSCheckIfAbsent: a direct
-// one for a direct outcome, any one else), and returns the row that won:
-// this one (verified) or the other run's (reused), so that every notice of
-// the window gets the same outcome. The row is dated when the check ended, but
-// no later than to: a notice that was just young enough for a live check
-// when it started (mailengine.DNSLiveMaxAge) would otherwise store a row a
-// few seconds past the window of the notice and lose the outcome when it is grouped
-// again. A failure is logged; the outcome of this check is then used (and
-// remembered for the rest of the run).
-func (c *Checker) store(key checkKey, outcome mailengine.DNSOutcome, detail string, direct bool, from, to time.Time) (memo, mailengine.DNSVerifyStatus) {
-	checkedAt := c.now()
-	if checkedAt.After(to) {
-		checkedAt = to
-	}
-	local := memo{outcome: outcome, ok: true, at: checkedAt, direct: direct}
+// verifying the same name at once) stored one the notice would use
+// meanwhile (models.InsertDNSCheckIfAbsent: a direct one for a direct
+// outcome, any one else; checked from `from`, the start of the fresh
+// period, up to now, since the other run dates its row when it took its
+// time, which may be after this one's), and returns the row that won: this
+// one (verified) or the other run's (reused), so that every notice of the
+// name gets the same outcome. The row is dated `to` (when the verification
+// took its time). A failure is logged; the outcome of this check is then
+// used.
+func (c *Checker) store(key checkKey, outcome mailengine.DNSOutcome, detail string, direct bool, from, to time.Time) (mailengine.DNSOutcome, mailengine.DNSVerifyStatus) {
+	checkedAt := to
 	if c.db == nil {
-		return local, mailengine.DNSStatusVerified
+		return outcome, mailengine.DNSStatusVerified
 	}
-	row := &models.DNSCheck{Name: key.name, QType: key.qtype, Outcome: string(outcome), Detail: detail, Direct: direct, CheckedAt: checkedAt}
-	winner, inserted, err := models.InsertDNSCheckIfAbsent(c.db, row, from, to)
+	row := &models.DNSCheck{Name: key.name, QType: verifyKind, Outcome: string(outcome), Detail: detail, Direct: direct, CheckedAt: checkedAt}
+	end := c.now()
+	if end.Before(to) {
+		end = to
+	}
+	winner, inserted, err := models.InsertDNSCheckIfAbsent(c.db, row, from, end)
 	if err != nil {
-		log.Printf("dns check: failed to store the outcome of %s %s: %v", key.name, key.qtype, err)
-		return local, mailengine.DNSStatusVerified
+		log.Printf("dns check: failed to store the outcome of %s: %v", key.name, err)
+		return outcome, mailengine.DNSStatusVerified
 	}
 	if inserted {
-		local.at = row.CheckedAt
-		return local, mailengine.DNSStatusVerified
+		return outcome, mailengine.DNSStatusVerified
 	}
 	if other, ok := validOutcome(winner.Outcome); ok {
-		return memo{outcome: other, ok: true, at: winner.CheckedAt, direct: winner.Direct}, mailengine.DNSStatusReused
+		return other, mailengine.DNSStatusReused
 	}
-	return local, mailengine.DNSStatusVerified
+	return outcome, mailengine.DNSStatusVerified
 }
 
-// remembered returns what the run found for the name earlier when it
-// counts for a notice whose window is [from, to]: an outcome stored (or
-// found) at a time within the window, or an inconclusive verification made
-// within it; of a verification that asked the authoritative servers only,
-// when directOnly. When both kinds count, an outcome comes before an
-// inconclusive verification, and the earlier before the later.
-func (c *Checker) remembered(key checkKey, from, to time.Time, directOnly bool) (memo, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var best memo
-	found := false
-	for _, direct := range []bool{true, false} {
-		if directOnly && !direct {
-			continue
-		}
-		m, ok := c.results[memoKey{checkKey: key, direct: direct}]
-		if !ok || !inRange(m.at, from, to) {
-			continue
-		}
-		if !found || (m.ok && !best.ok) || (m.ok == best.ok && m.at.Before(best.at)) {
-			best, found = m, true
-		}
-	}
-	return best, found
-}
-
-func (c *Checker) remember(key checkKey, m memo) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.results[memoKey{checkKey: key, direct: m.direct}] = m
-}
-
-// takeLookup counts a live verification against MaxLookups; false when the
-// run has used them all.
-func (c *Checker) takeLookup() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.lookups >= c.maxLookups {
-		return false
-	}
-	c.lookups++
-	return true
-}
-
-// check looks the name up through every reachable resolver and, when
-// direct and not in the SystemOnly mode, the authoritative servers of its
-// organization domain, and votes the answers (without the authoritative
-// servers the resolvers alone vote). It returns the outcome, whether there
-// is one, the evidence and whether the authoritative stage ran (asked: the
-// name servers were looked up, whatever they answered; not when the
-// resolvers were all unreachable or the stage is off for the run). When
-// ctx ends (the run is canceled or the deadline of the verification passes)
-// before every resolver answered, there is no outcome: a resolver cut off
-// would vote as a failure. An authoritative server cut off does not vote.
-func (c *Checker) check(ctx context.Context, name, qtype string, direct bool) (outcome mailengine.DNSOutcome, ok bool, detail string, asked bool) {
+// check verifies the name through every reachable resolver (resolveName:
+// as a mail domain, or as a host when host) and, when direct and not in
+// the SystemOnly mode, asks the authoritative servers of its organization
+// domain whether the name exists, and votes the answers (without the
+// authoritative servers the resolvers alone vote). It returns the outcome,
+// whether there is one, the evidence and whether the authoritative stage
+// ran (asked: the name servers were looked up, whatever they answered; not
+// when the resolvers were all unreachable). When the run is canceled before every resolver answered, there is
+// no outcome: what was cut off tells nothing about the name.
+func (c *Checker) check(ctx context.Context, name string, host, direct bool) (outcome mailengine.DNSOutcome, ok bool, detail string, asked bool) {
 	controls := c.controlAll(ctx)
 	var reachable []resolverPath
 	for i, p := range c.paths {
@@ -752,14 +590,18 @@ func (c *Checker) check(ctx context.Context, name, qtype string, direct bool) (o
 	}
 	answers := make([]answer, len(reachable))
 	notes := make([]string, len(reachable))
-	each(len(reachable), func(i int) {
-		answers[i], notes[i] = c.lookup(ctx, reachable[i], name, qtype)
-	})
+	for i := range reachable {
+		answers[i], notes[i] = c.resolveName(ctx, reachable[i], name, host)
+	}
 	if ended(ctx) {
 		return "", false, "", false
 	}
 
-	var lines []string
+	how := "as a mail domain: MX, then the A and AAAA of every MX target (or of the name itself without MX)"
+	if host {
+		how = "as a host (an MX target of the recipient domain): A and AAAA"
+	}
+	lines := []string{"checked " + how}
 	k := 0
 	for i, p := range c.paths {
 		if !controls[i].ok {
@@ -781,35 +623,22 @@ func (c *Checker) check(ctx context.Context, name, qtype string, direct bool) (o
 		lines = append(lines, "authoritative: not asked (the notice does not show mail sent from the sending sources)")
 	default:
 		var authLines []string
-		auth, authLines, asked = c.authoritative(ctx, reachable, name, qtype)
+		auth, authLines = c.authoritative(ctx, reachable, name, host)
 		lines = append(lines, authLines...)
-		if ended(ctx) {
-			lines = append(lines, "authoritative: cut short by the deadline of the verification")
-		}
+		asked = true
 	}
 	outcome, ok = vote(answers, auth)
 	result := string(outcome)
 	if !ok {
 		result = "inconclusive"
 	}
-	head := fmt.Sprintf("name=%s type=%s outcome=%s", name, qtype, result)
+	head := fmt.Sprintf("name=%s outcome=%s", name, result)
 	return outcome, ok, joinDetail(head, lines), asked
 }
 
-// joinDetail joins the evidence lines under the head line, cut at a line
-// boundary to stay within maxDetailBytes.
+// joinDetail joins the evidence lines under the head line.
 func joinDetail(head string, lines []string) string {
-	var b strings.Builder
-	b.WriteString(head)
-	for i, l := range lines {
-		if b.Len()+1+len(l) > maxDetailBytes-32 {
-			fmt.Fprintf(&b, "\n(%d more lines omitted)", len(lines)-i)
-			break
-		}
-		b.WriteString("\n")
-		b.WriteString(l)
-	}
-	return b.String()
+	return strings.Join(append([]string{head}, lines...), "\n")
 }
 
 // controlAll runs the control query of every resolver whose control has not
@@ -828,17 +657,16 @@ func (c *Checker) controlAll(ctx context.Context) []controlState {
 		}
 	}
 	c.mu.Unlock()
-	each(len(pending), func(j int) {
-		i := pending[j]
+	for _, i := range pending {
 		ok, note := c.control(ctx, c.paths[i])
 		out[i] = controlState{ok: ok, note: note}
 		if ended(ctx) {
-			return
+			continue
 		}
 		c.mu.Lock()
 		c.controls[i] = &out[i]
 		c.mu.Unlock()
-	})
+	}
 	return out
 }
 
@@ -861,19 +689,133 @@ func (c *Checker) control(ctx context.Context, p resolverPath) (bool, string) {
 	if !p.addr.IsValid() {
 		return c.systemControl(ctx)
 	}
-	a, _, note := c.lookupType(ctx, p.addr, controlName, typeA, nil)
+	a, _, note := c.lookupType(ctx, p.addr, controlName, typeA, false)
 	if a != answerData {
 		return false, note
 	}
 	return true, "ok"
 }
 
-// lookup asks one reachable resolver the question of a verification.
-func (c *Checker) lookup(ctx context.Context, p resolverPath, name, qtype string) (answer, string) {
+// resolveName verifies a name through one reachable resolver (the DNS
+// client of the package, or the OS resolver in the SystemOnly mode) and
+// returns the answer and its evidence: data when an address (A or AAAA)
+// was obtained for the mail hosts of a domain (every MX target is looked
+// up; without MX records the name itself, the implicit MX of RFC 5321 5.1)
+// or for a host, NXDOMAIN when the name does not exist, no data when it
+// exists without an address to deliver to (no MX target has an address,
+// no address without MX, or a null MX of RFC 7505: the domain accepts no
+// mail), and a failure when the answers needed failed. The record type the
+// notice named does not matter.
+func (c *Checker) resolveName(ctx context.Context, p resolverPath, name string, host bool) (answer, string) {
 	if !p.addr.IsValid() {
-		return c.systemLookup(ctx, name, qtype)
+		return c.systemResolveName(ctx, name, host)
 	}
-	return c.lookupTarget(ctx, p.addr, name, qtype, nil)
+	if host {
+		return c.addressAnswer(ctx, p.addr, name)
+	}
+	a, targets, note := c.lookupType(ctx, p.addr, name, typeMX, false)
+	switch a {
+	case answerNoData:
+		got, addrNote := c.addressAnswer(ctx, p.addr, name)
+		return got, "MX none (the name itself is the mail host); " + addrNote
+	case answerData:
+	default:
+		return a, "MX " + note
+	}
+	hosts := mxHosts(targets)
+	if len(hosts) == 0 {
+		return answerNoData, "MX " + note + " (null MX: the domain accepts no mail)"
+	}
+	answers := make([]answer, len(hosts))
+	notes := make([]string, len(hosts))
+	for i := range hosts {
+		answers[i], notes[i] = c.addressAnswer(ctx, p.addr, hosts[i])
+		notes[i] = hosts[i] + ": " + notes[i]
+	}
+	return targetsAnswer(answers), "MX " + note + "; " + strings.Join(notes, "; ")
+}
+
+// mxHosts returns the MX target names to look up: the valid host names
+// (not the root of a null MX, nothing that is no host name), each once.
+func mxHosts(targets []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range targets {
+		if h == "." || h == "(invalid name)" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
+}
+
+// targetsAnswer combines the answers of the MX targets of a domain: data
+// when any target has an address; else no answer when a lookup got no
+// reply at all (an address may be missing only because a server did not
+// answer); else a failure when a lookup got an error reply (SERVFAIL,
+// REFUSED); else no data (no target has an address; a target that does
+// not exist counts as one without an address).
+func targetsAnswer(answers []answer) answer {
+	result := answerNoData
+	for _, a := range answers {
+		switch a {
+		case answerData:
+			return answerData
+		case answerNone:
+			result = answerNone
+		case answerFail:
+			if result != answerNone {
+				result = answerFail
+			}
+		}
+	}
+	return result
+}
+
+// addressAnswer looks up the A and the AAAA records of a host through one
+// server (both, in parallel) and returns the answer: data when either gave
+// an address, NXDOMAIN when both said NXDOMAIN, a failure when no address
+// came and a lookup failed, else no data.
+func (c *Checker) addressAnswer(ctx context.Context, server netip.AddrPort, host string) (answer, string) {
+	types := []queryType{typeA, typeAAAA}
+	answers := make([]answer, len(types))
+	notes := make([]string, len(types))
+	for i := range types {
+		var note string
+		answers[i], _, note = c.lookupType(ctx, server, host, types[i], false)
+		notes[i] = typeName(types[i]) + " " + note
+	}
+	return addressesAnswer(answers), strings.Join(notes, ", ")
+}
+
+// addressesAnswer combines the answers of the A and the AAAA lookup of one
+// host (see addressAnswer): data when either gave an address; else no
+// answer when a lookup got no reply at all; else a failure when one got an
+// error reply; NXDOMAIN when both said so; else no data.
+func addressesAnswer(answers []answer) answer {
+	nx, fail, none := 0, false, false
+	for _, a := range answers {
+		switch a {
+		case answerData:
+			return answerData
+		case answerNX:
+			nx++
+		case answerFail:
+			fail = true
+		case answerNone:
+			none = true
+		}
+	}
+	switch {
+	case none:
+		return answerNone
+	case fail:
+		return answerFail
+	case nx == len(answers):
+		return answerNX
+	}
+	return answerNoData
 }
 
 // mxTargetsOf returns the MX target names of a recipient domain, looked up
@@ -881,32 +823,20 @@ func (c *Checker) lookup(ctx context.Context, p resolverPath, name, qtype string
 // none does or the domain has no MX; remembered too), and what a name that
 // is none of them is for the verification (mailengine.DNSVerifyStatus): not
 // applicable when a resolver answered, inconclusive when none did (or ctx
-// ended), over budget when the domain was not looked up because
-// maxMXDomains domains were already looked up or the budget is used up (a
-// later run looks it up).
+// ended).
 func (c *Checker) mxTargetsOf(ctx context.Context, domain string) (targets map[string]bool, why mailengine.DNSVerifyStatus) {
 	c.mu.Lock()
 	known, ok := c.mxTargets[domain]
-	switch {
-	case ok:
-	case c.mxLookups >= c.maxMXDomains, c.spent >= c.budget:
-		c.mu.Unlock()
-		return nil, mailengine.DNSStatusOverBudget
-	default:
-		c.mxLookups++
-	}
 	c.mu.Unlock()
 	if ok {
 		return known.targets, mxStatus(known.answered)
 	}
-	start := time.Now()
-	defer func() { c.spend(time.Since(start)) }()
 	found := mxLookup{targets: map[string]bool{}}
 	for _, p := range c.reachableResolvers(ctx) {
 		var hosts []string
 		var a answer
 		if p.addr.IsValid() {
-			a, hosts, _ = c.lookupType(ctx, p.addr, domain, typeMX, nil)
+			a, hosts, _ = c.lookupType(ctx, p.addr, domain, typeMX, false)
 		} else {
 			hosts, a = c.systemMX(ctx, domain)
 		}
@@ -950,15 +880,13 @@ func mxStatus(answered bool) mailengine.DNSVerifyStatus {
 // the configured resolvers (the first that answers both questions, see
 // sourceAddresses; not in the SystemOnly mode, whose resolver is the OS one):
 // a name of a split-horizon DNS resolves only inside, and a public
-// resolver knows no single-label name. Each lookup counts against the
-// budget of the sending sources (DefaultSourceBudget), not the budget of the
-// verification.
+// resolver knows no single-label name.
 //
 // answered is true when both the A and the AAAA question were answered,
 // with addresses or without any (NXDOMAIN, no data). It is false when the
-// verification is off (or StoredOnly), the name is no valid host name, the budget of the
-// sending sources is used up, no resolver answered both questions (the
-// addresses one of them gave are still returned) or ctx ended. The cache of
+// verification is off (or StoredOnly), the name is no valid host name, no
+// resolver answered both questions (the addresses one of them gave are
+// still returned) or ctx ended. The cache of
 // the sending sources (app/modules) stores only answered lookups, and the
 // grouping counts an unanswered one as incomplete (an address of a sending
 // source may be missing).
@@ -976,12 +904,7 @@ func (c *Checker) ResolveHost(ctx context.Context, host string) (addrs []netip.A
 	if ok {
 		return res.addrs, res.answered
 	}
-	if !c.sourceBudgetLeft() {
-		return nil, false
-	}
-	start := time.Now()
 	res.addrs, res.answered = c.sourceHostAddresses(ctx, name)
-	c.spendSource(time.Since(start))
 	if ended(ctx) {
 		return res.addrs, false
 	}
@@ -1032,7 +955,7 @@ func (c *Checker) sourceAddresses(ctx context.Context, host string) ([]netip.Add
 			addrs, answered = lookupSourceSystem(ctx, c.sys, c.timeout, absolute(host))
 		} else {
 			for _, t := range []queryType{typeA, typeAAAA} {
-				a, values, _ := c.lookupType(ctx, p.addr, host, t, nil)
+				a, values, _ := c.lookupType(ctx, p.addr, host, t, false)
 				for _, v := range values {
 					if addr, err := netip.ParseAddr(v); err == nil {
 						addrs = append(addrs, addr)
@@ -1057,21 +980,28 @@ func (c *Checker) sourceAddresses(ctx context.Context, host string) ([]netip.Add
 // notice gives as its reporting MTA (mailengine.HostResolver), to compare
 // them with the sending sources, and whether the answer is definitive.
 // The name comes from the notice, so it is untrusted: it must be a host name
-// of two labels or more (never an IP literal), at most maxReporters names
-// are looked up per Checker, each lookup is bounded by the deadline of a
-// verification and counts against the budget, and the result is remembered
-// for the run (a lookup no resolver answered too).
+// of two labels or more (never an IP literal), and each query is bounded by
+// the per-query timeout.
+//
+// The addresses of an answered lookup are stored (sending_source_lookups,
+// kind reporter: the addresses only, so that whether the reporting MTA is a
+// sending server is judged again against the current settings every time)
+// and used without asking while fresh (CacheFreshAge), by every run. An
+// older row is looked up again; when no resolver answers, the stored row
+// stands in, whatever its age. A StoredOnly Checker (the check is off)
+// asks nothing and uses the stored row as it is. The result is remembered
+// for the run, whatever the age of the notice.
 //
 // answered is true when a resolver answered (with addresses, or with none:
-// NXDOMAIN or no data). It is false when the verification is off or the
-// Checker is StoredOnly, the name is refused (no host name of two labels or
-// more; it is never looked up), the run reached maxReporters or used up its
-// budget before the name was looked up, no resolver answered in time, or
-// ctx ended: the caller cannot tell then whether the reporting MTA is a
-// sending server, and a later notice of the run would not get the same answer as
-// an earlier one.
+// NXDOMAIN or no data) or a stored row was used. It is false when the
+// verification is off, the name is refused (no host name of two labels or
+// more; it is never looked up), no resolver answered in time and nothing
+// is stored for the name, the Checker is StoredOnly and nothing is stored,
+// or ctx ended before a resolver answered (nothing is stored or
+// remembered then, and no stored row stands in): the caller cannot tell then whether the reporting MTA is a
+// sending server.
 func (c *Checker) ResolveReporter(ctx context.Context, host string) (addrs []netip.Addr, answered bool) {
-	if !c.live() {
+	if !c.enabled && !c.storedOnly {
 		return nil, false
 	}
 	name, ok := normalizeName(host)
@@ -1080,30 +1010,85 @@ func (c *Checker) ResolveReporter(ctx context.Context, host string) (addrs []net
 	}
 	c.mu.Lock()
 	res, cached := c.reporters[name]
-	switch {
-	case cached:
-	case c.reporterLookups >= c.maxReporters, c.spent >= c.budget:
-		c.mu.Unlock()
-		return nil, false
-	default:
-		c.reporterLookups++
-	}
 	c.mu.Unlock()
 	if cached {
 		return res.addrs, res.answered
 	}
-	live, cancel := context.WithTimeout(ctx, c.verifyDeadline())
-	start := time.Now()
-	res.addrs, res.answered = c.firstAddresses(live, name)
-	c.spend(time.Since(start))
-	cancel()
-	if ended(ctx) {
-		return res.addrs, res.answered
+	switch row := c.storedReporter(name); {
+	case row != nil && (!c.live() || c.fresh(row.FetchedAt)):
+		res = reporterResult{addrs: storedAddrs(row), answered: true}
+	case !c.live():
+		// Nothing stored, and nothing may be asked.
+	default:
+		res.addrs, res.answered = c.firstAddresses(ctx, name)
+		if ended(ctx) {
+			return res.addrs, res.answered
+		}
+		switch {
+		case res.answered:
+			c.storeReporter(name, res.addrs)
+		case row != nil:
+			res = reporterResult{addrs: storedAddrs(row), answered: true}
+		}
 	}
 	c.mu.Lock()
 	c.reporters[name] = res
 	c.mu.Unlock()
 	return res.addrs, res.answered
+}
+
+// fresh reports whether a stored lookup fetched at t is used without asking
+// again: at most CacheFreshAge old. A time after now (the clock was set back
+// since it was stored) has no known age and never is.
+func (c *Checker) fresh(t time.Time) bool {
+	age := c.now().Sub(t)
+	return age >= 0 && age <= CacheFreshAge
+}
+
+// storedReporter returns the stored lookup of a reporting MTA (nil when
+// there is none or it cannot be read).
+func (c *Checker) storedReporter(name string) *models.SendingSourceLookup {
+	if c.db == nil {
+		return nil
+	}
+	row, err := models.GetSendingSourceLookup(c.db, models.SendingSourceKindReporter, name)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("dns check: failed to read the stored lookup of %s: %v", name, err)
+		}
+		return nil
+	}
+	return row
+}
+
+// storeReporter stores the answered lookup of a reporting MTA in place of
+// the one stored before (an answer without any address too: it is the
+// answer). A failure is logged: the stored rows are only a reuse and a
+// fallback.
+func (c *Checker) storeReporter(name string, addrs []netip.Addr) {
+	if c.db == nil {
+		return
+	}
+	values := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		values = append(values, a.Unmap().String())
+	}
+	row := &models.SendingSourceLookup{Kind: models.SendingSourceKindReporter, Name: name, Addresses: values, FetchedAt: c.now()}
+	if _, err := models.ReplaceSendingSourceLookup(c.db, row, false); err != nil {
+		log.Printf("dns check: failed to store the lookup of %s: %v", name, err)
+	}
+}
+
+// storedAddrs returns the addresses of a stored lookup (an entry that does
+// not parse is skipped).
+func storedAddrs(row *models.SendingSourceLookup) []netip.Addr {
+	var addrs []netip.Addr
+	for _, v := range row.Addresses {
+		if a, err := netip.ParseAddr(v); err == nil {
+			addrs = append(addrs, a.Unmap())
+		}
+	}
+	return addrs
 }
 
 // firstAddresses returns the A and AAAA addresses of a host through the
@@ -1129,7 +1114,7 @@ func (c *Checker) addressesOf(ctx context.Context, p resolverPath, host string) 
 	var addrs []netip.Addr
 	result := answerNoData
 	for _, t := range []queryType{typeA, typeAAAA} {
-		a, values, _ := c.lookupType(ctx, p.addr, host, t, nil)
+		a, values, _ := c.lookupType(ctx, p.addr, host, t, false)
 		for _, v := range values {
 			if addr, err := netip.ParseAddr(v); err == nil {
 				addrs = append(addrs, addr)
@@ -1164,50 +1149,53 @@ func combine(a, b answer) answer {
 }
 
 // authoritative asks the authoritative servers of the organization domain
-// of the name (found through the reachable resolvers) the same question
-// without recursion. It returns their answers (answerNone for the servers
-// that did not answer or are not authoritative for the name), the evidence
-// lines and whether the stage ran (false only when it is off for the run,
-// authBlocked).
-func (c *Checker) authoritative(ctx context.Context, reachable []resolverPath, name, qtype string) ([]answer, []string, bool) {
-	if c.authBlocked() {
-		return nil, []string{fmt.Sprintf("authoritative: skipped (the authoritative servers of %d domains did not answer in this run)", authBlockedAfter)}, false
-	}
+// of the name (found through the reachable resolvers) without recursion
+// whether the name exists: its MX records for a mail domain, its A records
+// for a host (NXDOMAIN: it does not; any other authoritative answer, data,
+// no data or a CNAME: it does). It returns their answers (answerNone for
+// the servers that did not answer or are not authoritative for the name),
+// and the evidence lines. Every name server and every usable address of it
+// is tried (an address that left a query unanswered within failureTTL
+// is skipped), each query within the per-query timeout.
+func (c *Checker) authoritative(ctx context.Context, reachable []resolverPath, name string, host bool) ([]answer, []string) {
 	org := organizationDomain(name)
 	set := c.nameServersOf(ctx, reachable, org)
 	if len(set.servers) == 0 {
-		return nil, []string{fmt.Sprintf("authoritative: %s", set.note)}, true
+		return nil, []string{fmt.Sprintf("authoritative: %s", set.note)}
 	}
 	answers := make([]answer, len(set.servers))
 	lines := make([]string, len(set.servers))
-	tally := &authTally{}
-	each(len(set.servers), func(i int) {
-		s := set.servers[i]
+	for i, s := range set.servers {
 		answers[i] = answerNone
 		lines[i] = fmt.Sprintf("authoritative %s: no usable address", s.host)
 		for _, addr := range s.addrs {
 			server := netip.AddrPortFrom(addr, c.port)
 			if c.isSilent(server) {
-				lines[i] = fmt.Sprintf("authoritative %s (%s): no response earlier in this run", s.host, addr)
+				lines[i] = fmt.Sprintf("authoritative %s (%s): no response in the last %d minutes", s.host, addr, int(failureTTL.Minutes()))
 				continue
 			}
-			a, note := c.lookupTarget(ctx, server, name, qtype, tally)
+			t := typeMX
+			if host {
+				t = typeA
+			}
+			a, _, note := c.lookupType(ctx, server, name, t, true)
+			if a == answerNoData {
+				a = answerData // the name exists
+			}
 			answers[i] = a
-			lines[i] = fmt.Sprintf("authoritative %s (%s): %s", s.host, addr, note)
+			lines[i] = fmt.Sprintf("authoritative %s (%s): %s %s", s.host, addr, typeName(t), note)
 			if !c.isSilent(server) {
 				break
 			}
 		}
-	})
-	c.noteAuthDomain(org, tally)
-	return answers, lines, true
+	}
+	return answers, lines
 }
 
 // nameServersOf returns the authoritative servers of a domain: its NS
-// records from the first reachable resolver that answers, at most
-// maxNameServers of them (sorted by name), each with up to maxServerAddrs
-// usable addresses (IPv4 first) looked up through the same resolver.
-// Remembered for the run.
+// records from the first reachable resolver that answers (sorted by name),
+// each with its usable addresses (IPv4 first) looked up through the same
+// resolver. Remembered for the run.
 func (c *Checker) nameServersOf(ctx context.Context, reachable []resolverPath, org string) *nameServerSet {
 	c.mu.Lock()
 	set, ok := c.nameServers[org]
@@ -1220,7 +1208,7 @@ func (c *Checker) nameServersOf(ctx context.Context, reachable []resolverPath, o
 		var hosts []string
 		var a answer
 		if p.addr.IsValid() {
-			a, hosts, _ = c.lookupType(ctx, p.addr, org, typeNS, nil)
+			a, hosts, _ = c.lookupType(ctx, p.addr, org, typeNS, false)
 		} else {
 			hosts, a = c.systemNS(ctx, org)
 		}
@@ -1239,14 +1227,11 @@ func (c *Checker) nameServersOf(ctx context.Context, reachable []resolverPath, o
 			sorted = append(sorted, n)
 		}
 		sort.Strings(sorted)
-		if len(sorted) > maxNameServers {
-			sorted = sorted[:maxNameServers]
-		}
 		servers := make([]nameServer, len(sorted))
-		each(len(sorted), func(i int) {
-			addrs, _ := c.addressesOf(ctx, p, sorted[i])
-			servers[i] = nameServer{host: sorted[i], addrs: c.usableServerAddrs(addrs)}
-		})
+		for i, n := range sorted {
+			addrs, _ := c.addressesOf(ctx, p, n)
+			servers[i] = nameServer{host: n, addrs: c.usableServerAddrs(addrs)}
+		}
 		set.servers = servers
 		break
 	}
@@ -1260,7 +1245,7 @@ func (c *Checker) nameServersOf(ctx context.Context, reachable []resolverPath, o
 }
 
 // usableServerAddrs keeps the addresses an authoritative server may be
-// asked at (serverAllowed), IPv4 first, at most maxServerAddrs.
+// asked at (serverAllowed), IPv4 first.
 func (c *Checker) usableServerAddrs(addrs []netip.Addr) []netip.Addr {
 	var v4, v6 []netip.Addr
 	for _, a := range addrs {
@@ -1274,11 +1259,7 @@ func (c *Checker) usableServerAddrs(addrs []netip.Addr) []netip.Addr {
 			v6 = append(v6, a)
 		}
 	}
-	out := append(v4, v6...)
-	if len(out) > maxServerAddrs {
-		out = out[:maxServerAddrs]
-	}
-	return out
+	return append(v4, v6...)
 }
 
 // specialPurpose lists the special-purpose ranges (IANA registries) an
@@ -1340,102 +1321,37 @@ func (c *Checker) serverAllowed(a netip.Addr) bool {
 }
 
 // noteAuthReply records whether an authoritative server answered a query:
-// an address that did not is not asked again in the run.
+// an address that did not is not asked again for failureTTL, one that
+// did is asked again at once.
 func (c *Checker) noteAuthReply(server netip.AddrPort, answered bool) {
-	if answered {
-		return
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.silent[server] = true
+	if answered {
+		delete(c.silent, server)
+		return
+	}
+	c.silent[server] = c.now()
 }
 
+// isSilent reports whether the address left a query unanswered within
+// failureTTL.
 func (c *Checker) isSilent(server netip.AddrPort) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.silent[server]
+	at, ok := c.silent[server]
+	return ok && c.now().Sub(at) < failureTTL
 }
 
-// authTally counts the authoritative queries of one verification that were
-// noted (not cut off by the end of ctx) and how many of them got a reply,
-// for the silence of the organization domain asked (noteAuthDomain). The
-// servers of a domain are asked concurrently.
-type authTally struct {
-	mu              sync.Mutex
-	asked, answered int
-}
-
-func (t *authTally) note(answered bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.asked++
-	if answered {
-		t.answered++
-	}
-}
-
-// noteAuthDomain records how the authoritative servers of the organization
-// domain org took the queries of one verification (see authBlockedAfter): a
-// domain one of whose servers replied stays answered for the rest of the
-// run, one that was asked without any reply is silent until a reply comes,
-// and nothing is recorded when no query was noted.
-func (c *Checker) noteAuthDomain(org string, t *authTally) {
-	t.mu.Lock()
-	asked, answered := t.asked, t.answered
-	t.mu.Unlock()
-	if asked == 0 {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if answered > 0 {
-		c.authDomains[org] = true
-		return
-	}
-	if _, known := c.authDomains[org]; !known {
-		c.authDomains[org] = false
-	}
-}
-
-// authBlocked reports whether authBlockedAfter organization domains were
-// silent in this run, so that the authoritative servers are no longer
-// asked.
-func (c *Checker) authBlocked() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	silent := 0
-	for _, answered := range c.authDomains {
-		if !answered {
-			silent++
-		}
-	}
-	return silent >= authBlockedAfter
-}
-
-// ended reports whether ctx is canceled or its deadline has passed. The
-// sockets of the queries carry the deadline of ctx itself, so a query can
-// time out at the deadline a moment before the timer of ctx marks it done;
-// what such a query did not get tells nothing about the name or the server
-// either.
+// ended reports whether ctx is canceled or a deadline its caller set has
+// passed (the sockets of the queries are cut at once then, so a query can
+// end a moment before the timer of ctx marks it done); what such a query
+// did not get tells nothing about the name or the server.
 func ended(ctx context.Context) bool {
 	if ctx.Err() != nil {
 		return true
 	}
 	deadline, ok := ctx.Deadline()
 	return ok && !time.Now().Before(deadline)
-}
-
-// each runs fn(0) ... fn(n-1) concurrently and waits for all of them.
-func each(n int, fn func(i int)) {
-	if n == 1 {
-		fn(0)
-		return
-	}
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Go(func() { fn(i) })
-	}
-	wg.Wait()
 }
 
 // normalizeName lower-cases a host name, removes its trailing dot and
@@ -1487,11 +1403,7 @@ func organizationDomain(name string) string {
 	return name
 }
 
-// quote joins the records of an answer for the evidence, at most
-// maxNoteValues of them.
+// quote joins the records of an answer for the evidence (all of them).
 func quote(values []string) string {
-	if len(values) > maxNoteValues {
-		return strings.Join(values[:maxNoteValues], ", ") + fmt.Sprintf(", +%d more", len(values)-maxNoteValues)
-	}
 	return strings.Join(values, ", ")
 }

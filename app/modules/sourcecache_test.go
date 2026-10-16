@@ -17,10 +17,11 @@ import (
 
 // TestSourceCacheHosts: a host name is looked up once for every mailbox
 // whose SMTP host it is and for sending_source_hosts, and stored once per
-// kind; the stored lookup is used without asking while at most an hour
-// old, and stands in for a lookup that is not answered (answered then)
-// while at most 14 days old; without such a row the lookup stays
-// unanswered. A name is looked up once per run.
+// kind; the stored lookup is used without asking while at most
+// dnscheck.CacheFreshAge old, and stands in for a lookup that is not
+// answered (answered then),
+// whatever its age; without such a row the lookup stays unanswered. A name
+// is looked up once per run.
 func TestSourceCacheHosts(t *testing.T) {
 	db := newTestDB(t)
 	_, key := newTestJobManager(t, db)
@@ -67,44 +68,45 @@ func TestSourceCacheHosts(t *testing.T) {
 	}
 	stored := []netip.Addr{netip.MustParseAddr("192.0.2.25"), netip.MustParseAddr("192.0.2.26")}
 
-	// Another run within the hour asks nothing; after it, it asks again.
-	now = now.Add(59 * time.Minute)
+	// Another run within the fresh period asks nothing; after it, it asks
+	// again.
+	now = now.Add(dnscheck.CacheFreshAge - time.Minute)
 	if got, answered := newCache().ResolveHost(context.Background(), "mail.example.jp"); !reflect.DeepEqual(got, stored) || !answered || calls != 1 {
-		t.Errorf("59 minutes later: %v, %v, %d lookups", got, answered, calls)
+		t.Errorf("a minute before the end of the fresh period: %v, %v, %d lookups", got, answered, calls)
 	}
 	now = now.Add(2 * time.Minute)
 	if got, answered := newCache().ResolveHost(context.Background(), "mail.example.jp"); !reflect.DeepEqual(got, want) || !answered || calls != 2 {
-		t.Errorf("61 minutes later: %v, %v, %d lookups", got, answered, calls)
+		t.Errorf("a minute after the fresh period: %v, %v, %d lookups", got, answered, calls)
 	}
 
-	// Not answered: the freshest row within 14 days stands in.
+	// Not answered: the freshest row stands in, however old.
 	delete(answers, "mail.example.jp")
 	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ?, addresses = '198.51.100.1' WHERE kind = 'smtp_host'`,
-		now.UTC().Add(-13*24*time.Hour)); err != nil {
+		now.UTC().Add(-3*365*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ?, addresses = '198.51.100.2' WHERE kind = 'global_host'`,
-		now.UTC().Add(-12*24*time.Hour)); err != nil {
+		now.UTC().Add(-2*365*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if got, answered := newCache().ResolveHost(context.Background(), "mail.example.jp"); !reflect.DeepEqual(got, []netip.Addr{netip.MustParseAddr("198.51.100.2")}) || !answered {
 		t.Errorf("fallback: %v, %v; want the freshest row, answered", got, answered)
 	}
-	// Every row older than 14 days: no address, and not answered.
-	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ?`, now.UTC().Add(-15*24*time.Hour)); err != nil {
+	if rows, _ := models.ListSendingSourceLookups(db); len(rows) != 2 {
+		t.Errorf("a failed lookup changed the stored rows: %+v", rows)
+	}
+	// No row: no address, and not answered.
+	if _, err := db.Exec(`DELETE FROM sending_source_lookups`); err != nil {
 		t.Fatal(err)
 	}
 	if got, answered := newCache().ResolveHost(context.Background(), "mail.example.jp"); got != nil || answered {
-		t.Errorf("old rows: %v, %v; want nothing, not answered", got, answered)
-	}
-	if rows, _ := models.ListSendingSourceLookups(db); len(rows) != 2 {
-		t.Errorf("a failed lookup changed the stored rows: %+v", rows)
+		t.Errorf("no rows: %v, %v; want nothing, not answered", got, answered)
 	}
 }
 
 // TestSourceCacheHalfAnswered: a lookup answered for one family only
 // (the other failed) neither replaces the stored row nor counts as
-// answered: the row at most 14 days old stands in for it (answered), and
+// answered: the stored row stands in for it (answered), and
 // without one the addresses found come back unanswered, and nothing is
 // stored. A name answered without addresses (NXDOMAIN) is stored without
 // addresses and answered.
@@ -119,7 +121,7 @@ func TestSourceCacheHalfAnswered(t *testing.T) {
 	}
 	full := []netip.Addr{netip.MustParseAddr("192.0.2.25"), netip.MustParseAddr("2001:db8::25")}
 	if _, err := models.ReplaceSendingSourceLookup(db, &models.SendingSourceLookup{Kind: models.SendingSourceKindSMTPHost, Name: "mail.example.jp",
-		Addresses: []string{"192.0.2.25", "2001:db8::25"}, FetchedAt: time.Now().Add(-2 * time.Hour)}, time.Time{}); err != nil {
+		Addresses: []string{"192.0.2.25", "2001:db8::25"}, FetchedAt: time.Now().Add(-dnscheck.CacheFreshAge - time.Hour)}, false); err != nil {
 		t.Fatal(err)
 	}
 	half := map[string][]netip.Addr{"mail.example.jp": full[:1], "gone.example.jp": full[1:]}
@@ -132,7 +134,7 @@ func TestSourceCacheHalfAnswered(t *testing.T) {
 		t.Errorf("half answered, no row: %v, %v; want the addresses found, not answered", got, answered)
 	}
 	row, err := models.GetSendingSourceLookup(db, models.SendingSourceKindSMTPHost, "mail.example.jp")
-	if err != nil || !reflect.DeepEqual(row.Addresses, []string{"192.0.2.25", "2001:db8::25"}) || time.Since(row.FetchedAt) < time.Hour {
+	if err != nil || !reflect.DeepEqual(row.Addresses, []string{"192.0.2.25", "2001:db8::25"}) || time.Since(row.FetchedAt) < dnscheck.CacheFreshAge {
 		t.Errorf("the stored row was replaced: %+v (err %v)", row, err)
 	}
 	if _, err := models.GetSendingSourceLookup(db, models.SendingSourceKindSMTPHost, "gone.example.jp"); err == nil {
@@ -166,7 +168,7 @@ func TestSourceCacheFutureRows(t *testing.T) {
 		{Kind: models.SendingSourceKindSMTPHost, Name: "mail.example.jp", Addresses: []string{"198.51.100.1"}, FetchedAt: future},
 		{Kind: models.SendingSourceKindSPF, Name: "example.jp", Addresses: []string{"198.51.100.0/24"}, FetchedAt: future},
 	} {
-		if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+		if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -221,8 +223,8 @@ func TestSourceCacheFutureRows(t *testing.T) {
 
 // TestSourceCacheSPF: the SPF record of a domain shared by two mailboxes
 // is evaluated once and stored once; the stored result is used without
-// asking while at most an hour old; an incomplete evaluation uses it as
-// complete while at most 14 days old and stays incomplete otherwise.
+// asking while at most dnscheck.CacheFreshAge old; an incomplete evaluation uses it as
+// complete, whatever its age, and stays incomplete without one.
 // Without an SPF lookup (the DNS check off) nothing is read or used.
 func TestSourceCacheSPF(t *testing.T) {
 	db := newTestDB(t)
@@ -262,23 +264,27 @@ func TestSourceCacheSPF(t *testing.T) {
 	result = dnscheck.SPFResult{Prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}} // partial
 	now = now.Add(30 * time.Minute)
 	if prefixes, _, complete := newCache().ResolveSPF(context.Background(), "example.jp"); !complete || len(prefixes) != 2 || calls != 1 {
-		t.Errorf("within the hour: %v %v, %d evaluations", prefixes, complete, calls)
+		t.Errorf("within the fresh period: %v %v, %d evaluations", prefixes, complete, calls)
 	}
-	now = now.Add(time.Hour)
+	now = now.Add(dnscheck.CacheFreshAge)
 	prefixes, hosts, complete := newCache().ResolveSPF(context.Background(), "example.jp")
 	if !complete || !reflect.DeepEqual(prefixes, []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("2001:db8::25/128")}) ||
 		!reflect.DeepEqual(hosts, []string{"mx1.example.jp"}) || calls != 2 {
 		t.Errorf("incomplete, fresh row: %v %v %v, %d evaluations", prefixes, hosts, complete, calls)
 	}
-	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ?`, now.UTC().Add(-15*24*time.Hour)); err != nil {
+	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ?`, now.UTC().Add(-3*365*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	prefixes, _, complete = newCache().ResolveSPF(context.Background(), "example.jp")
+	if !complete || len(prefixes) != 2 {
+		t.Errorf("incomplete, old row: %v %v; want the stored result, complete", prefixes, complete)
+	}
+	if _, err := db.Exec(`DELETE FROM sending_source_lookups`); err != nil {
 		t.Fatal(err)
 	}
 	prefixes, _, complete = newCache().ResolveSPF(context.Background(), "example.jp")
 	if complete || !reflect.DeepEqual(prefixes, result.Prefixes) {
-		t.Errorf("incomplete, old row: %v %v", prefixes, complete)
-	}
-	if _, err := db.Exec(`UPDATE sending_source_lookups SET fetched_at = ?`, now.UTC()); err != nil {
-		t.Fatal(err)
+		t.Errorf("incomplete, no row: %v %v", prefixes, complete)
 	}
 	off := newSourceCache(db, nil, mailboxes)
 	if prefixes, hosts, complete := off.ResolveSPF(context.Background(), "example.jp"); complete || prefixes != nil || hosts != nil {
@@ -288,11 +294,10 @@ func TestSourceCacheSPF(t *testing.T) {
 
 // TestSourceCacheEmptyKeepsStoredRow: a complete lookup that found
 // nothing (a host name answered without addresses, an SPF record listing
-// nothing) does not replace a non-empty stored row at most 14 days old,
+// nothing) does not replace a non-empty stored row, whatever its age,
 // whichever kind of the name holds it (one dated after now included): the
 // row is used as it is, answered or complete, and no row of the name is
-// written or renewed. A non-empty row older than 14 days, and an empty row,
-// are replaced as usual.
+// written or renewed. An empty row is replaced as usual.
 func TestSourceCacheEmptyKeepsStoredRow(t *testing.T) {
 	db := newTestDB(t)
 	_, key := newTestJobManager(t, db)
@@ -321,7 +326,7 @@ func TestSourceCacheEmptyKeepsStoredRow(t *testing.T) {
 		if address != "" {
 			row.Addresses = []string{address}
 		}
-		if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+		if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -334,56 +339,39 @@ func TestSourceCacheEmptyKeepsStoredRow(t *testing.T) {
 		return row
 	}
 	day := 24 * time.Hour
+	stale := dnscheck.CacheFreshAge + time.Hour // no longer fresh
 
 	// The SMTP host row lists an address, the row of the setting is empty and
 	// older: the empty answer keeps both rows as they are and uses the
 	// address.
-	for _, age := range []time.Duration{2 * time.Hour, 13 * day, -30 * time.Minute} {
+	for _, age := range []time.Duration{stale, 3 * 365 * day, -30 * time.Minute} {
 		seed(models.SendingSourceKindSMTPHost, "192.0.2.25", age)
-		seed(models.SendingSourceKindGlobalHost, "", age+2*time.Hour)
+		seed(models.SendingSourceKindGlobalHost, "", age+stale)
 		got, answered := newCache().ResolveHost(context.Background(), "mail.example.jp")
 		if !reflect.DeepEqual(got, []netip.Addr{netip.MustParseAddr("192.0.2.25")}) || !answered {
 			t.Errorf("host row %v old: %v, %v; want the stored address, answered", age, got, answered)
 		}
 		smtp, global := rowOf(models.SendingSourceKindSMTPHost, "mail.example.jp"), rowOf(models.SendingSourceKindGlobalHost, "mail.example.jp")
-		if !smtp.FetchedAt.Equal(now.Add(-age)) || len(smtp.Addresses) != 1 || !global.FetchedAt.Equal(now.Add(-age-2*time.Hour)) {
+		if !smtp.FetchedAt.Equal(now.Add(-age)) || len(smtp.Addresses) != 1 || !global.FetchedAt.Equal(now.Add(-age-stale)) {
 			t.Errorf("host row %v old: rows changed: %+v, %+v", age, smtp, global)
 		}
 	}
-	// Older than 14 days: replaced (every kind, empty and renewed).
-	seed(models.SendingSourceKindSMTPHost, "192.0.2.25", 15*day)
-	seed(models.SendingSourceKindGlobalHost, "", 16*day)
-	if got, answered := newCache().ResolveHost(context.Background(), "mail.example.jp"); got != nil || !answered {
-		t.Errorf("host row 15 days old: %v, %v; want answered without addresses", got, answered)
-	}
-	for _, kind := range []string{models.SendingSourceKindSMTPHost, models.SendingSourceKindGlobalHost} {
-		if row := rowOf(kind, "mail.example.jp"); len(row.Addresses) != 0 || !row.FetchedAt.Equal(now) {
-			t.Errorf("host row 15 days old, %s: %+v; want replaced", kind, row)
-		}
-	}
 	// A stored empty row is replaced as usual.
-	seed(models.SendingSourceKindSMTPHost, "", 2*time.Hour)
-	seed(models.SendingSourceKindGlobalHost, "", 2*time.Hour)
+	seed(models.SendingSourceKindSMTPHost, "", stale)
+	seed(models.SendingSourceKindGlobalHost, "", stale)
 	newCache().ResolveHost(context.Background(), "mail.example.jp")
 	if row := rowOf(models.SendingSourceKindSMTPHost, "mail.example.jp"); !row.FetchedAt.Equal(now) {
 		t.Errorf("empty host row: %+v; want renewed", row)
 	}
 
 	// The same for an SPF record that lists nothing.
-	seed(models.SendingSourceKindSPF, "198.51.100.0/24", 13*day)
+	seed(models.SendingSourceKindSPF, "198.51.100.0/24", 3*365*day)
 	prefixes, _, complete := newCache().ResolveSPF(context.Background(), "example.jp")
 	if !complete || !reflect.DeepEqual(prefixes, []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}) {
-		t.Errorf("SPF row 13 days old: %v, %v; want the stored prefix, complete", prefixes, complete)
+		t.Errorf("old SPF row: %v, %v; want the stored prefix, complete", prefixes, complete)
 	}
-	if row := rowOf(models.SendingSourceKindSPF, "example.jp"); !row.FetchedAt.Equal(now.Add(-13 * day)) {
-		t.Errorf("SPF row 13 days old: %+v; want untouched", row)
-	}
-	seed(models.SendingSourceKindSPF, "198.51.100.0/24", 15*day)
-	if prefixes, _, complete := newCache().ResolveSPF(context.Background(), "example.jp"); !complete || prefixes != nil {
-		t.Errorf("SPF row 15 days old: %v, %v; want complete without prefixes", prefixes, complete)
-	}
-	if row := rowOf(models.SendingSourceKindSPF, "example.jp"); len(row.Addresses) != 0 || !row.FetchedAt.Equal(now) {
-		t.Errorf("SPF row 15 days old: %+v; want replaced", row)
+	if row := rowOf(models.SendingSourceKindSPF, "example.jp"); !row.FetchedAt.Equal(now.Add(-3 * 365 * day)) {
+		t.Errorf("old SPF row: %+v; want untouched", row)
 	}
 }
 
@@ -391,7 +379,8 @@ func TestSourceCacheEmptyKeepsStoredRow(t *testing.T) {
 // rows no current source refers to are deleted: an SMTP host no mailbox has
 // any more (changed, cleared, or its mailbox deleted), a domain no mailbox
 // address has, a host name that left sending_source_hosts. A name still used
-// by another mailbox keeps its row.
+// by another mailbox keeps its row, and so does a reporting MTA (no source:
+// the daily cleanup deletes it by age).
 func TestSourceCachePrunesGoneSources(t *testing.T) {
 	db := newTestDB(t)
 	jm, key := newTestJobManager(t, db)
@@ -408,8 +397,9 @@ func TestSourceCachePrunesGoneSources(t *testing.T) {
 		{Kind: models.SendingSourceKindSPF, Name: "example.org"},
 		{Kind: models.SendingSourceKindGlobalHost, Name: "relay.example.jp"},
 		{Kind: models.SendingSourceKindGlobalHost, Name: "removed.example.jp"},
+		{Kind: models.SendingSourceKindReporter, Name: "mx.outside.example"},
 	} {
-		if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+		if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -439,7 +429,8 @@ func TestSourceCachePrunesGoneSources(t *testing.T) {
 	for _, row := range rows {
 		left = append(left, row.Kind+" "+row.Name)
 	}
-	want := []string{"smtp_host keep.example.jp", "smtp_host shared.example.jp", "spf example.jp", "spf example.org", "global_host relay.example.jp"}
+	want := []string{"smtp_host keep.example.jp", "smtp_host shared.example.jp", "spf example.jp", "spf example.org", "global_host relay.example.jp",
+		"reporter mx.outside.example"}
 	if !reflect.DeepEqual(left, want) {
 		t.Errorf("rows left %v, want %v", left, want)
 	}
@@ -479,7 +470,7 @@ func TestSourceCachePruneReadsTheSourcesAgain(t *testing.T) {
 		{Kind: models.SendingSourceKindSMTPHost, Name: "mail.example.jp"},
 		{Kind: models.SendingSourceKindSPF, Name: "example.jp"},
 	} {
-		if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+		if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -499,16 +490,17 @@ func TestSourceCachePruneReadsTheSourcesAgain(t *testing.T) {
 }
 
 // TestSourceSPFDomains: the distinct domains of the mailboxes in mailbox
-// order, at most MaxSPFDomains, without a domain that is no host name.
+// order, every one of them, without a domain that is no host name.
 func TestSourceSPFDomains(t *testing.T) {
+	const n = 40
 	var mailboxes []*models.Mailbox
-	for i := range MaxSPFDomains + 5 {
+	for i := range n {
 		mailboxes = append(mailboxes, &models.Mailbox{Address: fmt.Sprintf("a@d%02d.example.jp", i)},
 			&models.Mailbox{Address: fmt.Sprintf("b@d%02d.example.jp", i)})
 	}
 	mailboxes = append([]*models.Mailbox{{Address: "x@localhost"}, {Address: "y@[192.0.2.1]"}}, mailboxes...)
 	got := sourceSPFDomains(mailboxes)
-	if len(got) != MaxSPFDomains || got[0] != "d00.example.jp" || got[MaxSPFDomains-1] != fmt.Sprintf("d%02d.example.jp", MaxSPFDomains-1) {
+	if len(got) != n || got[0] != "d00.example.jp" || got[n-1] != fmt.Sprintf("d%02d.example.jp", n-1) {
 		t.Errorf("domains %v", got)
 	}
 	if got := sourceSPFDomains(nil); len(got) != 0 {
@@ -516,19 +508,18 @@ func TestSourceSPFDomains(t *testing.T) {
 	}
 }
 
-// TestPruneDNSChecksRemovesOldSendingSourceLookups: the daily cleanup deletes
-// the stored lookups older than 90 days and those dated more than a day
-// after now (the clock was set back).
-func TestPruneDNSChecksRemovesOldSendingSourceLookups(t *testing.T) {
+// TestPruneDNSChecksRemovesFutureSendingSourceLookups: the daily cleanup
+// deletes the stored lookups dated after now (the clock was set back) and
+// none for its age.
+func TestPruneDNSChecksRemovesFutureSendingSourceLookups(t *testing.T) {
 	db := newTestDB(t)
 	jm, _ := newTestJobManager(t, db)
 	for _, row := range []*models.SendingSourceLookup{
-		{Kind: models.SendingSourceKindGlobalHost, Name: "old.example.jp", FetchedAt: time.Now().Add(-91 * 24 * time.Hour)},
-		{Kind: models.SendingSourceKindGlobalHost, Name: "new.example.jp", FetchedAt: time.Now().Add(-89 * 24 * time.Hour)},
-		{Kind: models.SendingSourceKindGlobalHost, Name: "future.example.jp", FetchedAt: time.Now().Add(25 * time.Hour)},
-		{Kind: models.SendingSourceKindGlobalHost, Name: "soon.example.jp", FetchedAt: time.Now().Add(23 * time.Hour)},
+		{Kind: models.SendingSourceKindGlobalHost, Name: "old.example.jp", FetchedAt: time.Now().Add(-3 * 365 * 24 * time.Hour)},
+		{Kind: models.SendingSourceKindGlobalHost, Name: "future.example.jp", FetchedAt: time.Now().Add(time.Hour)},
+		{Kind: models.SendingSourceKindGlobalHost, Name: "now.example.jp", FetchedAt: time.Now().Add(-time.Second)},
 	} {
-		if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+		if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -537,11 +528,10 @@ func TestPruneDNSChecksRemovesOldSendingSourceLookups(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := models.ListSendingSourceLookups(db)
-	if err != nil || len(rows) != 2 || rows[0].Name != "new.example.jp" || rows[1].Name != "soon.example.jp" {
+	if err != nil || len(rows) != 2 || rows[0].Name != "old.example.jp" || rows[1].Name != "now.example.jp" {
 		t.Errorf("rows after the cleanup %+v (err %v)", rows, err)
 	}
-	want := []string{"removed 1 stored sending source lookup(s) older than 90 days",
-		"removed 1 stored sending source lookup(s) dated more than 24 hours in the future"}
+	want := []string{"removed 1 stored sending source lookup(s) dated in the future"}
 	if !reflect.DeepEqual(lines, want) {
 		t.Errorf("progress %q, want %q", lines, want)
 	}
@@ -553,8 +543,8 @@ func TestPruneDNSChecksRemovesOldSendingSourceLookups(t *testing.T) {
 func TestPruneDNSChecksGoesOnAfterAFailure(t *testing.T) {
 	db := newTestDB(t)
 	jm, _ := newTestJobManager(t, db)
-	if _, err := models.ReplaceSendingSourceLookup(db, &models.SendingSourceLookup{Kind: models.SendingSourceKindGlobalHost, Name: "old.example.jp",
-		FetchedAt: time.Now().Add(-91 * 24 * time.Hour)}, time.Time{}); err != nil {
+	if _, err := models.ReplaceSendingSourceLookup(db, &models.SendingSourceLookup{Kind: models.SendingSourceKindGlobalHost, Name: "future.example.jp",
+		FetchedAt: time.Now().Add(time.Hour)}, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`ALTER TABLE dns_checks RENAME TO dns_checks_unavailable`); err != nil {
@@ -568,17 +558,17 @@ func TestPruneDNSChecksGoesOnAfterAFailure(t *testing.T) {
 	if rows, err := models.ListSendingSourceLookups(db); err != nil || len(rows) != 0 {
 		t.Errorf("rows after the cleanup %+v (err %v): the sending source lookups were not pruned", rows, err)
 	}
-	if !slices.Contains(lines, "removed 1 stored sending source lookup(s) older than 90 days") {
+	if !slices.Contains(lines, "removed 1 stored sending source lookup(s) dated in the future") {
 		t.Errorf("progress %q", lines)
 	}
 }
 
-// TestSourceCacheTooWideRows: a stored SPF result that takes in more
-// address space than an evaluation may count as sending sources (written before the
-// limits applied; here sixteen /12 and one more) is never used: not
-// without asking while fresh, not in place of an incomplete evaluation,
-// and not kept against a complete one that found nothing, which replaces
-// it.
+// TestSourceCacheTooWideRows: a stored SPF result with a range wider than
+// an evaluation may count as sending sources (an IPv4 /7; written before
+// the limits applied) is never used: not without asking while fresh, not
+// in place of an incomplete evaluation, and not kept against a complete one
+// that found nothing, which replaces it. Many ranges together are used
+// (there is no total).
 func TestSourceCacheTooWideRows(t *testing.T) {
 	db := newTestDB(t)
 	_, key := newTestJobManager(t, db)
@@ -587,15 +577,16 @@ func TestSourceCacheTooWideRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var wide []string
+	var many []string
 	for i := range 16 {
-		wide = append(wide, fmt.Sprintf("10.%d.0.0/12", i*16))
+		many = append(many, fmt.Sprintf("10.%d.0.0/12", i*16))
 	}
-	wide = append(wide, "11.0.0.0/12")
-	seed := func(age time.Duration) {
+	many = append(many, "11.0.0.0/12", "2001::/16", "2002::/16")
+	wide := []string{"10.0.0.0/12", "12.0.0.0/7"}
+	seed := func(addresses []string, age time.Duration) {
 		t.Helper()
 		if _, err := models.ReplaceSendingSourceLookup(db, &models.SendingSourceLookup{Kind: models.SendingSourceKindSPF, Name: "example.jp",
-			Addresses: wide, FetchedAt: time.Now().Add(-age)}, time.Time{}); err != nil {
+			Addresses: addresses, FetchedAt: time.Now().Add(-age)}, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -609,7 +600,11 @@ func TestSourceCacheTooWideRows(t *testing.T) {
 		}
 		return c
 	}
-	seed(10 * time.Minute)
+	seed(many, 10*time.Minute)
+	if prefixes, _, complete := newCache().ResolveSPF(context.Background(), "example.jp"); !complete || len(prefixes) != len(many) || calls != 0 {
+		t.Errorf("fresh row of many ranges: %v, %v, %d evaluations; want used without asking", prefixes, complete, calls)
+	}
+	seed(wide, 10*time.Minute)
 	if prefixes, _, complete := newCache().ResolveSPF(context.Background(), "example.jp"); complete || len(prefixes) != 0 || calls != 1 {
 		t.Errorf("fresh too wide row, incomplete evaluation: %v, %v, %d evaluations; want evaluated and incomplete", prefixes, complete, calls)
 	}
@@ -620,7 +615,7 @@ func TestSourceCacheTooWideRows(t *testing.T) {
 	if row, err := models.GetSendingSourceLookup(db, models.SendingSourceKindSPF, "example.jp"); err != nil || len(row.Addresses) != 0 {
 		t.Errorf("the too wide row was kept: %+v (err %v)", row, err)
 	}
-	if !dnscheck.SPFTooWide(parseStoredPrefixes(wide)) || dnscheck.SPFTooWide(parseStoredPrefixes(wide[:16])) {
+	if !dnscheck.SPFTooWide(parseStoredPrefixes(wide)) || dnscheck.SPFTooWide(parseStoredPrefixes(wide[:1])) || dnscheck.SPFTooWide(parseStoredPrefixes(many)) {
 		t.Error("the seeded prefixes are not just over the limit")
 	}
 }
@@ -723,8 +718,9 @@ func TestSourceCacheConcurrentRuns(t *testing.T) {
 	}
 }
 
-// TestSourceCacheFreshBoundary: a stored lookup exactly an hour old is
-// still used without asking, for a host name and for an SPF record.
+// TestSourceCacheFreshBoundary: a stored lookup exactly
+// dnscheck.CacheFreshAge old is still used without asking, for a host name
+// and for an SPF record.
 func TestSourceCacheFreshBoundary(t *testing.T) {
 	db := newTestDB(t)
 	_, key := newTestJobManager(t, db)
@@ -735,10 +731,10 @@ func TestSourceCacheFreshBoundary(t *testing.T) {
 	}
 	now := time.Now().UTC().Round(time.Second)
 	for _, row := range []*models.SendingSourceLookup{
-		{Kind: models.SendingSourceKindSMTPHost, Name: "mail.example.jp", Addresses: []string{"192.0.2.25"}, FetchedAt: now.Add(-SourceCacheFreshAge)},
-		{Kind: models.SendingSourceKindSPF, Name: "example.jp", Addresses: []string{"192.0.2.0/24"}, FetchedAt: now.Add(-SourceCacheFreshAge)},
+		{Kind: models.SendingSourceKindSMTPHost, Name: "mail.example.jp", Addresses: []string{"192.0.2.25"}, FetchedAt: now.Add(-dnscheck.CacheFreshAge)},
+		{Kind: models.SendingSourceKindSPF, Name: "example.jp", Addresses: []string{"192.0.2.0/24"}, FetchedAt: now.Add(-dnscheck.CacheFreshAge)},
 	} {
-		if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+		if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -754,10 +750,10 @@ func TestSourceCacheFreshBoundary(t *testing.T) {
 		return dnscheck.SPFResult{Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, Complete: true}
 	}
 	if got, answered := c.ResolveHost(context.Background(), "mail.example.jp"); !reflect.DeepEqual(got, []netip.Addr{netip.MustParseAddr("192.0.2.25")}) || !answered {
-		t.Errorf("host row an hour old: %v, %v; want the stored address", got, answered)
+		t.Errorf("host row at the end of the fresh period: %v, %v; want the stored address", got, answered)
 	}
 	if prefixes, _, complete := c.ResolveSPF(context.Background(), "example.jp"); !reflect.DeepEqual(prefixes, []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}) || !complete {
-		t.Errorf("SPF row an hour old: %v, %v; want the stored prefix", prefixes, complete)
+		t.Errorf("SPF row at the end of the fresh period: %v, %v; want the stored prefix", prefixes, complete)
 	}
 	if calls != 0 {
 		t.Errorf("%d lookups, want none", calls)
@@ -787,7 +783,7 @@ func TestSourceCacheFreshestKind(t *testing.T) {
 			if kind == fresher {
 				row.Addresses, row.FetchedAt = []string{"192.0.2.25"}, now.Add(-2*day)
 			}
-			if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+			if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -816,8 +812,8 @@ func TestSourceCacheSPFHostsOnly(t *testing.T) {
 	now := time.Now().UTC().Round(time.Second)
 	seed := func(row *models.SendingSourceLookup) {
 		t.Helper()
-		row.Kind, row.Name, row.FetchedAt = models.SendingSourceKindSPF, "example.jp", now.Add(-2*time.Hour)
-		if _, err := models.ReplaceSendingSourceLookup(db, row, time.Time{}); err != nil {
+		row.Kind, row.Name, row.FetchedAt = models.SendingSourceKindSPF, "example.jp", now.Add(-dnscheck.CacheFreshAge-time.Hour)
+		if _, err := models.ReplaceSendingSourceLookup(db, row, false); err != nil {
 			t.Fatal(err)
 		}
 	}
